@@ -1,0 +1,108 @@
+package config
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+)
+
+// ModelOption represents a selectable model for the setup wizard.
+type ModelOption struct {
+	ID   string
+	Name string
+}
+
+// ModelLister returns available models for a given provider.
+type ModelLister func(provider string) []ModelOption
+
+var providerList = []struct {
+	key  string
+	name string
+}{
+	{"openai", "OpenAI"},
+	{"anthropic", "Anthropic"},
+	{"gemini", "Google Gemini"},
+}
+
+// RunSetup runs an interactive first-time configuration wizard.
+// Returns the resolved provider, apiKey, baseURL, and model.
+func RunSetup(cwd string, settings Resolved, listModels ModelLister) (prov, apiKey, baseURL, model string, err error) {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Println("\nWelcome to codebot! Let's configure your settings.")
+
+	// 1. Provider
+	fmt.Println("Select provider:")
+	for i, p := range providerList {
+		marker := ""
+		if p.key == settings.DefaultProvider {
+			marker = " (current)"
+		}
+		fmt.Printf("  %d. %s%s\n", i+1, p.name, marker)
+	}
+	fmt.Print("\n> ")
+	providerIdx := readChoice(reader, len(providerList), 1)
+	prov = providerList[providerIdx-1].key
+
+	// 2. API key
+	fmt.Printf("\nEnter %s API key: ", providerList[providerIdx-1].name)
+	apiKey = readLine(reader)
+	if apiKey == "" {
+		return "", "", "", "", fmt.Errorf("API key is required")
+	}
+
+	// 3. Base URL
+	fmt.Print("\nEnter base URL (optional, press Enter to skip): ")
+	baseURL = readLine(reader)
+
+	// 4. Model
+	if listModels != nil {
+		models := listModels(prov)
+		if len(models) > 0 {
+			fmt.Println("\nSelect default model:")
+			for i, m := range models {
+				fmt.Printf("  %d. %s (%s)\n", i+1, m.ID, m.Name)
+			}
+			fmt.Print("\n> ")
+			modelIdx := readChoice(reader, len(models), 1)
+			model = models[modelIdx-1].ID
+		}
+	}
+
+	// 5. Save
+	s := Settings{
+		DefaultProvider: &prov,
+		APIKey:          &apiKey,
+	}
+	if baseURL != "" {
+		s.BaseURL = &baseURL
+	}
+	if model != "" {
+		s.DefaultModel = &model
+	}
+
+	if err := SaveSettings(cwd, s); err != nil {
+		return "", "", "", "", fmt.Errorf("save settings: %w", err)
+	}
+
+	fmt.Printf("\nSettings saved to %s\n\n", SettingsPath(cwd))
+	return prov, apiKey, baseURL, model, nil
+}
+
+func readLine(reader *bufio.Reader) string {
+	line, _ := reader.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+func readChoice(reader *bufio.Reader, max, defaultVal int) int {
+	line := readLine(reader)
+	if line == "" {
+		return defaultVal
+	}
+	var n int
+	if _, err := fmt.Sscanf(line, "%d", &n); err != nil || n < 1 || n > max {
+		return defaultVal
+	}
+	return n
+}

@@ -1,0 +1,281 @@
+package runtime
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/memory"
+	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/policy"
+	"github.com/voocel/codebot/internal/provider"
+	"github.com/voocel/codebot/internal/session"
+)
+
+// Options controls how runtime bootstraps.
+type Options struct {
+	Cwd string
+
+	Provider string
+	Model    string
+	APIKey   string
+	BaseURL  string
+
+	Continue   bool
+	Resume     bool
+	Session    string
+	NonTTYMode bool
+
+	PolicyProfile string
+	ToolFactories []ToolFactory
+	ModelFactory  agent.ModelFactory
+}
+
+// Runtime is the bootstrapped app runtime state.
+type Runtime struct {
+	Cwd       string
+	GitBranch string
+
+	PolicyProfile policy.Profile
+
+	Settings config.Resolved
+	Registry *provider.ModelRegistry
+	Manager  *session.Manager
+	Store    *session.Store
+	Session  *agent.AgentSession
+	Agent    *agentcore.Agent
+}
+
+// Close releases runtime resources.
+func (r *Runtime) Close() {
+	if r.Session != nil {
+		r.Session.Close()
+	}
+}
+
+// Boot creates a ready-to-run runtime.
+func Boot(opts Options) (*Runtime, error) {
+	cwd := opts.Cwd
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("get cwd: %w", err)
+		}
+	}
+
+	settings := config.ResolveAll(cwd, config.Flags{
+		Provider: opts.Provider,
+		Model:    opts.Model,
+		APIKey:   opts.APIKey,
+		BaseURL:  opts.BaseURL,
+	})
+
+	registry := provider.NewModelRegistry()
+	profile, err := parseProfile(opts.PolicyProfile)
+	if err != nil {
+		return nil, err
+	}
+	createModel := opts.ModelFactory
+	if createModel == nil {
+		createModel = provider.CreateModel
+	}
+
+	// Interactive setup when API key is missing.
+	if settings.APIKey == "" {
+		if opts.NonTTYMode {
+			return nil, fmt.Errorf("api key not set. use -api-key or set %s", config.EnvKeyName(settings.DefaultProvider))
+		}
+		prov, apiKey, baseURL, model, err := config.RunSetup(cwd, settings, func(prov string) []config.ModelOption {
+			entries := registry.FindByProvider(prov)
+			result := make([]config.ModelOption, len(entries))
+			for i, e := range entries {
+				result[i] = config.ModelOption{ID: e.ID, Name: e.Name}
+			}
+			return result
+		})
+		if err != nil {
+			return nil, fmt.Errorf("setup: %w", err)
+		}
+		settings = config.ResolveAll(cwd, config.Flags{
+			Provider: prov,
+			APIKey:   apiKey,
+			BaseURL:  baseURL,
+			Model:    model,
+		})
+	}
+
+	manager := session.NewManager(config.SessionsDir(cwd))
+	store, err := resolveSession(manager, cwd, opts.Continue, opts.Resume, opts.Session)
+	if err != nil {
+		return nil, fmt.Errorf("session: %w", err)
+	}
+	closeStoreOnError := true
+	defer func() {
+		if closeStoreOnError && store != nil {
+			_ = store.Close()
+		}
+	}()
+
+	var snapshot session.ContextSnapshot
+	if opts.Continue || opts.Resume || opts.Session != "" {
+		snapshot, err = store.BuildSnapshot()
+		if err != nil {
+			return nil, fmt.Errorf("restore context: %w", err)
+		}
+	}
+
+	activeProvider := settings.DefaultProvider
+	if snapshot.Provider != "" {
+		activeProvider = snapshot.Provider
+	}
+	activeModel := settings.DefaultModel
+	if snapshot.Model != "" {
+		activeModel = snapshot.Model
+	}
+	activeAPIKey := settings.APIKey
+	activeBaseURL := settings.BaseURL
+
+	// When restored provider differs from default provider, resolve provider-specific credentials.
+	if activeProvider != settings.DefaultProvider {
+		if envKey := os.Getenv(config.EnvKeyName(activeProvider)); envKey != "" {
+			activeAPIKey = envKey
+		}
+		if envBase := os.Getenv(config.BaseURLEnvName(activeProvider)); envBase != "" {
+			activeBaseURL = envBase
+		}
+	}
+
+	chatModel, err := createModel(activeProvider, activeModel, activeAPIKey, activeBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("create model: %w", err)
+	}
+
+	ctxFiles := config.LoadContextFiles(cwd)
+
+	pol := policy.New(policy.Config{
+		Profile:     profile,
+		Workspace:   cwd,
+		Interactive: !opts.NonTTYMode,
+		AuditPath:   filepath.Join(cwd, config.ConfigDir, "audit.log"),
+	})
+
+	ag := agentcore.NewAgent(
+		agentcore.WithModel(chatModel),
+		agentcore.WithSystemPrompt(config.BuildSystemPrompt(cwd, ctxFiles)),
+		agentcore.WithTools(buildTools(cwd, opts.ToolFactories)...),
+		agentcore.WithMaxTurns(settings.MaxTurns),
+		agentcore.WithContextPipeline(
+			memory.NewCompaction(memory.CompactionConfig{
+				Model:         chatModel,
+				ContextWindow: settings.ContextWindow,
+			}),
+			memory.CompactionConvertToLLM,
+		),
+		agentcore.WithContextWindow(settings.ContextWindow),
+		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
+		agentcore.WithPermission(pol.Permission),
+	)
+
+	if len(snapshot.Messages) > 0 {
+		if err := ag.SetMessages(snapshot.Messages); err != nil {
+			return nil, fmt.Errorf("restore agent messages: %w", err)
+		}
+	}
+	if snapshot.Thinking != "" {
+		ag.SetThinkingLevel(agentcore.ThinkingLevel(snapshot.Thinking))
+	}
+
+	settings.DefaultProvider = activeProvider
+	settings.DefaultModel = activeModel
+	settings.APIKey = activeAPIKey
+	settings.BaseURL = activeBaseURL
+
+	sess := agent.NewAgentSession(agent.AgentSessionConfig{
+		Agent:       ag,
+		Store:       store,
+		Manager:     manager,
+		Registry:    registry,
+		Settings:    settings,
+		Cwd:         cwd,
+		CreateModel: createModel,
+	})
+	closeStoreOnError = false
+
+	return &Runtime{
+		Cwd:           cwd,
+		GitBranch:     detectGitBranch(cwd),
+		PolicyProfile: profile,
+		Settings:      settings,
+		Registry:      registry,
+		Manager:       manager,
+		Store:         store,
+		Session:       sess,
+		Agent:         ag,
+	}, nil
+}
+
+func detectGitBranch(cwd string) string {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func resolveSession(mgr *session.Manager, cwd string, cont, resume bool, path string) (*session.Store, error) {
+	switch {
+	case path != "":
+		return mgr.OpenPath(path)
+	case cont:
+		info, err := mgr.MostRecent()
+		if err != nil {
+			return nil, err
+		}
+		if info == nil {
+			return mgr.Create(cwd)
+		}
+		return mgr.OpenPath(info.Path)
+	case resume:
+		sessions, err := mgr.List()
+		if err != nil {
+			return nil, err
+		}
+		if len(sessions) == 0 {
+			return mgr.Create(cwd)
+		}
+		fmt.Fprintf(os.Stderr, "Available sessions:\n")
+		for i, s := range sessions {
+			name := s.ID
+			if s.Name != "" {
+				name = s.Name
+			}
+			fmt.Fprintf(os.Stderr, "  %d. %s  (%s)  %s\n", i+1, name, s.Cwd, s.Updated.Format("2006-01-02 15:04"))
+		}
+		fmt.Fprintf(os.Stderr, "Resuming most recent session.\n")
+		return mgr.OpenPath(sessions[0].Path)
+	default:
+		return mgr.Create(cwd)
+	}
+}
+
+func parseProfile(s string) (policy.Profile, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return policy.ProfileBalanced, nil
+	case string(policy.ProfileOff):
+		return policy.ProfileOff, nil
+	case string(policy.ProfileStrict):
+		return policy.ProfileStrict, nil
+	case string(policy.ProfileBalanced):
+		return policy.ProfileBalanced, nil
+	default:
+		return "", fmt.Errorf("invalid policy profile %q (allowed: off, balanced, strict)", s)
+	}
+}
