@@ -3,75 +3,67 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/agentcore"
+	"github.com/muesli/reflow/truncate"
+	reflowwrap "github.com/muesli/reflow/wrap"
 )
 
-// RebuildViewport reconstructs the viewport content from blocks and streaming state.
-func (m *Model) RebuildViewport() {
+// ---------------------------------------------------------------------------
+// Live area renderers (used by View)
+// ---------------------------------------------------------------------------
+
+func (m *Model) renderWelcome() string {
 	var sb strings.Builder
-
-	for _, b := range m.Blocks {
-		if b.Collapsed {
-			if b.Summary != "" {
-				sb.WriteString(MutedStyle.Render("▸ " + b.Summary))
-				sb.WriteString("\n")
-			}
-			continue
-		}
-		sb.WriteString(b.Content)
-		sb.WriteString("\n\n")
-	}
-
-	if m.IsStream {
-		sb.WriteString(AssistantPrefixStyle.Render("> Assistant"))
+	sb.WriteString("\n")
+	sb.WriteString(WelcomeTitleStyle.Render("  Codebot"))
+	sb.WriteString("\n\n")
+	sb.WriteString(WelcomeDetailStyle.Render(fmt.Sprintf("  Model:  %s", m.ModelName)))
+	if m.Cwd != "" {
 		sb.WriteString("\n")
-		sb.WriteString(StreamingStyle.Render(m.Streaming.String()))
-		sb.WriteString(m.Spinner.View())
-		sb.WriteString("\n\n")
-	}
-
-	if len(m.PendingTools) > 0 && !m.IsStream {
-		for _, name := range m.PendingTools {
-			sb.WriteString(m.Spinner.View())
-			sb.WriteString(" ")
-			sb.WriteString(ToolNameStyle.Render(name))
-			sb.WriteString(" running...\n")
+		detail := fmt.Sprintf("  Cwd:    %s", shortenPath(m.Cwd))
+		if m.GitBranch != "" {
+			detail += fmt.Sprintf(" (%s)", m.GitBranch)
 		}
-		sb.WriteString("\n")
+		sb.WriteString(WelcomeDetailStyle.Render(detail))
 	}
-
-	m.Viewport.SetContent(sb.String())
-	if m.AutoScroll {
-		m.Viewport.GotoBottom()
-	}
+	sb.WriteString("\n\n")
+	sb.WriteString(MutedStyle.Render("  Type a message to start. /help for commands."))
+	return sb.String()
 }
 
-// RenderStatusBar renders the status bar with optional right-side customization.
+// RenderStatusBar renders the top status bar.
 func (m *Model) RenderStatusBar() string {
 	var status string
 	if m.Running {
-		status = m.Spinner.View() + " Thinking..."
+		status = m.Spinner.View() + " running"
 	} else {
-		status = "Ready"
+		status = lipgloss.NewStyle().Foreground(ColorSuccess).Render("●") + " ready"
 	}
 
-	right := fmt.Sprintf("%s  Turn %d", m.ModelName, m.TurnCount)
-	if m.config.StatusRight != nil {
-		if extra := m.config.StatusRight(m); extra != "" {
-			right = extra + "  " + right
-		}
+	right := m.StatusInfo()
+
+	if m.Width <= 0 {
+		return status
 	}
 
-	gap := max(m.Width-lipgloss.Width(status)-lipgloss.Width(right)-2, 1)
+	maxWidth := max(m.Width-2, 1)
+	left := truncate.StringWithTail(status, uint(maxWidth), "…")
 
-	bar := status + strings.Repeat(" ", gap) + right
+	availableRight := maxWidth - lipgloss.Width(left) - 2
+	if availableRight <= 0 {
+		return StatusBarStyle.Width(m.Width).Render(left)
+	}
+
+	right = truncate.StringWithTail(right, uint(availableRight), "…")
+	gap := max(maxWidth-lipgloss.Width(left)-lipgloss.Width(right), 1)
+	bar := left + strings.Repeat(" ", gap) + right
 	return StatusBarStyle.Width(m.Width).Render(bar)
 }
 
-// RenderFooter renders the optional footer bar above the input area.
+// RenderFooter renders the optional footer bar.
 func (m *Model) RenderFooter() string {
 	if m.config.OnFooter == nil {
 		return ""
@@ -82,6 +74,10 @@ func (m *Model) RenderFooter() string {
 	}
 	return FooterStyle.Width(m.Width).Render(content)
 }
+
+// ---------------------------------------------------------------------------
+// Markdown rendering
+// ---------------------------------------------------------------------------
 
 // RenderMarkdown renders markdown content using glamour.
 func (m *Model) RenderMarkdown(content string) string {
@@ -95,15 +91,72 @@ func (m *Model) RenderMarkdown(content string) string {
 	return strings.TrimSpace(rendered)
 }
 
-// --- Utility functions ---
+// ---------------------------------------------------------------------------
+// Run summary
+// ---------------------------------------------------------------------------
 
-// MsgRole safely extracts the role from an AgentMessage.
-func MsgRole(msg agentcore.AgentMessage) agentcore.Role {
-	if msg == nil {
+// renderRunSummary renders per-run stats shown after agent completion.
+func (m *Model) renderRunSummary() string {
+	s := m.RunStats
+	return MutedStyle.Render(fmt.Sprintf("  turns %d · tools %d · tokens ↑%s ↓%s",
+		s.Turns, s.ToolCalls, formatTokens(s.Input), formatTokens(s.Output)))
+}
+
+// formatTokens formats a token count with k/M suffix for readability.
+func formatTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Text utilities
+// ---------------------------------------------------------------------------
+
+// wrapTextForIndent wraps content to fit terminal width after indentation.
+func (m Model) wrapTextForIndent(content string, indent int) string {
+	if content == "" {
 		return ""
 	}
-	return msg.GetRole()
+	width := m.Width - indent - 1
+	if width <= 1 {
+		width = 79
+	}
+	return strings.TrimRight(reflowwrap.String(content, width), "\n")
 }
+
+// indentBlock prepends n spaces to each non-empty line.
+func indentBlock(s string, n int) string {
+	if s == "" {
+		return ""
+	}
+	prefix := strings.Repeat(" ", n)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = prefix + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// shortenPath replaces the home directory prefix with ~.
+func shortenPath(p string) string {
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" && strings.HasPrefix(p, home) {
+		return "~" + p[len(home):]
+	}
+	return p
+}
+
+// ---------------------------------------------------------------------------
+// Tool display utilities
+// ---------------------------------------------------------------------------
 
 // FormatToolArgs formats tool arguments for display, truncating if needed.
 func FormatToolArgs(args json.RawMessage) string {
@@ -155,11 +208,11 @@ func RenderStreamingOutput(full string, maxLines int) string {
 	visible := lines[start:]
 	var sb strings.Builder
 	if start > 0 {
-		sb.WriteString(MutedStyle.Render(fmt.Sprintf("    ... (%d lines above)", start)))
+		sb.WriteString(MutedStyle.Render(fmt.Sprintf("... (%d lines above)", start)))
 		sb.WriteByte('\n')
 	}
 	for _, line := range visible {
-		sb.WriteString(MutedStyle.Render("    " + line))
+		sb.WriteString(MutedStyle.Render(line))
 		sb.WriteByte('\n')
 	}
 	return strings.TrimRight(sb.String(), "\n")
@@ -168,33 +221,33 @@ func RenderStreamingOutput(full string, maxLines int) string {
 // RenderEditResult renders the edit tool result with colored diff output.
 func RenderEditResult(result json.RawMessage) string {
 	if len(result) == 0 {
-		return ToolResultStyle.Render("    (edit completed)")
+		return "(edit completed)"
 	}
 
 	var parsed map[string]any
 	if err := json.Unmarshal(result, &parsed); err != nil {
-		return ToolResultStyle.Render("    " + TruncateLines(string(result), 10))
+		return TruncateLines(string(result), 10)
 	}
 
 	msg, _ := parsed["message"].(string)
 	diff, _ := parsed["diff"].(string)
 	if diff == "" {
-		return ToolResultStyle.Render("    " + msg)
+		return msg
 	}
 
 	var sb strings.Builder
-	sb.WriteString(CommandStyle.Render("    "+msg) + "\n")
+	sb.WriteString(msg + "\n")
 	for _, line := range strings.Split(diff, "\n") {
 		if line == "" {
 			continue
 		}
 		switch {
 		case strings.HasPrefix(line, "-"):
-			sb.WriteString(ErrorStyle.Render("    " + line))
+			sb.WriteString(DiffRemoveStyle.Render(line))
 		case strings.HasPrefix(line, "+"):
-			sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("    " + line))
+			sb.WriteString(DiffAddStyle.Render(line))
 		default:
-			sb.WriteString(MutedStyle.Render("    " + line))
+			sb.WriteString(MutedStyle.Render(line))
 		}
 		sb.WriteString("\n")
 	}

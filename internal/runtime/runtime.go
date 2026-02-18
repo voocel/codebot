@@ -188,6 +188,9 @@ func Boot(opts Options) (*Runtime, error) {
 	}
 	if snapshot.Thinking != "" {
 		ag.SetThinkingLevel(agentcore.ThinkingLevel(snapshot.Thinking))
+		settings.ThinkingLevel = snapshot.Thinking
+	} else if settings.ThinkingLevel != "" {
+		ag.SetThinkingLevel(agentcore.ThinkingLevel(settings.ThinkingLevel))
 	}
 
 	settings.DefaultProvider = activeProvider

@@ -6,72 +6,61 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
 )
 
-// BlockKind identifies the type of a rendered content block.
-type BlockKind int
-
-const (
-	BlockUser BlockKind = iota
-	BlockAssistant
-	BlockToolStart
-	BlockToolEnd
-	BlockThinking
-	BlockError
-	BlockCommand
-)
-
-// Block is a rendered content entry in the conversation history.
-type Block struct {
-	Kind      BlockKind
-	Content   string
-	Collapsed bool   // when true, only a summary line is shown
-	Summary   string // one-line summary for collapsed state
-}
-
 // Config provides hooks for extending the base TUI behavior.
 type Config struct {
 	Placeholder string
+	Cwd         string
+	GitBranch   string
 	OnKey       func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
 	OnEvent     func(m *Model, ev agentcore.Event) tea.Cmd
 	StatusRight func(m *Model) string
-	OnFooter    func(m *Model) string // optional footer line below viewport
+	OnFooter    func(m *Model) string
 }
 
-// Model is the shared bubbletea Model for agent TUI applications.
+// runStats tracks per-run statistics displayed after agent completion.
+type runStats struct {
+	Turns     int
+	ToolCalls int
+	Input     int
+	Output    int
+}
+
+// Model is the bubbletea Model for the agent TUI.
+// Completed content is printed to terminal scrollback via tea.Println;
+// View() only renders the live area (status + streaming + input).
 type Model struct {
 	Agent     *agentcore.Agent
 	ModelName string
 
-	Viewport viewport.Model
-	Input    textarea.Model
-	Spinner  spinner.Model
+	Input   textarea.Model
+	Spinner spinner.Model
 
-	Blocks    []Block
 	Streaming *strings.Builder
+	Thinking  *strings.Builder
 	IsStream  bool
 
 	Running       bool
 	TurnCount     int
-	PendingTools  map[string]string
-	ToolOutputBuf map[string]*strings.Builder
-	ToolOutputIdx map[string]int
+	PendingTools  map[string]string           // toolID -> tool name
+	ToolOutputBuf map[string]*strings.Builder // toolID -> streaming output
 
-	Width, Height int
-	Ready         bool
-	AutoScroll    bool
+	Width int
+	Ready bool
 
-	ToolsCollapsed    bool // global toggle for tool output blocks
-	ThinkingCollapsed bool // global toggle for thinking blocks
+	Cwd         string
+	GitBranch   string
+	ShowWelcome bool
+	ShowSummary bool
+	RunStats    runStats
 
 	Glamour *glamour.TermRenderer
-
-	config Config
+	config  Config
 }
 
 // New creates a Model with the given agent, model name, and optional config.
@@ -86,13 +75,14 @@ func New(agent *agentcore.Agent, modelName string, cfg ...Config) Model {
 	sp.Style = lipgloss.NewStyle().Foreground(ColorAssistant)
 
 	ta := textarea.New()
-	placeholder := "Type your message... (Enter to send, Esc to abort)"
+	placeholder := "Type a message (Enter to send, Esc to abort)"
 	if c.Placeholder != "" {
 		placeholder = c.Placeholder
 	}
 	ta.Placeholder = placeholder
+	ta.Prompt = ""
 	ta.Focus()
-	ta.SetHeight(3)
+	ta.SetHeight(2)
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 
@@ -102,23 +92,23 @@ func New(agent *agentcore.Agent, modelName string, cfg ...Config) Model {
 		Spinner:       sp,
 		Input:         ta,
 		Streaming:     &strings.Builder{},
+		Thinking:      &strings.Builder{},
 		PendingTools:  make(map[string]string),
 		ToolOutputBuf: make(map[string]*strings.Builder),
-		ToolOutputIdx: make(map[string]int),
-		AutoScroll:    true,
+		Cwd:           c.Cwd,
+		GitBranch:     c.GitBranch,
+		ShowWelcome:   true,
 		config:        c,
 	}
 }
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.Spinner.Tick, textarea.Blink)
+	return tea.Batch(tea.ClearScreen, m.Spinner.Tick, textarea.Blink)
 }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -127,58 +117,79 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AgentEventMsg:
 		return m.HandleAgentEvent(msg.Event)
 	case CommandResultMsg:
-		if msg.Quit {
-			return m, tea.Quit
-		}
-		if msg.Clear {
-			m.Blocks = nil
-			m.TurnCount = 0
-		}
-		if msg.NewModel != "" {
-			m.ModelName = msg.NewModel
-		}
-		if msg.Text != "" {
-			m.Blocks = append(m.Blocks, Block{Kind: BlockCommand, Content: msg.Text})
-		}
-		m.RebuildViewport()
-		return m, nil
+		return m.handleCommandResult(msg)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.Spinner, cmd = m.Spinner.Update(msg)
-		cmds = append(cmds, cmd)
-	}
-
-	if m.Ready {
-		var cmd tea.Cmd
-		m.Viewport, cmd = m.Viewport.Update(msg)
-		cmds = append(cmds, cmd)
-		if !m.Viewport.AtBottom() {
-			m.AutoScroll = false
-		}
+		return m, cmd
 	}
 
 	var cmd tea.Cmd
 	m.Input, cmd = m.Input.Update(msg)
-	cmds = append(cmds, cmd)
-
-	return m, tea.Batch(cmds...)
+	return m, cmd
 }
 
-// View implements tea.Model.
+// View renders the live area pinned at the bottom of the terminal.
+// Completed content lives in terminal scrollback (printed via tea.Println).
 func (m Model) View() string {
 	if !m.Ready {
 		return "\n  Initializing..."
 	}
-	footer := m.RenderFooter()
-	if footer != "" {
-		return fmt.Sprintf("%s\n%s\n%s\n%s", m.RenderStatusBar(), m.Viewport.View(), footer, m.Input.View())
+
+	var parts []string
+
+	// Welcome banner (before first message only)
+	if m.ShowWelcome {
+		parts = append(parts, m.renderWelcome())
 	}
-	return fmt.Sprintf("%s\n%s\n%s", m.RenderStatusBar(), m.Viewport.View(), m.Input.View())
+
+	// Live: streaming assistant text
+	if m.IsStream {
+		if thinking := strings.TrimSpace(m.Thinking.String()); thinking != "" {
+			think := ThinkingLabelStyle.Render("[thinking]") + "\n" +
+				indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
+			parts = append(parts, think)
+		}
+		parts = append(parts, AssistantLabelStyle.Render("[assistant]"))
+		text := m.wrapTextForIndent(m.Streaming.String(), 2)
+		parts = append(parts, indentBlock(text, 2)+m.Spinner.View())
+	}
+
+	// Live: pending tool execution
+	for id, name := range m.PendingTools {
+		line := "  " + m.Spinner.View() + " " + ToolNameStyle.Render(name) + MutedStyle.Render(" running...")
+		if buf, ok := m.ToolOutputBuf[id]; ok && buf.Len() > 0 {
+			output := RenderStreamingOutput(buf.String(), 5)
+			line += "\n" + indentBlock(m.wrapTextForIndent(output, 4), 4)
+		}
+		parts = append(parts, line)
+	}
+
+	// Blank line before chrome
+	parts = append(parts, "")
+
+	// Run summary (shown after agent completes, cleared on next input)
+	if m.ShowSummary {
+		parts = append(parts, m.renderRunSummary(), "")
+	}
+
+	// Status bar
+	parts = append(parts, m.RenderStatusBar())
+
+	// Optional footer
+	if footer := m.RenderFooter(); footer != "" {
+		parts = append(parts, footer)
+	}
+
+	// Separator + input
+	parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+	parts = append(parts, m.Input.View())
+
+	return strings.Join(parts, "\n")
 }
 
-// handleKey processes keyboard input, delegating to OnKey hook first.
+// handleKey processes keyboard input.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Delegate to hook first
 	if m.config.OnKey != nil {
 		if handled, cmd := m.config.OnKey(&m, msg); handled {
 			return m, cmd
@@ -189,18 +200,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 
-	case "ctrl+o":
-		m.ToolsCollapsed = !m.ToolsCollapsed
-		m.applyCollapseState()
-		m.RebuildViewport()
-		return m, nil
-
-	case "ctrl+t":
-		m.ThinkingCollapsed = !m.ThinkingCollapsed
-		m.applyCollapseState()
-		m.RebuildViewport()
-		return m, nil
-
 	case "esc":
 		if m.Running {
 			m.Agent.Abort()
@@ -210,28 +209,29 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		text := strings.TrimSpace(m.Input.Value())
 		if text == "" {
+			m.Input.Reset()
 			return m, nil
 		}
 		m.Input.Reset()
+		m.ShowSummary = false
+
+		userLine := "\n" + indentBlock(UserPromptStyle.Render("❯ ")+m.wrapTextForIndent(text, 2), 2)
+
+		// Persist welcome to scrollback before it leaves the live area.
+		var output string
+		if m.ShowWelcome {
+			output = m.renderWelcome() + "\n" + userLine
+			m.ShowWelcome = false
+		} else {
+			output = userLine
+		}
 
 		if m.Running {
 			m.Agent.Steer(agentcore.UserMsg(text))
-		} else {
-			m.Blocks = append(m.Blocks, Block{
-				Kind:    BlockUser,
-				Content: UserPrefixStyle.Render("> You") + "\n" + text,
-			})
-			m.AutoScroll = true
-			m.RebuildViewport()
-			_ = m.Agent.Prompt(text)
+		} else if err := m.Agent.Prompt(text); err != nil {
+			output += "\n" + ErrorStyle.Render("  error: "+err.Error())
 		}
-		return m, nil
-
-	case "pgup", "pgdown":
-		var cmd tea.Cmd
-		m.Viewport, cmd = m.Viewport.Update(msg)
-		m.AutoScroll = m.Viewport.AtBottom()
-		return m, cmd
+		return m, tea.Println(output)
 	}
 
 	var cmd tea.Cmd
@@ -239,40 +239,51 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// handleResize processes terminal window resize events.
+// handleResize processes terminal resize events.
 func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.Width = msg.Width
-	m.Height = msg.Height
-
-	vpHeight := max(m.Height-6, 1)
-	if m.config.OnFooter != nil {
-		vpHeight = max(vpHeight-1, 1)
-	}
-
-	if !m.Ready {
-		m.Viewport = viewport.New(m.Width, vpHeight)
-		m.Viewport.MouseWheelEnabled = true
-		m.Viewport.MouseWheelDelta = 3
-		m.Ready = true
-	} else {
-		m.Viewport.Width = m.Width
-		m.Viewport.Height = vpHeight
-	}
-
+	m.Ready = true
 	m.Input.SetWidth(m.Width - 2)
 	m.Glamour = NewGlamourRenderer(m.Width - 4)
-	m.RebuildViewport()
 	return m, nil
 }
 
-// applyCollapseState synchronizes block Collapsed fields with global toggle state.
-func (m *Model) applyCollapseState() {
-	for i := range m.Blocks {
-		switch m.Blocks[i].Kind {
-		case BlockToolStart, BlockToolEnd:
-			m.Blocks[i].Collapsed = m.ToolsCollapsed
-		case BlockThinking:
-			m.Blocks[i].Collapsed = m.ThinkingCollapsed
+// handleCommandResult processes slash command results.
+func (m Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Quit {
+		return m, tea.Quit
+	}
+	if msg.Clear {
+		m.TurnCount = 0
+		m.ShowWelcome = true
+	}
+	if msg.NewModel != "" {
+		m.ModelName = msg.NewModel
+	}
+	if msg.Text != "" {
+		var output string
+		if m.ShowWelcome {
+			output = m.renderWelcome() + "\n"
+			m.ShowWelcome = false
+		}
+		output += indentBlock(msg.Text, 2)
+		return m, tea.Println(output)
+	}
+	return m, nil
+}
+
+// StatusInfo returns the formatted right-side status bar content.
+func (m *Model) StatusInfo() string {
+	var parts []string
+	if m.GitBranch != "" {
+		parts = append(parts, MutedStyle.Render(m.GitBranch))
+	}
+	parts = append(parts, m.ModelName)
+	if m.config.StatusRight != nil {
+		if extra := m.config.StatusRight(m); extra != "" {
+			parts = append(parts, extra)
 		}
 	}
+	parts = append(parts, MutedStyle.Render(fmt.Sprintf("turn %d", m.TurnCount)))
+	return strings.Join(parts, "  ")
 }

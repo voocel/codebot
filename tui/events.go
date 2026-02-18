@@ -7,76 +7,100 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// HandleAgentEvent processes standard agent events and updates the model.
-// After standard handling, it delegates to the OnEvent hook if configured.
+// HandleAgentEvent processes agent events.
+// Completed content is printed to terminal scrollback via tea.Println.
+// In-progress content (streaming, tool output) is shown in the live View().
 func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch ev.Type {
 	case agentcore.EventAgentStart:
 		m.Running = true
+		m.RunStats = runStats{}
+		m.ShowSummary = false
 
 	case agentcore.EventAgentEnd:
 		m.Running = false
+		m.ShowSummary = true
 
 	case agentcore.EventTurnStart:
 		m.TurnCount++
+		m.RunStats.Turns++
 
 	case agentcore.EventMessageStart:
-		if role := MsgRole(ev.Message); role == agentcore.RoleAssistant {
+		if ev.Message.GetRole() == agentcore.RoleAssistant {
 			m.IsStream = true
 			m.Streaming.Reset()
-		} else if role == agentcore.RoleUser {
-			if ev.Message != nil && ev.Message.TextContent() != "" {
-				m.Blocks = append(m.Blocks, Block{
-					Kind:    BlockUser,
-					Content: UserPrefixStyle.Render("> You (steer)") + "\n" + ev.Message.TextContent(),
-				})
-			}
+			m.Thinking.Reset()
 		}
 
 	case agentcore.EventMessageUpdate:
-		if m.IsStream {
+		if !m.IsStream {
+			break
+		}
+		if ev.Message != nil {
+			if text := ev.Message.TextContent(); text != "" {
+				m.Streaming.Reset()
+				m.Streaming.WriteString(text)
+			}
+			if thinking := ev.Message.ThinkingContent(); thinking != "" {
+				m.Thinking.Reset()
+				m.Thinking.WriteString(thinking)
+			}
+		} else if ev.Delta != "" {
 			m.Streaming.WriteString(ev.Delta)
-			m.RebuildViewport()
 		}
 
 	case agentcore.EventMessageEnd:
-		if role := MsgRole(ev.Message); role == agentcore.RoleAssistant {
+		if ev.Message.GetRole() == agentcore.RoleAssistant {
 			m.IsStream = false
-			content := m.Streaming.String()
 			m.Streaming.Reset()
+			m.Thinking.Reset()
 
+			// Accumulate token usage via type assertion (AgentMessage has no Usage method).
+			if msg, ok := ev.Message.(agentcore.Message); ok && msg.Usage != nil {
+				m.RunStats.Input += msg.Usage.Input
+				m.RunStats.Output += msg.Usage.Output
+			}
+
+			content := strings.TrimSpace(ev.Message.TextContent())
+			thinkingText := strings.TrimSpace(ev.Message.ThinkingContent())
+
+			// Single tea.Println to guarantee display order in scrollback.
+			var block strings.Builder
+			block.WriteByte('\n')
+			if thinkingText != "" {
+				block.WriteString(ThinkingLabelStyle.Render("[thinking]") + "\n")
+				block.WriteString(indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2))
+				block.WriteString("\n")
+				block.WriteString("\n")
+			}
 			rendered := m.RenderMarkdown(content)
-			m.Blocks = append(m.Blocks, Block{
-				Kind:    BlockAssistant,
-				Content: AssistantPrefixStyle.Render("> Assistant") + "\n" + rendered,
-			})
-			m.RebuildViewport()
+			block.WriteString(AssistantLabelStyle.Render("[assistant]") + "\n")
+			block.WriteString(indentBlock(m.wrapTextForIndent(rendered, 2), 2))
+			cmds = append(cmds, tea.Println(block.String()))
 		}
 
 	case agentcore.EventToolExecStart:
 		m.PendingTools[ev.ToolID] = ev.Tool
-		argsStr := FormatToolArgs(ev.Args)
-		m.Blocks = append(m.Blocks, Block{
-			Kind:      BlockToolStart,
-			Content:   ToolNameStyle.Render("  > "+ev.Tool) + " " + MutedStyle.Render(argsStr),
-			Collapsed: m.ToolsCollapsed,
-			Summary:   ev.Tool + ": " + argsStr,
-		})
 		m.ToolOutputBuf[ev.ToolID] = &strings.Builder{}
-		m.Blocks = append(m.Blocks, Block{Kind: BlockToolEnd, Collapsed: m.ToolsCollapsed})
-		m.ToolOutputIdx[ev.ToolID] = len(m.Blocks) - 1
-		m.RebuildViewport()
+		m.RunStats.ToolCalls++
+
+		label := ev.Tool
+		if ev.ToolLabel != "" {
+			label = ev.ToolLabel
+		}
+		header := "\n" + ToolIconStyle.Render("  ⏺ ") + ToolNameStyle.Render(label)
+		if argsStr := FormatToolArgs(ev.Args); argsStr != "" {
+			header += "\n" + indentBlock(ToolArgsStyle.Render(m.wrapTextForIndent(argsStr, 4)), 4)
+		}
+		cmds = append(cmds, tea.Println(header))
 
 	case agentcore.EventToolExecUpdate:
 		if line := FormatProgressLine(ev.Result); line != "" {
 			if buf, ok := m.ToolOutputBuf[ev.ToolID]; ok {
 				buf.WriteString(line)
 				buf.WriteByte('\n')
-				content := RenderStreamingOutput(buf.String(), 10)
-				if idx, ok := m.ToolOutputIdx[ev.ToolID]; ok && idx < len(m.Blocks) {
-					m.Blocks[idx] = Block{Kind: BlockToolEnd, Content: content}
-				}
-				m.RebuildViewport()
 			}
 		}
 
@@ -90,30 +114,28 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		} else {
 			rendered = FormatToolResult(ev.Result, ev.IsError)
 		}
-		if idx, ok := m.ToolOutputIdx[ev.ToolID]; ok && idx < len(m.Blocks) {
-			m.Blocks[idx] = Block{Kind: BlockToolEnd, Content: rendered}
-			delete(m.ToolOutputIdx, ev.ToolID)
-		} else {
-			m.Blocks = append(m.Blocks, Block{Kind: BlockToolEnd, Content: rendered})
+		style := ToolResultStyle
+		if ev.IsError {
+			style = ErrorStyle
 		}
-		m.RebuildViewport()
+		cmds = append(cmds, tea.Println(indentBlock(style.Render(m.wrapTextForIndent(rendered, 4)), 4)))
 
 	case agentcore.EventError:
 		errMsg := "unknown error"
 		if ev.Err != nil {
 			errMsg = ev.Err.Error()
 		}
-		m.Blocks = append(m.Blocks, Block{
-			Kind:    BlockError,
-			Content: ErrorStyle.Render("  Error: " + errMsg),
-		})
-		m.RebuildViewport()
+		cmds = append(cmds, tea.Println("\n"+ErrorStyle.Render("  error: "+errMsg)))
 	}
 
-	// Delegate to hook for extended handling (e.g. thinking blocks)
-	var cmd tea.Cmd
 	if m.config.OnEvent != nil {
-		cmd = m.config.OnEvent(&m, ev)
+		if cmd := m.config.OnEvent(&m, ev); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
-	return m, cmd
+
+	if len(cmds) == 0 {
+		return m, nil
+	}
+	return m, tea.Batch(cmds...)
 }

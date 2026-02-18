@@ -5,72 +5,114 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Colors
+// Color palette — dark terminal optimized.
 var (
-	ColorPrimary   = lipgloss.Color("63")
-	ColorUser      = lipgloss.Color("39")
-	ColorAssistant = lipgloss.Color("213")
-	ColorTool      = lipgloss.Color("214")
-	ColorError     = lipgloss.Color("196")
-	ColorMuted     = lipgloss.Color("241")
-	ColorThinking  = lipgloss.Color("103")
-	ColorCommand   = lipgloss.Color("77")
-	ColorToken     = lipgloss.Color("249")
+	ColorAccent    = lipgloss.Color("#7C6FE0") // soft purple, primary accent
+	ColorUser      = lipgloss.Color("#5FAFFF") // bright blue
+	ColorAssistant = lipgloss.Color("#C792EA") // soft purple/magenta
+	ColorTool      = lipgloss.Color("#FFCB6B") // amber/yellow
+	ColorError     = lipgloss.Color("#FF5370") // soft red
+	ColorSuccess   = lipgloss.Color("#C3E88D") // green
+	ColorMuted     = lipgloss.Color("243")     // medium gray
+	ColorThinking  = lipgloss.Color("240")     // dim gray, distinctly muted vs assistant text
+	ColorToken     = lipgloss.Color("249")     // light gray
+	ColorCommand   = lipgloss.Color("#89DDFF") // cyan
+	ColorStatusBg  = lipgloss.Color("236")     // dark background
+	ColorSeparator = lipgloss.Color("237")     // subtle separator
 )
 
-// Styles
+// Status bar
+var StatusBarStyle = lipgloss.NewStyle().
+	Background(ColorStatusBg).
+	Foreground(lipgloss.Color("250")).
+	Padding(0, 1)
+
+// User prompt prefix (inline, no label)
+var UserPromptStyle = lipgloss.NewStyle().
+	Foreground(ColorUser).
+	Bold(true)
+
+// Assistant label
+var AssistantLabelStyle = lipgloss.NewStyle().
+	Foreground(ColorAssistant).
+	Bold(true)
+
+// Tool blocks
 var (
-	StatusBarStyle = lipgloss.NewStyle().
-			Background(ColorPrimary).
-			Foreground(lipgloss.Color("230")).
-			Padding(0, 1).
-			Bold(true)
-
-	UserPrefixStyle = lipgloss.NewStyle().
-			Foreground(ColorUser).
-			Bold(true)
-
-	AssistantPrefixStyle = lipgloss.NewStyle().
-				Foreground(ColorAssistant).
-				Bold(true)
+	ToolIconStyle = lipgloss.NewStyle().
+			Foreground(ColorTool)
 
 	ToolNameStyle = lipgloss.NewStyle().
 			Foreground(ColorTool).
 			Bold(true)
 
+	ToolArgsStyle = lipgloss.NewStyle().
+			Foreground(ColorMuted)
+
 	ToolResultStyle = lipgloss.NewStyle().
 			Foreground(ColorMuted)
+)
 
-	ErrorStyle = lipgloss.NewStyle().
-			Foreground(ColorError).
-			Bold(true)
+// Thinking blocks
+var (
+	ThinkingLabelStyle = lipgloss.NewStyle().
+				Foreground(ColorThinking).
+				Italic(true)
 
-	StreamingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+	ThinkingBodyStyle = lipgloss.NewStyle().
+				Foreground(ColorThinking).
+				Italic(true)
+)
 
+// Error
+var ErrorStyle = lipgloss.NewStyle().
+	Foreground(ColorError).
+	Bold(true)
+
+// Command / system output
+var CommandStyle = lipgloss.NewStyle().
+	Foreground(ColorCommand)
+
+// Separator
+var SeparatorStyle = lipgloss.NewStyle().
+	Foreground(ColorSeparator)
+
+// Welcome banner
+var (
+	WelcomeTitleStyle = lipgloss.NewStyle().
+				Foreground(ColorAccent).
+				Bold(true)
+
+	WelcomeDetailStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
+)
+
+// Footer
+var FooterStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("245")).
+	Background(ColorStatusBg).
+	Padding(0, 1)
+
+// General purpose
+var (
 	MutedStyle = lipgloss.NewStyle().
 			Foreground(ColorMuted)
-
-	ThinkingStyle = lipgloss.NewStyle().
-			Foreground(ColorThinking).
-			Italic(true)
-
-	CommandStyle = lipgloss.NewStyle().
-			Foreground(ColorCommand)
 
 	TokenStyle = lipgloss.NewStyle().
 			Foreground(ColorToken)
 
-	FooterStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
-			Background(lipgloss.Color("236")).
-			Padding(0, 1)
+	DiffAddStyle = lipgloss.NewStyle().
+			Foreground(ColorSuccess)
+
+	DiffRemoveStyle = lipgloss.NewStyle().
+			Foreground(ColorError)
 )
 
 // NewGlamourRenderer creates a glamour markdown renderer with the given width.
 func NewGlamourRenderer(width int) *glamour.TermRenderer {
 	r, _ := glamour.NewTermRenderer(
-		glamour.WithStandardStyle("dark"),
+		// Avoid terminal probing escape sequences leaking into input on some terminals.
+		glamour.WithStandardStyle("notty"),
 		glamour.WithWordWrap(width),
 	)
 	return r

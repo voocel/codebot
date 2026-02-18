@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/tui"
@@ -24,11 +23,11 @@ type App struct {
 // Config returns a tui.Config with all hooks wired to this App.
 func (a *App) Config() tui.Config {
 	return tui.Config{
-		Placeholder: "Type your message... (Enter to send, Esc to abort, /help for commands)",
+		Placeholder: "输入消息（Enter 发送，↑/↓ 浏览历史，Esc 中断，/help 查看命令）",
+		Cwd:         a.Cwd,
+		GitBranch:   a.GitBranch,
 		OnKey:       a.onKey(),
-		OnEvent:     a.onEvent,
 		StatusRight: a.statusRight,
-		OnFooter:    a.footer,
 	}
 }
 
@@ -47,60 +46,20 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	}
 }
 
-// onEvent extracts thinking blocks from assistant messages.
-func (a *App) onEvent(m *tui.Model, ev agentcore.Event) tea.Cmd {
-	if ev.Type != agentcore.EventMessageEnd {
-		return nil
-	}
-	if ev.Message == nil || ev.Message.GetRole() != agentcore.RoleAssistant {
-		return nil
-	}
-	if tc := ev.Message.ThinkingContent(); tc != "" {
-		thinking := tui.Block{
-			Kind:      tui.BlockThinking,
-			Content:   tui.ThinkingStyle.Render("  [thinking] " + tui.TruncateLines(tc, 3)),
-			Collapsed: m.ThinkingCollapsed,
-			Summary:   "Thinking...",
-		}
-		if len(m.Blocks) > 0 {
-			last := m.Blocks[len(m.Blocks)-1]
-			m.Blocks[len(m.Blocks)-1] = thinking
-			m.Blocks = append(m.Blocks, last)
-		} else {
-			m.Blocks = append(m.Blocks, thinking)
-		}
-		m.RebuildViewport()
-	}
-	return nil
-}
-
 // statusRight displays context usage in the status bar.
 func (a *App) statusRight(m *tui.Model) string {
+	thinking := a.Session.Settings().ThinkingLevel
+	if thinking == "" {
+		thinking = "off"
+	}
+	thinkingTag := tui.TokenStyle.Render(fmt.Sprintf("thinking:%s", thinking))
+
 	if cu := m.Agent.ContextUsage(); cu != nil {
-		return tui.TokenStyle.Render(fmt.Sprintf("ctx: %.0f%%", cu.Percent))
+		return tui.TokenStyle.Render(fmt.Sprintf("ctx: %.0f%%", cu.Percent)) + "  " + thinkingTag
 	}
 	usage := m.Agent.TotalUsage()
 	if usage.TotalTokens > 0 {
-		return tui.TokenStyle.Render(fmt.Sprintf("tokens: %d", usage.TotalTokens))
+		return tui.TokenStyle.Render(fmt.Sprintf("tokens: %d", usage.TotalTokens)) + "  " + thinkingTag
 	}
-	return ""
-}
-
-// footer renders the bottom information bar.
-func (a *App) footer(m *tui.Model) string {
-	var parts []string
-
-	if a.GitBranch != "" {
-		parts = append(parts, tui.MutedStyle.Render(a.GitBranch))
-	}
-
-	parts = append(parts, m.ModelName)
-
-	if cu := m.Agent.ContextUsage(); cu != nil {
-		parts = append(parts, fmt.Sprintf("ctx: %.0f%% (%dk)", cu.Percent, cu.Tokens/1000))
-	}
-
-	parts = append(parts, fmt.Sprintf("Turn %d", m.TurnCount))
-
-	return strings.Join(parts, "  │  ")
+	return thinkingTag
 }

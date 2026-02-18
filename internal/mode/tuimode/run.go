@@ -21,7 +21,8 @@ func Run(sess agent.Session, ag *agentcore.Agent, cwd, gitBranch, modelName stri
 	}
 
 	m := tui.New(ag, modelName, ui.Config())
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	// Use the normal terminal screen so users keep native scrollback history.
+	p := tea.NewProgram(m)
 
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {
 		if ev.Type == agent.SEAgentEvent && ev.AgentEvent != nil {

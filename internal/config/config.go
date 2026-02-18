@@ -46,6 +46,7 @@ func (s Settings) Resolve() Resolved {
 		DefaultProvider: "openai",
 		ContextWindow:   128000,
 		AutoCompaction:  true,
+		ThinkingLevel:   "low",
 		ShowTokens:      true,
 		MaxTurns:        30,
 	}

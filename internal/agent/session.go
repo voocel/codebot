@@ -224,6 +224,7 @@ func (s *AgentSession) SetThinkingLevel(level agentcore.ThinkingLevel) {
 
 	s.mu.Lock()
 	store := s.store
+	s.settings.ThinkingLevel = string(level)
 	s.mu.Unlock()
 
 	if store != nil {
@@ -366,6 +367,9 @@ func (s *AgentSession) SwitchSession(id string) error {
 	s.store = newStore
 	s.provider = targetProvider
 	s.modelName = targetModel
+	if snapshot.Thinking != "" {
+		s.settings.ThinkingLevel = snapshot.Thinking
+	}
 	s.mu.Unlock()
 
 	if oldStore != nil {
@@ -456,6 +460,9 @@ func (s *AgentSession) Fork(entryID string) error {
 	s.mu.Lock()
 	s.provider = targetProvider
 	s.modelName = targetModel
+	if snapshot.Thinking != "" {
+		s.settings.ThinkingLevel = snapshot.Thinking
+	}
 	s.mu.Unlock()
 
 	if snapshot.Thinking != "" {

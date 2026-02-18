@@ -153,6 +153,14 @@ func (a *App) commandRegistry(agent *agentcore.Agent, currentModel string) map[s
 				return a.cmdSettings()
 			},
 		},
+		"/thinking": {
+			Usage:       "/thinking [off|minimal|low|medium|high|xhigh]",
+			Description: "Show or set thinking level",
+			Risk:        policy.RiskLow,
+			Run: func(args []string) tea.Cmd {
+				return a.cmdThinking(args)
+			},
+		},
 		"/exit": {
 			Usage:       "/exit",
 			Description: "Quit",
@@ -202,8 +210,7 @@ func (a *App) helpText(agent *agentcore.Agent, currentModel string) string {
 	sb.WriteString(strings.TrimSpace(`
 
 Keyboard shortcuts:
-  Ctrl+O            Toggle tool output collapse/expand
-  Ctrl+T            Toggle thinking block collapse/expand
+  Enter             Send message
   Esc               Abort running agent
   Ctrl+C            Quit
 `))
@@ -314,12 +321,40 @@ func (a *App) cmdSettings() tea.Cmd {
 	if baseURL == "" {
 		baseURL = "(default)"
 	}
+	thinking := s.ThinkingLevel
+	if thinking == "" {
+		thinking = "(unset)"
+	}
 	apiKey := a.Session.APIKey()
 	masked := maskKey(apiKey)
-	info := fmt.Sprintf("Provider: %s\nModel: %s\nAPI Key: %s\nBase URL: %s\nContext window: %d\nAuto compaction: %v\nMax turns: %d\nConfig: %s",
+	info := fmt.Sprintf("Provider: %s\nModel: %s\nAPI Key: %s\nBase URL: %s\nThinking level: %s\nContext window: %d\nAuto compaction: %v\nMax turns: %d\nConfig: %s",
 		s.DefaultProvider, a.Session.ModelName(), masked, baseURL,
-		s.ContextWindow, s.AutoCompaction, s.MaxTurns, config.SettingsPath(a.Cwd))
+		thinking, s.ContextWindow, s.AutoCompaction, s.MaxTurns, config.SettingsPath(a.Cwd))
 	return tui.SendCommandResult(tui.CommandStyle.Render(info))
+}
+
+func (a *App) cmdThinking(args []string) tea.Cmd {
+	current := a.Session.Settings().ThinkingLevel
+	if current == "" {
+		current = "off"
+	}
+	if len(args) == 0 {
+		return tui.SendCommandResult(tui.CommandStyle.Render(
+			fmt.Sprintf("Thinking level: %s\nUsage: /thinking [off|minimal|low|medium|high|xhigh]", current)))
+	}
+
+	level := strings.ToLower(strings.TrimSpace(args[0]))
+	switch agentcore.ThinkingLevel(level) {
+	case agentcore.ThinkingOff, agentcore.ThinkingMinimal, agentcore.ThinkingLow,
+		agentcore.ThinkingMedium, agentcore.ThinkingHigh, agentcore.ThinkingXHigh:
+	default:
+		return tui.SendCommandResult(tui.ErrorStyle.Render(
+			"Invalid thinking level. Use one of: off, minimal, low, medium, high, xhigh"))
+	}
+
+	a.Session.SetThinkingLevel(agentcore.ThinkingLevel(level))
+	return tui.SendCommandResult(tui.CommandStyle.Render(
+		fmt.Sprintf("Thinking level set to: %s", level)))
 }
 
 func maskKey(key string) string {
