@@ -23,6 +23,13 @@ type Config struct {
 	OnFooter    func(m *Model) string
 }
 
+// Driver defines the minimal conversation operations required by the TUI.
+type Driver interface {
+	Prompt(text string) error
+	Steer(text string)
+	Abort()
+}
+
 // runStats tracks per-run statistics displayed after agent completion.
 type runStats struct {
 	Turns     int
@@ -35,7 +42,7 @@ type runStats struct {
 // Completed content is printed to terminal scrollback via tea.Println;
 // View() only renders the live area (status + streaming + input).
 type Model struct {
-	Agent     *agentcore.Agent
+	Driver    Driver
 	ModelName string
 
 	Input   textarea.Model
@@ -64,7 +71,7 @@ type Model struct {
 }
 
 // New creates a Model with the given agent, model name, and optional config.
-func New(agent *agentcore.Agent, modelName string, cfg ...Config) Model {
+func New(driver Driver, modelName string, cfg ...Config) Model {
 	var c Config
 	if len(cfg) > 0 {
 		c = cfg[0]
@@ -87,7 +94,7 @@ func New(agent *agentcore.Agent, modelName string, cfg ...Config) Model {
 	ta.CharLimit = 0
 
 	return Model{
-		Agent:         agent,
+		Driver:        driver,
 		ModelName:     modelName,
 		Spinner:       sp,
 		Input:         ta,
@@ -201,8 +208,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
-		if m.Running {
-			m.Agent.Abort()
+		if m.Running && m.Driver != nil {
+			m.Driver.Abort()
 		}
 		return m, nil
 
@@ -226,9 +233,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			output = userLine
 		}
 
-		if m.Running {
-			m.Agent.Steer(agentcore.UserMsg(text))
-		} else if err := m.Agent.Prompt(text); err != nil {
+		if m.Driver == nil {
+			output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
+		} else if m.Running {
+			m.Driver.Steer(text)
+		} else if err := m.Driver.Prompt(text); err != nil {
 			output += "\n" + ErrorStyle.Render("  error: "+err.Error())
 		}
 		return m, tea.Println(output)

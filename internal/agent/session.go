@@ -10,50 +10,6 @@ import (
 	"github.com/voocel/codebot/internal/session"
 )
 
-// Session defines the contract that UI layers and command handlers use
-// to interact with the agent session.
-type Session interface {
-	// Lifecycle
-	Prompt(text string) error
-	PromptMessages(msgs ...agentcore.AgentMessage) error
-	Abort()
-	Continue() error
-	Steer(text string)
-	FollowUp(text string)
-	WaitForIdle()
-
-	// Model
-	ModelName() string
-	Provider() string
-	APIKey() string
-	BaseURL() string
-	SetModel(prov, model, apiKey string) error
-	ResolveAndSetModel(pattern string) (string, error)
-	SetThinkingLevel(level agentcore.ThinkingLevel)
-
-	// Session management
-	NewSession() error
-	SwitchSession(id string) error
-	SetSessionName(name string) error
-	Fork(entryID string) error
-	Compact() error
-
-	// Access
-	Agent() *agentcore.Agent
-	Store() *session.Store
-	Manager() *session.Manager
-	Registry() *provider.ModelRegistry
-	Settings() config.Resolved
-	Cwd() string
-	ContextUsage() *agentcore.ContextUsage
-
-	// Events
-	Subscribe(fn func(SessionEvent)) func()
-
-	// Cleanup
-	Close()
-}
-
 // ModelFactory creates a chat model instance for a provider/model tuple.
 type ModelFactory func(prov, model, apiKey, baseURL string) (agentcore.ChatModel, error)
 
@@ -155,6 +111,17 @@ func (s *AgentSession) Abort() {
 // WaitForIdle blocks until the agent finishes its current run.
 func (s *AgentSession) WaitForIdle() {
 	s.agent.WaitForIdle()
+}
+
+// IsRunning reports whether the underlying agent is currently processing.
+func (s *AgentSession) IsRunning() bool {
+	return s.agent.State().IsRunning
+}
+
+// ClearConversation clears in-memory conversation messages and queued inputs.
+func (s *AgentSession) ClearConversation() {
+	s.agent.ClearMessages()
+	s.agent.ClearAllQueues()
 }
 
 // --------------------------------------------------------------------------
@@ -492,34 +459,77 @@ func (s *AgentSession) Subscribe(fn func(SessionEvent)) func() {
 }
 
 // --------------------------------------------------------------------------
-// Accessors
+// Query operations
 // --------------------------------------------------------------------------
 
-// Agent returns the underlying agentcore.Agent.
-func (s *AgentSession) Agent() *agentcore.Agent { return s.agent }
-
-// Store returns the current session store.
-func (s *AgentSession) Store() *session.Store {
+// Settings returns current resolved settings.
+func (s *AgentSession) Settings() config.Resolved {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.store
+	return s.settings
 }
 
-// Manager returns the session manager.
-func (s *AgentSession) Manager() *session.Manager { return s.mgr }
-
-// Registry returns the model registry.
-func (s *AgentSession) Registry() *provider.ModelRegistry { return s.registry }
-
-// Settings returns the resolved settings.
-func (s *AgentSession) Settings() config.Resolved { return s.settings }
-
-// Cwd returns the working directory.
-func (s *AgentSession) Cwd() string { return s.cwd }
-
-// ContextUsage returns the current context window occupancy.
+// ContextUsage returns current context window occupancy.
 func (s *AgentSession) ContextUsage() *agentcore.ContextUsage {
 	return s.agent.ContextUsage()
+}
+
+// TotalTokens returns accumulated total tokens across current process lifetime.
+func (s *AgentSession) TotalTokens() int {
+	return s.agent.TotalUsage().TotalTokens
+}
+
+// CurrentSessionInfo returns metadata of the active session.
+func (s *AgentSession) CurrentSessionInfo() (session.SessionInfo, error) {
+	s.mu.Lock()
+	store := s.store
+	s.mu.Unlock()
+
+	if store == nil {
+		return session.SessionInfo{}, fmt.Errorf("no active session")
+	}
+
+	h := store.Header()
+	return session.SessionInfo{
+		ID:      h.SessionID,
+		Name:    h.Name,
+		Path:    store.Path(),
+		Cwd:     h.Cwd,
+		Created: h.Created,
+	}, nil
+}
+
+// ListSessions returns sessions sorted by most recent update first.
+func (s *AgentSession) ListSessions() ([]session.SessionInfo, error) {
+	s.mu.Lock()
+	mgr := s.mgr
+	s.mu.Unlock()
+
+	if mgr == nil {
+		return nil, fmt.Errorf("no session manager configured")
+	}
+	return mgr.List()
+}
+
+// SessionTree builds tree data for the active session and returns current leaf ID.
+func (s *AgentSession) SessionTree() (*session.TreeNode, string, error) {
+	s.mu.Lock()
+	store := s.store
+	s.mu.Unlock()
+
+	if store == nil {
+		return nil, "", fmt.Errorf("no active session")
+	}
+
+	entries, err := store.ReadAllEntries()
+	if err != nil {
+		return nil, "", fmt.Errorf("read entries: %w", err)
+	}
+	root, err := session.BuildTree(entries)
+	if err != nil {
+		return nil, "", fmt.Errorf("build tree: %w", err)
+	}
+	return root, store.LeafID(), nil
 }
 
 // Close cleans up the session (unsubscribes from agent, closes store).

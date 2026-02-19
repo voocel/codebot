@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/policy"
@@ -12,7 +11,7 @@ import (
 )
 
 // Run executes interactive TUI mode.
-func Run(sess agent.Session, ag *agentcore.Agent, cwd, gitBranch, modelName string, profile policy.Profile) error {
+func Run(sess *agent.AgentSession, cwd, gitBranch, modelName string, profile policy.Profile) error {
 	ui := &app.App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -20,7 +19,7 @@ func Run(sess agent.Session, ag *agentcore.Agent, cwd, gitBranch, modelName stri
 		PolicyProfile: profile,
 	}
 
-	m := tui.New(ag, modelName, ui.Config())
+	m := tui.New(sess, modelName, ui.Config())
 	// Use the normal terminal screen so users keep native scrollback history.
 	p := tea.NewProgram(m)
 

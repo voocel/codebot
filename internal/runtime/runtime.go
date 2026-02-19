@@ -1,10 +1,14 @@
 package runtime
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/voocel/agentcore"
@@ -43,11 +47,7 @@ type Runtime struct {
 	PolicyProfile policy.Profile
 
 	Settings config.Resolved
-	Registry *provider.ModelRegistry
-	Manager  *session.Manager
-	Store    *session.Store
 	Session  *agent.AgentSession
-	Agent    *agentcore.Agent
 }
 
 // Close releases runtime resources.
@@ -110,7 +110,7 @@ func Boot(opts Options) (*Runtime, error) {
 	}
 
 	manager := session.NewManager(config.SessionsDir(cwd))
-	store, err := resolveSession(manager, cwd, opts.Continue, opts.Resume, opts.Session)
+	store, err := resolveSession(manager, cwd, opts.Continue, opts.Resume, opts.Session, opts.NonTTYMode)
 	if err != nil {
 		return nil, fmt.Errorf("session: %w", err)
 	}
@@ -214,11 +214,7 @@ func Boot(opts Options) (*Runtime, error) {
 		GitBranch:     detectGitBranch(cwd),
 		PolicyProfile: profile,
 		Settings:      settings,
-		Registry:      registry,
-		Manager:       manager,
-		Store:         store,
 		Session:       sess,
-		Agent:         ag,
 	}, nil
 }
 
@@ -232,7 +228,7 @@ func detectGitBranch(cwd string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func resolveSession(mgr *session.Manager, cwd string, cont, resume bool, path string) (*session.Store, error) {
+func resolveSession(mgr *session.Manager, cwd string, cont, resume bool, path string, nonTTY bool) (*session.Store, error) {
 	switch {
 	case path != "":
 		return mgr.OpenPath(path)
@@ -253,16 +249,43 @@ func resolveSession(mgr *session.Manager, cwd string, cont, resume bool, path st
 		if len(sessions) == 0 {
 			return mgr.Create(cwd)
 		}
+		if nonTTY {
+			return nil, fmt.Errorf("-r requires interactive terminal, use -c or -session in non-interactive mode")
+		}
+
 		fmt.Fprintf(os.Stderr, "Available sessions:\n")
 		for i, s := range sessions {
 			name := s.ID
 			if s.Name != "" {
 				name = s.Name
 			}
-			fmt.Fprintf(os.Stderr, "  %d. %s  (%s)  %s\n", i+1, name, s.Cwd, s.Updated.Format("2006-01-02 15:04"))
+			fmt.Fprintf(os.Stderr, "  %d. %s  (%s)  %s  [id:%s]\n",
+				i+1, name, s.Cwd, s.Updated.Format("2006-01-02 15:04"), s.ID)
 		}
-		fmt.Fprintf(os.Stderr, "Resuming most recent session.\n")
-		return mgr.OpenPath(sessions[0].Path)
+		fmt.Fprintf(os.Stderr, "Select session number or id: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		raw, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("read session selection: %w", err)
+		}
+		choice := strings.TrimSpace(raw)
+		if choice == "" {
+			return nil, fmt.Errorf("no session selected")
+		}
+
+		if idx, convErr := strconv.Atoi(choice); convErr == nil {
+			if idx < 1 || idx > len(sessions) {
+				return nil, fmt.Errorf("invalid session index %d (range: 1-%d)", idx, len(sessions))
+			}
+			return mgr.OpenPath(sessions[idx-1].Path)
+		}
+		for _, s := range sessions {
+			if s.ID == choice {
+				return mgr.OpenPath(s.Path)
+			}
+		}
+		return nil, fmt.Errorf("invalid session selection %q", choice)
 	default:
 		return mgr.Create(cwd)
 	}

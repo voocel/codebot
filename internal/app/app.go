@@ -10,9 +10,9 @@ import (
 	"github.com/voocel/codebot/tui"
 )
 
-// App is the TUI adapter. Business logic lives in agent.Session.
+// App is the TUI adapter. Business logic lives in AgentSession.
 type App struct {
-	Session   agent.Session
+	Session   *agent.AgentSession
 	Cwd       string
 	GitBranch string
 
@@ -42,7 +42,7 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 			return false, nil
 		}
 		m.Input.Reset()
-		return true, a.handleCommand(text, m.Agent, m.ModelName)
+		return true, a.handleCommand(text)
 	}
 }
 
@@ -54,12 +54,11 @@ func (a *App) statusRight(m *tui.Model) string {
 	}
 	thinkingTag := tui.TokenStyle.Render(fmt.Sprintf("thinking:%s", thinking))
 
-	if cu := m.Agent.ContextUsage(); cu != nil {
+	if cu := a.Session.ContextUsage(); cu != nil {
 		return tui.TokenStyle.Render(fmt.Sprintf("ctx: %.0f%%", cu.Percent)) + "  " + thinkingTag
 	}
-	usage := m.Agent.TotalUsage()
-	if usage.TotalTokens > 0 {
-		return tui.TokenStyle.Render(fmt.Sprintf("tokens: %d", usage.TotalTokens)) + "  " + thinkingTag
+	if totalTokens := a.Session.TotalTokens(); totalTokens > 0 {
+		return tui.TokenStyle.Render(fmt.Sprintf("tokens: %d", totalTokens)) + "  " + thinkingTag
 	}
 	return thinkingTag
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,7 +24,7 @@ type commandSpec struct {
 	Run         func(args []string) tea.Cmd
 }
 
-func (a *App) handleCommand(input string, agent *agentcore.Agent, currentModel string) tea.Cmd {
+func (a *App) handleCommand(input string) tea.Cmd {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
 		return nil
@@ -31,14 +32,14 @@ func (a *App) handleCommand(input string, agent *agentcore.Agent, currentModel s
 
 	cmd := strings.ToLower(parts[0])
 	args := parts[1:]
-	registry := a.commandRegistry(agent, currentModel)
+	registry := a.commandRegistry()
 
 	spec, ok := registry[cmd]
 	if !ok {
 		return tui.SendCommandResult(tui.CommandStyle.Render(
 			fmt.Sprintf("Unknown command: %s. Type /help for available commands.", cmd)))
 	}
-	if err := validateCommand(a.PolicyProfile, spec, agent.State().IsRunning); err != nil {
+	if err := validateCommand(a.PolicyProfile, spec, a.Session.IsRunning()); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Command blocked: " + err.Error()))
 	}
 	return spec.Run(args)
@@ -54,25 +55,28 @@ func validateCommand(profile policy.Profile, spec commandSpec, isRunning bool) e
 	return nil
 }
 
-func (a *App) commandRegistry(agent *agentcore.Agent, currentModel string) map[string]commandSpec {
+func (a *App) commandRegistry() map[string]commandSpec {
 	return map[string]commandSpec{
 		"/help": {
 			Usage:       "/help",
 			Description: "Show this help",
 			Risk:        policy.RiskLow,
 			Run: func(_ []string) tea.Cmd {
-				return tui.SendCommandResult(a.helpText(agent, currentModel))
+				return tui.SendCommandResult(a.helpText())
 			},
 		},
 		"/clear": {
 			Usage:       "/clear",
-			Description: "Clear conversation history",
+			Description: "Clear current context (memory only)",
 			Risk:        policy.RiskLow,
 			NeedsIdle:   true,
 			Run: func(_ []string) tea.Cmd {
-				agent.ClearMessages()
+				a.Session.ClearConversation()
 				return func() tea.Msg {
-					return tui.CommandResultMsg{Text: tui.CommandStyle.Render("Conversation cleared."), Clear: true}
+					return tui.CommandResultMsg{
+						Text:  tui.CommandStyle.Render("Current context cleared (session history is kept)."),
+						Clear: true,
+					}
 				}
 			},
 		},
@@ -82,7 +86,7 @@ func (a *App) commandRegistry(agent *agentcore.Agent, currentModel string) map[s
 			Risk:        policy.RiskLow,
 			NeedsIdle:   true,
 			Run: func(args []string) tea.Cmd {
-				return a.cmdModel(currentModel, args)
+				return a.cmdModel(args)
 			},
 		},
 		"/compact": {
@@ -120,12 +124,12 @@ func (a *App) commandRegistry(agent *agentcore.Agent, currentModel string) map[s
 			},
 		},
 		"/resume": {
-			Usage:       "/resume",
-			Description: "List and resume a session",
+			Usage:       "/resume [id|index]",
+			Description: "List sessions or resume by id/index",
 			Risk:        policy.RiskMedium,
 			NeedsIdle:   true,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdResume()
+			Run: func(args []string) tea.Cmd {
+				return a.cmdResume(args)
 			},
 		},
 		"/fork": {
@@ -181,8 +185,8 @@ func (a *App) commandRegistry(agent *agentcore.Agent, currentModel string) map[s
 	}
 }
 
-func (a *App) helpText(agent *agentcore.Agent, currentModel string) string {
-	registry := a.commandRegistry(agent, currentModel)
+func (a *App) helpText() string {
+	registry := a.commandRegistry()
 	var keys []string
 	for k, spec := range registry {
 		if spec.Hidden {
@@ -218,7 +222,8 @@ Keyboard shortcuts:
 	return tui.CommandStyle.Render(sb.String())
 }
 
-func (a *App) cmdModel(currentModel string, args []string) tea.Cmd {
+func (a *App) cmdModel(args []string) tea.Cmd {
+	currentModel := a.Session.ModelName()
 	if len(args) == 0 {
 		return tui.SendCommandResult(tui.CommandStyle.Render(
 			fmt.Sprintf("Current model: %s. Usage: /model <name>", currentModel)))
@@ -253,18 +258,17 @@ func (a *App) cmdCompact() tea.Cmd {
 }
 
 func (a *App) cmdSession() tea.Cmd {
-	store := a.Session.Store()
-	if store == nil {
-		return tui.SendCommandResult(tui.CommandStyle.Render("No active session."))
+	info, err := a.Session.CurrentSessionInfo()
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to load session info: " + err.Error()))
 	}
-	h := store.Header()
-	name := h.SessionID
-	if h.Name != "" {
-		name = h.Name + " (" + h.SessionID + ")"
+	name := info.ID
+	if info.Name != "" {
+		name = info.Name + " (" + info.ID + ")"
 	}
-	info := fmt.Sprintf("Session: %s\nPath: %s\nCwd: %s\nCreated: %s",
-		name, store.Path(), h.Cwd, h.Created.Format("2006-01-02 15:04:05"))
-	return tui.SendCommandResult(tui.CommandStyle.Render(info))
+	text := fmt.Sprintf("Session: %s\nPath: %s\nCwd: %s\nCreated: %s",
+		name, info.Path, info.Cwd, info.Created.Format("2006-01-02 15:04:05"))
+	return tui.SendCommandResult(tui.CommandStyle.Render(text))
 }
 
 func (a *App) cmdName(args []string) tea.Cmd {
@@ -290,14 +294,45 @@ func (a *App) cmdNew() tea.Cmd {
 	}
 }
 
-func (a *App) cmdResume() tea.Cmd {
-	mgr := a.Session.Manager()
-	sessions, err := mgr.List()
+func (a *App) cmdResume(args []string) tea.Cmd {
+	sessions, err := a.Session.ListSessions()
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to list sessions: " + err.Error()))
 	}
 	if len(sessions) == 0 {
 		return tui.SendCommandResult(tui.CommandStyle.Render("No sessions found."))
+	}
+
+	if len(args) > 0 {
+		target := strings.TrimSpace(args[0])
+		if n, convErr := strconv.Atoi(target); convErr == nil {
+			if n < 1 || n > len(sessions) {
+				return tui.SendCommandResult(tui.ErrorStyle.Render(
+					fmt.Sprintf("Invalid index %d (range: 1-%d)", n, len(sessions))))
+			}
+			target = sessions[n-1].ID
+		}
+
+		if err := a.Session.SwitchSession(target); err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to resume session: " + err.Error()))
+		}
+
+		resumed := target
+		for _, s := range sessions {
+			if s.ID == target {
+				if s.Name != "" {
+					resumed = s.Name + " (" + s.ID + ")"
+				}
+				break
+			}
+		}
+
+		return func() tea.Msg {
+			return tui.CommandResultMsg{
+				Text:  tui.CommandStyle.Render(fmt.Sprintf("Resumed session: %s", resumed)),
+				Clear: true,
+			}
+		}
 	}
 
 	var sb strings.Builder
@@ -309,9 +344,9 @@ func (a *App) cmdResume() tea.Cmd {
 		if s.Name != "" {
 			name = s.Name
 		}
-		fmt.Fprintf(&sb, "  %d. %s  (%s)  %s\n", i+1, name, s.Cwd, s.Updated.Format("01-02 15:04"))
+		fmt.Fprintf(&sb, "  %d. %s  (%s)  %s  [id:%s]\n", i+1, name, s.Cwd, s.Updated.Format("01-02 15:04"), s.ID)
 	}
-	sb.WriteString("\nUse: codebot -c (most recent) or -session <path>")
+	sb.WriteString("\nUse /resume <index> or /resume <id>")
 	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 }
 
@@ -382,22 +417,11 @@ func (a *App) cmdFork(args []string) tea.Cmd {
 }
 
 func (a *App) cmdTree() tea.Cmd {
-	store := a.Session.Store()
-	if store == nil {
-		return tui.SendCommandResult(tui.CommandStyle.Render("No active session."))
-	}
-
-	entries, err := store.ReadAllEntries()
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Read entries failed: " + err.Error()))
-	}
-
-	root, err := session.BuildTree(entries)
+	root, currentLeaf, err := a.Session.SessionTree()
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Build tree failed: " + err.Error()))
 	}
 
-	currentLeaf := store.LeafID()
 	var sb strings.Builder
 	sb.WriteString("Session tree:\n")
 	renderTree(&sb, root, "", true, currentLeaf)

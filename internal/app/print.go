@@ -15,7 +15,7 @@ import (
 // RunPrintMode runs the agent in non-interactive mode.
 // stdout receives assistant text (pipe-friendly), stderr receives tool/status info.
 // When jsonMode is true, all events are streamed as JSONL to stdout.
-func RunPrintMode(sess agent.Session, prompt string, jsonMode bool) error {
+func RunPrintMode(sess *agent.AgentSession, prompt string, jsonMode bool) error {
 	done := make(chan struct{})
 	var once sync.Once
 	closeDone := func() { once.Do(func() { close(done) }) }

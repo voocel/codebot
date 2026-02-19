@@ -93,7 +93,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	})
 	t.Cleanup(s.Close)
 
-	oldPath := s.Store().Path()
+	oldPath := s.store.Path()
 	oldProvider := s.Provider()
 	oldModel := s.ModelName()
 
@@ -105,7 +105,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if got := s.Store().Path(); got != oldPath {
+	if got := s.store.Path(); got != oldPath {
 		t.Fatalf("store path changed after failed switch: got %s want %s", got, oldPath)
 	}
 	if got := s.Provider(); got != oldProvider {
@@ -115,7 +115,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 		t.Fatalf("model changed after failed switch: got %s want %s", got, oldModel)
 	}
 
-	if err := s.Store().AppendMessage(textMessage(agentcore.RoleUser, "still-writable")); err != nil {
+	if err := s.store.AppendMessage(textMessage(agentcore.RoleUser, "still-writable")); err != nil {
 		t.Fatalf("current store should remain writable after failed switch: %v", err)
 	}
 }

@@ -53,7 +53,7 @@ func main() {
 	if rt.Session != nil && rt.Session.ModelName() != "" {
 		modelName = rt.Session.ModelName()
 	}
-	if err := tuimode.Run(rt.Session, rt.Agent, rt.Cwd, rt.GitBranch, modelName, rt.PolicyProfile); err != nil {
+	if err := tuimode.Run(rt.Session, rt.Cwd, rt.GitBranch, modelName, rt.PolicyProfile); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

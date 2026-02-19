@@ -9,7 +9,7 @@ import (
 )
 
 // Run executes non-interactive print/json mode.
-func Run(sess agent.Session, args []string, jsonMode bool) error {
+func Run(sess *agent.AgentSession, args []string, jsonMode bool) error {
 	prompt := strings.Join(args, " ")
 	if prompt == "" {
 		stdinPrompt, err := app.ReadStdinPrompt()
