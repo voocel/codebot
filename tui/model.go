@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -82,14 +81,21 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	sp.Style = lipgloss.NewStyle().Foreground(ColorAssistant)
 
 	ta := textarea.New()
-	placeholder := "Type a message (Enter to send, Esc to abort)"
+	placeholder := "Ask anything... (Enter send, Ctrl+J newline, Esc abort)"
 	if c.Placeholder != "" {
 		placeholder = c.Placeholder
 	}
 	ta.Placeholder = placeholder
-	ta.Prompt = ""
+	ta.SetPromptFunc(2, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(ColorSeparator)
 	ta.Focus()
-	ta.SetHeight(2)
+	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 
@@ -111,7 +117,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(tea.ClearScreen, m.Spinner.Tick, textarea.Blink)
+	return tea.Batch(m.Spinner.Tick, textarea.Blink)
 }
 
 // Update implements tea.Model.
@@ -181,7 +187,7 @@ func (m Model) View() string {
 		parts = append(parts, m.renderRunSummary(), "")
 	}
 
-	// Status bar
+	// Status bar (above input)
 	parts = append(parts, m.RenderStatusBar())
 
 	// Optional footer
@@ -189,9 +195,14 @@ func (m Model) View() string {
 		parts = append(parts, footer)
 	}
 
-	// Separator + input
+	// Separator + input + bottom border
 	parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 	parts = append(parts, m.Input.View())
+	parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+
+	// Context bar (below input)
+	parts = append(parts, m.RenderContextBar())
+	parts = append(parts, "")
 
 	return strings.Join(parts, "\n")
 }
@@ -214,13 +225,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "alt+enter", "ctrl+j":
+		m.Input.InsertString("\n")
+		m.adjustInputHeight()
+		return m, nil
+
 	case "enter":
 		text := strings.TrimSpace(m.Input.Value())
 		if text == "" {
 			m.Input.Reset()
+			m.Input.SetHeight(1)
 			return m, nil
 		}
 		m.Input.Reset()
+		m.Input.SetHeight(1)
 		m.ShowSummary = false
 
 		userLine := "\n" + m.renderUserMessage(text)
@@ -258,6 +276,20 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+const maxInputHeight = 8
+
+// adjustInputHeight grows/shrinks the textarea to fit the content lines.
+func (m *Model) adjustInputHeight() {
+	lines := strings.Count(m.Input.Value(), "\n") + 1
+	if lines > maxInputHeight {
+		lines = maxInputHeight
+	}
+	if lines < 1 {
+		lines = 1
+	}
+	m.Input.SetHeight(lines)
+}
+
 // handleCommandResult processes slash command results.
 func (m Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Quit {
@@ -282,18 +314,3 @@ func (m Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// StatusInfo returns the formatted right-side status bar content.
-func (m *Model) StatusInfo() string {
-	var parts []string
-	if m.GitBranch != "" {
-		parts = append(parts, MutedStyle.Render(m.GitBranch))
-	}
-	parts = append(parts, m.ModelName)
-	if m.config.StatusRight != nil {
-		if extra := m.config.StatusRight(m); extra != "" {
-			parts = append(parts, extra)
-		}
-	}
-	parts = append(parts, MutedStyle.Render(fmt.Sprintf("turn %d", m.TurnCount)))
-	return strings.Join(parts, "  ")
-}

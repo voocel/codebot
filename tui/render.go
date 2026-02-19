@@ -17,17 +17,30 @@ import (
 
 func (m *Model) renderWelcome() string {
 	title := WelcomeTitleStyle.Render("◆ Codebot")
-	detail := m.ModelName
+
+	info := m.ModelName
 	if m.Cwd != "" {
-		detail += " · " + shortenPath(m.Cwd)
+		info += " · " + shortenPath(m.Cwd)
 		if m.GitBranch != "" {
-			detail += " (" + m.GitBranch + ")"
+			info += " (" + m.GitBranch + ")"
 		}
 	}
-	return "\n  " + title + "\n  " + WelcomeDetailStyle.Render(detail)
+	hints := "Enter send · Ctrl+J newline · Esc abort · /help commands"
+
+	content := title + "\n" +
+		WelcomeDetailStyle.Render(info) + "\n\n" +
+		MutedStyle.Render(hints)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorAccent).
+		Padding(0, 1).
+		Render(content)
+
+	return box
 }
 
-// RenderStatusBar renders the top status bar.
+// RenderStatusBar renders the status line above the input (running state + turn).
 func (m *Model) RenderStatusBar() string {
 	var status string
 	if m.Running {
@@ -35,16 +48,31 @@ func (m *Model) RenderStatusBar() string {
 	} else {
 		status = lipgloss.NewStyle().Foreground(ColorSuccess).Render("●") + " ready"
 	}
-
-	right := m.StatusInfo()
-	if right != "" {
-		status += "  " + right
-	}
+	status += "  " + MutedStyle.Render(fmt.Sprintf("turn %d", m.TurnCount))
 
 	if m.Width > 0 {
 		status = truncate.StringWithTail(status, uint(max(m.Width-2, 1)), "…")
 	}
 	return status
+}
+
+// RenderContextBar renders the context line below the input (env info).
+func (m *Model) RenderContextBar() string {
+	var parts []string
+	if m.GitBranch != "" {
+		parts = append(parts, m.GitBranch)
+	}
+	parts = append(parts, m.ModelName)
+	if m.config.StatusRight != nil {
+		if extra := m.config.StatusRight(m); extra != "" {
+			parts = append(parts, extra)
+		}
+	}
+	line := MutedStyle.Render(strings.Join(parts, " · "))
+	if m.Width > 0 {
+		line = truncate.StringWithTail(line, uint(max(m.Width-2, 1)), "…")
+	}
+	return line
 }
 
 // RenderFooter renders the optional footer bar.

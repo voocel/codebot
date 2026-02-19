@@ -23,8 +23,7 @@ type App struct {
 // Config returns a tui.Config with all hooks wired to this App.
 func (a *App) Config() tui.Config {
 	return tui.Config{
-		Placeholder: "输入消息（Enter 发送，↑/↓ 浏览历史，Esc 中断，/help 查看命令）",
-		Cwd:         a.Cwd,
+		Cwd:       a.Cwd,
 		GitBranch:   a.GitBranch,
 		OnKey:       a.onKey(),
 		StatusRight: a.statusRight,
@@ -55,10 +54,10 @@ func (a *App) statusRight(m *tui.Model) string {
 	thinkingTag := tui.TokenStyle.Render(fmt.Sprintf("thinking:%s", thinking))
 
 	if cu := a.Session.ContextUsage(); cu != nil {
-		return tui.TokenStyle.Render(fmt.Sprintf("ctx: %.0f%%", cu.Percent)) + "  " + thinkingTag
+		return tui.TokenStyle.Render(fmt.Sprintf("ctx: %.0f%%", cu.Percent)) + " · " + thinkingTag
 	}
 	if totalTokens := a.Session.TotalTokens(); totalTokens > 0 {
-		return tui.TokenStyle.Render(fmt.Sprintf("tokens: %d", totalTokens)) + "  " + thinkingTag
+		return tui.TokenStyle.Render(fmt.Sprintf("tokens: %d", totalTokens)) + " · " + thinkingTag
 	}
 	return thinkingTag
 }
