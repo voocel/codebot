@@ -119,14 +119,6 @@ func loadSettingsFile(path string) Settings {
 	return s
 }
 
-// Flags holds CLI flag values for configuration resolution.
-type Flags struct {
-	Provider string
-	Model    string
-	APIKey   string
-	BaseURL  string
-}
-
 // EnvKeyName returns the environment variable name for the API key of the given provider.
 func EnvKeyName(prov string) string {
 	switch prov {
@@ -163,36 +155,22 @@ func DefaultModelName(prov string) string {
 	}
 }
 
-// ResolveAll merges flags, settings file, and environment variables
-// into a single resolved configuration. Precedence: flags > settings > env.
-func ResolveAll(cwd string, flags Flags) Resolved {
+// ResolveAll merges settings file and environment variables
+// into a single resolved configuration. Precedence: settings > env.
+func ResolveAll(cwd string) Resolved {
 	settings := LoadSettings(cwd)
 
-	// Provider: flag > settings
-	if flags.Provider != "" {
-		settings.DefaultProvider = flags.Provider
-	}
-
-	// API key: flag > settings > env
-	if flags.APIKey != "" {
-		settings.APIKey = flags.APIKey
-	}
+	// API key: settings > env
 	if settings.APIKey == "" {
 		settings.APIKey = os.Getenv(EnvKeyName(settings.DefaultProvider))
 	}
 
-	// Base URL: flag > settings > env
-	if flags.BaseURL != "" {
-		settings.BaseURL = flags.BaseURL
-	}
+	// Base URL: settings > env
 	if settings.BaseURL == "" {
 		settings.BaseURL = os.Getenv(BaseURLEnvName(settings.DefaultProvider))
 	}
 
-	// Model: flag > settings > default per provider
-	if flags.Model != "" {
-		settings.DefaultModel = flags.Model
-	}
+	// Model: settings > default per provider
 	if settings.DefaultModel == "" {
 		settings.DefaultModel = DefaultModelName(settings.DefaultProvider)
 	}

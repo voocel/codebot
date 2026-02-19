@@ -3,17 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+
 	"github.com/voocel/codebot/internal/mode/printmode"
 	"github.com/voocel/codebot/internal/mode/tuimode"
 	"github.com/voocel/codebot/internal/runtime"
-	"os"
 )
 
 func main() {
-	providerFlag := flag.String("provider", "", "LLM provider: openai, anthropic, gemini")
-	modelFlag := flag.String("model", "", "Model name (default: auto per provider)")
-	apiKeyFlag := flag.String("api-key", "", "API key (default: from env)")
-	baseURLFlag := flag.String("base-url", "", "API base URL (default: from env)")
 	printFlag := flag.Bool("p", false, "Print mode (non-interactive, pipe-friendly)")
 	jsonFlag := flag.Bool("json", false, "JSON output mode (implies -p)")
 	continueFlag := flag.Bool("c", false, "Continue most recent session")
@@ -25,10 +22,6 @@ func main() {
 	printMode := *printFlag || *jsonFlag
 
 	rt, err := runtime.Boot(runtime.Options{
-		Provider:      *providerFlag,
-		Model:         *modelFlag,
-		APIKey:        *apiKeyFlag,
-		BaseURL:       *baseURLFlag,
 		Continue:      *continueFlag,
 		Resume:        *resumeFlag,
 		Session:       *sessionFlag,

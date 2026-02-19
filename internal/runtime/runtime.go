@@ -24,11 +24,6 @@ import (
 type Options struct {
 	Cwd string
 
-	Provider string
-	Model    string
-	APIKey   string
-	BaseURL  string
-
 	Continue   bool
 	Resume     bool
 	Session    string
@@ -68,12 +63,7 @@ func Boot(opts Options) (*Runtime, error) {
 		}
 	}
 
-	settings := config.ResolveAll(cwd, config.Flags{
-		Provider: opts.Provider,
-		Model:    opts.Model,
-		APIKey:   opts.APIKey,
-		BaseURL:  opts.BaseURL,
-	})
+	settings := config.ResolveAll(cwd)
 
 	registry := provider.NewModelRegistry()
 	profile, err := parseProfile(opts.PolicyProfile)
@@ -88,9 +78,10 @@ func Boot(opts Options) (*Runtime, error) {
 	// Interactive setup when API key is missing.
 	if settings.APIKey == "" {
 		if opts.NonTTYMode {
-			return nil, fmt.Errorf("api key not set. use -api-key or set %s", config.EnvKeyName(settings.DefaultProvider))
+			return nil, fmt.Errorf("api key not set. set %s or configure %s",
+				config.EnvKeyName(settings.DefaultProvider), config.SettingsPath(cwd))
 		}
-		prov, apiKey, baseURL, model, err := config.RunSetup(cwd, settings, func(prov string) []config.ModelOption {
+		err := config.RunSetup(cwd, settings, func(prov string) []config.ModelOption {
 			entries := registry.FindByProvider(prov)
 			result := make([]config.ModelOption, len(entries))
 			for i, e := range entries {
@@ -101,12 +92,7 @@ func Boot(opts Options) (*Runtime, error) {
 		if err != nil {
 			return nil, fmt.Errorf("setup: %w", err)
 		}
-		settings = config.ResolveAll(cwd, config.Flags{
-			Provider: prov,
-			APIKey:   apiKey,
-			BaseURL:  baseURL,
-			Model:    model,
-		})
+		settings = config.ResolveAll(cwd)
 	}
 
 	manager := session.NewManager(config.SessionsDir(cwd))

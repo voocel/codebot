@@ -26,13 +26,11 @@ var providerList = []struct {
 }
 
 // RunSetup runs an interactive first-time configuration wizard.
-// Returns the resolved provider, apiKey, baseURL, and model.
-func RunSetup(cwd string, settings Resolved, listModels ModelLister) (prov, apiKey, baseURL, model string, err error) {
+func RunSetup(cwd string, settings Resolved, listModels ModelLister) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("\nWelcome to codebot! Let's configure your settings.")
 
-	// 1. Provider
 	fmt.Println("Select provider:")
 	for i, p := range providerList {
 		marker := ""
@@ -43,20 +41,18 @@ func RunSetup(cwd string, settings Resolved, listModels ModelLister) (prov, apiK
 	}
 	fmt.Print("\n> ")
 	providerIdx := readChoice(reader, len(providerList), 1)
-	prov = providerList[providerIdx-1].key
+	prov := providerList[providerIdx-1].key
 
-	// 2. API key
 	fmt.Printf("\nEnter %s API key: ", providerList[providerIdx-1].name)
-	apiKey = readLine(reader)
+	apiKey := readLine(reader)
 	if apiKey == "" {
-		return "", "", "", "", fmt.Errorf("API key is required")
+		return fmt.Errorf("API key is required")
 	}
 
-	// 3. Base URL
 	fmt.Print("\nEnter base URL (optional, press Enter to skip): ")
-	baseURL = readLine(reader)
+	baseURL := readLine(reader)
 
-	// 4. Model
+	model := ""
 	if listModels != nil {
 		models := listModels(prov)
 		if len(models) > 0 {
@@ -70,7 +66,6 @@ func RunSetup(cwd string, settings Resolved, listModels ModelLister) (prov, apiK
 		}
 	}
 
-	// 5. Save
 	s := Settings{
 		DefaultProvider: &prov,
 		APIKey:          &apiKey,
@@ -83,11 +78,11 @@ func RunSetup(cwd string, settings Resolved, listModels ModelLister) (prov, apiK
 	}
 
 	if err := SaveSettings(cwd, s); err != nil {
-		return "", "", "", "", fmt.Errorf("save settings: %w", err)
+		return fmt.Errorf("save settings: %w", err)
 	}
 
 	fmt.Printf("\nSettings saved to %s\n\n", SettingsPath(cwd))
-	return prov, apiKey, baseURL, model, nil
+	return nil
 }
 
 func readLine(reader *bufio.Reader) string {
