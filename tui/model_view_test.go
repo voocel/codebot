@@ -14,11 +14,8 @@ func TestViewShowsLiveThinkingWhenStreaming(t *testing.T) {
 	m.Thinking.WriteString("thinking trace")
 
 	view := m.View()
-	if !strings.Contains(view, "[thinking]") {
-		t.Fatalf("expected view to contain thinking label, got: %q", view)
-	}
-	if !strings.Contains(view, "[assistant]") {
-		t.Fatalf("expected view to contain assistant label, got: %q", view)
+	if !strings.Contains(view, "thinking trace") {
+		t.Fatalf("expected view to contain thinking text, got: %q", view)
 	}
 	if !strings.Contains(view, "assistant reply") {
 		t.Fatalf("expected view to contain assistant streaming text, got: %q", view)

@@ -21,22 +21,6 @@ var (
 	ColorSeparator = lipgloss.Color("237")     // subtle separator
 )
 
-// Status bar
-var StatusBarStyle = lipgloss.NewStyle().
-	Background(ColorStatusBg).
-	Foreground(lipgloss.Color("250")).
-	Padding(0, 1)
-
-// User prompt prefix (inline, no label)
-var UserPromptStyle = lipgloss.NewStyle().
-	Foreground(ColorUser).
-	Bold(true)
-
-// Assistant label
-var AssistantLabelStyle = lipgloss.NewStyle().
-	Foreground(ColorAssistant).
-	Bold(true)
-
 // Tool blocks
 var (
 	ToolIconStyle = lipgloss.NewStyle().
@@ -53,16 +37,14 @@ var (
 			Foreground(ColorMuted)
 )
 
-// Thinking blocks
-var (
-	ThinkingLabelStyle = lipgloss.NewStyle().
-				Foreground(ColorThinking).
-				Italic(true)
+// Thinking body
+var ThinkingBodyStyle = lipgloss.NewStyle().
+	Foreground(ColorThinking).
+	Italic(true)
 
-	ThinkingBodyStyle = lipgloss.NewStyle().
-				Foreground(ColorThinking).
-				Italic(true)
-)
+// Assistant icon
+var AssistantIconStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("252"))
 
 // Error
 var ErrorStyle = lipgloss.NewStyle().

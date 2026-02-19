@@ -151,23 +151,24 @@ func (m Model) View() string {
 	}
 
 	// Live: streaming assistant text
+	// Each block is preceded by "" for consistent blank-line spacing,
+	// matching the \n prefix used in scrollback (events.go tea.Println).
 	if m.IsStream {
 		if thinking := strings.TrimSpace(m.Thinking.String()); thinking != "" {
-			think := ThinkingLabelStyle.Render("[thinking]") + "\n" +
-				indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
-			parts = append(parts, think)
+			indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
+			parts = append(parts, "", ThinkingBodyStyle.Render("● ")+strings.TrimPrefix(indented, "  "))
 		}
-		parts = append(parts, AssistantLabelStyle.Render("[assistant]"))
 		text := m.wrapTextForIndent(m.Streaming.String(), 2)
-		parts = append(parts, indentBlock(text, 2)+m.Spinner.View())
+		indented := indentBlock(text, 2)
+		parts = append(parts, "", AssistantIconStyle.Render("● ")+strings.TrimPrefix(indented, "  ")+m.Spinner.View())
 	}
 
 	// Live: pending tool execution
 	for id, name := range m.PendingTools {
-		line := "  " + m.Spinner.View() + " " + ToolNameStyle.Render(name) + MutedStyle.Render(" running...")
+		line := m.Spinner.View() + " " + ToolNameStyle.Render(name)
 		if buf, ok := m.ToolOutputBuf[id]; ok && buf.Len() > 0 {
 			output := RenderStreamingOutput(buf.String(), 5)
-			line += "\n" + indentBlock(m.wrapTextForIndent(output, 4), 4)
+			line += "\n" + indentBlock(m.wrapTextForIndent(output, 2), 2)
 		}
 		parts = append(parts, line)
 	}
@@ -222,7 +223,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.Input.Reset()
 		m.ShowSummary = false
 
-		userLine := "\n" + indentBlock(UserPromptStyle.Render("❯ ")+m.wrapTextForIndent(text, 2), 2)
+		userLine := "\n" + m.renderUserMessage(text)
 
 		// Persist welcome to scrollback before it leaves the live area.
 		var output string

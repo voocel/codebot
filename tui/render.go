@@ -16,22 +16,15 @@ import (
 // ---------------------------------------------------------------------------
 
 func (m *Model) renderWelcome() string {
-	var sb strings.Builder
-	sb.WriteString("\n")
-	sb.WriteString(WelcomeTitleStyle.Render("  Codebot"))
-	sb.WriteString("\n\n")
-	sb.WriteString(WelcomeDetailStyle.Render(fmt.Sprintf("  Model:  %s", m.ModelName)))
+	title := WelcomeTitleStyle.Render("◆ Codebot")
+	detail := m.ModelName
 	if m.Cwd != "" {
-		sb.WriteString("\n")
-		detail := fmt.Sprintf("  Cwd:    %s", shortenPath(m.Cwd))
+		detail += " · " + shortenPath(m.Cwd)
 		if m.GitBranch != "" {
-			detail += fmt.Sprintf(" (%s)", m.GitBranch)
+			detail += " (" + m.GitBranch + ")"
 		}
-		sb.WriteString(WelcomeDetailStyle.Render(detail))
 	}
-	sb.WriteString("\n\n")
-	sb.WriteString(MutedStyle.Render("  Type a message to start. /help for commands."))
-	return sb.String()
+	return "\n  " + title + "\n  " + WelcomeDetailStyle.Render(detail)
 }
 
 // RenderStatusBar renders the top status bar.
@@ -44,23 +37,14 @@ func (m *Model) RenderStatusBar() string {
 	}
 
 	right := m.StatusInfo()
-
-	if m.Width <= 0 {
-		return status
+	if right != "" {
+		status += "  " + right
 	}
 
-	maxWidth := max(m.Width-2, 1)
-	left := truncate.StringWithTail(status, uint(maxWidth), "…")
-
-	availableRight := maxWidth - lipgloss.Width(left) - 2
-	if availableRight <= 0 {
-		return StatusBarStyle.Width(m.Width).Render(left)
+	if m.Width > 0 {
+		status = truncate.StringWithTail(status, uint(max(m.Width-2, 1)), "…")
 	}
-
-	right = truncate.StringWithTail(right, uint(availableRight), "…")
-	gap := max(maxWidth-lipgloss.Width(left)-lipgloss.Width(right), 1)
-	bar := left + strings.Repeat(" ", gap) + right
-	return StatusBarStyle.Width(m.Width).Render(bar)
+	return status
 }
 
 // RenderFooter renders the optional footer bar.
@@ -88,7 +72,11 @@ func (m *Model) RenderMarkdown(content string) string {
 	if err != nil {
 		return content
 	}
-	return strings.TrimSpace(rendered)
+	// glamour "notty" adds a uniform left margin to every line.
+	// dedent must run FIRST to detect and strip the common indent;
+	// if TrimSpace runs first it strips only line 1's margin, making
+	// minIndent=0 and dedent a no-op — leaving lines 2+ over-indented.
+	return strings.TrimSpace(dedent(rendered))
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +86,7 @@ func (m *Model) RenderMarkdown(content string) string {
 // renderRunSummary renders per-run stats shown after agent completion.
 func (m *Model) renderRunSummary() string {
 	s := m.RunStats
-	return MutedStyle.Render(fmt.Sprintf("  turns %d · tools %d · tokens ↑%s ↓%s",
+	return MutedStyle.Render(fmt.Sprintf("  ─ %d turns · %d tools · ↑%s ↓%s tokens",
 		s.Turns, s.ToolCalls, formatTokens(s.Input), formatTokens(s.Output)))
 }
 
@@ -115,6 +103,47 @@ func formatTokens(n int) string {
 }
 
 // ---------------------------------------------------------------------------
+// User message rendering
+// ---------------------------------------------------------------------------
+
+// renderUserMessage renders a sent user message with the textarea's background.
+//
+// IMPORTANT: lipgloss Render() appends ANSI reset (\033[0m) after each call.
+// If you nest styled content inside an outer Background style, the inner reset
+// kills the outer background — causing "text has color A, padding has color B".
+// To avoid this, every styled segment (icon, text, padding) must carry its own
+// Background. This way each segment is self-contained and resets between them
+// are invisible (zero characters wide).
+func (m *Model) renderUserMessage(text string) string {
+	bg := m.Input.FocusedStyle.CursorLine.GetBackground()
+	iconStyle := lipgloss.NewStyle().Foreground(ColorMuted).Background(bg)
+	textStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(bg)
+	padStyle := lipgloss.NewStyle().Background(bg)
+
+	wrapped := m.wrapTextForIndent(text, 2)
+	lines := strings.Split(wrapped, "\n")
+
+	var sb strings.Builder
+	for i, line := range lines {
+		var rendered string
+		if i == 0 {
+			rendered = iconStyle.Render("❯ ") + textStyle.Render(line)
+		} else {
+			rendered = textStyle.Render("  " + line)
+		}
+		// Pad remaining width so background fills the full terminal line.
+		if pad := m.Width - lipgloss.Width(rendered); pad > 0 {
+			rendered += padStyle.Render(strings.Repeat(" ", pad))
+		}
+		sb.WriteString(rendered)
+		if i < len(lines)-1 {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
 // Text utilities
 // ---------------------------------------------------------------------------
 
@@ -128,6 +157,32 @@ func (m Model) wrapTextForIndent(content string, indent int) string {
 		width = 79
 	}
 	return strings.TrimRight(reflowwrap.String(content, width), "\n")
+}
+
+// dedent strips the common leading whitespace from all lines.
+// Preserves relative indentation (code blocks, lists) while removing
+// any unwanted base indentation added by renderers like glamour.
+func dedent(s string) string {
+	lines := strings.Split(s, "\n")
+	minIndent := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if minIndent < 0 || indent < minIndent {
+			minIndent = indent
+		}
+	}
+	if minIndent <= 0 {
+		return s
+	}
+	for i, line := range lines {
+		if len(line) >= minIndent {
+			lines[i] = line[minIndent:]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // indentBlock prepends n spaces to each non-empty line.

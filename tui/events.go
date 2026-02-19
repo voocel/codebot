@@ -70,14 +70,13 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 			var block strings.Builder
 			block.WriteByte('\n')
 			if thinkingText != "" {
-				block.WriteString(ThinkingLabelStyle.Render("[thinking]") + "\n")
-				block.WriteString(indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2))
-				block.WriteString("\n")
-				block.WriteString("\n")
+				indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2)
+				block.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+				block.WriteString("\n\n")
 			}
 			rendered := m.RenderMarkdown(content)
-			block.WriteString(AssistantLabelStyle.Render("[assistant]") + "\n")
-			block.WriteString(indentBlock(m.wrapTextForIndent(rendered, 2), 2))
+			indented := indentBlock(m.wrapTextForIndent(rendered, 2), 2)
+			block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 			cmds = append(cmds, tea.Println(block.String()))
 		}
 
@@ -90,9 +89,9 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		if ev.ToolLabel != "" {
 			label = ev.ToolLabel
 		}
-		header := "\n" + ToolIconStyle.Render("  ⏺ ") + ToolNameStyle.Render(label)
+		header := "\n" + ToolIconStyle.Render("● ") + ToolNameStyle.Render(label)
 		if argsStr := FormatToolArgs(ev.Args); argsStr != "" {
-			header += "\n" + indentBlock(ToolArgsStyle.Render(m.wrapTextForIndent(argsStr, 4)), 4)
+			header += "\n" + indentBlock(ToolArgsStyle.Render(m.wrapTextForIndent(argsStr, 2)), 2)
 		}
 		cmds = append(cmds, tea.Println(header))
 
@@ -118,7 +117,7 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		if ev.IsError {
 			style = ErrorStyle
 		}
-		cmds = append(cmds, tea.Println(indentBlock(style.Render(m.wrapTextForIndent(rendered, 4)), 4)))
+		cmds = append(cmds, tea.Println(indentBlock(style.Render(m.wrapTextForIndent(rendered, 2)), 2)))
 
 	case agentcore.EventError:
 		errMsg := "unknown error"
