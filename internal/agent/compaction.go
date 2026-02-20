@@ -13,8 +13,14 @@ import (
 // Compact performs manual compaction using the same strategy as agentcore memory compaction.
 // It persists a compaction checkpoint to session log for deterministic restore.
 func (s *AgentSession) Compact() error {
-	s.emit(SessionEvent{Type: SEAutoCompactionStart})
-	defer s.emit(SessionEvent{Type: SEAutoCompactionEnd})
+	return s.compactWithReason("manual")
+}
+
+// compactWithReason performs compaction and emits events with the given reason
+// ("overflow", "threshold", or "manual").
+func (s *AgentSession) compactWithReason(reason string) error {
+	s.emit(SessionEvent{Type: SEAutoCompactionStart, CompactionReason: reason})
+	defer s.emit(SessionEvent{Type: SEAutoCompactionEnd, CompactionReason: reason})
 
 	msgs := s.agent.Messages()
 	if len(msgs) == 0 {
@@ -112,7 +118,7 @@ func (s *AgentSession) checkAutoCompaction() {
 	if cu == nil || cu.Percent < 80 {
 		return
 	}
-	if err := s.Compact(); err != nil {
+	if err := s.compactWithReason("threshold"); err != nil {
 		s.emit(SessionEvent{
 			Type:  SEError,
 			Error: fmt.Errorf("auto compact failed: %w", err),

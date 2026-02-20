@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -24,6 +25,9 @@ type AgentSessionConfig struct {
 	// CreateModel allows tests/integrations to override model construction.
 	// Defaults to provider.CreateModel when nil.
 	CreateModel ModelFactory
+	// LazyPersist buffers user messages and flushes them only when
+	// an assistant response arrives. Disabled by default for safety.
+	LazyPersist bool
 }
 
 // AgentSession is the business-logic core that wraps Agent + session persistence.
@@ -45,7 +49,16 @@ type AgentSession struct {
 
 	listeners []func(SessionEvent)
 	unsub     func() // unsubscribe from agent events
-	mu        sync.Mutex
+
+	// Retry/overflow tracking (set by handleAgentEvent, reset on EventAgentEnd).
+	retryAttempt     int
+	overflowDetected bool
+
+	// Lazy persistence: buffer user messages until assistant responds.
+	lazyPersist    bool
+	pendingUserMsg []agentcore.Message
+
+	mu sync.Mutex
 }
 
 // NewAgentSession creates an AgentSession and wires auto-persist to the agent.
@@ -67,6 +80,7 @@ func NewAgentSession(cfg AgentSessionConfig) *AgentSession {
 		baseURL:     cfg.Settings.BaseURL,
 		cwd:         cfg.Cwd,
 		createModel: modelFactory,
+		lazyPersist: cfg.LazyPersist,
 	}
 
 	// Subscribe to agent events for auto-persistence and event forwarding.
@@ -158,6 +172,10 @@ func (s *AgentSession) SetModel(prov, model, apiKey string) error {
 		ModelName: model,
 		Provider:  prov,
 	})
+
+	// Re-clamp thinking level for the new model.
+	s.reclampThinking()
+
 	return nil
 }
 
@@ -187,6 +205,15 @@ func (s *AgentSession) ResolveAndSetModel(pattern string) (string, error) {
 
 // SetThinkingLevel changes the reasoning depth and persists the change.
 func (s *AgentSession) SetThinkingLevel(level agentcore.ThinkingLevel) {
+	// Clamp to nearest valid level for current model.
+	if s.registry != nil {
+		s.mu.Lock()
+		model := s.modelName
+		s.mu.Unlock()
+		available := s.registry.AvailableThinkingLevels(model)
+		level = agentcore.ThinkingLevel(provider.ClampThinkingLevel(string(level), available))
+	}
+
 	s.agent.SetThinkingLevel(level)
 
 	s.mu.Lock()
@@ -324,7 +351,12 @@ func (s *AgentSession) SwitchSession(id string) error {
 		}
 	}
 	if snapshot.Thinking != "" {
-		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(snapshot.Thinking))
+		thinkingLevel := agentcore.ThinkingLevel(snapshot.Thinking)
+		if s.registry != nil {
+			available := s.registry.AvailableThinkingLevels(targetModel)
+			thinkingLevel = agentcore.ThinkingLevel(provider.ClampThinkingLevel(string(thinkingLevel), available))
+		}
+		s.agent.SetThinkingLevel(thinkingLevel)
 	}
 	if restoredModel != nil {
 		s.agent.SetModel(restoredModel)
@@ -335,7 +367,12 @@ func (s *AgentSession) SwitchSession(id string) error {
 	s.provider = targetProvider
 	s.modelName = targetModel
 	if snapshot.Thinking != "" {
-		s.settings.ThinkingLevel = snapshot.Thinking
+		clamped := snapshot.Thinking
+		if s.registry != nil {
+			available := s.registry.AvailableThinkingLevels(targetModel)
+			clamped = provider.ClampThinkingLevel(snapshot.Thinking, available)
+		}
+		s.settings.ThinkingLevel = clamped
 	}
 	s.mu.Unlock()
 
@@ -379,6 +416,15 @@ func (s *AgentSession) Fork(entryID string) error {
 	}
 
 	prevLeaf := store.LeafID()
+
+	// Generate branch summary before fork (non-fatal on failure).
+	currentMsgs := s.agent.Messages()
+	if len(currentMsgs) > 2 {
+		ctx := context.Background()
+		if summary, err := s.generateBranchSummary(ctx, currentMsgs); err == nil && summary != "" {
+			_ = store.AppendBranchSummary(prevLeaf, summary)
+		}
+	}
 
 	exists, err := store.HasEntry(entryID)
 	if err != nil {
@@ -532,11 +578,37 @@ func (s *AgentSession) SessionTree() (*session.TreeNode, string, error) {
 	return root, store.LeafID(), nil
 }
 
+// SetLabel sets or clears a label on a session entry.
+// An empty label string clears the label.
+func (s *AgentSession) SetLabel(targetID, label string) error {
+	s.mu.Lock()
+	store := s.store
+	s.mu.Unlock()
+
+	if store == nil {
+		return fmt.Errorf("no active session")
+	}
+	return store.AppendLabel(targetID, label)
+}
+
+// Labels returns all labels in the current session.
+func (s *AgentSession) Labels() (map[string]string, error) {
+	s.mu.Lock()
+	store := s.store
+	s.mu.Unlock()
+
+	if store == nil {
+		return nil, fmt.Errorf("no active session")
+	}
+	return store.Labels()
+}
+
 // Close cleans up the session (unsubscribes from agent, closes store).
 func (s *AgentSession) Close() {
 	if s.unsub != nil {
 		s.unsub()
 	}
+	s.flushPendingMessages()
 	s.mu.Lock()
 	store := s.store
 	s.mu.Unlock()
@@ -555,22 +627,73 @@ func (s *AgentSession) handleAgentEvent(ev agentcore.Event) {
 	if ev.Type == agentcore.EventMessageEnd {
 		if msg, ok := ev.Message.(agentcore.Message); ok {
 			s.mu.Lock()
-			store := s.store
+			lazy := s.lazyPersist
 			s.mu.Unlock()
-			if store != nil {
-				if err := store.AppendMessage(msg); err != nil {
-					s.emit(SessionEvent{
-						Type:  SEError,
-						Error: fmt.Errorf("persist message: %w", err),
-					})
+
+			if lazy && msg.Role == agentcore.RoleUser {
+				// Buffer user messages until assistant responds.
+				s.mu.Lock()
+				s.pendingUserMsg = append(s.pendingUserMsg, msg)
+				s.mu.Unlock()
+			} else {
+				// Flush any pending user messages before writing assistant response.
+				if lazy && msg.Role == agentcore.RoleAssistant {
+					s.flushPendingMessages()
 				}
+				s.persistMessage(msg)
 			}
 		}
 	}
 
-	// Check auto-compaction when agent finishes.
+	// Bridge retry events from agentcore to session-level events.
+	if ev.Type == agentcore.EventRetry && ev.RetryInfo != nil {
+		if agentcore.IsContextOverflow(ev.RetryInfo.Err) {
+			s.mu.Lock()
+			s.overflowDetected = true
+			s.mu.Unlock()
+		} else {
+			s.mu.Lock()
+			s.retryAttempt = ev.RetryInfo.Attempt
+			s.mu.Unlock()
+			s.emit(SessionEvent{
+				Type:         SEAutoRetryStart,
+				RetryAttempt: ev.RetryInfo.Attempt,
+				RetryMax:     ev.RetryInfo.MaxRetries,
+				RetryDelay:   ev.RetryInfo.Delay,
+			})
+		}
+	}
+
+	// On agent completion: flush pending messages, finalize retry state, handle overflow compaction, then threshold check.
 	if ev.Type == agentcore.EventAgentEnd {
-		s.checkAutoCompaction()
+		s.flushPendingMessages()
+
+		s.mu.Lock()
+		retryAttempt := s.retryAttempt
+		overflow := s.overflowDetected
+		s.retryAttempt = 0
+		s.overflowDetected = false
+		s.mu.Unlock()
+
+		if retryAttempt > 0 {
+			s.emit(SessionEvent{
+				Type:         SEAutoRetryEnd,
+				RetryAttempt: retryAttempt,
+				RetrySuccess: true,
+			})
+		}
+
+		if overflow {
+			if err := s.compactWithReason("overflow"); err == nil {
+				// Auto-continue after overflow compaction (like pi-mono's willRetry=true).
+				go func() {
+					_ = s.agent.Continue()
+				}()
+				return // Don't forward EventAgentEnd yet — agent will restart.
+			}
+		} else {
+			s.checkAutoCompaction()
+		}
 	}
 
 	// Forward as session event.
@@ -578,6 +701,53 @@ func (s *AgentSession) handleAgentEvent(ev agentcore.Event) {
 		Type:       SEAgentEvent,
 		AgentEvent: &ev,
 	})
+}
+
+// persistMessage writes a single message to the session store.
+func (s *AgentSession) persistMessage(msg agentcore.Message) {
+	s.mu.Lock()
+	store := s.store
+	s.mu.Unlock()
+	if store != nil {
+		if err := store.AppendMessage(msg); err != nil {
+			s.emit(SessionEvent{
+				Type:  SEError,
+				Error: fmt.Errorf("persist message: %w", err),
+			})
+		}
+	}
+}
+
+// flushPendingMessages writes all buffered user messages to the store.
+func (s *AgentSession) flushPendingMessages() {
+	s.mu.Lock()
+	pending := s.pendingUserMsg
+	s.pendingUserMsg = nil
+	s.mu.Unlock()
+
+	for _, msg := range pending {
+		s.persistMessage(msg)
+	}
+}
+
+// reclampThinking re-clamps the current thinking level to the new model's capabilities.
+func (s *AgentSession) reclampThinking() {
+	if s.registry == nil {
+		return
+	}
+	s.mu.Lock()
+	current := s.settings.ThinkingLevel
+	model := s.modelName
+	s.mu.Unlock()
+
+	if current == "" {
+		return
+	}
+	available := s.registry.AvailableThinkingLevels(model)
+	clamped := provider.ClampThinkingLevel(current, available)
+	if clamped != current {
+		s.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
+	}
 }
 
 func (s *AgentSession) emit(ev SessionEvent) {

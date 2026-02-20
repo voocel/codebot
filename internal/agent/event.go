@@ -1,6 +1,10 @@
 package agent
 
-import "github.com/voocel/agentcore"
+import (
+	"time"
+
+	"github.com/voocel/agentcore"
+)
 
 // SessionEventType identifies a session-level event.
 type SessionEventType string
@@ -12,6 +16,8 @@ const (
 	// Session lifecycle events
 	SEAutoCompactionStart SessionEventType = "auto_compaction_start"
 	SEAutoCompactionEnd   SessionEventType = "auto_compaction_end"
+	SEAutoRetryStart      SessionEventType = "auto_retry_start"
+	SEAutoRetryEnd        SessionEventType = "auto_retry_end"
 	SEModelChanged        SessionEventType = "model_changed"
 	SEThinkingChanged     SessionEventType = "thinking_changed"
 	SESessionSwitched     SessionEventType = "session_switched"
@@ -30,4 +36,13 @@ type SessionEvent struct {
 	Level     agentcore.ThinkingLevel
 	SessionID string
 	Error     error
+
+	// Retry fields (populated for SEAutoRetryStart / SEAutoRetryEnd)
+	RetryAttempt int
+	RetryMax     int
+	RetryDelay   time.Duration
+	RetrySuccess bool
+
+	// Compaction reason: "overflow" or "threshold"
+	CompactionReason string
 }

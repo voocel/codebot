@@ -121,6 +121,15 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 					}
 				}
 			}
+		case EntryBranchSummary:
+			var bs BranchSummary
+			if json.Unmarshal(entry.Data, &bs) == nil && bs.Summary != "" {
+				msgs = append(msgs, agentcore.Message{
+					Role:      agentcore.RoleUser,
+					Content:   []agentcore.ContentBlock{agentcore.TextBlock("[Previous branch context]: " + bs.Summary)},
+					Timestamp: entry.Timestamp,
+				})
+			}
 		case EntrySessionInfo:
 			var info map[string]string
 			if json.Unmarshal(entry.Data, &info) == nil {

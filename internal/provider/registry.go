@@ -237,3 +237,59 @@ func hasDatedSuffix(id string) bool {
 	}
 	return true
 }
+
+// ThinkingLevelOrder defines the ordered progression of thinking levels.
+var ThinkingLevelOrder = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
+
+// AvailableThinkingLevels returns valid thinking levels for a model.
+// Non-reasoning models only support "off"; reasoning models support all levels.
+func (r *ModelRegistry) AvailableThinkingLevels(modelID string) []string {
+	for _, m := range r.models {
+		if strings.EqualFold(m.ID, modelID) {
+			if m.Reasoning {
+				return ThinkingLevelOrder
+			}
+			return []string{"off"}
+		}
+	}
+	// Unknown model — assume all levels are valid.
+	return ThinkingLevelOrder
+}
+
+// ClampThinkingLevel adjusts level to the nearest valid level from available.
+// It searches backward then forward in ThinkingLevelOrder for the closest match.
+func ClampThinkingLevel(level string, available []string) string {
+	if len(available) == 0 {
+		return "off"
+	}
+	avSet := make(map[string]bool, len(available))
+	for _, a := range available {
+		avSet[a] = true
+	}
+	if avSet[level] {
+		return level
+	}
+
+	// Find position of requested level in the ordered list.
+	pos := -1
+	for i, l := range ThinkingLevelOrder {
+		if l == level {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		return available[0]
+	}
+
+	// Search backward then forward for nearest available level.
+	for dist := 1; dist < len(ThinkingLevelOrder); dist++ {
+		if lo := pos - dist; lo >= 0 && avSet[ThinkingLevelOrder[lo]] {
+			return ThinkingLevelOrder[lo]
+		}
+		if hi := pos + dist; hi < len(ThinkingLevelOrder) && avSet[ThinkingLevelOrder[hi]] {
+			return ThinkingLevelOrder[hi]
+		}
+	}
+	return available[0]
+}

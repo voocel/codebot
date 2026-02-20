@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Manager manages session files in a directory.
@@ -40,9 +41,11 @@ func (m *Manager) List() ([]SessionInfo, error) {
 		if err != nil {
 			continue
 		}
-		fi, _ := e.Info()
-		if fi != nil {
-			info.Updated = fi.ModTime()
+		// Fallback to file mtime if no entry timestamps were found.
+		if info.Updated.IsZero() {
+			if fi, _ := e.Info(); fi != nil {
+				info.Updated = fi.ModTime()
+			}
 		}
 		sessions = append(sessions, info)
 	}
@@ -113,6 +116,7 @@ func readSessionInfo(path string) (SessionInfo, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	if !scanner.Scan() {
 		return SessionInfo{}, fmt.Errorf("empty file")
 	}
@@ -133,25 +137,65 @@ func readSessionInfo(path string) (SessionInfo, error) {
 		return SessionInfo{}, fmt.Errorf("unsupported version: %d", h.Version)
 	}
 
-	// Scan for latest session_info to get name
+	// Scan all entries for name, message count, first user message, and latest timestamp.
 	name := h.Name
+	var messageCount int
+	var firstMessage string
+	var lastTimestamp time.Time
+
 	for scanner.Scan() {
 		var e Entry
-		if json.Unmarshal(scanner.Bytes(), &e) == nil && e.Kind == EntrySessionInfo {
+		if json.Unmarshal(scanner.Bytes(), &e) != nil {
+			continue
+		}
+
+		if !e.Timestamp.IsZero() && e.Timestamp.After(lastTimestamp) {
+			lastTimestamp = e.Timestamp
+		}
+
+		switch e.Kind {
+		case EntrySessionInfo:
 			var info map[string]string
 			if json.Unmarshal(e.Data, &info) == nil {
 				if n, ok := info["name"]; ok {
 					name = n
 				}
 			}
+		case EntryMessage:
+			messageCount++
+			if firstMessage == "" {
+				var msg struct {
+					Role    string `json:"role"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				}
+				if json.Unmarshal(e.Data, &msg) == nil && msg.Role == "user" {
+					for _, c := range msg.Content {
+						if c.Text != "" {
+							firstMessage = c.Text
+							break
+						}
+					}
+					if len(firstMessage) > 80 {
+						firstMessage = firstMessage[:77] + "..."
+					}
+				}
+			}
 		}
 	}
 
-	return SessionInfo{
-		ID:      h.SessionID,
-		Name:    name,
-		Path:    path,
-		Cwd:     h.Cwd,
-		Created: h.Created,
-	}, nil
+	info := SessionInfo{
+		ID:           h.SessionID,
+		Name:         name,
+		Path:         path,
+		Cwd:          h.Cwd,
+		Created:      h.Created,
+		MessageCount: messageCount,
+		FirstMessage: firstMessage,
+	}
+	if !lastTimestamp.IsZero() {
+		info.Updated = lastTimestamp
+	}
+	return info, nil
 }

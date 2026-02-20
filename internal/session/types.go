@@ -15,6 +15,8 @@ const (
 	EntryCompaction     EntryKind = "compaction"
 	EntryThinkingChange EntryKind = "thinking_change"
 	EntrySessionInfo    EntryKind = "session_info"
+	EntryBranchSummary  EntryKind = "branch_summary"
+	EntryLabel          EntryKind = "label"
 )
 
 // Entry is a single JSONL line in the session file.
@@ -54,12 +56,26 @@ type Compaction struct {
 
 // SessionInfo is a summary of a session for listing.
 type SessionInfo struct {
-	ID      string
-	Name    string
-	Path    string
-	Cwd     string
-	Created time.Time
-	Updated time.Time
+	ID           string
+	Name         string
+	Path         string
+	Cwd          string
+	Created      time.Time
+	Updated      time.Time
+	MessageCount int
+	FirstMessage string // first user message, truncated to 80 chars
+}
+
+// BranchSummary records a context summary from a fork point.
+type BranchSummary struct {
+	FromID  string `json:"from_id"`
+	Summary string `json:"summary"`
+}
+
+// Label records a user-defined bookmark on an entry.
+type Label struct {
+	TargetID string `json:"target_id"`
+	Label    string `json:"label"`
 }
 
 // TreeNode represents a node in the session tree for visualization.

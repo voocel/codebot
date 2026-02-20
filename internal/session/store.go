@@ -144,6 +144,56 @@ func (s *Store) AppendCompaction(summary string, keptMessages []json.RawMessage)
 	return s.appendChained(EntryCompaction, data)
 }
 
+// AppendBranchSummary records a branch context summary from a fork point.
+func (s *Store) AppendBranchSummary(fromID, summary string) error {
+	data, err := json.Marshal(BranchSummary{FromID: fromID, Summary: summary})
+	if err != nil {
+		return fmt.Errorf("marshal branch summary: %w", err)
+	}
+	return s.appendChained(EntryBranchSummary, data)
+}
+
+// AppendLabel records a user-defined label on a target entry.
+// Returns an error if the target entry does not exist.
+func (s *Store) AppendLabel(targetID, label string) error {
+	exists, err := s.HasEntry(targetID)
+	if err != nil {
+		return fmt.Errorf("check label target: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("entry %s not found", targetID)
+	}
+	data, err := json.Marshal(Label{TargetID: targetID, Label: label})
+	if err != nil {
+		return fmt.Errorf("marshal label: %w", err)
+	}
+	return s.appendChained(EntryLabel, data)
+}
+
+// Labels returns all labels in the session (target entry ID → label text).
+// Later labels for the same target overwrite earlier ones; empty label means cleared.
+func (s *Store) Labels() (map[string]string, error) {
+	entries, err := s.ReadAllEntries()
+	if err != nil {
+		return nil, err
+	}
+	labels := make(map[string]string)
+	for _, e := range entries {
+		if e.Kind != EntryLabel {
+			continue
+		}
+		var l Label
+		if json.Unmarshal(e.Data, &l) == nil {
+			if l.Label == "" {
+				delete(labels, l.TargetID)
+			} else {
+				labels[l.TargetID] = l.Label
+			}
+		}
+	}
+	return labels, nil
+}
+
 // SetName updates the session display name by appending a session_info entry.
 func (s *Store) SetName(name string) error {
 	data, err := json.Marshal(map[string]string{"name": name})

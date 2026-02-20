@@ -149,6 +149,14 @@ func (a *App) commandRegistry() map[string]commandSpec {
 				return a.cmdTree()
 			},
 		},
+		"/label": {
+			Usage:       "/label [id] [text]",
+			Description: "List, set, or clear labels",
+			Risk:        policy.RiskLow,
+			Run: func(args []string) tea.Cmd {
+				return a.cmdLabel(args)
+			},
+		},
 		"/settings": {
 			Usage:       "/settings",
 			Description: "Show current settings",
@@ -344,7 +352,12 @@ func (a *App) cmdResume(args []string) tea.Cmd {
 		if s.Name != "" {
 			name = s.Name
 		}
-		fmt.Fprintf(&sb, "  %d. %s  (%s)  %s  [id:%s]\n", i+1, name, s.Cwd, s.Updated.Format("01-02 15:04"), s.ID)
+		line := fmt.Sprintf("  %d. %-16s (%d msgs)  %s  [id:%s]",
+			i+1, name, s.MessageCount, s.Updated.Format("01-02 15:04"), s.ID)
+		if s.FirstMessage != "" {
+			line += "  - " + s.FirstMessage
+		}
+		sb.WriteString(line + "\n")
 	}
 	sb.WriteString("\nUse /resume <index> or /resume <id>")
 	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
@@ -493,7 +506,50 @@ func formatTreeEntry(node *session.TreeNode, currentLeaf string) string {
 		return fmt.Sprintf("[%s] thinking change%s", e.ID, marker)
 	case session.EntrySessionInfo:
 		return fmt.Sprintf("[%s] info%s", e.ID, marker)
+	case session.EntryBranchSummary:
+		return fmt.Sprintf("[%s] branch summary%s", e.ID, marker)
+	case session.EntryLabel:
+		var l session.Label
+		if json.Unmarshal(e.Data, &l) == nil {
+			return fmt.Sprintf("[%s] label: %s → %q%s", e.ID, l.TargetID, l.Label, marker)
+		}
+		return fmt.Sprintf("[%s] label%s", e.ID, marker)
 	default:
 		return fmt.Sprintf("[%s] %s%s", e.ID, e.Kind, marker)
 	}
+}
+
+func (a *App) cmdLabel(args []string) tea.Cmd {
+	// /label — list all labels
+	if len(args) == 0 {
+		labels, err := a.Session.Labels()
+		if err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to load labels: " + err.Error()))
+		}
+		if len(labels) == 0 {
+			return tui.SendCommandResult(tui.CommandStyle.Render("No labels set. Usage: /label <entry-id> <text>"))
+		}
+		var sb strings.Builder
+		sb.WriteString("Labels:\n")
+		for id, text := range labels {
+			fmt.Fprintf(&sb, "  [%s] %s\n", id, text)
+		}
+		return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
+	}
+
+	targetID := args[0]
+	// /label <id> — clear label
+	if len(args) == 1 {
+		if err := a.Session.SetLabel(targetID, ""); err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to clear label: " + err.Error()))
+		}
+		return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Label cleared for entry %s", targetID)))
+	}
+
+	// /label <id> <text> — set label
+	text := strings.Join(args[1:], " ")
+	if err := a.Session.SetLabel(targetID, text); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to set label: " + err.Error()))
+	}
+	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Label set: [%s] %s", targetID, text)))
 }
