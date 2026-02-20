@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/tui"
 )
@@ -17,6 +18,7 @@ func Run(sess *agent.AgentSession, cwd, gitBranch, modelName string, profile pol
 		Cwd:           cwd,
 		GitBranch:     gitBranch,
 		PolicyProfile: profile,
+		Templates:     config.LoadPromptTemplates(cwd),
 	}
 
 	m := tui.New(sess, modelName, ui.Config())

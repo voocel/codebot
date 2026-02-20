@@ -66,6 +66,7 @@ func Boot(opts Options) (*Runtime, error) {
 	settings := config.ResolveAll(cwd)
 
 	registry := provider.NewModelRegistry()
+	provider.StartPricingRefresh(registry)
 	profile, err := parseProfile(opts.PolicyProfile)
 	if err != nil {
 		return nil, err
@@ -150,10 +151,16 @@ func Boot(opts Options) (*Runtime, error) {
 		AuditPath:   filepath.Join(cwd, config.ConfigDir, "audit.log"),
 	})
 
+	builtTools := buildTools(cwd, opts.ToolFactories)
+	toolInfos := make([]config.ToolInfo, len(builtTools))
+	for i, t := range builtTools {
+		toolInfos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
+	}
+
 	ag := agentcore.NewAgent(
 		agentcore.WithModel(chatModel),
-		agentcore.WithSystemPrompt(config.BuildSystemPrompt(cwd, ctxFiles)),
-		agentcore.WithTools(buildTools(cwd, opts.ToolFactories)...),
+		agentcore.WithSystemPrompt(config.BuildSystemPrompt(cwd, ctxFiles, toolInfos)),
+		agentcore.WithTools(builtTools...),
 		agentcore.WithMaxTurns(settings.MaxTurns),
 		agentcore.WithContextPipeline(
 			memory.NewCompaction(memory.CompactionConfig{

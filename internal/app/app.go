@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/tui"
 )
@@ -18,6 +19,9 @@ type App struct {
 
 	// PolicyProfile controls slash-command risk gating.
 	PolicyProfile policy.Profile
+
+	// Templates are user-defined prompt templates loaded from .md files.
+	Templates []config.PromptTemplate
 }
 
 // Config returns a tui.Config with all hooks wired to this App.

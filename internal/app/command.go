@@ -7,10 +7,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/policy"
+	"github.com/voocel/codebot/internal/prompt"
 	"github.com/voocel/codebot/internal/session"
 	"github.com/voocel/codebot/tui"
 )
@@ -35,14 +37,23 @@ func (a *App) handleCommand(input string) tea.Cmd {
 	registry := a.commandRegistry()
 
 	spec, ok := registry[cmd]
-	if !ok {
-		return tui.SendCommandResult(tui.CommandStyle.Render(
-			fmt.Sprintf("Unknown command: %s. Type /help for available commands.", cmd)))
+	if ok {
+		if err := validateCommand(a.PolicyProfile, spec, a.Session.IsRunning()); err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render("Command blocked: " + err.Error()))
+		}
+		return spec.Run(args)
 	}
-	if err := validateCommand(a.PolicyProfile, spec, a.Session.IsRunning()); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Command blocked: " + err.Error()))
+
+	// Fallback: check prompt templates.
+	name := strings.TrimPrefix(cmd, "/")
+	if tmpl := a.findTemplate(name); tmpl != nil {
+		rawArgs := strings.TrimSpace(strings.TrimPrefix(input, parts[0]))
+		expanded := prompt.Expand(tmpl.Content, prompt.ParseArgs(rawArgs))
+		return a.sendAsPrompt(expanded)
 	}
-	return spec.Run(args)
+
+	return tui.SendCommandResult(tui.CommandStyle.Render(
+		fmt.Sprintf("Unknown command: %s. Type /help for available commands.", cmd)))
 }
 
 func validateCommand(profile policy.Profile, spec commandSpec, isRunning bool) error {
@@ -165,6 +176,22 @@ func (a *App) commandRegistry() map[string]commandSpec {
 				return a.cmdSettings()
 			},
 		},
+		"/copy": {
+			Usage:       "/copy",
+			Description: "Copy last response to clipboard",
+			Risk:        policy.RiskLow,
+			Run: func(_ []string) tea.Cmd {
+				return a.cmdCopy()
+			},
+		},
+		"/models": {
+			Usage:       "/models [filter]",
+			Description: "List available models",
+			Risk:        policy.RiskLow,
+			Run: func(args []string) tea.Cmd {
+				return a.cmdModels(args)
+			},
+		},
 		"/thinking": {
 			Usage:       "/thinking [off|minimal|low|medium|high|xhigh]",
 			Description: "Show or set thinking level",
@@ -227,6 +254,18 @@ Keyboard shortcuts:
   Ctrl+C            Quit
 `))
 
+	// Append prompt templates if any.
+	if len(a.Templates) > 0 {
+		sb.WriteString("\n\nCustom prompts:\n")
+		for _, t := range a.Templates {
+			desc := t.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			fmt.Fprintf(&sb, "  /%-16s %s (%s)\n", t.Name, desc, t.Source)
+		}
+	}
+
 	return tui.CommandStyle.Render(sb.String())
 }
 
@@ -276,6 +315,14 @@ func (a *App) cmdSession() tea.Cmd {
 	}
 	text := fmt.Sprintf("Session: %s\nPath: %s\nCwd: %s\nCreated: %s",
 		name, info.Path, info.Cwd, info.Created.Format("2006-01-02 15:04:05"))
+
+	// Append cost estimate if tokens have been used.
+	inTok, outTok, cost := a.Session.CostEstimate()
+	if inTok+outTok > 0 {
+		text += fmt.Sprintf("\nCost: ~$%.4f (%s in / %s out)",
+			cost, formatTokenCount(inTok), formatTokenCount(outTok))
+	}
+
 	return tui.SendCommandResult(tui.CommandStyle.Render(text))
 }
 
@@ -346,9 +393,12 @@ func (a *App) cmdResume(args []string) tea.Cmd {
 	var sb strings.Builder
 	sb.WriteString("Recent sessions:\n")
 	limit := min(len(sessions), 10)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		s := sessions[i]
-		name := s.ID[:8]
+		name := s.ID
+		if len(name) > 8 {
+			name = name[:8]
+		}
 		if s.Name != "" {
 			name = s.Name
 		}
@@ -410,6 +460,17 @@ func maskKey(key string) string {
 		return "****"
 	}
 	return key[:4] + "..." + key[len(key)-4:]
+}
+
+func formatTokenCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 func (a *App) cmdFork(args []string) tea.Cmd {
@@ -552,4 +613,66 @@ func (a *App) cmdLabel(args []string) tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to set label: " + err.Error()))
 	}
 	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Label set: [%s] %s", targetID, text)))
+}
+
+func (a *App) cmdCopy() tea.Cmd {
+	text := a.Session.LastAssistantText()
+	if text == "" {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("No assistant response to copy."))
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Clipboard write failed: " + err.Error()))
+	}
+	n := len([]rune(text))
+	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Copied %d characters to clipboard.", n)))
+}
+
+func (a *App) cmdModels(args []string) tea.Cmd {
+	reg := a.Session.Registry()
+	if reg == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("No model registry configured."))
+	}
+
+	filter := strings.Join(args, " ")
+	models := reg.List(filter)
+	if len(models) == 0 {
+		return tui.SendCommandResult(tui.CommandStyle.Render("No models found."))
+	}
+
+	currentModel := a.Session.ModelName()
+	var sb strings.Builder
+	sb.WriteString("Available models:\n")
+	for _, m := range models {
+		marker := "  "
+		if strings.EqualFold(m.ID, currentModel) {
+			marker = "* "
+		}
+		ctx := formatTokenCount(m.ContextWindow)
+		reasoning := ""
+		if m.Reasoning {
+			reasoning = "  reasoning"
+		}
+		fmt.Fprintf(&sb, "%s%-12s/%-30s %-20s %6s%s\n",
+			marker, m.Provider, m.ID, m.Name, ctx, reasoning)
+	}
+	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
+}
+
+// findTemplate returns the first template matching name (case-insensitive), or nil.
+func (a *App) findTemplate(name string) *config.PromptTemplate {
+	lower := strings.ToLower(name)
+	for i := range a.Templates {
+		if strings.ToLower(a.Templates[i].Name) == lower {
+			return &a.Templates[i]
+		}
+	}
+	return nil
+}
+
+// sendAsPrompt sends expanded template text as a user message to the agent.
+func (a *App) sendAsPrompt(text string) tea.Cmd {
+	return func() tea.Msg {
+		_ = a.Session.Prompt(text)
+		return nil
+	}
 }

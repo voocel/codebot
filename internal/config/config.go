@@ -90,6 +90,20 @@ func SessionsDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "sessions")
 }
 
+// PromptsDir returns <cwd>/.codebot/prompts/.
+func PromptsDir(cwd string) string {
+	return filepath.Join(cwd, ConfigDir, "prompts")
+}
+
+// UserConfigDir returns ~/.codebot/.
+func UserConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ConfigDir)
+}
+
 // LoadSettings loads settings from <cwd>/.codebot/settings.json.
 func LoadSettings(cwd string) Resolved {
 	s := loadSettingsFile(SettingsPath(cwd))

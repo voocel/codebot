@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/voocel/agentcore"
@@ -57,6 +58,9 @@ type AgentSession struct {
 	// Lazy persistence: buffer user messages until assistant responds.
 	lazyPersist    bool
 	pendingUserMsg []agentcore.Message
+
+	// Auto-naming: set once from first user message text.
+	autoNamed bool
 
 	mu sync.Mutex
 }
@@ -286,6 +290,7 @@ func (s *AgentSession) NewSession() error {
 
 	s.mu.Lock()
 	s.store = newStore
+	s.autoNamed = false
 	s.mu.Unlock()
 	if oldStore != nil {
 		_ = oldStore.Close()
@@ -366,6 +371,7 @@ func (s *AgentSession) SwitchSession(id string) error {
 	s.store = newStore
 	s.provider = targetProvider
 	s.modelName = targetModel
+	s.autoNamed = newStore.Header().Name != ""
 	if snapshot.Thinking != "" {
 		clamped := snapshot.Thinking
 		if s.registry != nil {
@@ -473,6 +479,7 @@ func (s *AgentSession) Fork(entryID string) error {
 	s.mu.Lock()
 	s.provider = targetProvider
 	s.modelName = targetModel
+	s.autoNamed = store.Header().Name != ""
 	if snapshot.Thinking != "" {
 		s.settings.ThinkingLevel = snapshot.Thinking
 	}
@@ -523,6 +530,48 @@ func (s *AgentSession) ContextUsage() *agentcore.ContextUsage {
 // TotalTokens returns accumulated total tokens across current process lifetime.
 func (s *AgentSession) TotalTokens() int {
 	return s.agent.TotalUsage().TotalTokens
+}
+
+// Registry returns the model registry (may be nil).
+func (s *AgentSession) Registry() *provider.ModelRegistry {
+	return s.registry
+}
+
+// CostEstimate returns accumulated token counts and an estimated cost (USD) for the session.
+// Cost is computed using the current model's rates (approximate if models were switched).
+func (s *AgentSession) CostEstimate() (inputTokens, outputTokens int, cost float64) {
+	usage := s.agent.TotalUsage()
+	inputTokens = usage.Input
+	outputTokens = usage.Output
+
+	s.mu.Lock()
+	model := s.modelName
+	reg := s.registry
+	s.mu.Unlock()
+
+	if reg != nil {
+		inRate, outRate, crRate, cwRate := reg.CostRates(model)
+		cost = float64(inputTokens)*inRate/1e6 +
+			float64(outputTokens)*outRate/1e6 +
+			float64(usage.CacheRead)*crRate/1e6 +
+			float64(usage.CacheWrite)*cwRate/1e6
+	}
+	return
+}
+
+// LastAssistantText returns the text of the most recent assistant message, or "".
+func (s *AgentSession) LastAssistantText() string {
+	msgs := s.agent.Messages()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg, ok := msgs[i].(agentcore.Message)
+		if !ok || msg.Role != agentcore.RoleAssistant {
+			continue
+		}
+		if text := msg.TextContent(); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 // CurrentSessionInfo returns metadata of the active session.
@@ -642,6 +691,11 @@ func (s *AgentSession) handleAgentEvent(ev agentcore.Event) {
 				}
 				s.persistMessage(msg)
 			}
+
+			// Auto-name session from first user message when the first assistant response arrives.
+			if msg.Role == agentcore.RoleAssistant {
+				s.tryAutoName()
+			}
 		}
 	}
 
@@ -747,6 +801,48 @@ func (s *AgentSession) reclampThinking() {
 	clamped := provider.ClampThinkingLevel(current, available)
 	if clamped != current {
 		s.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
+	}
+}
+
+// tryAutoName sets the session name from the first user message text once.
+// It claims the autoNamed flag atomically under the lock to prevent duplicates,
+// then performs the disk write asynchronously to avoid blocking event dispatch.
+func (s *AgentSession) tryAutoName() {
+	s.mu.Lock()
+	if s.autoNamed || s.store == nil {
+		s.mu.Unlock()
+		return
+	}
+	store := s.store
+	// Claim immediately to prevent concurrent calls from duplicating the write.
+	s.autoNamed = true
+	s.mu.Unlock()
+
+	if h := store.Header(); h.Name != "" {
+		return
+	}
+
+	// Find first user message text from agent context.
+	var name string
+	for _, m := range s.agent.Messages() {
+		msg, ok := m.(agentcore.Message)
+		if !ok || msg.Role != agentcore.RoleUser {
+			continue
+		}
+		text := msg.TextContent()
+		if text == "" {
+			continue
+		}
+		// Truncate to 50 characters and collapse newlines.
+		if len([]rune(text)) > 50 {
+			text = string([]rune(text)[:50])
+		}
+		name = strings.ReplaceAll(text, "\n", " ")
+		break
+	}
+
+	if name != "" {
+		go func() { _ = store.SetName(name) }()
 	}
 }
 

@@ -1,31 +1,39 @@
 package provider
 
+//go:generate go run gen_models.go
+
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/voocel/agentcore"
 )
 
 // ModelEntry describes a known LLM model.
 type ModelEntry struct {
-	Provider      string
-	ID            string
-	Name          string
-	ContextWindow int
-	MaxTokens     int
-	Reasoning     bool // supports thinking/reasoning
+	Provider             string  `json:"provider"`
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	ContextWindow        int     `json:"context_window"`
+	MaxTokens            int     `json:"max_tokens"`
+	Reasoning            bool    `json:"reasoning"`
+	InputCostPer1M       float64 `json:"input_cost_per_1m"`
+	OutputCostPer1M      float64 `json:"output_cost_per_1m"`
+	CacheReadCostPer1M   float64 `json:"cache_read_cost_per_1m"`
+	CacheWriteCostPer1M  float64 `json:"cache_write_cost_per_1m"`
 }
 
 // ModelRegistry holds known models and provides resolution/cycling.
 type ModelRegistry struct {
+	mu     sync.RWMutex
 	models []ModelEntry
 }
 
-// NewModelRegistry creates a registry pre-loaded with built-in models.
+// NewModelRegistry creates a registry loaded from generated model data.
 func NewModelRegistry() *ModelRegistry {
 	r := &ModelRegistry{}
-	r.loadBuiltins()
+	r.models = append(r.models, generatedModels...)
 	return r
 }
 
@@ -50,6 +58,9 @@ func (r *ModelRegistry) Resolve(pattern string) (*ModelEntry, agentcore.Thinking
 		}
 	}
 
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	// Try provider/model format
 	if idx := strings.Index(pattern, "/"); idx > 0 {
 		prov := pattern[:idx]
@@ -57,7 +68,8 @@ func (r *ModelRegistry) Resolve(pattern string) (*ModelEntry, agentcore.Thinking
 		for i := range r.models {
 			if strings.EqualFold(r.models[i].Provider, prov) &&
 				strings.EqualFold(r.models[i].ID, modelID) {
-				return &r.models[i], thinkingLevel, nil
+				entry := r.models[i]
+				return &entry, thinkingLevel, nil
 			}
 		}
 	}
@@ -65,7 +77,8 @@ func (r *ModelRegistry) Resolve(pattern string) (*ModelEntry, agentcore.Thinking
 	// Try exact ID match
 	for i := range r.models {
 		if strings.EqualFold(r.models[i].ID, pattern) {
-			return &r.models[i], thinkingLevel, nil
+			entry := r.models[i]
+			return &entry, thinkingLevel, nil
 		}
 	}
 
@@ -90,11 +103,15 @@ func (r *ModelRegistry) Resolve(pattern string) (*ModelEntry, agentcore.Thinking
 			best = idx
 		}
 	}
-	return &r.models[best], thinkingLevel, nil
+	entry := r.models[best]
+	return &entry, thinkingLevel, nil
 }
 
 // List returns models matching the filter (empty filter = all).
 func (r *ModelRegistry) List(filter string) []ModelEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	if filter == "" {
 		return append([]ModelEntry{}, r.models...)
 	}
@@ -113,6 +130,9 @@ func (r *ModelRegistry) List(filter string) []ModelEntry {
 // Cycle returns the next/prev model from the same provider.
 // direction > 0 for next, < 0 for previous.
 func (r *ModelRegistry) Cycle(currentID string, direction int) *ModelEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	// Find current model's provider
 	var prov string
 	var currentIdx int = -1
@@ -153,11 +173,15 @@ func (r *ModelRegistry) Cycle(currentID string, direction int) *ModelEntry {
 	} else {
 		pos = (pos - 1 + len(sameProvider)) % len(sameProvider)
 	}
-	return &r.models[sameProvider[pos]]
+	entry := r.models[sameProvider[pos]]
+	return &entry
 }
 
 // FindByProvider returns all models for a given provider.
 func (r *ModelRegistry) FindByProvider(prov string) []ModelEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	var out []ModelEntry
 	for _, m := range r.models {
 		if strings.EqualFold(m.Provider, prov) {
@@ -167,48 +191,65 @@ func (r *ModelRegistry) FindByProvider(prov string) []ModelEntry {
 	return out
 }
 
-// DefaultModel returns the default model for a provider.
-func (r *ModelRegistry) DefaultModel(prov string) *ModelEntry {
-	defaults := map[string]string{
-		"anthropic": "claude-sonnet-4-5",
-		"openai":    "gpt-4.1-mini",
-		"gemini":    "gemini-2.5-flash",
-	}
-	if id, ok := defaults[strings.ToLower(prov)]; ok {
-		for i := range r.models {
-			if r.models[i].ID == id {
-				return &r.models[i]
-			}
+// CostRates returns the per-1M-token cost rates for a model.
+func (r *ModelRegistry) CostRates(modelID string) (inputPer1M, outputPer1M, cacheReadPer1M, cacheWritePer1M float64) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	for _, m := range r.models {
+		if strings.EqualFold(m.ID, modelID) {
+			return m.InputCostPer1M, m.OutputCostPer1M, m.CacheReadCostPer1M, m.CacheWriteCostPer1M
 		}
 	}
-	// Fallback: first model for provider
+	return 0, 0, 0, 0
+}
+
+// DefaultModel returns the first model for a provider.
+func (r *ModelRegistry) DefaultModel(prov string) *ModelEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	for i := range r.models {
 		if strings.EqualFold(r.models[i].Provider, prov) {
-			return &r.models[i]
+			entry := r.models[i]
+			return &entry
 		}
 	}
 	return nil
 }
 
-func (r *ModelRegistry) loadBuiltins() {
-	r.models = []ModelEntry{
-		// Anthropic
-		{Provider: "anthropic", ID: "claude-opus-4-6", Name: "Claude Opus 4.6", ContextWindow: 200000, MaxTokens: 32768, Reasoning: true},
-		{Provider: "anthropic", ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5", ContextWindow: 200000, MaxTokens: 16384, Reasoning: true},
-		{Provider: "anthropic", ID: "claude-sonnet-4-20250514", Name: "Claude Sonnet 4", ContextWindow: 200000, MaxTokens: 16384, Reasoning: true},
-		{Provider: "anthropic", ID: "claude-haiku-3-5-20241022", Name: "Claude Haiku 3.5", ContextWindow: 200000, MaxTokens: 8192, Reasoning: false},
+// MergeModels updates existing models and adds new ones from fetched data.
+// Matching by Provider+ID (case-insensitive). Updates cost/context/name fields.
+func (r *ModelRegistry) MergeModels(fetched []ModelEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-		// OpenAI
-		{Provider: "openai", ID: "gpt-4.1", Name: "GPT-4.1", ContextWindow: 1047576, MaxTokens: 32768, Reasoning: false},
-		{Provider: "openai", ID: "gpt-4.1-mini", Name: "GPT-4.1 Mini", ContextWindow: 1047576, MaxTokens: 16384, Reasoning: false},
-		{Provider: "openai", ID: "gpt-4.1-nano", Name: "GPT-4.1 Nano", ContextWindow: 1047576, MaxTokens: 16384, Reasoning: false},
-		{Provider: "openai", ID: "o3", Name: "o3", ContextWindow: 200000, MaxTokens: 100000, Reasoning: true},
-		{Provider: "openai", ID: "o4-mini", Name: "o4 Mini", ContextWindow: 200000, MaxTokens: 100000, Reasoning: true},
-
-		// Google
-		{Provider: "gemini", ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", ContextWindow: 1048576, MaxTokens: 65536, Reasoning: true},
-		{Provider: "gemini", ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", ContextWindow: 1048576, MaxTokens: 65536, Reasoning: true},
-		{Provider: "gemini", ID: "gemini-2.0-flash", Name: "Gemini 2.0 Flash", ContextWindow: 1048576, MaxTokens: 8192, Reasoning: false},
+	idx := make(map[string]int, len(r.models))
+	for i, m := range r.models {
+		idx[strings.ToLower(m.Provider+"/"+m.ID)] = i
+	}
+	for _, f := range fetched {
+		key := strings.ToLower(f.Provider + "/" + f.ID)
+		if i, ok := idx[key]; ok {
+			if f.InputCostPer1M > 0 || f.OutputCostPer1M > 0 {
+				r.models[i].InputCostPer1M = f.InputCostPer1M
+				r.models[i].OutputCostPer1M = f.OutputCostPer1M
+				r.models[i].CacheReadCostPer1M = f.CacheReadCostPer1M
+				r.models[i].CacheWriteCostPer1M = f.CacheWriteCostPer1M
+			}
+			if f.ContextWindow > 0 {
+				r.models[i].ContextWindow = f.ContextWindow
+			}
+			if f.MaxTokens > 0 {
+				r.models[i].MaxTokens = f.MaxTokens
+			}
+			if f.Name != "" {
+				r.models[i].Name = f.Name
+			}
+		} else {
+			r.models = append(r.models, f)
+			idx[key] = len(r.models) - 1
+		}
 	}
 }
 
@@ -244,6 +285,9 @@ var ThinkingLevelOrder = []string{"off", "minimal", "low", "medium", "high", "xh
 // AvailableThinkingLevels returns valid thinking levels for a model.
 // Non-reasoning models only support "off"; reasoning models support all levels.
 func (r *ModelRegistry) AvailableThinkingLevels(modelID string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	for _, m := range r.models {
 		if strings.EqualFold(m.ID, modelID) {
 			if m.Reasoning {
