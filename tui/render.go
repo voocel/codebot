@@ -246,7 +246,10 @@ func FormatToolArgs(args json.RawMessage) string {
 	if len(args) == 0 {
 		return ""
 	}
-	s := string(args)
+	s := strings.TrimSpace(string(args))
+	if s == "{}" || s == "null" {
+		return ""
+	}
 	if len(s) > 100 {
 		s = s[:97] + "..."
 	}
@@ -262,6 +265,15 @@ func FormatToolResult(result json.RawMessage, isError bool) string {
 	if len(result) == 0 {
 		return prefix + "(no output)"
 	}
+
+	// Extract "message" from JSON objects for cleaner display.
+	var obj map[string]any
+	if json.Unmarshal(result, &obj) == nil {
+		if msg, ok := obj["message"].(string); ok && msg != "" {
+			return prefix + msg
+		}
+	}
+
 	s := strings.TrimSpace(string(result))
 	lines := strings.SplitN(s, "\n", 6)
 	if len(lines) > 5 {

@@ -20,7 +20,8 @@ type planState int
 
 const (
 	planOff       planState = iota
-	planPlanning            // read-only exploration + submit_plan tool
+	planPlanning            // read-only exploration + exit_plan_mode tool
+	planPending             // plan submitted, awaiting user approval
 	planExecuting           // full tools + mark_step tool
 )
 
@@ -37,11 +38,11 @@ type planStep struct {
 const planModePrompt = `[PLAN MODE - Read-Only]
 You are in plan mode. Explore and analyze the codebase, then create a detailed implementation plan.
 
-Available tools: read, find, grep, ls, bash (read-only commands only), submit_plan
+Available tools: read, find, grep, ls, bash (read-only commands only), exit_plan_mode
 Disabled tools: write, edit
 
-When your plan is ready, call the submit_plan tool with structured steps.
-Do NOT write the plan as plain text — you MUST use the submit_plan tool.
+When your plan is ready, call the exit_plan_mode tool with structured steps.
+Do NOT write the plan as plain text — you MUST use the exit_plan_mode tool.
 Do NOT modify any files.`
 
 func buildExecutionPrompt(steps []planStep) string {
@@ -58,17 +59,20 @@ func buildExecutionPrompt(steps []planStep) string {
 }
 
 // ---------------------------------------------------------------------------
-// Commands
+// Commands — /plan injects prompts, does NOT directly switch state
 // ---------------------------------------------------------------------------
 
 func (a *App) cmdPlan(args []string) tea.Cmd {
 	if len(args) == 0 {
 		switch a.planState {
 		case planOff:
-			return a.enterPlanMode()
+			return a.sendAsPrompt("Use the enter_plan_mode tool to begin planning.")
 		case planPlanning:
 			return tui.SendCommandResult(tui.CommandStyle.Render(
-				"Already in plan mode (read-only). Use /plan execute or /plan cancel."))
+				"Already in plan mode (read-only). Use /plan cancel to abort."))
+		case planPending:
+			return tui.SendCommandResult(tui.CommandStyle.Render(
+				"Plan awaiting approval. Use ↑↓ to select, Enter to confirm."))
 		case planExecuting:
 			return tui.SendCommandResult(tui.CommandStyle.Render(
 				fmt.Sprintf("Executing plan: %d/%d completed. Use /plan cancel to abort.",
@@ -91,8 +95,14 @@ func (a *App) cmdPlan(args []string) tea.Cmd {
 		}
 		return a.cmdPlanShow(id)
 	default:
-		return tui.SendCommandResult(tui.ErrorStyle.Render(
-			"Usage: /plan [execute|cancel|list|show [id]]"))
+		// /plan <task> — inject prompt with task description.
+		if a.planState != planOff {
+			return tui.SendCommandResult(tui.ErrorStyle.Render(
+				"Already in plan mode. Use /plan execute or /plan cancel."))
+		}
+		msg := strings.Join(args, " ")
+		return a.sendAsPrompt(fmt.Sprintf(
+			"Use the enter_plan_mode tool to begin planning.\n\nTask: %s", msg))
 	}
 }
 
@@ -108,42 +118,14 @@ func (a *App) cmdTodos() tea.Cmd {
 // State transitions
 // ---------------------------------------------------------------------------
 
-func (a *App) enterPlanMode() tea.Cmd {
-	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash")
-	a.Session.SetTools(append(readOnly, newSubmitPlanTool())...)
-	a.Session.SetSystemSuffix(planModePrompt)
-	a.planState = planPlanning
-	a.planSteps = nil
-
-	// Persist draft plan.
-	now := time.Now().UnixMilli()
-	id := plan.GenerateID()
-	a.planID = id
-	if a.PlanStore != nil {
-		_ = a.PlanStore.Save(&plan.SavedPlan{
-			Metadata: plan.Metadata{
-				ID:               id,
-				Status:           plan.StatusDraft,
-				WorkingDirectory: a.Cwd,
-				CreatedAt:        now,
-				UpdatedAt:        now,
-				Version:          1,
-			},
-		})
-	}
-
-	return tui.SendCommandResult(tui.CommandStyle.Render(
-		"Entered plan mode (read-only). Describe your task — the agent will explore and propose a plan."))
-}
-
 func (a *App) executePlan() tea.Cmd {
-	if a.planState != planPlanning {
+	if a.planState != planPlanning && a.planState != planPending {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(
 			"Not in planning state. Use /plan to enter plan mode first."))
 	}
 	if len(a.planSteps) == 0 {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(
-			"No plan steps submitted. Let the agent call submit_plan first."))
+			"No plan steps submitted. Let the agent call exit_plan_mode first."))
 	}
 
 	a.Session.RestoreAllTools(newMarkStepTool())
@@ -184,7 +166,7 @@ func (a *App) cancelPlanMode() tea.Cmd {
 }
 
 func (a *App) resetPlanState() {
-	a.Session.RestoreAllTools()
+	a.Session.RestoreAllTools(newEnterPlanModeTool())
 	a.Session.SetSystemSuffix("")
 	a.planState = planOff
 	a.planSteps = nil
@@ -192,7 +174,7 @@ func (a *App) resetPlanState() {
 }
 
 // ---------------------------------------------------------------------------
-// Event handling — driven by tool-use events, no regex parsing
+// Event handling — driven by tool-use events
 // ---------------------------------------------------------------------------
 
 func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
@@ -201,15 +183,49 @@ func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
 	}
 
 	switch ev.Tool {
-	case "submit_plan":
-		return a.onSubmitPlan(ev.Result)
+	case "enter_plan_mode":
+		return a.onEnterPlanMode()
+	case "exit_plan_mode":
+		return a.onExitPlanMode(ev.Result)
 	case "mark_step":
 		return a.onMarkStep(ev.Result)
 	}
 	return nil
 }
 
-func (a *App) onSubmitPlan(result json.RawMessage) tea.Cmd {
+func (a *App) onEnterPlanMode() tea.Cmd {
+	if a.planState != planOff {
+		return nil
+	}
+
+	// Switch to read-only tools + exit_plan_mode.
+	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash")
+	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
+	a.Session.SetSystemSuffix(planModePrompt)
+	a.planState = planPlanning
+	a.planSteps = nil
+
+	// Persist draft plan.
+	now := time.Now().UnixMilli()
+	id := plan.GenerateID()
+	a.planID = id
+	if a.PlanStore != nil {
+		_ = a.PlanStore.Save(&plan.SavedPlan{
+			Metadata: plan.Metadata{
+				ID:               id,
+				Status:           plan.StatusDraft,
+				WorkingDirectory: a.Cwd,
+				CreatedAt:        now,
+				UpdatedAt:        now,
+				Version:          1,
+			},
+		})
+	}
+
+	return nil
+}
+
+func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
 	if a.planState != planPlanning {
 		return nil
 	}
@@ -238,8 +254,12 @@ func (a *App) onSubmitPlan(result json.RawMessage) tea.Cmd {
 		}
 	}
 
-	return tea.Println("\n" + tui.CommandStyle.Render(
-		a.formatSteps()+"\n\nUse /plan execute to start, /plan cancel to abort."))
+	// Switch to pending state and stop the agent so the user can review.
+	a.planState = planPending
+	a.planChoice = 0
+	a.Session.Abort()
+
+	return tea.Println("\n" + tui.CommandStyle.Render(a.formatSteps()))
 }
 
 func (a *App) onMarkStep(result json.RawMessage) tea.Cmd {
@@ -359,6 +379,20 @@ func (a *App) planFooter(_ *tui.Model) string {
 	switch a.planState {
 	case planPlanning:
 		return "plan mode (read-only)"
+	case planPending:
+		choices := []string{"Execute plan", "Cancel"}
+		var sb strings.Builder
+		for i, c := range choices {
+			if i > 0 {
+				sb.WriteByte('\n')
+			}
+			if i == a.planChoice {
+				sb.WriteString(tui.ChoiceActiveStyle.Render("❯ " + c))
+			} else {
+				sb.WriteString(tui.ChoiceInactiveStyle.Render("  " + c))
+			}
+		}
+		return sb.String()
 	case planExecuting:
 		return fmt.Sprintf("executing plan: %d/%d completed", a.completedCount(), len(a.planSteps))
 	default:

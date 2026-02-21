@@ -131,6 +131,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.HandleAgentEvent(msg.Event)
 	case CommandResultMsg:
 		return m.handleCommandResult(msg)
+	case PromptMsg:
+		return m.handlePrompt(msg)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.Spinner, cmd = m.Spinner.Update(msg)
@@ -312,5 +314,31 @@ func (m Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Println(output)
 	}
 	return m, nil
+}
+
+// handlePrompt processes an injected prompt — renders as user message and sends to agent.
+func (m Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
+	text := msg.Text
+	if text == "" {
+		return m, nil
+	}
+	m.ShowSummary = false
+
+	userLine := "\n" + m.renderUserMessage(text)
+
+	var output string
+	if m.ShowWelcome {
+		output = m.renderWelcome() + "\n" + userLine
+		m.ShowWelcome = false
+	} else {
+		output = userLine
+	}
+
+	if m.Driver == nil {
+		output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
+	} else if err := m.Driver.Prompt(text); err != nil {
+		output += "\n" + ErrorStyle.Render("  error: "+err.Error())
+	}
+	return m, tea.Println(output)
 }
 

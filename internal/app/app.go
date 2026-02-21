@@ -28,13 +28,16 @@ type App struct {
 	PlanStore *plan.Store
 
 	// Plan mode state.
-	planState planState
-	planSteps []planStep
-	planID    string // active plan ID (empty = no active plan)
+	planState  planState
+	planSteps  []planStep
+	planID     string // active plan ID (empty = no active plan)
+	planChoice int    // selected option in planPending approval menu
 }
 
 // Config returns a tui.Config with all hooks wired to this App.
 func (a *App) Config() tui.Config {
+	// Make enter_plan_mode available in normal mode.
+	a.Session.RestoreAllTools(newEnterPlanModeTool())
 	return tui.Config{
 		Cwd:         a.Cwd,
 		GitBranch:   a.GitBranch,
@@ -45,9 +48,34 @@ func (a *App) Config() tui.Config {
 	}
 }
 
-// onKey returns a hook that intercepts slash commands.
+// onKey returns a hook that intercepts slash commands and plan approval keys.
 func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	return func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
+		// Plan pending approval: up/down to select, enter to confirm.
+		if a.planState == planPending && !m.Running {
+			switch msg.String() {
+			case "up", "k":
+				if a.planChoice > 0 {
+					a.planChoice--
+				}
+				return true, nil
+			case "down", "j":
+				if a.planChoice < 1 {
+					a.planChoice++
+				}
+				return true, nil
+			case "enter":
+				switch a.planChoice {
+				case 0:
+					return true, a.executePlan()
+				case 1:
+					return true, a.cancelPlanMode()
+				}
+			}
+			// Block other input while awaiting approval.
+			return true, nil
+		}
+
 		if msg.String() != "enter" {
 			return false, nil
 		}

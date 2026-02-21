@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -124,6 +126,10 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		cmds = append(cmds, tea.Println(indentBlock(style.Render(m.wrapTextForIndent(rendered, 2)), 2)))
 
 	case agentcore.EventError:
+		// Context cancellation is a normal operation (user Esc, plan submission stop).
+		if ev.Err != nil && errors.Is(ev.Err, context.Canceled) {
+			break
+		}
 		errMsg := "unknown error"
 		if ev.Err != nil {
 			errMsg = ev.Err.Error()

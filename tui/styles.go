@@ -67,6 +67,12 @@ var FooterStyle = lipgloss.NewStyle().
 	Background(ColorStatusBg).
 	Padding(0, 1)
 
+// Selection menu (plan approval, etc.)
+var (
+	ChoiceActiveStyle   = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	ChoiceInactiveStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+)
+
 // General purpose
 var (
 	MutedStyle = lipgloss.NewStyle().Foreground(ColorMuted)

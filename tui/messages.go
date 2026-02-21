@@ -22,3 +22,9 @@ type CommandResultMsg struct {
 func SendCommandResult(text string) tea.Cmd {
 	return func() tea.Msg { return CommandResultMsg{Text: text} }
 }
+
+// PromptMsg injects a message as if the user typed and sent it.
+// The TUI renders it as a user message and forwards it to the agent.
+type PromptMsg struct {
+	Text string
+}

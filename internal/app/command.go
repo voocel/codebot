@@ -202,7 +202,7 @@ func (a *App) commandRegistry() map[string]commandSpec {
 		},
 		"/plan": {
 			Usage:       "/plan [execute|cancel|list|show]",
-			Description: "Enter plan mode or execute/cancel/list/show plan",
+			Description: "Enter plan mode or manage plans",
 			Risk:        policy.RiskLow,
 			NeedsIdle:   true,
 			Run: func(args []string) tea.Cmd {
@@ -691,7 +691,6 @@ func (a *App) findTemplate(name string) *config.PromptTemplate {
 // sendAsPrompt sends expanded template text as a user message to the agent.
 func (a *App) sendAsPrompt(text string) tea.Cmd {
 	return func() tea.Msg {
-		_ = a.Session.Prompt(text)
-		return nil
+		return tui.PromptMsg{Text: text}
 	}
 }
