@@ -7,6 +7,7 @@ import (
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/tui"
 )
@@ -19,6 +20,7 @@ func Run(sess *agent.AgentSession, cwd, gitBranch, modelName string, profile pol
 		GitBranch:     gitBranch,
 		PolicyProfile: profile,
 		Templates:     config.LoadPromptTemplates(cwd),
+		PlanStore:     plan.NewStore(config.PlansDir(cwd)),
 	}
 
 	m := tui.New(sess, modelName, ui.Config())

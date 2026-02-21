@@ -201,8 +201,8 @@ func (a *App) commandRegistry() map[string]commandSpec {
 			},
 		},
 		"/plan": {
-			Usage:       "/plan [execute|cancel]",
-			Description: "Enter plan mode or execute/cancel plan",
+			Usage:       "/plan [execute|cancel|list|show]",
+			Description: "Enter plan mode or execute/cancel/list/show plan",
 			Risk:        policy.RiskLow,
 			NeedsIdle:   true,
 			Run: func(args []string) tea.Cmd {

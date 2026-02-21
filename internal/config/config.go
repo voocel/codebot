@@ -95,6 +95,11 @@ func PromptsDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "prompts")
 }
 
+// PlansDir returns <cwd>/.codebot/plans/.
+func PlansDir(cwd string) string {
+	return filepath.Join(cwd, ConfigDir, "plans")
+}
+
 // UserConfigDir returns ~/.codebot/.
 func UserConfigDir() string {
 	home, err := os.UserHomeDir()

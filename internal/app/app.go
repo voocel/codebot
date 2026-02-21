@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/tui"
 )
@@ -23,9 +24,13 @@ type App struct {
 	// Templates are user-defined prompt templates loaded from .md files.
 	Templates []config.PromptTemplate
 
+	// PlanStore persists plans to <cwd>/.codebot/plans/.
+	PlanStore *plan.Store
+
 	// Plan mode state.
 	planState planState
 	planSteps []planStep
+	planID    string // active plan ID (empty = no active plan)
 }
 
 // Config returns a tui.Config with all hooks wired to this App.

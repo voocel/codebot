@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/tui"
 )
 
@@ -80,9 +82,17 @@ func (a *App) cmdPlan(args []string) tea.Cmd {
 		return a.executePlan()
 	case "cancel":
 		return a.cancelPlanMode()
+	case "list":
+		return a.cmdPlanList()
+	case "show":
+		id := ""
+		if len(args) > 1 {
+			id = args[1]
+		}
+		return a.cmdPlanShow(id)
 	default:
 		return tui.SendCommandResult(tui.ErrorStyle.Render(
-			"Usage: /plan [execute|cancel]"))
+			"Usage: /plan [execute|cancel|list|show [id]]"))
 	}
 }
 
@@ -104,6 +114,24 @@ func (a *App) enterPlanMode() tea.Cmd {
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
 	a.planSteps = nil
+
+	// Persist draft plan.
+	now := time.Now().UnixMilli()
+	id := plan.GenerateID()
+	a.planID = id
+	if a.PlanStore != nil {
+		_ = a.PlanStore.Save(&plan.SavedPlan{
+			Metadata: plan.Metadata{
+				ID:               id,
+				Status:           plan.StatusDraft,
+				WorkingDirectory: a.Cwd,
+				CreatedAt:        now,
+				UpdatedAt:        now,
+				Version:          1,
+			},
+		})
+	}
+
 	return tui.SendCommandResult(tui.CommandStyle.Render(
 		"Entered plan mode (read-only). Describe your task — the agent will explore and propose a plan."))
 }
@@ -121,6 +149,11 @@ func (a *App) executePlan() tea.Cmd {
 	a.Session.RestoreAllTools(newMarkStepTool())
 	a.Session.SetSystemSuffix(buildExecutionPrompt(a.planSteps))
 	a.planState = planExecuting
+
+	// Persist status change.
+	if a.PlanStore != nil && a.planID != "" {
+		_ = a.PlanStore.UpdateStatus(a.planID, plan.StatusExecuting)
+	}
 
 	remaining := a.remainingSteps()
 	if len(remaining) == 0 {
@@ -142,6 +175,10 @@ func (a *App) cancelPlanMode() tea.Cmd {
 	if a.planState == planOff {
 		return tui.SendCommandResult(tui.CommandStyle.Render("Not in plan mode."))
 	}
+	// Persist abandoned status before resetting.
+	if a.PlanStore != nil && a.planID != "" {
+		_ = a.PlanStore.UpdateStatus(a.planID, plan.StatusAbandoned)
+	}
 	a.resetPlanState()
 	return tui.SendCommandResult(tui.CommandStyle.Render("Plan mode cancelled. All tools restored."))
 }
@@ -151,6 +188,7 @@ func (a *App) resetPlanState() {
 	a.Session.SetSystemSuffix("")
 	a.planState = planOff
 	a.planSteps = nil
+	a.planID = ""
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +228,16 @@ func (a *App) onSubmitPlan(result json.RawMessage) tea.Cmd {
 		a.planSteps[i] = planStep{Number: i + 1, Text: s.Description}
 	}
 
+	// Persist steps and pending status.
+	if a.PlanStore != nil && a.planID != "" {
+		if p, _ := a.PlanStore.Load(a.planID); p != nil {
+			p.Steps = toPlanSteps(a.planSteps)
+			p.Metadata.Status = plan.StatusPending
+			p.Metadata.Title = planTitle(a.planSteps)
+			_ = a.PlanStore.Save(p)
+		}
+	}
+
 	return tea.Println("\n" + tui.CommandStyle.Render(
 		a.formatSteps()+"\n\nUse /plan execute to start, /plan cancel to abort."))
 }
@@ -213,11 +261,94 @@ func (a *App) onMarkStep(result json.RawMessage) tea.Cmd {
 		}
 	}
 
+	// Persist step completion.
+	if a.PlanStore != nil && a.planID != "" {
+		_ = a.PlanStore.UpdateStep(a.planID, data.Step, "completed")
+	}
+
 	if a.allStepsCompleted() {
+		if a.PlanStore != nil && a.planID != "" {
+			_ = a.PlanStore.UpdateStatus(a.planID, plan.StatusCompleted)
+		}
 		a.resetPlanState()
 		return tea.Println("\n" + tui.CommandStyle.Render("Plan completed. All steps done. Restored normal mode."))
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Plan list / show commands
+// ---------------------------------------------------------------------------
+
+func (a *App) cmdPlanList() tea.Cmd {
+	if a.PlanStore == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan store not configured."))
+	}
+	plans, err := a.PlanStore.List(a.Cwd)
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to list plans: " + err.Error()))
+	}
+	if len(plans) == 0 {
+		return tui.SendCommandResult(tui.CommandStyle.Render("No plans found for this project."))
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Plans for %s:\n", a.Cwd)
+	for i, p := range plans {
+		title := p.Metadata.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+		if len([]rune(title)) > 40 {
+			title = string([]rune(title)[:40]) + "..."
+		}
+		completed := p.CompletedCount()
+		total := len(p.Steps)
+		updated := time.UnixMilli(p.Metadata.UpdatedAt).Format("01-02 15:04")
+		fmt.Fprintf(&sb, "  %d. [%s] %s  %q  %d/%d steps  %s\n",
+			i+1, p.Metadata.Status, p.Metadata.ID, title, completed, total, updated)
+	}
+	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
+}
+
+func (a *App) cmdPlanShow(id string) tea.Cmd {
+	if a.PlanStore == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan store not configured."))
+	}
+	// Default to current active plan.
+	if id == "" {
+		id = a.planID
+	}
+	if id == "" {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan ID specified. Usage: /plan show <id>"))
+	}
+
+	p, err := a.PlanStore.Load(id)
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to load plan: " + err.Error()))
+	}
+	if p == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan not found: " + id))
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Plan: %s\n", p.Metadata.ID)
+	fmt.Fprintf(&sb, "Title: %s\n", p.Metadata.Title)
+	fmt.Fprintf(&sb, "Status: %s\n", p.Metadata.Status)
+	fmt.Fprintf(&sb, "Directory: %s\n", p.Metadata.WorkingDirectory)
+	fmt.Fprintf(&sb, "Created: %s\n", time.UnixMilli(p.Metadata.CreatedAt).Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(&sb, "Updated: %s\n", time.UnixMilli(p.Metadata.UpdatedAt).Format("2006-01-02 15:04:05"))
+	if len(p.Steps) > 0 {
+		sb.WriteString("\nSteps:\n")
+		for _, s := range p.Steps {
+			mark := "  "
+			if s.Status == "completed" {
+				mark = "x "
+			}
+			fmt.Fprintf(&sb, "  [%s] %d. %s\n", mark, s.Number, s.Description)
+		}
+	}
+	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 }
 
 // ---------------------------------------------------------------------------
@@ -279,4 +410,29 @@ func (a *App) formatSteps() string {
 		fmt.Fprintf(&sb, "  [%s] %d. %s\n", mark, s.Number, s.Text)
 	}
 	return sb.String()
+}
+
+// toPlanSteps converts in-memory planSteps to persistable plan.Step slice.
+func toPlanSteps(steps []planStep) []plan.Step {
+	result := make([]plan.Step, len(steps))
+	for i, s := range steps {
+		status := "pending"
+		if s.Completed {
+			status = "completed"
+		}
+		result[i] = plan.Step{Number: s.Number, Description: s.Text, Status: status}
+	}
+	return result
+}
+
+// planTitle derives a plan title from the first step description.
+func planTitle(steps []planStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	title := steps[0].Text
+	if len([]rune(title)) > 60 {
+		title = string([]rune(title)[:60]) + "..."
+	}
+	return title
 }
