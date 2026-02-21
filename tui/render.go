@@ -302,6 +302,8 @@ func RenderStreamingOutput(full string, maxLines int) string {
 }
 
 // RenderEditResult renders the edit tool result with colored diff output.
+// Single-line changes (1 removed + 1 added) get intra-line highlighting
+// where only the changed portion is rendered in inverse color.
 func RenderEditResult(result json.RawMessage) string {
 	if len(result) == 0 {
 		return "(edit completed)"
@@ -318,23 +320,130 @@ func RenderEditResult(result json.RawMessage) string {
 		return msg
 	}
 
+	lines := strings.Split(diff, "\n")
+
 	var sb strings.Builder
 	sb.WriteString(msg + "\n")
-	for _, line := range strings.Split(diff, "\n") {
+
+	i := 0
+	for i < len(lines) {
+		line := expandTabs(lines[i])
 		if line == "" {
+			i++
 			continue
 		}
-		switch {
-		case strings.HasPrefix(line, "-"):
-			sb.WriteString(DiffRemoveStyle.Render(line))
-		case strings.HasPrefix(line, "+"):
-			sb.WriteString(DiffAddStyle.Render(line))
-		default:
-			sb.WriteString(MutedStyle.Render(line))
+
+		// Collect consecutive '-' lines
+		if strings.HasPrefix(line, "-") {
+			var removed []string
+			for i < len(lines) && strings.HasPrefix(expandTabs(lines[i]), "-") {
+				removed = append(removed, expandTabs(lines[i]))
+				i++
+			}
+			// Collect immediately following '+' lines
+			var added []string
+			for i < len(lines) && strings.HasPrefix(expandTabs(lines[i]), "+") {
+				added = append(added, expandTabs(lines[i]))
+				i++
+			}
+			// Single-line change: intra-line diff
+			if len(removed) == 1 && len(added) == 1 {
+				remRendered, addRendered := renderIntraLineDiff(removed[0], added[0])
+				sb.WriteString(remRendered + "\n")
+				sb.WriteString(addRendered + "\n")
+			} else {
+				for _, r := range removed {
+					sb.WriteString(DiffRemoveStyle.Render(r) + "\n")
+				}
+				for _, a := range added {
+					sb.WriteString(DiffAddStyle.Render(a) + "\n")
+				}
+			}
+			continue
 		}
-		sb.WriteString("\n")
+
+		if strings.HasPrefix(line, "+") {
+			sb.WriteString(DiffAddStyle.Render(line) + "\n")
+		} else {
+			sb.WriteString(MutedStyle.Render(line) + "\n")
+		}
+		i++
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// renderIntraLineDiff highlights the specific changed portion within a single-line change.
+// It finds the common prefix/suffix of the content (after the line-number prefix),
+// then renders unchanged parts in base color and changed parts in inverse color.
+// Uses rune-level comparison to avoid splitting multi-byte UTF-8 characters.
+func renderIntraLineDiff(removedLine, addedLine string) (string, string) {
+	// Split off the diff prefix (e.g. "-  5 " or "+  5 ")
+	remPrefix, remContent := splitDiffPrefix(removedLine)
+	addPrefix, addContent := splitDiffPrefix(addedLine)
+
+	remRunes := []rune(remContent)
+	addRunes := []rune(addContent)
+
+	// Find common prefix length (in runes)
+	prefixLen := 0
+	minLen := min(len(remRunes), len(addRunes))
+	for prefixLen < minLen && remRunes[prefixLen] == addRunes[prefixLen] {
+		prefixLen++
+	}
+
+	// Find common suffix length (in runes, not overlapping prefix)
+	suffixLen := 0
+	for suffixLen < minLen-prefixLen &&
+		remRunes[len(remRunes)-1-suffixLen] == addRunes[len(addRunes)-1-suffixLen] {
+		suffixLen++
+	}
+
+	// Convert back to strings
+	commonPre := string(remRunes[:prefixLen])
+	remMid := string(remRunes[prefixLen : len(remRunes)-suffixLen])
+	addMid := string(addRunes[prefixLen : len(addRunes)-suffixLen])
+	commonSuf := string(remRunes[len(remRunes)-suffixLen:])
+
+	// Build rendered lines
+	var remSB, addSB strings.Builder
+	remSB.WriteString(DiffRemoveStyle.Render(remPrefix + commonPre))
+	if remMid != "" {
+		remSB.WriteString(DiffInverseRemoveStyle.Render(remMid))
+	}
+	remSB.WriteString(DiffRemoveStyle.Render(commonSuf))
+
+	addSB.WriteString(DiffAddStyle.Render(addPrefix + commonPre))
+	if addMid != "" {
+		addSB.WriteString(DiffInverseAddStyle.Render(addMid))
+	}
+	addSB.WriteString(DiffAddStyle.Render(commonSuf))
+
+	return remSB.String(), addSB.String()
+}
+
+// splitDiffPrefix splits a diff line like "-  5 content" into prefix ("-  5 ") and content ("content").
+// Handles space-padded line numbers from fmt's %*d format: sign + spaces + digits + space.
+func splitDiffPrefix(line string) (prefix, content string) {
+	// Skip the leading +/- sign
+	i := 1
+	// Skip padding spaces (from %*d right-justification)
+	for i < len(line) && line[i] == ' ' {
+		i++
+	}
+	// Skip digits (line number)
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	// Skip the space separator
+	if i < len(line) && line[i] == ' ' {
+		i++
+	}
+	return line[:i], line[i:]
+}
+
+// expandTabs replaces tab characters with 4 spaces for consistent display.
+func expandTabs(s string) string {
+	return strings.ReplaceAll(s, "\t", "    ")
 }
 
 // FormatProgressLine formats a tool progress update for display.

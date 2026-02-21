@@ -23,18 +23,13 @@ var (
 
 // Tool blocks
 var (
-	ToolIconStyle = lipgloss.NewStyle().
-		Foreground(ColorTool)
+	ToolIconStyle = lipgloss.NewStyle().Foreground(ColorTool)
 
-	ToolNameStyle = lipgloss.NewStyle().
-		Foreground(ColorTool).
-		Bold(true)
+	ToolNameStyle = lipgloss.NewStyle().Foreground(ColorTool).Bold(true)
 
-	ToolArgsStyle = lipgloss.NewStyle().
-		Foreground(ColorMuted)
+	ToolArgsStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 
-	ToolResultStyle = lipgloss.NewStyle().
-		Foreground(ColorMuted)
+	ToolResultStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 )
 
 // Thinking body
@@ -61,12 +56,9 @@ var SeparatorStyle = lipgloss.NewStyle().
 
 // Welcome banner
 var (
-	WelcomeTitleStyle = lipgloss.NewStyle().
-		Foreground(ColorAccent).
-		Bold(true)
+	WelcomeTitleStyle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 
-	WelcomeDetailStyle = lipgloss.NewStyle().
-		Foreground(ColorMuted)
+	WelcomeDetailStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 )
 
 // Footer
@@ -77,17 +69,17 @@ var FooterStyle = lipgloss.NewStyle().
 
 // General purpose
 var (
-	MutedStyle = lipgloss.NewStyle().
-		Foreground(ColorMuted)
+	MutedStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 
-	TokenStyle = lipgloss.NewStyle().
-		Foreground(ColorToken)
+	TokenStyle = lipgloss.NewStyle().Foreground(ColorToken)
 
-	DiffAddStyle = lipgloss.NewStyle().
-		Foreground(ColorSuccess)
+	DiffAddStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
 
-	DiffRemoveStyle = lipgloss.NewStyle().
-		Foreground(ColorError)
+	DiffRemoveStyle = lipgloss.NewStyle().Foreground(ColorError)
+
+	DiffInverseAddStyle = lipgloss.NewStyle().Foreground(ColorSuccess).Reverse(true)
+
+	DiffInverseRemoveStyle = lipgloss.NewStyle().Foreground(ColorError).Reverse(true)
 )
 
 // NewGlamourRenderer creates a glamour markdown renderer with the given width.
