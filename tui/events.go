@@ -74,10 +74,14 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 				block.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 				block.WriteString("\n\n")
 			}
-			rendered := m.RenderMarkdown(content)
-			indented := indentBlock(m.wrapTextForIndent(rendered, 2), 2)
-			block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
-			cmds = append(cmds, tea.Println(block.String()))
+			if content != "" {
+				rendered := m.RenderMarkdown(content)
+				indented := indentBlock(m.wrapTextForIndent(rendered, 2), 2)
+				block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+			}
+			if block.Len() > 1 { // More than just the leading '\n'
+				cmds = append(cmds, tea.Println(block.String()))
+			}
 		}
 
 	case agentcore.EventToolExecStart:
