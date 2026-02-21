@@ -22,15 +22,21 @@ type App struct {
 
 	// Templates are user-defined prompt templates loaded from .md files.
 	Templates []config.PromptTemplate
+
+	// Plan mode state.
+	planState planState
+	planSteps []planStep
 }
 
 // Config returns a tui.Config with all hooks wired to this App.
 func (a *App) Config() tui.Config {
 	return tui.Config{
-		Cwd:       a.Cwd,
+		Cwd:         a.Cwd,
 		GitBranch:   a.GitBranch,
 		OnKey:       a.onKey(),
+		OnEvent:     a.planOnEvent,
 		StatusRight: a.statusRight,
+		OnFooter:    a.planFooter,
 	}
 }
 

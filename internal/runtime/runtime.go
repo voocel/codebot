@@ -157,9 +157,11 @@ func Boot(opts Options) (*Runtime, error) {
 		toolInfos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
 	}
 
+	systemPrompt := config.BuildSystemPrompt(cwd, ctxFiles, toolInfos)
+
 	ag := agentcore.NewAgent(
 		agentcore.WithModel(chatModel),
-		agentcore.WithSystemPrompt(config.BuildSystemPrompt(cwd, ctxFiles, toolInfos)),
+		agentcore.WithSystemPrompt(systemPrompt),
 		agentcore.WithTools(builtTools...),
 		agentcore.WithMaxTurns(settings.MaxTurns),
 		agentcore.WithContextPipeline(
@@ -192,13 +194,15 @@ func Boot(opts Options) (*Runtime, error) {
 	settings.BaseURL = activeBaseURL
 
 	sess := agent.NewAgentSession(agent.AgentSessionConfig{
-		Agent:       ag,
-		Store:       store,
-		Manager:     manager,
-		Registry:    registry,
-		Settings:    settings,
-		Cwd:         cwd,
-		CreateModel: createModel,
+		Agent:        ag,
+		Store:        store,
+		Manager:      manager,
+		Registry:     registry,
+		Settings:     settings,
+		Cwd:          cwd,
+		CreateModel:  createModel,
+		Tools:        builtTools,
+		SystemPrompt: systemPrompt,
 	})
 	closeStoreOnError = false
 

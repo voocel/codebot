@@ -200,6 +200,23 @@ func (a *App) commandRegistry() map[string]commandSpec {
 				return a.cmdThinking(args)
 			},
 		},
+		"/plan": {
+			Usage:       "/plan [execute|cancel]",
+			Description: "Enter plan mode or execute/cancel plan",
+			Risk:        policy.RiskLow,
+			NeedsIdle:   true,
+			Run: func(args []string) tea.Cmd {
+				return a.cmdPlan(args)
+			},
+		},
+		"/todos": {
+			Usage:       "/todos",
+			Description: "Show plan steps and progress",
+			Risk:        policy.RiskLow,
+			Run: func(_ []string) tea.Cmd {
+				return a.cmdTodos()
+			},
+		},
 		"/exit": {
 			Usage:       "/exit",
 			Description: "Quit",
@@ -341,6 +358,7 @@ func (a *App) cmdNew() tea.Cmd {
 	if err := a.Session.NewSession(); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to create session: " + err.Error()))
 	}
+	a.resetPlanState()
 	return func() tea.Msg {
 		return tui.CommandResultMsg{
 			Text:  tui.CommandStyle.Render("New session started."),
@@ -371,6 +389,7 @@ func (a *App) cmdResume(args []string) tea.Cmd {
 		if err := a.Session.SwitchSession(target); err != nil {
 			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to resume session: " + err.Error()))
 		}
+		a.resetPlanState()
 
 		resumed := target
 		for _, s := range sessions {

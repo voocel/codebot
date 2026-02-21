@@ -29,6 +29,13 @@ type AgentSessionConfig struct {
 	// LazyPersist buffers user messages and flushes them only when
 	// an assistant response arrives. Disabled by default for safety.
 	LazyPersist bool
+
+	// Tools is the full set of tools registered with the agent.
+	// Used by ToolsByName / RestoreAllTools for plan mode filtering.
+	Tools []agentcore.Tool
+	// SystemPrompt is the base system prompt passed to the agent.
+	// Used by SetSystemSuffix to append/restore contextual instructions.
+	SystemPrompt string
 }
 
 // AgentSession is the business-logic core that wraps Agent + session persistence.
@@ -47,6 +54,10 @@ type AgentSession struct {
 	cwd       string
 
 	createModel ModelFactory
+
+	// Full tool set and base prompt for plan mode tool/prompt switching.
+	allTools   []agentcore.Tool
+	basePrompt string
 
 	listeners []func(SessionEvent)
 	unsub     func() // unsubscribe from agent events
@@ -85,6 +96,8 @@ func NewAgentSession(cfg AgentSessionConfig) *AgentSession {
 		cwd:         cfg.Cwd,
 		createModel: modelFactory,
 		lazyPersist: cfg.LazyPersist,
+		allTools:    cfg.Tools,
+		basePrompt:  cfg.SystemPrompt,
 	}
 
 	// Subscribe to agent events for auto-persistence and event forwarding.
@@ -492,6 +505,52 @@ func (s *AgentSession) Fork(entryID string) error {
 		s.agent.SetModel(restoredModel)
 	}
 	return nil
+}
+
+// --------------------------------------------------------------------------
+// Tool / prompt switching (plan mode support)
+// --------------------------------------------------------------------------
+
+// ToolsByName returns the subset of allTools matching the given names.
+func (s *AgentSession) ToolsByName(names ...string) []agentcore.Tool {
+	allowed := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		allowed[n] = struct{}{}
+	}
+	var result []agentcore.Tool
+	for _, t := range s.allTools {
+		if _, ok := allowed[t.Name()]; ok {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// SetTools directly replaces the agent's active tool set.
+func (s *AgentSession) SetTools(tools ...agentcore.Tool) {
+	s.agent.SetTools(tools...)
+}
+
+// RestoreAllTools restores the full tool set, optionally appending extra tools.
+func (s *AgentSession) RestoreAllTools(extra ...agentcore.Tool) {
+	if len(extra) == 0 {
+		s.agent.SetTools(s.allTools...)
+		return
+	}
+	tools := make([]agentcore.Tool, len(s.allTools), len(s.allTools)+len(extra))
+	copy(tools, s.allTools)
+	tools = append(tools, extra...)
+	s.agent.SetTools(tools...)
+}
+
+// SetSystemSuffix appends a suffix to the base system prompt.
+// An empty suffix restores the original prompt.
+func (s *AgentSession) SetSystemSuffix(suffix string) {
+	if suffix == "" {
+		s.agent.SetSystemPrompt(s.basePrompt)
+		return
+	}
+	s.agent.SetSystemPrompt(s.basePrompt + "\n\n" + suffix)
 }
 
 // --------------------------------------------------------------------------
