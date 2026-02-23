@@ -50,16 +50,16 @@ type apiProvider struct {
 }
 
 type entry struct {
-	Provider             string
-	ID                   string
-	Name                 string
-	ContextWindow        int
-	MaxTokens            int
-	Reasoning            bool
-	InputCostPer1M       float64
-	OutputCostPer1M      float64
-	CacheReadCostPer1M   float64
-	CacheWriteCostPer1M  float64
+	Provider            string
+	ID                  string
+	Name                string
+	ContextWindow       int
+	MaxTokens           int
+	Reasoning           bool
+	InputCostPer1M      float64
+	OutputCostPer1M     float64
+	CacheReadCostPer1M  float64
+	CacheWriteCostPer1M float64
 }
 
 func main() {
@@ -131,6 +131,10 @@ func convert(m apiModel) (entry, bool) {
 	}
 	return e, true
 }
+
+// NOTE: inferReasoning, toMillion, cleanName are intentionally duplicated from
+// pricing.go because this file compiles as a standalone program (package main).
+// Keep them in sync when editing.
 
 func toMillion(s string) float64 {
 	if s == "" {

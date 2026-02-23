@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/voocel/codebot/internal/mode/printmode"
-	"github.com/voocel/codebot/internal/mode/tuimode"
-	"github.com/voocel/codebot/internal/runtime"
+	"github.com/voocel/codebot/internal/bootstrap"
+	"github.com/voocel/codebot/internal/ui"
 )
 
 func main() {
@@ -21,7 +20,7 @@ func main() {
 
 	printMode := *printFlag || *jsonFlag
 
-	rt, err := runtime.Boot(runtime.Options{
+	rt, err := bootstrap.Boot(bootstrap.Options{
 		Continue:      *continueFlag,
 		Resume:        *resumeFlag,
 		Session:       *sessionFlag,
@@ -35,7 +34,7 @@ func main() {
 	defer rt.Close()
 
 	if printMode {
-		if err := printmode.Run(rt.Session, flag.Args(), *jsonFlag); err != nil {
+		if err := ui.RunPrint(rt.Session, flag.Args(), *jsonFlag); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
@@ -46,7 +45,7 @@ func main() {
 	if rt.Session != nil && rt.Session.ModelName() != "" {
 		modelName = rt.Session.ModelName()
 	}
-	if err := tuimode.Run(rt.Session, rt.Cwd, rt.GitBranch, modelName, rt.PolicyProfile); err != nil {
+	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, rt.PolicyProfile); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

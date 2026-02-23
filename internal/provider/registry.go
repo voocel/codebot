@@ -12,16 +12,16 @@ import (
 
 // ModelEntry describes a known LLM model.
 type ModelEntry struct {
-	Provider             string  `json:"provider"`
-	ID                   string  `json:"id"`
-	Name                 string  `json:"name"`
-	ContextWindow        int     `json:"context_window"`
-	MaxTokens            int     `json:"max_tokens"`
-	Reasoning            bool    `json:"reasoning"`
-	InputCostPer1M       float64 `json:"input_cost_per_1m"`
-	OutputCostPer1M      float64 `json:"output_cost_per_1m"`
-	CacheReadCostPer1M   float64 `json:"cache_read_cost_per_1m"`
-	CacheWriteCostPer1M  float64 `json:"cache_write_cost_per_1m"`
+	Provider            string  `json:"provider"`
+	ID                  string  `json:"id"`
+	Name                string  `json:"name"`
+	ContextWindow       int     `json:"context_window"`
+	MaxTokens           int     `json:"max_tokens"`
+	Reasoning           bool    `json:"reasoning"`
+	InputCostPer1M      float64 `json:"input_cost_per_1m"`
+	OutputCostPer1M     float64 `json:"output_cost_per_1m"`
+	CacheReadCostPer1M  float64 `json:"cache_read_cost_per_1m"`
+	CacheWriteCostPer1M float64 `json:"cache_write_cost_per_1m"`
 }
 
 // ModelRegistry holds known models and provides resolution/cycling.
@@ -127,56 +127,6 @@ func (r *ModelRegistry) List(filter string) []ModelEntry {
 	return out
 }
 
-// Cycle returns the next/prev model from the same provider.
-// direction > 0 for next, < 0 for previous.
-func (r *ModelRegistry) Cycle(currentID string, direction int) *ModelEntry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// Find current model's provider
-	var prov string
-	var currentIdx int = -1
-	for i, m := range r.models {
-		if strings.EqualFold(m.ID, currentID) {
-			prov = m.Provider
-			currentIdx = i
-			break
-		}
-	}
-	if currentIdx < 0 {
-		return nil
-	}
-
-	// Collect same-provider models
-	var sameProvider []int
-	for i, m := range r.models {
-		if m.Provider == prov {
-			sameProvider = append(sameProvider, i)
-		}
-	}
-	if len(sameProvider) <= 1 {
-		return nil
-	}
-
-	// Find position in same-provider list
-	pos := 0
-	for i, idx := range sameProvider {
-		if idx == currentIdx {
-			pos = i
-			break
-		}
-	}
-
-	// Cycle
-	if direction > 0 {
-		pos = (pos + 1) % len(sameProvider)
-	} else {
-		pos = (pos - 1 + len(sameProvider)) % len(sameProvider)
-	}
-	entry := r.models[sameProvider[pos]]
-	return &entry
-}
-
 // FindByProvider returns all models for a given provider.
 func (r *ModelRegistry) FindByProvider(prov string) []ModelEntry {
 	r.mu.RLock()
@@ -202,20 +152,6 @@ func (r *ModelRegistry) CostRates(modelID string) (inputPer1M, outputPer1M, cach
 		}
 	}
 	return 0, 0, 0, 0
-}
-
-// DefaultModel returns the first model for a provider.
-func (r *ModelRegistry) DefaultModel(prov string) *ModelEntry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	for i := range r.models {
-		if strings.EqualFold(r.models[i].Provider, prov) {
-			entry := r.models[i]
-			return &entry
-		}
-	}
-	return nil
 }
 
 // MergeModels updates existing models and adds new ones from fetched data.

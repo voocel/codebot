@@ -8,7 +8,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/session"
+	"github.com/voocel/codebot/internal/storage"
 )
 
 type stubChatModel struct{}
@@ -50,7 +50,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	mgr := session.NewManager(dir)
+	mgr := storage.NewManager(dir)
 	current, err := mgr.Create(dir)
 	if err != nil {
 		t.Fatalf("create current session: %v", err)
@@ -71,7 +71,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	}
 
 	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
-	s := NewAgentSession(AgentSessionConfig{
+	s := NewSession(SessionConfig{
 		Agent:   ag,
 		Store:   current,
 		Manager: mgr,
@@ -124,7 +124,7 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	mgr := session.NewManager(dir)
+	mgr := storage.NewManager(dir)
 	store, err := mgr.Create(dir)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -134,7 +134,7 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 	}
 
 	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
-	s := NewAgentSession(AgentSessionConfig{
+	s := NewSession(SessionConfig{
 		Agent:   ag,
 		Store:   store,
 		Manager: mgr,

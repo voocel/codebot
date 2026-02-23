@@ -8,17 +8,17 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/provider"
-	"github.com/voocel/codebot/internal/session"
+	"github.com/voocel/codebot/internal/storage"
 )
 
 // ModelFactory creates a chat model instance for a provider/model tuple.
 type ModelFactory func(prov, model, apiKey, baseURL string) (agentcore.ChatModel, error)
 
-// AgentSessionConfig configures a new AgentSession.
-type AgentSessionConfig struct {
+// SessionConfig configures a new Session.
+type SessionConfig struct {
 	Agent    *agentcore.Agent
-	Store    *session.Store
-	Manager  *session.Manager
+	Store    *storage.Store
+	Manager  *storage.Manager
 	Registry *provider.ModelRegistry
 	Settings config.Resolved
 	Cwd      string
@@ -37,12 +37,12 @@ type AgentSessionConfig struct {
 	SystemPrompt string
 }
 
-// AgentSession is the business-logic core that wraps Agent + session persistence.
+// Session is the business-logic core that wraps Agent + session persistence.
 // It is independent of any UI framework and drives interactive, print, and RPC modes.
-type AgentSession struct {
+type Session struct {
 	agent    *agentcore.Agent
-	store    *session.Store
-	mgr      *session.Manager
+	store    *storage.Store
+	mgr      *storage.Manager
 	registry *provider.ModelRegistry
 	settings config.Resolved
 
@@ -75,14 +75,14 @@ type AgentSession struct {
 	mu sync.Mutex
 }
 
-// NewAgentSession creates an AgentSession and wires auto-persist to the agent.
-func NewAgentSession(cfg AgentSessionConfig) *AgentSession {
+// NewSession creates a Session and wires auto-persist to the agent.
+func NewSession(cfg SessionConfig) *Session {
 	modelFactory := cfg.CreateModel
 	if modelFactory == nil {
 		modelFactory = provider.CreateModel
 	}
 
-	s := &AgentSession{
+	s := &Session{
 		agent:       cfg.Agent,
 		store:       cfg.Store,
 		mgr:         cfg.Manager,
@@ -109,47 +109,27 @@ func NewAgentSession(cfg AgentSessionConfig) *AgentSession {
 // --------------------------------------------------------------------------
 
 // Prompt sends a user message to the agent.
-func (s *AgentSession) Prompt(text string) error {
+func (s *Session) Prompt(text string) error {
 	return s.agent.Prompt(text)
 }
 
-// PromptMessages sends arbitrary messages to the agent.
-func (s *AgentSession) PromptMessages(msgs ...agentcore.AgentMessage) error {
-	return s.agent.PromptMessages(msgs...)
-}
-
 // Steer queues a steering message to interrupt the agent mid-run.
-func (s *AgentSession) Steer(text string) {
+func (s *Session) Steer(text string) {
 	s.agent.Steer(agentcore.UserMsg(text))
 }
 
-// FollowUp queues a follow-up message for after the agent finishes.
-func (s *AgentSession) FollowUp(text string) {
-	s.agent.FollowUp(agentcore.UserMsg(text))
-}
-
-// Continue resumes the agent from its current context.
-func (s *AgentSession) Continue() error {
-	return s.agent.Continue()
-}
-
 // Abort cancels the running agent.
-func (s *AgentSession) Abort() {
+func (s *Session) Abort() {
 	s.agent.Abort()
 }
 
-// WaitForIdle blocks until the agent finishes its current run.
-func (s *AgentSession) WaitForIdle() {
-	s.agent.WaitForIdle()
-}
-
 // IsRunning reports whether the underlying agent is currently processing.
-func (s *AgentSession) IsRunning() bool {
+func (s *Session) IsRunning() bool {
 	return s.agent.State().IsRunning
 }
 
 // ClearConversation clears in-memory conversation messages and queued inputs.
-func (s *AgentSession) ClearConversation() {
+func (s *Session) ClearConversation() {
 	s.agent.ClearMessages()
 	s.agent.ClearAllQueues()
 }
@@ -159,7 +139,7 @@ func (s *AgentSession) ClearConversation() {
 // --------------------------------------------------------------------------
 
 // SetModel switches the LLM model and persists the change.
-func (s *AgentSession) SetModel(prov, model, apiKey string) error {
+func (s *Session) SetModel(prov, model, apiKey string) error {
 	s.mu.Lock()
 	baseURL := s.baseURL
 	store := s.store
@@ -189,7 +169,7 @@ func (s *AgentSession) SetModel(prov, model, apiKey string) error {
 		Provider:  prov,
 	})
 
-	// Re-clamp thinking level for the new model.
+	// Re-clamp thinking level for the new provider.
 	s.reclampThinking()
 
 	return nil
@@ -197,7 +177,7 @@ func (s *AgentSession) SetModel(prov, model, apiKey string) error {
 
 // ResolveAndSetModel resolves a model pattern via the registry and switches to it.
 // Returns the resolved model name.
-func (s *AgentSession) ResolveAndSetModel(pattern string) (string, error) {
+func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 	if s.registry == nil {
 		return "", fmt.Errorf("no model registry configured")
 	}
@@ -220,13 +200,13 @@ func (s *AgentSession) ResolveAndSetModel(pattern string) (string, error) {
 }
 
 // SetThinkingLevel changes the reasoning depth and persists the change.
-func (s *AgentSession) SetThinkingLevel(level agentcore.ThinkingLevel) {
-	// Clamp to nearest valid level for current model.
+func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
+	// Clamp to nearest valid level for current provider.
 	if s.registry != nil {
 		s.mu.Lock()
-		model := s.modelName
+		modelName := s.modelName
 		s.mu.Unlock()
-		available := s.registry.AvailableThinkingLevels(model)
+		available := s.registry.AvailableThinkingLevels(modelName)
 		level = agentcore.ThinkingLevel(provider.ClampThinkingLevel(string(level), available))
 	}
 
@@ -253,28 +233,28 @@ func (s *AgentSession) SetThinkingLevel(level agentcore.ThinkingLevel) {
 }
 
 // ModelName returns the current model name.
-func (s *AgentSession) ModelName() string {
+func (s *Session) ModelName() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.modelName
 }
 
 // Provider returns the current provider name.
-func (s *AgentSession) Provider() string {
+func (s *Session) Provider() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.provider
 }
 
 // APIKey returns the current API key.
-func (s *AgentSession) APIKey() string {
+func (s *Session) APIKey() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.apiKey
 }
 
 // BaseURL returns the current base URL.
-func (s *AgentSession) BaseURL() string {
+func (s *Session) BaseURL() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.baseURL
@@ -285,7 +265,7 @@ func (s *AgentSession) BaseURL() string {
 // --------------------------------------------------------------------------
 
 // NewSession closes the current session and creates a new one.
-func (s *AgentSession) NewSession() error {
+func (s *Session) NewSession() error {
 	s.mu.Lock()
 	oldStore := s.store
 	mgr := s.mgr
@@ -316,7 +296,7 @@ func (s *AgentSession) NewSession() error {
 }
 
 // SwitchSession closes the current session and restores another by ID.
-func (s *AgentSession) SwitchSession(id string) error {
+func (s *Session) SwitchSession(id string) error {
 	s.mu.Lock()
 	oldStore := s.store
 	mgr := s.mgr
@@ -411,7 +391,7 @@ func (s *AgentSession) SwitchSession(id string) error {
 // --------------------------------------------------------------------------
 
 // ToolsByName returns the subset of allTools matching the given names.
-func (s *AgentSession) ToolsByName(names ...string) []agentcore.Tool {
+func (s *Session) ToolsByName(names ...string) []agentcore.Tool {
 	allowed := make(map[string]struct{}, len(names))
 	for _, n := range names {
 		allowed[n] = struct{}{}
@@ -426,12 +406,12 @@ func (s *AgentSession) ToolsByName(names ...string) []agentcore.Tool {
 }
 
 // SetTools directly replaces the agent's active tool set.
-func (s *AgentSession) SetTools(tools ...agentcore.Tool) {
+func (s *Session) SetTools(tools ...agentcore.Tool) {
 	s.agent.SetTools(tools...)
 }
 
 // RestoreAllTools restores the full tool set, optionally appending extra tools.
-func (s *AgentSession) RestoreAllTools(extra ...agentcore.Tool) {
+func (s *Session) RestoreAllTools(extra ...agentcore.Tool) {
 	if len(extra) == 0 {
 		s.agent.SetTools(s.allTools...)
 		return
@@ -444,7 +424,7 @@ func (s *AgentSession) RestoreAllTools(extra ...agentcore.Tool) {
 
 // SetSystemSuffix appends a suffix to the base system prompt.
 // An empty suffix restores the original prompt.
-func (s *AgentSession) SetSystemSuffix(suffix string) {
+func (s *Session) SetSystemSuffix(suffix string) {
 	if suffix == "" {
 		s.agent.SetSystemPrompt(s.basePrompt)
 		return
@@ -457,7 +437,7 @@ func (s *AgentSession) SetSystemSuffix(suffix string) {
 // --------------------------------------------------------------------------
 
 // Subscribe registers a listener for session events. Returns an unsubscribe function.
-func (s *AgentSession) Subscribe(fn func(SessionEvent)) func() {
+func (s *Session) Subscribe(fn func(SessionEvent)) func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listeners = append(s.listeners, fn)
@@ -474,30 +454,30 @@ func (s *AgentSession) Subscribe(fn func(SessionEvent)) func() {
 // --------------------------------------------------------------------------
 
 // Settings returns current resolved settings.
-func (s *AgentSession) Settings() config.Resolved {
+func (s *Session) Settings() config.Resolved {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.settings
 }
 
 // ContextUsage returns current context window occupancy.
-func (s *AgentSession) ContextUsage() *agentcore.ContextUsage {
+func (s *Session) ContextUsage() *agentcore.ContextUsage {
 	return s.agent.ContextUsage()
 }
 
 // TotalTokens returns accumulated total tokens across current process lifetime.
-func (s *AgentSession) TotalTokens() int {
+func (s *Session) TotalTokens() int {
 	return s.agent.TotalUsage().TotalTokens
 }
 
 // Registry returns the model registry (may be nil).
-func (s *AgentSession) Registry() *provider.ModelRegistry {
+func (s *Session) Registry() *provider.ModelRegistry {
 	return s.registry
 }
 
-// CostEstimate returns accumulated token counts and an estimated cost (USD) for the session.
+// CostEstimate returns accumulated token counts and an estimated cost (USD) for the storage.
 // Cost is computed using the current model's rates (approximate if models were switched).
-func (s *AgentSession) CostEstimate() (inputTokens, outputTokens int, cost float64) {
+func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 	usage := s.agent.TotalUsage()
 	inputTokens = usage.Input
 	outputTokens = usage.Output
@@ -518,7 +498,7 @@ func (s *AgentSession) CostEstimate() (inputTokens, outputTokens int, cost float
 }
 
 // LastAssistantText returns the text of the most recent assistant message, or "".
-func (s *AgentSession) LastAssistantText() string {
+func (s *Session) LastAssistantText() string {
 	msgs := s.agent.Messages()
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg, ok := msgs[i].(agentcore.Message)
@@ -532,18 +512,18 @@ func (s *AgentSession) LastAssistantText() string {
 	return ""
 }
 
-// CurrentSessionInfo returns metadata of the active session.
-func (s *AgentSession) CurrentSessionInfo() (session.SessionInfo, error) {
+// CurrentSessionInfo returns metadata of the active storage.
+func (s *Session) CurrentSessionInfo() (storage.SessionInfo, error) {
 	s.mu.Lock()
 	store := s.store
 	s.mu.Unlock()
 
 	if store == nil {
-		return session.SessionInfo{}, fmt.Errorf("no active session")
+		return storage.SessionInfo{}, fmt.Errorf("no active session")
 	}
 
 	h := store.Header()
-	return session.SessionInfo{
+	return storage.SessionInfo{
 		ID:      h.SessionID,
 		Name:    h.Name,
 		Path:    store.Path(),
@@ -553,7 +533,7 @@ func (s *AgentSession) CurrentSessionInfo() (session.SessionInfo, error) {
 }
 
 // ListSessions returns sessions sorted by most recent update first.
-func (s *AgentSession) ListSessions() ([]session.SessionInfo, error) {
+func (s *Session) ListSessions() ([]storage.SessionInfo, error) {
 	s.mu.Lock()
 	mgr := s.mgr
 	s.mu.Unlock()
@@ -565,7 +545,7 @@ func (s *AgentSession) ListSessions() ([]session.SessionInfo, error) {
 }
 
 // Close cleans up the session (unsubscribes from agent, closes store).
-func (s *AgentSession) Close() {
+func (s *Session) Close() {
 	if s.unsub != nil {
 		s.unsub()
 	}
@@ -583,7 +563,7 @@ func (s *AgentSession) Close() {
 // --------------------------------------------------------------------------
 
 // handleAgentEvent processes agent events for auto-persistence and forwarding.
-func (s *AgentSession) handleAgentEvent(ev agentcore.Event) {
+func (s *Session) handleAgentEvent(ev agentcore.Event) {
 	// Auto-persist messages to session file.
 	if ev.Type == agentcore.EventMessageEnd {
 		if msg, ok := ev.Message.(agentcore.Message); ok {
@@ -670,7 +650,7 @@ func (s *AgentSession) handleAgentEvent(ev agentcore.Event) {
 }
 
 // persistMessage writes a single message to the session store.
-func (s *AgentSession) persistMessage(msg agentcore.Message) {
+func (s *Session) persistMessage(msg agentcore.Message) {
 	s.mu.Lock()
 	store := s.store
 	s.mu.Unlock()
@@ -685,7 +665,7 @@ func (s *AgentSession) persistMessage(msg agentcore.Message) {
 }
 
 // flushPendingMessages writes all buffered user messages to the store.
-func (s *AgentSession) flushPendingMessages() {
+func (s *Session) flushPendingMessages() {
 	s.mu.Lock()
 	pending := s.pendingUserMsg
 	s.pendingUserMsg = nil
@@ -697,19 +677,19 @@ func (s *AgentSession) flushPendingMessages() {
 }
 
 // reclampThinking re-clamps the current thinking level to the new model's capabilities.
-func (s *AgentSession) reclampThinking() {
+func (s *Session) reclampThinking() {
 	if s.registry == nil {
 		return
 	}
 	s.mu.Lock()
 	current := s.settings.ThinkingLevel
-	model := s.modelName
+	modelName := s.modelName
 	s.mu.Unlock()
 
 	if current == "" {
 		return
 	}
-	available := s.registry.AvailableThinkingLevels(model)
+	available := s.registry.AvailableThinkingLevels(modelName)
 	clamped := provider.ClampThinkingLevel(current, available)
 	if clamped != current {
 		s.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
@@ -719,7 +699,7 @@ func (s *AgentSession) reclampThinking() {
 // tryAutoName sets the session name from the first user message text once.
 // It claims the autoNamed flag atomically under the lock to prevent duplicates,
 // then performs the disk write asynchronously to avoid blocking event dispatch.
-func (s *AgentSession) tryAutoName() {
+func (s *Session) tryAutoName() {
 	s.mu.Lock()
 	if s.autoNamed || s.store == nil {
 		s.mu.Unlock()
@@ -758,7 +738,7 @@ func (s *AgentSession) tryAutoName() {
 	}
 }
 
-func (s *AgentSession) emit(ev SessionEvent) {
+func (s *Session) emit(ev SessionEvent) {
 	s.mu.Lock()
 	listeners := make([]func(SessionEvent), len(s.listeners))
 	copy(listeners, s.listeners)
