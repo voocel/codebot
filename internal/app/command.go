@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -9,11 +8,9 @@ import (
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/prompt"
-	"github.com/voocel/codebot/internal/session"
 	"github.com/voocel/codebot/tui"
 )
 
@@ -93,8 +90,8 @@ func (a *App) commandRegistry() map[string]commandSpec {
 			},
 		},
 		"/model": {
-			Usage:       "/model <name>",
-			Description: "Switch model",
+			Usage:       "/model [name]",
+			Description: "Show or switch model",
 			Risk:        policy.RiskLow,
 			NeedsIdle:   true,
 			Run: func(args []string) tea.Cmd {
@@ -118,14 +115,6 @@ func (a *App) commandRegistry() map[string]commandSpec {
 				return a.cmdSession()
 			},
 		},
-		"/name": {
-			Usage:       "/name <name>",
-			Description: "Name current session",
-			Risk:        policy.RiskLow,
-			Run: func(args []string) tea.Cmd {
-				return a.cmdName(args)
-			},
-		},
 		"/new": {
 			Usage:       "/new",
 			Description: "Start new session",
@@ -144,31 +133,6 @@ func (a *App) commandRegistry() map[string]commandSpec {
 				return a.cmdResume(args)
 			},
 		},
-		"/fork": {
-			Usage:       "/fork <id>",
-			Description: "Fork conversation from entry ID",
-			Risk:        policy.RiskMedium,
-			NeedsIdle:   true,
-			Run: func(args []string) tea.Cmd {
-				return a.cmdFork(args)
-			},
-		},
-		"/tree": {
-			Usage:       "/tree",
-			Description: "Show session tree structure",
-			Risk:        policy.RiskLow,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdTree()
-			},
-		},
-		"/label": {
-			Usage:       "/label [id] [text]",
-			Description: "List, set, or clear labels",
-			Risk:        policy.RiskLow,
-			Run: func(args []string) tea.Cmd {
-				return a.cmdLabel(args)
-			},
-		},
 		"/settings": {
 			Usage:       "/settings",
 			Description: "Show current settings",
@@ -185,24 +149,8 @@ func (a *App) commandRegistry() map[string]commandSpec {
 				return a.cmdCopy()
 			},
 		},
-		"/models": {
-			Usage:       "/models [filter]",
-			Description: "List available models",
-			Risk:        policy.RiskLow,
-			Run: func(args []string) tea.Cmd {
-				return a.cmdModels(args)
-			},
-		},
-		"/thinking": {
-			Usage:       "/thinking [off|minimal|low|medium|high|xhigh]",
-			Description: "Show or set thinking level",
-			Risk:        policy.RiskLow,
-			Run: func(args []string) tea.Cmd {
-				return a.cmdThinking(args)
-			},
-		},
 		"/plan": {
-			Usage:       "/plan [cancel|list|show|<task>]",
+			Usage:       "/plan [cancel|<task>]",
 			Description: "Enter plan mode or manage plans",
 			Risk:        policy.RiskLow,
 			NeedsIdle:   true,
@@ -282,8 +230,28 @@ Keyboard shortcuts:
 func (a *App) cmdModel(args []string) tea.Cmd {
 	currentModel := a.Session.ModelName()
 	if len(args) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render(
-			fmt.Sprintf("Current model: %s. Usage: /model <name>", currentModel)))
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Current model: %s\n", currentModel)
+		if reg := a.Session.Registry(); reg != nil {
+			if models := reg.List(""); len(models) > 0 {
+				sb.WriteString("\nAvailable models:\n")
+				for _, m := range models {
+					marker := "  "
+					if strings.EqualFold(m.ID, currentModel) {
+						marker = "* "
+					}
+					ctx := formatTokenCount(m.ContextWindow)
+					reasoning := ""
+					if m.Reasoning {
+						reasoning = "  reasoning"
+					}
+					fmt.Fprintf(&sb, "%s%-12s/%-30s %-20s %6s%s\n",
+						marker, m.Provider, m.ID, m.Name, ctx, reasoning)
+				}
+			}
+		}
+		sb.WriteString("\nUsage: /model <name>")
+		return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 	}
 
 	pattern := strings.Join(args, " ")
@@ -334,17 +302,6 @@ func (a *App) cmdSession() tea.Cmd {
 	}
 
 	return tui.SendCommandResult(tui.CommandStyle.Render(text))
-}
-
-func (a *App) cmdName(args []string) tea.Cmd {
-	if len(args) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render("Usage: /name <session name>"))
-	}
-	name := strings.Join(args, " ")
-	if err := a.Session.SetSessionName(name); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to set name: " + err.Error()))
-	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Session named: %s", name)))
 }
 
 func (a *App) cmdNew() tea.Cmd {
@@ -443,30 +400,6 @@ func (a *App) cmdSettings() tea.Cmd {
 	return tui.SendCommandResult(tui.CommandStyle.Render(info))
 }
 
-func (a *App) cmdThinking(args []string) tea.Cmd {
-	current := a.Session.Settings().ThinkingLevel
-	if current == "" {
-		current = "off"
-	}
-	if len(args) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render(
-			fmt.Sprintf("Thinking level: %s\nUsage: /thinking [off|minimal|low|medium|high|xhigh]", current)))
-	}
-
-	level := strings.ToLower(strings.TrimSpace(args[0]))
-	switch agentcore.ThinkingLevel(level) {
-	case agentcore.ThinkingOff, agentcore.ThinkingMinimal, agentcore.ThinkingLow,
-		agentcore.ThinkingMedium, agentcore.ThinkingHigh, agentcore.ThinkingXHigh:
-	default:
-		return tui.SendCommandResult(tui.ErrorStyle.Render(
-			"Invalid thinking level. Use one of: off, minimal, low, medium, high, xhigh"))
-	}
-
-	a.Session.SetThinkingLevel(agentcore.ThinkingLevel(level))
-	return tui.SendCommandResult(tui.CommandStyle.Render(
-		fmt.Sprintf("Thinking level set to: %s", level)))
-}
-
 func maskKey(key string) string {
 	if len(key) <= 8 {
 		return "****"
@@ -485,148 +418,6 @@ func formatTokenCount(n int) string {
 	}
 }
 
-func (a *App) cmdFork(args []string) tea.Cmd {
-	if len(args) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render(
-			"Usage: /fork <entry-id>\nUse /tree to see available entry IDs."))
-	}
-	entryID := args[0]
-	if err := a.Session.Fork(entryID); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Fork failed: " + err.Error()))
-	}
-	return func() tea.Msg {
-		return tui.CommandResultMsg{
-			Text:  tui.CommandStyle.Render(fmt.Sprintf("Forked from entry: %s", entryID)),
-			Clear: true,
-		}
-	}
-}
-
-func (a *App) cmdTree() tea.Cmd {
-	root, currentLeaf, err := a.Session.SessionTree()
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Build tree failed: " + err.Error()))
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Session tree:\n")
-	renderTree(&sb, root, "", true, currentLeaf)
-	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
-}
-
-func renderTree(sb *strings.Builder, node *session.TreeNode, prefix string, isLast bool, currentLeaf string) {
-	if node == nil {
-		return
-	}
-
-	// Draw connector
-	connector := "├── "
-	if isLast {
-		connector = "└── "
-	}
-	if prefix == "" {
-		connector = ""
-	}
-
-	// Format entry label
-	label := formatTreeEntry(node, currentLeaf)
-	fmt.Fprintf(sb, "%s%s%s\n", prefix, connector, label)
-
-	// Child prefix
-	childPrefix := prefix
-	if prefix != "" {
-		if isLast {
-			childPrefix += "    "
-		} else {
-			childPrefix += "│   "
-		}
-	}
-
-	for i, child := range node.Children {
-		renderTree(sb, child, childPrefix, i == len(node.Children)-1, currentLeaf)
-	}
-}
-
-func formatTreeEntry(node *session.TreeNode, currentLeaf string) string {
-	e := node.Entry
-	marker := ""
-	if e.ID == currentLeaf {
-		marker = " *"
-	}
-
-	switch e.Kind {
-	case session.EntryHeader:
-		return fmt.Sprintf("[%s] session start%s", e.ID, marker)
-	case session.EntryMessage:
-		// Try to extract role from data
-		var msg struct {
-			Role string `json:"role"`
-		}
-		role := "msg"
-		if json.Unmarshal(e.Data, &msg) == nil && msg.Role != "" {
-			role = msg.Role
-		}
-		return fmt.Sprintf("[%s] %s%s", e.ID, role, marker)
-	case session.EntryModelChange:
-		var mc session.ModelChange
-		if json.Unmarshal(e.Data, &mc) == nil {
-			return fmt.Sprintf("[%s] model: %s%s", e.ID, mc.Model, marker)
-		}
-		return fmt.Sprintf("[%s] model change%s", e.ID, marker)
-	case session.EntryCompaction:
-		return fmt.Sprintf("[%s] compaction%s", e.ID, marker)
-	case session.EntryThinkingChange:
-		return fmt.Sprintf("[%s] thinking change%s", e.ID, marker)
-	case session.EntrySessionInfo:
-		return fmt.Sprintf("[%s] info%s", e.ID, marker)
-	case session.EntryBranchSummary:
-		return fmt.Sprintf("[%s] branch summary%s", e.ID, marker)
-	case session.EntryLabel:
-		var l session.Label
-		if json.Unmarshal(e.Data, &l) == nil {
-			return fmt.Sprintf("[%s] label: %s → %q%s", e.ID, l.TargetID, l.Label, marker)
-		}
-		return fmt.Sprintf("[%s] label%s", e.ID, marker)
-	default:
-		return fmt.Sprintf("[%s] %s%s", e.ID, e.Kind, marker)
-	}
-}
-
-func (a *App) cmdLabel(args []string) tea.Cmd {
-	// /label — list all labels
-	if len(args) == 0 {
-		labels, err := a.Session.Labels()
-		if err != nil {
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to load labels: " + err.Error()))
-		}
-		if len(labels) == 0 {
-			return tui.SendCommandResult(tui.CommandStyle.Render("No labels set. Usage: /label <entry-id> <text>"))
-		}
-		var sb strings.Builder
-		sb.WriteString("Labels:\n")
-		for id, text := range labels {
-			fmt.Fprintf(&sb, "  [%s] %s\n", id, text)
-		}
-		return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
-	}
-
-	targetID := args[0]
-	// /label <id> — clear label
-	if len(args) == 1 {
-		if err := a.Session.SetLabel(targetID, ""); err != nil {
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to clear label: " + err.Error()))
-		}
-		return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Label cleared for entry %s", targetID)))
-	}
-
-	// /label <id> <text> — set label
-	text := strings.Join(args[1:], " ")
-	if err := a.Session.SetLabel(targetID, text); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to set label: " + err.Error()))
-	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Label set: [%s] %s", targetID, text)))
-}
-
 func (a *App) cmdCopy() tea.Cmd {
 	text := a.Session.LastAssistantText()
 	if text == "" {
@@ -637,37 +428,6 @@ func (a *App) cmdCopy() tea.Cmd {
 	}
 	n := len([]rune(text))
 	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Copied %d characters to clipboard.", n)))
-}
-
-func (a *App) cmdModels(args []string) tea.Cmd {
-	reg := a.Session.Registry()
-	if reg == nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("No model registry configured."))
-	}
-
-	filter := strings.Join(args, " ")
-	models := reg.List(filter)
-	if len(models) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render("No models found."))
-	}
-
-	currentModel := a.Session.ModelName()
-	var sb strings.Builder
-	sb.WriteString("Available models:\n")
-	for _, m := range models {
-		marker := "  "
-		if strings.EqualFold(m.ID, currentModel) {
-			marker = "* "
-		}
-		ctx := formatTokenCount(m.ContextWindow)
-		reasoning := ""
-		if m.Reasoning {
-			reasoning = "  reasoning"
-		}
-		fmt.Fprintf(&sb, "%s%-12s/%-30s %-20s %6s%s\n",
-			marker, m.Provider, m.ID, m.Name, ctx, reasoning)
-	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 }
 
 // findTemplate returns the first template matching name (case-insensitive), or nil.

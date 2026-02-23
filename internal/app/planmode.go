@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
@@ -63,14 +62,6 @@ func (a *App) cmdPlan(args []string) tea.Cmd {
 	switch sub {
 	case "cancel":
 		return a.cancelPlanMode()
-	case "list":
-		return a.cmdPlanList()
-	case "show":
-		name := ""
-		if len(args) > 1 {
-			name = args[1]
-		}
-		return a.cmdPlanShow(name)
 	default:
 		if a.planState != planOff {
 			return tui.SendCommandResult(tui.ErrorStyle.Render(
@@ -92,7 +83,6 @@ func (a *App) enterPlanMode(task string) tea.Cmd {
 	a.planState = planPlanning
 	a.planContent = ""
 	a.planTitle = ""
-	a.planFile = ""
 
 	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan.\nWhen done, call exit_plan_mode."
 	if task != "" {
@@ -114,7 +104,6 @@ func (a *App) executePlan() tea.Cmd {
 	a.planState = planOff
 	a.planContent = ""
 	a.planTitle = ""
-	a.planFile = ""
 
 	return a.sendAsPrompt("The plan has been approved. Execute it now.")
 }
@@ -130,7 +119,6 @@ func (a *App) editPlan() tea.Cmd {
 	a.planState = planPlanning
 	a.planContent = ""
 	a.planTitle = ""
-	a.planFile = ""
 
 	return tui.SendCommandResult(tui.CommandStyle.Render(
 		"Back to plan mode. Type your feedback to revise the plan."))
@@ -150,7 +138,6 @@ func (a *App) resetPlanState() {
 	a.planState = planOff
 	a.planContent = ""
 	a.planTitle = ""
-	a.planFile = ""
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +177,6 @@ func (a *App) onEnterPlanMode() tea.Cmd {
 	a.planState = planPlanning
 	a.planContent = ""
 	a.planTitle = ""
-	a.planFile = ""
 	return nil
 }
 
@@ -211,12 +197,9 @@ func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
 		a.planTitle = extractTitle(a.planContent)
 	}
 
-	// Persist as markdown file.
+	// Archive to disk (fire-and-forget, no state dependency).
 	if a.PlanStore != nil {
-		name := plan.GenerateName()
-		if err := a.PlanStore.Save(name, a.planContent); err == nil {
-			a.planFile = name
-		}
+		_ = a.PlanStore.Save(plan.GenerateName(), a.planContent)
 	}
 
 	a.planState = planReview
@@ -246,57 +229,6 @@ func extractTitle(content string) string {
 		return line
 	}
 	return "(untitled)"
-}
-
-// ---------------------------------------------------------------------------
-// Plan list / show
-// ---------------------------------------------------------------------------
-
-func (a *App) cmdPlanList() tea.Cmd {
-	if a.PlanStore == nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan store not configured."))
-	}
-	plans, err := a.PlanStore.List()
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to list plans: " + err.Error()))
-	}
-	if len(plans) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render("No plans found."))
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Plans:\n")
-	for i, p := range plans {
-		t := time.Unix(p.ModTime, 0).Format("01-02 15:04")
-		fmt.Fprintf(&sb, "  %d. %s  %s\n", i+1, p.Name, t)
-	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
-}
-
-func (a *App) cmdPlanShow(name string) tea.Cmd {
-	if a.PlanStore == nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan store not configured."))
-	}
-	if name == "" {
-		name = a.planFile
-	}
-	if name == "" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan specified. Usage: /plan show <name>"))
-	}
-
-	content, err := a.PlanStore.Load(name)
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to load plan: " + err.Error()))
-	}
-	if content == "" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan not found: " + name))
-	}
-
-	lines := strings.Split(content, "\n")
-	if len(lines) > 30 {
-		lines = append(lines[:30], "...")
-	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(strings.Join(lines, "\n")))
 }
 
 // ---------------------------------------------------------------------------

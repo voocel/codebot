@@ -31,7 +31,6 @@ type App struct {
 	planState   planState
 	planContent string // free-form plan text from LLM
 	planTitle   string // short title extracted from plan content
-	planFile    string // filename of saved .md plan (without extension)
 	planChoice  int    // selected option in planReview menu
 }
 
