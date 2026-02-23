@@ -24,6 +24,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 	case agentcore.EventAgentEnd:
 		m.Running = false
 		m.ShowSummary = true
+		clear(m.PendingTools)
+		clear(m.ToolOutputBuf)
 
 	case agentcore.EventTurnStart:
 		m.TurnCount++

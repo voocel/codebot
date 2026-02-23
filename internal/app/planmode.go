@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -20,8 +19,8 @@ type planState int
 
 const (
 	planOff      planState = iota
-	planPlanning           // read-only exploration + submit_plan tool
-	planReview             // plan submitted, awaiting user approval
+	planPlanning           // read-only exploration, agent writes plan
+	planReview             // agent finished, awaiting user approval
 )
 
 // ---------------------------------------------------------------------------
@@ -31,11 +30,10 @@ const (
 const planModePrompt = `[PLAN MODE - Read-Only]
 You are in plan mode. Explore and analyze the codebase, then create a detailed implementation plan.
 
-Available tools: read, find, grep, ls, bash (read-only commands only), submit_plan
+Available tools: read, find, grep, ls, bash (read-only commands only)
 Disabled tools: write, edit
 
-Write your plan as free-form text in your response. When the plan is ready,
-call the submit_plan tool to signal completion.
+Write your plan as free-form text in your final response.
 Do NOT modify any files.`
 
 func buildPlanContextSuffix(title, content string) string {
@@ -86,8 +84,7 @@ func (a *App) cmdPlan(args []string) tea.Cmd {
 // ---------------------------------------------------------------------------
 
 func (a *App) enterPlanMode(task string) tea.Cmd {
-	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash")
-	a.Session.SetTools(append(readOnly, newSubmitPlanTool())...)
+	a.Session.SetTools(a.Session.ToolsByName("read", "find", "grep", "ls", "bash")...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
 	a.planContent = ""
@@ -109,7 +106,7 @@ func (a *App) enterPlanMode(task string) tea.Cmd {
 		})
 	}
 
-	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan.\nWhen your plan is complete, call the submit_plan tool."
+	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan."
 	if task != "" {
 		prompt += "\n\nTask: " + task
 	}
@@ -130,8 +127,6 @@ func (a *App) executePlan() tea.Cmd {
 		_ = a.PlanStore.UpdateStatus(a.planID, plan.StatusCompleted)
 	}
 
-	// Return to normal mode. Plan context persists as system suffix
-	// and will be cleared by /clear, /new, /resume, or compaction.
 	a.planState = planOff
 	a.planContent = ""
 	a.planTitle = ""
@@ -145,8 +140,7 @@ func (a *App) editPlan() tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan to edit."))
 	}
 
-	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash")
-	a.Session.SetTools(append(readOnly, newSubmitPlanTool())...)
+	a.Session.SetTools(a.Session.ToolsByName("read", "find", "grep", "ls", "bash")...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
 	a.planContent = ""
@@ -180,31 +174,15 @@ func (a *App) resetPlanState() {
 // Event handling
 // ---------------------------------------------------------------------------
 
+// planOnEvent listens for agent completion to transition from planning to review.
 func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
-	if ev.Type != agentcore.EventToolExecEnd || ev.IsError {
-		return nil
-	}
-	if ev.Tool == "submit_plan" {
-		return a.onSubmitPlan(ev.Result)
-	}
-	return nil
-}
-
-func (a *App) onSubmitPlan(result json.RawMessage) tea.Cmd {
-	if a.planState != planPlanning {
+	if ev.Type != agentcore.EventAgentEnd || a.planState != planPlanning {
 		return nil
 	}
 
-	// Capture plan content from the LLM's last assistant message.
+	// Agent finished in plan mode — capture plan from last assistant message.
 	a.planContent = a.Session.LastAssistantText()
-
-	// Extract title from tool result.
-	var resp struct {
-		Title string `json:"title"`
-	}
-	if json.Unmarshal(result, &resp) == nil && resp.Title != "" {
-		a.planTitle = resp.Title
-	}
+	a.planTitle = extractTitle(a.planContent)
 
 	// Persist.
 	if a.PlanStore != nil && a.planID != "" {
@@ -218,14 +196,27 @@ func (a *App) onSubmitPlan(result json.RawMessage) tea.Cmd {
 
 	a.planState = planReview
 	a.planChoice = 0
-	// Do NOT call Abort() here. EventToolExecEnd fires before tool results
-	// are written to conversation history (loop.go:167-172). Aborting would
-	// leave a tool_use without a matching tool_result, causing API errors.
-	// Instead, let the agent finish the current turn naturally — the tool
-	// returned "Waiting for user approval", so the LLM will stop on its own.
 
 	return tea.Println("\n" + tui.CommandStyle.Render(
-		fmt.Sprintf("Plan submitted: %s\nSelect an action below.", a.planTitle)))
+		fmt.Sprintf("Plan ready: %s\nSelect an action below.", a.planTitle)))
+}
+
+// extractTitle returns the first markdown heading or first non-empty line as title.
+func extractTitle(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			return strings.TrimSpace(strings.TrimLeft(line, "#"))
+		}
+		if len([]rune(line)) > 60 {
+			return string([]rune(line)[:57]) + "..."
+		}
+		return line
+	}
+	return "(untitled)"
 }
 
 // ---------------------------------------------------------------------------

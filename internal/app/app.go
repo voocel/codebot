@@ -30,7 +30,7 @@ type App struct {
 	// Plan mode state.
 	planState   planState
 	planContent string // free-form plan text from LLM
-	planTitle   string // short title from submit_plan
+	planTitle   string // short title extracted from plan content
 	planID      string // active plan ID (empty = no active plan)
 	planChoice  int    // selected option in planReview menu
 }
