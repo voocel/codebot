@@ -28,16 +28,15 @@ type App struct {
 	PlanStore *plan.Store
 
 	// Plan mode state.
-	planState  planState
-	planSteps  []planStep
-	planID     string // active plan ID (empty = no active plan)
-	planChoice int    // selected option in planPending approval menu
+	planState   planState
+	planContent string // free-form plan text from LLM
+	planTitle   string // short title from submit_plan
+	planID      string // active plan ID (empty = no active plan)
+	planChoice  int    // selected option in planReview menu
 }
 
 // Config returns a tui.Config with all hooks wired to this App.
 func (a *App) Config() tui.Config {
-	// Make enter_plan_mode available in normal mode.
-	a.Session.RestoreAllTools(newEnterPlanModeTool())
 	return tui.Config{
 		Cwd:         a.Cwd,
 		GitBranch:   a.GitBranch,
@@ -52,7 +51,7 @@ func (a *App) Config() tui.Config {
 func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	return func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 		// Plan pending approval: up/down to select, enter to confirm.
-		if a.planState == planPending && !m.Running {
+		if a.planState == planReview && !m.Running {
 			switch msg.String() {
 			case "up", "k":
 				if a.planChoice > 0 {
@@ -60,7 +59,7 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 				}
 				return true, nil
 			case "down", "j":
-				if a.planChoice < 1 {
+				if a.planChoice < 2 {
 					a.planChoice++
 				}
 				return true, nil
@@ -69,6 +68,8 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 				case 0:
 					return true, a.executePlan()
 				case 1:
+					return true, a.editPlan()
+				case 2:
 					return true, a.cancelPlanMode()
 				}
 			}

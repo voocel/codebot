@@ -35,12 +35,8 @@ func TestStoreSaveLoadDelete(t *testing.T) {
 			WorkingDirectory: "/tmp/project",
 			CreatedAt:        now,
 			UpdatedAt:        now,
-			Version:          1,
 		},
-		Steps: []Step{
-			{Number: 1, Description: "First step", Status: "pending"},
-			{Number: 2, Description: "Second step", Status: "pending"},
-		},
+		Content: "## Step 1\nDo something\n\n## Step 2\nDo something else",
 	}
 
 	if err := s.Save(p); err != nil {
@@ -62,8 +58,8 @@ func TestStoreSaveLoadDelete(t *testing.T) {
 	if loaded.Metadata.Title != "Test Plan" {
 		t.Fatalf("title mismatch: %s", loaded.Metadata.Title)
 	}
-	if len(loaded.Steps) != 2 {
-		t.Fatalf("steps count: %d", len(loaded.Steps))
+	if loaded.Content == "" {
+		t.Fatal("content should not be empty")
 	}
 
 	// Load non-existent.
@@ -90,7 +86,6 @@ func TestStoreListFiltersByCwd(t *testing.T) {
 	s := NewStore(dir)
 	now := time.Now().UnixMilli()
 
-	// Create plans for two different projects.
 	for _, cwd := range []string{"/project-a", "/project-b", "/project-a"} {
 		p := &SavedPlan{
 			Metadata: Metadata{
@@ -99,7 +94,6 @@ func TestStoreListFiltersByCwd(t *testing.T) {
 				WorkingDirectory: cwd,
 				CreatedAt:        now,
 				UpdatedAt:        now,
-				Version:          1,
 			},
 		}
 		if err := s.Save(p); err != nil {
@@ -123,7 +117,6 @@ func TestStoreListFiltersByCwd(t *testing.T) {
 		t.Fatalf("expected 1 plan for project-b, got %d", len(plans))
 	}
 
-	// List all.
 	plans, err = s.List("")
 	if err != nil {
 		t.Fatalf("List all: %v", err)
@@ -133,7 +126,7 @@ func TestStoreListFiltersByCwd(t *testing.T) {
 	}
 }
 
-func TestStoreUpdateStatusAndStep(t *testing.T) {
+func TestStoreUpdateStatus(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)
 	now := time.Now().UnixMilli()
@@ -145,32 +138,25 @@ func TestStoreUpdateStatusAndStep(t *testing.T) {
 			WorkingDirectory: "/tmp",
 			CreatedAt:        now,
 			UpdatedAt:        now,
-			Version:          1,
 		},
-		Steps: []Step{
-			{Number: 1, Description: "Step 1", Status: "pending"},
-			{Number: 2, Description: "Step 2", Status: "pending"},
-		},
+		Content: "some plan content",
 	}
 	_ = s.Save(p)
 
-	if err := s.UpdateStatus("plan-update-test", StatusExecuting); err != nil {
+	if err := s.UpdateStatus("plan-update-test", StatusPending); err != nil {
 		t.Fatalf("UpdateStatus: %v", err)
 	}
 	loaded, _ := s.Load("plan-update-test")
-	if loaded.Metadata.Status != StatusExecuting {
+	if loaded.Metadata.Status != StatusPending {
 		t.Fatalf("status: %s", loaded.Metadata.Status)
 	}
 
-	if err := s.UpdateStep("plan-update-test", 1, "completed"); err != nil {
-		t.Fatalf("UpdateStep: %v", err)
+	if err := s.UpdateStatus("plan-update-test", StatusCompleted); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
 	}
 	loaded, _ = s.Load("plan-update-test")
-	if loaded.Steps[0].Status != "completed" {
-		t.Fatalf("step 1 status: %s", loaded.Steps[0].Status)
-	}
-	if loaded.Steps[1].Status != "pending" {
-		t.Fatalf("step 2 status: %s", loaded.Steps[1].Status)
+	if loaded.Metadata.Status != StatusCompleted {
+		t.Fatalf("status: %s", loaded.Metadata.Status)
 	}
 }
 
@@ -181,12 +167,11 @@ func TestStoreListSkipsExpired(t *testing.T) {
 	old := time.Now().AddDate(0, 0, -(expiryDays + 1)).UnixMilli()
 	fresh := time.Now().UnixMilli()
 
-	// Write old plan directly to bypass Save's auto-update of UpdatedAt.
 	writeRawPlan(t, dir, &SavedPlan{
-		Metadata: Metadata{ID: "plan-old", Status: StatusCompleted, WorkingDirectory: "/tmp", CreatedAt: old, UpdatedAt: old, Version: 1},
+		Metadata: Metadata{ID: "plan-old", Status: StatusCompleted, WorkingDirectory: "/tmp", CreatedAt: old, UpdatedAt: old},
 	})
 	_ = s.Save(&SavedPlan{
-		Metadata: Metadata{ID: "plan-fresh", Status: StatusCompleted, WorkingDirectory: "/tmp", CreatedAt: fresh, UpdatedAt: fresh, Version: 1},
+		Metadata: Metadata{ID: "plan-fresh", Status: StatusCompleted, WorkingDirectory: "/tmp", CreatedAt: fresh, UpdatedAt: fresh},
 	})
 
 	plans, _ := s.List("/tmp")
@@ -198,7 +183,6 @@ func TestStoreListSkipsExpired(t *testing.T) {
 	}
 }
 
-// writeRawPlan writes a plan JSON file directly, bypassing Save's auto-UpdatedAt.
 func writeRawPlan(t *testing.T, dir string, p *SavedPlan) {
 	t.Helper()
 	data, err := json.MarshalIndent(p, "", "  ")

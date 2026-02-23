@@ -83,6 +83,7 @@ func (a *App) commandRegistry() map[string]commandSpec {
 			NeedsIdle:   true,
 			Run: func(_ []string) tea.Cmd {
 				a.Session.ClearConversation()
+				a.resetPlanState()
 				return func() tea.Msg {
 					return tui.CommandResultMsg{
 						Text:  tui.CommandStyle.Render("Current context cleared (session history is kept)."),
@@ -201,20 +202,12 @@ func (a *App) commandRegistry() map[string]commandSpec {
 			},
 		},
 		"/plan": {
-			Usage:       "/plan [execute|cancel|list|show]",
+			Usage:       "/plan [cancel|list|show|<task>]",
 			Description: "Enter plan mode or manage plans",
 			Risk:        policy.RiskLow,
 			NeedsIdle:   true,
 			Run: func(args []string) tea.Cmd {
 				return a.cmdPlan(args)
-			},
-		},
-		"/todos": {
-			Usage:       "/todos",
-			Description: "Show plan steps and progress",
-			Risk:        policy.RiskLow,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdTodos()
 			},
 		},
 		"/exit": {

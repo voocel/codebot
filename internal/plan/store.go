@@ -21,21 +21,14 @@ type Status string
 
 const (
 	StatusDraft     Status = "draft"
-	StatusPending   Status = "pending"   // submit_plan called, awaiting /plan execute
-	StatusExecuting Status = "executing" // execution in progress
-	StatusCompleted Status = "completed"
+	StatusPending   Status = "pending"   // submit_plan called, awaiting approval
+	StatusCompleted Status = "completed" // approved and executed
 	StatusAbandoned Status = "abandoned" // /plan cancel
 )
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-type Step struct {
-	Number      int    `json:"number"`
-	Description string `json:"description"`
-	Status      string `json:"status"` // "pending" | "completed"
-}
 
 type Metadata struct {
 	ID               string `json:"id"`
@@ -44,24 +37,11 @@ type Metadata struct {
 	WorkingDirectory string `json:"working_directory"`
 	CreatedAt        int64  `json:"created_at"` // unix ms
 	UpdatedAt        int64  `json:"updated_at"`
-	Version          int    `json:"version"`
 }
 
 type SavedPlan struct {
 	Metadata Metadata `json:"metadata"`
-	Steps    []Step   `json:"steps"`
-	Summary  string   `json:"summary,omitempty"`
-}
-
-// CompletedCount returns the number of completed steps.
-func (p *SavedPlan) CompletedCount() int {
-	n := 0
-	for _, s := range p.Steps {
-		if s.Status == "completed" {
-			n++
-		}
-	}
-	return n
+	Content  string   `json:"content,omitempty"` // free-form plan text
 }
 
 // ---------------------------------------------------------------------------
@@ -183,24 +163,6 @@ func (s *Store) UpdateStatus(id string, status Status) error {
 		return fmt.Errorf("plan %s not found", id)
 	}
 	p.Metadata.Status = status
-	return s.Save(p)
-}
-
-// UpdateStep loads a plan, marks a step's status, and saves it.
-func (s *Store) UpdateStep(id string, stepNum int, stepStatus string) error {
-	p, err := s.Load(id)
-	if err != nil {
-		return err
-	}
-	if p == nil {
-		return fmt.Errorf("plan %s not found", id)
-	}
-	for i := range p.Steps {
-		if p.Steps[i].Number == stepNum {
-			p.Steps[i].Status = stepStatus
-			break
-		}
-	}
 	return s.Save(p)
 }
 
