@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ type planState int
 const (
 	planOff      planState = iota
 	planPlanning           // read-only exploration, agent writes plan
-	planReview             // agent finished, awaiting user approval
+	planReview             // plan submitted, awaiting user approval
 )
 
 // ---------------------------------------------------------------------------
@@ -30,10 +31,10 @@ const (
 const planModePrompt = `[PLAN MODE - Read-Only]
 You are in plan mode. Explore and analyze the codebase, then create a detailed implementation plan.
 
-Available tools: read, find, grep, ls, bash (read-only commands only)
+Available tools: read, find, grep, ls, bash (read-only commands only), exit_plan_mode
 Disabled tools: write, edit
 
-Write your plan as free-form text in your final response.
+Write your plan as free-form text, then call exit_plan_mode when done.
 Do NOT modify any files.`
 
 func buildPlanContextSuffix(title, content string) string {
@@ -65,11 +66,11 @@ func (a *App) cmdPlan(args []string) tea.Cmd {
 	case "list":
 		return a.cmdPlanList()
 	case "show":
-		id := ""
+		name := ""
 		if len(args) > 1 {
-			id = args[1]
+			name = args[1]
 		}
-		return a.cmdPlanShow(id)
+		return a.cmdPlanShow(name)
 	default:
 		if a.planState != planOff {
 			return tui.SendCommandResult(tui.ErrorStyle.Render(
@@ -83,30 +84,17 @@ func (a *App) cmdPlan(args []string) tea.Cmd {
 // State transitions
 // ---------------------------------------------------------------------------
 
+// enterPlanMode is the shared setup for both /plan command and enter_plan_mode tool.
 func (a *App) enterPlanMode(task string) tea.Cmd {
-	a.Session.SetTools(a.Session.ToolsByName("read", "find", "grep", "ls", "bash")...)
+	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash")
+	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
 	a.planContent = ""
 	a.planTitle = ""
+	a.planFile = ""
 
-	// Persist draft plan.
-	id := plan.GenerateID()
-	a.planID = id
-	if a.PlanStore != nil {
-		now := time.Now().UnixMilli()
-		_ = a.PlanStore.Save(&plan.SavedPlan{
-			Metadata: plan.Metadata{
-				ID:               id,
-				Status:           plan.StatusDraft,
-				WorkingDirectory: a.Cwd,
-				CreatedAt:        now,
-				UpdatedAt:        now,
-			},
-		})
-	}
-
-	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan."
+	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan.\nWhen done, call exit_plan_mode."
 	if task != "" {
 		prompt += "\n\nTask: " + task
 	}
@@ -120,17 +108,13 @@ func (a *App) executePlan() tea.Cmd {
 
 	title, content := a.planTitle, a.planContent
 
-	a.Session.RestoreAllTools()
+	a.Session.RestoreAllTools(newEnterPlanModeTool())
 	a.Session.SetSystemSuffix(buildPlanContextSuffix(title, content))
-
-	if a.PlanStore != nil && a.planID != "" {
-		_ = a.PlanStore.UpdateStatus(a.planID, plan.StatusCompleted)
-	}
 
 	a.planState = planOff
 	a.planContent = ""
 	a.planTitle = ""
-	a.planID = ""
+	a.planFile = ""
 
 	return a.sendAsPrompt("The plan has been approved. Execute it now.")
 }
@@ -140,11 +124,13 @@ func (a *App) editPlan() tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan to edit."))
 	}
 
-	a.Session.SetTools(a.Session.ToolsByName("read", "find", "grep", "ls", "bash")...)
+	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash")
+	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
 	a.planContent = ""
 	a.planTitle = ""
+	a.planFile = ""
 
 	return tui.SendCommandResult(tui.CommandStyle.Render(
 		"Back to plan mode. Type your feedback to revise the plan."))
@@ -154,54 +140,97 @@ func (a *App) cancelPlanMode() tea.Cmd {
 	if a.planState == planOff {
 		return tui.SendCommandResult(tui.CommandStyle.Render("Not in plan mode."))
 	}
-	if a.PlanStore != nil && a.planID != "" {
-		_ = a.PlanStore.UpdateStatus(a.planID, plan.StatusAbandoned)
-	}
 	a.resetPlanState()
 	return tui.SendCommandResult(tui.CommandStyle.Render("Plan mode cancelled. All tools restored."))
 }
 
 func (a *App) resetPlanState() {
-	a.Session.RestoreAllTools()
+	a.Session.RestoreAllTools(newEnterPlanModeTool())
 	a.Session.SetSystemSuffix("")
 	a.planState = planOff
 	a.planContent = ""
 	a.planTitle = ""
-	a.planID = ""
+	a.planFile = ""
 }
 
 // ---------------------------------------------------------------------------
 // Event handling
 // ---------------------------------------------------------------------------
 
-// planOnEvent listens for agent completion to transition from planning to review.
 func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
-	if ev.Type != agentcore.EventAgentEnd || a.planState != planPlanning {
+	switch ev.Type {
+	case agentcore.EventToolExecEnd:
+		if ev.IsError {
+			return nil
+		}
+		switch ev.Tool {
+		case "enter_plan_mode":
+			return a.onEnterPlanMode()
+		case "exit_plan_mode":
+			return a.onExitPlanMode(ev.Result)
+		}
+	case agentcore.EventAgentEnd:
+		// Show approval menu only after agent fully stops.
+		if a.planState == planReview {
+			return tea.Println("\n" + tui.CommandStyle.Render(
+				fmt.Sprintf("Plan ready: %s\nSelect an action below.", a.planTitle)))
+		}
+	}
+	return nil
+}
+
+// onEnterPlanMode handles LLM-initiated plan mode entry.
+func (a *App) onEnterPlanMode() tea.Cmd {
+	if a.planState != planOff {
+		return nil
+	}
+	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash")
+	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
+	a.Session.SetSystemSuffix(planModePrompt)
+	a.planState = planPlanning
+	a.planContent = ""
+	a.planTitle = ""
+	a.planFile = ""
+	return nil
+}
+
+// onExitPlanMode captures plan content when LLM signals completion.
+func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
+	if a.planState != planPlanning {
 		return nil
 	}
 
-	// Agent finished in plan mode — capture plan from last assistant message.
 	a.planContent = a.Session.LastAssistantText()
-	a.planTitle = extractTitle(a.planContent)
 
-	// Persist.
-	if a.PlanStore != nil && a.planID != "" {
-		if p, _ := a.PlanStore.Load(a.planID); p != nil {
-			p.Content = a.planContent
-			p.Metadata.Title = a.planTitle
-			p.Metadata.Status = plan.StatusPending
-			_ = a.PlanStore.Save(p)
+	var resp struct {
+		Title string `json:"title"`
+	}
+	if json.Unmarshal(result, &resp) == nil && resp.Title != "" {
+		a.planTitle = resp.Title
+	} else {
+		a.planTitle = extractTitle(a.planContent)
+	}
+
+	// Persist as markdown file.
+	if a.PlanStore != nil {
+		name := plan.GenerateName()
+		if err := a.PlanStore.Save(name, a.planContent); err == nil {
+			a.planFile = name
 		}
 	}
 
 	a.planState = planReview
 	a.planChoice = 0
 
-	return tea.Println("\n" + tui.CommandStyle.Render(
-		fmt.Sprintf("Plan ready: %s\nSelect an action below.", a.planTitle)))
+	// Stop the agent so LLM doesn't get another turn.
+	// Safe: tool_result is written to messages AFTER executeToolCalls returns
+	// (loop.go:167-173), then ctx.Err() check (loop.go:102-106) exits cleanly.
+	a.Session.Abort()
+
+	return nil
 }
 
-// extractTitle returns the first markdown heading or first non-empty line as title.
+// extractTitle returns the first markdown heading or first non-empty line.
 func extractTitle(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -227,80 +256,61 @@ func (a *App) cmdPlanList() tea.Cmd {
 	if a.PlanStore == nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan store not configured."))
 	}
-	plans, err := a.PlanStore.List(a.Cwd)
+	plans, err := a.PlanStore.List()
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to list plans: " + err.Error()))
 	}
 	if len(plans) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render("No plans found for this project."))
+		return tui.SendCommandResult(tui.CommandStyle.Render("No plans found."))
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Plans for %s:\n", a.Cwd)
+	sb.WriteString("Plans:\n")
 	for i, p := range plans {
-		title := p.Metadata.Title
-		if title == "" {
-			title = "(untitled)"
-		}
-		if len([]rune(title)) > 40 {
-			title = string([]rune(title)[:40]) + "..."
-		}
-		updated := time.UnixMilli(p.Metadata.UpdatedAt).Format("01-02 15:04")
-		fmt.Fprintf(&sb, "  %d. [%s] %s  %q  %s\n",
-			i+1, p.Metadata.Status, p.Metadata.ID, title, updated)
+		t := time.Unix(p.ModTime, 0).Format("01-02 15:04")
+		fmt.Fprintf(&sb, "  %d. %s  %s\n", i+1, p.Name, t)
 	}
 	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 }
 
-func (a *App) cmdPlanShow(id string) tea.Cmd {
+func (a *App) cmdPlanShow(name string) tea.Cmd {
 	if a.PlanStore == nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan store not configured."))
 	}
-	if id == "" {
-		id = a.planID
+	if name == "" {
+		name = a.planFile
 	}
-	if id == "" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan ID specified. Usage: /plan show <id>"))
+	if name == "" {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan specified. Usage: /plan show <name>"))
 	}
 
-	p, err := a.PlanStore.Load(id)
+	content, err := a.PlanStore.Load(name)
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to load plan: " + err.Error()))
 	}
-	if p == nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan not found: " + id))
+	if content == "" {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan not found: " + name))
 	}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Plan: %s\n", p.Metadata.ID)
-	fmt.Fprintf(&sb, "Title: %s\n", p.Metadata.Title)
-	fmt.Fprintf(&sb, "Status: %s\n", p.Metadata.Status)
-	fmt.Fprintf(&sb, "Directory: %s\n", p.Metadata.WorkingDirectory)
-	fmt.Fprintf(&sb, "Created: %s\n", time.UnixMilli(p.Metadata.CreatedAt).Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(&sb, "Updated: %s\n", time.UnixMilli(p.Metadata.UpdatedAt).Format("2006-01-02 15:04:05"))
-	if p.Content != "" {
-		sb.WriteString("\n")
-		lines := strings.Split(p.Content, "\n")
-		for i, line := range lines {
-			if i >= 20 {
-				sb.WriteString("  ...\n")
-				break
-			}
-			sb.WriteString("  " + line + "\n")
-		}
+	lines := strings.Split(content, "\n")
+	if len(lines) > 30 {
+		lines = append(lines[:30], "...")
 	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
+	return tui.SendCommandResult(tui.CommandStyle.Render(strings.Join(lines, "\n")))
 }
 
 // ---------------------------------------------------------------------------
 // Footer
 // ---------------------------------------------------------------------------
 
-func (a *App) planFooter(_ *tui.Model) string {
+func (a *App) planFooter(m *tui.Model) string {
 	switch a.planState {
 	case planPlanning:
 		return "plan mode (read-only)"
 	case planReview:
+		if m.Running {
+			return "plan mode (submitting...)"
+		}
 		choices := []string{"Execute plan", "Edit plan", "Cancel"}
 		var sb strings.Builder
 		for i, c := range choices {

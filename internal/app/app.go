@@ -31,12 +31,14 @@ type App struct {
 	planState   planState
 	planContent string // free-form plan text from LLM
 	planTitle   string // short title extracted from plan content
-	planID      string // active plan ID (empty = no active plan)
+	planFile    string // filename of saved .md plan (without extension)
 	planChoice  int    // selected option in planReview menu
 }
 
 // Config returns a tui.Config with all hooks wired to this App.
 func (a *App) Config() tui.Config {
+	// Register enter_plan_mode so LLM can proactively enter plan mode.
+	a.Session.RestoreAllTools(newEnterPlanModeTool())
 	return tui.Config{
 		Cwd:         a.Cwd,
 		GitBranch:   a.GitBranch,
