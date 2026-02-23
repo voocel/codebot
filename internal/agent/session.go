@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -407,106 +406,6 @@ func (s *AgentSession) SwitchSession(id string) error {
 	return nil
 }
 
-// SetSessionName updates the display name of the current session.
-func (s *AgentSession) SetSessionName(name string) error {
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
-
-	if store == nil {
-		return fmt.Errorf("no active session")
-	}
-	return store.SetName(name)
-}
-
-// Fork creates a branch from a specific entry ID.
-// The agent's context is rebuilt from that point.
-func (s *AgentSession) Fork(entryID string) error {
-	s.mu.Lock()
-	store := s.store
-	apiKey := s.apiKey
-	baseURL := s.baseURL
-	curProvider := s.provider
-	curModel := s.modelName
-	s.mu.Unlock()
-
-	if store == nil {
-		return fmt.Errorf("no active session")
-	}
-
-	prevLeaf := store.LeafID()
-
-	// Generate branch summary before fork (non-fatal on failure).
-	currentMsgs := s.agent.Messages()
-	if len(currentMsgs) > 2 {
-		ctx := context.Background()
-		if summary, err := s.generateBranchSummary(ctx, currentMsgs); err == nil && summary != "" {
-			_ = store.AppendBranchSummary(prevLeaf, summary)
-		}
-	}
-
-	exists, err := store.HasEntry(entryID)
-	if err != nil {
-		return fmt.Errorf("check fork entry: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("entry %s not found", entryID)
-	}
-
-	store.SetLeafID(entryID)
-
-	// Rebuild agent context from the new branch point.
-	snapshot, err := store.BuildSnapshot()
-	if err != nil {
-		store.SetLeafID(prevLeaf)
-		return fmt.Errorf("rebuild context after fork: %w", err)
-	}
-
-	targetProvider := curProvider
-	if snapshot.Provider != "" {
-		targetProvider = snapshot.Provider
-	}
-	targetModel := curModel
-	if snapshot.Model != "" {
-		targetModel = snapshot.Model
-	}
-
-	var restoredModel agentcore.ChatModel
-	if snapshot.Model != "" || snapshot.Provider != "" {
-		restoredModel, err = s.createModel(targetProvider, targetModel, apiKey, baseURL)
-		if err != nil {
-			store.SetLeafID(prevLeaf)
-			return fmt.Errorf("restore model after fork %s/%s: %w", targetProvider, targetModel, err)
-		}
-	}
-
-	s.agent.ClearMessages()
-	s.agent.ClearAllQueues()
-	if len(snapshot.Messages) > 0 {
-		if err := s.agent.SetMessages(snapshot.Messages); err != nil {
-			store.SetLeafID(prevLeaf)
-			return fmt.Errorf("restore messages after fork: %w", err)
-		}
-	}
-
-	s.mu.Lock()
-	s.provider = targetProvider
-	s.modelName = targetModel
-	s.autoNamed = store.Header().Name != ""
-	if snapshot.Thinking != "" {
-		s.settings.ThinkingLevel = snapshot.Thinking
-	}
-	s.mu.Unlock()
-
-	if snapshot.Thinking != "" {
-		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(snapshot.Thinking))
-	}
-	if restoredModel != nil {
-		s.agent.SetModel(restoredModel)
-	}
-	return nil
-}
-
 // --------------------------------------------------------------------------
 // Tool / prompt switching (plan mode support)
 // --------------------------------------------------------------------------
@@ -663,52 +562,6 @@ func (s *AgentSession) ListSessions() ([]session.SessionInfo, error) {
 		return nil, fmt.Errorf("no session manager configured")
 	}
 	return mgr.List()
-}
-
-// SessionTree builds tree data for the active session and returns current leaf ID.
-func (s *AgentSession) SessionTree() (*session.TreeNode, string, error) {
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
-
-	if store == nil {
-		return nil, "", fmt.Errorf("no active session")
-	}
-
-	entries, err := store.ReadAllEntries()
-	if err != nil {
-		return nil, "", fmt.Errorf("read entries: %w", err)
-	}
-	root, err := session.BuildTree(entries)
-	if err != nil {
-		return nil, "", fmt.Errorf("build tree: %w", err)
-	}
-	return root, store.LeafID(), nil
-}
-
-// SetLabel sets or clears a label on a session entry.
-// An empty label string clears the label.
-func (s *AgentSession) SetLabel(targetID, label string) error {
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
-
-	if store == nil {
-		return fmt.Errorf("no active session")
-	}
-	return store.AppendLabel(targetID, label)
-}
-
-// Labels returns all labels in the current session.
-func (s *AgentSession) Labels() (map[string]string, error) {
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
-
-	if store == nil {
-		return nil, fmt.Errorf("no active session")
-	}
-	return store.Labels()
 }
 
 // Close cleans up the session (unsubscribes from agent, closes store).
