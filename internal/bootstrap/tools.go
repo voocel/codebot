@@ -10,9 +10,9 @@ type ToolFactory func(cwd string) agentcore.Tool
 
 func defaultToolFactories() []ToolFactory {
 	return []ToolFactory{
-		func(_ string) agentcore.Tool { return tools.NewRead() },
-		func(_ string) agentcore.Tool { return tools.NewWrite() },
-		func(_ string) agentcore.Tool { return tools.NewEdit() },
+		func(cwd string) agentcore.Tool { return tools.NewRead(cwd) },
+		func(cwd string) agentcore.Tool { return tools.NewWrite(cwd) },
+		func(cwd string) agentcore.Tool { return tools.NewEdit(cwd) },
 		func(cwd string) agentcore.Tool { return tools.NewBash(cwd) },
 		func(cwd string) agentcore.Tool { return tools.NewFind(cwd) },
 		func(cwd string) agentcore.Tool { return tools.NewGrep(cwd) },

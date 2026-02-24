@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
+
+	mcpclient "github.com/voocel/codebot/internal/mcp"
 )
 
 // Options controls how runtime bootstraps.
@@ -45,12 +48,16 @@ type Runtime struct {
 
 	PolicyProfile policy.Profile
 
-	Settings config.Resolved
-	Session  *agent.Session
+	Settings   config.Resolved
+	Session    *agent.Session
+	MCPManager *mcpclient.Manager
 }
 
 // Close releases runtime resources.
 func (r *Runtime) Close() {
+	if r.MCPManager != nil {
+		r.MCPManager.Close()
+	}
 	if r.Session != nil {
 		r.Session.Close()
 	}
@@ -161,12 +168,39 @@ func Boot(opts Options) (*Runtime, error) {
 		localtools.NewWebFetch(),
 		localtools.NewWebSearch(settings.SearchAPIKey),
 	)
+
+	// Start MCP servers and collect their tools.
+	var mcpManager *mcpclient.Manager
+	mcpServers := mcpclient.LoadAllMCPServers(cwd)
+	if len(mcpServers) > 0 {
+		mcpManager = mcpclient.NewManager()
+		if errs := mcpManager.StartAll(context.Background(), mcpServers); len(errs) > 0 {
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "mcp: %v\n", e)
+			}
+		}
+		builtTools = append(builtTools, mcpManager.Tools(context.Background())...)
+	}
+
 	toolInfos := make([]config.ToolInfo, len(builtTools))
 	for i, t := range builtTools {
 		toolInfos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
 	}
 
 	systemPrompt := config.BuildSystemPrompt(cwd, ctxFiles, toolInfos, skills)
+
+	// Append MCP server instructions to system prompt.
+	if mcpManager != nil {
+		if instructions := mcpManager.Instructions(); len(instructions) > 0 {
+			var sb strings.Builder
+			sb.WriteString(systemPrompt)
+			for _, inst := range instructions {
+				sb.WriteString("\n\n")
+				sb.WriteString(inst)
+			}
+			systemPrompt = sb.String()
+		}
+	}
 
 	ag := agentcore.NewAgent(
 		agentcore.WithModel(chatModel),
@@ -222,6 +256,7 @@ func Boot(opts Options) (*Runtime, error) {
 		PolicyProfile: profile,
 		Settings:      settings,
 		Session:       sess,
+		MCPManager:    mcpManager,
 	}, nil
 }
 
