@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,8 +41,18 @@ func (a *App) handleCommand(input string) tea.Cmd {
 		return spec.Run(args)
 	}
 
-	// Fallback: check prompt templates.
+	// Fallback: check skill commands (/skill:name).
 	name := strings.TrimPrefix(cmd, "/")
+	if skillName, ok := parseSkillCommand(name); ok {
+		if skill := a.findSkill(skillName); skill != nil {
+			rawArgs := strings.TrimSpace(strings.TrimPrefix(input, parts[0]))
+			return a.invokeSkill(skill, rawArgs)
+		}
+		return tui.SendCommandResult(tui.ErrorStyle.Render(
+			fmt.Sprintf("Unknown skill: %s", skillName)))
+	}
+
+	// Fallback: check prompt templates.
 	if tmpl := a.findTemplate(name); tmpl != nil {
 		rawArgs := strings.TrimSpace(strings.TrimPrefix(input, parts[0]))
 		expanded := Expand(tmpl.Content, ParseArgs(rawArgs))
@@ -157,6 +168,15 @@ func (a *App) commandRegistry() map[string]commandSpec {
 				return a.cmdPlan(args)
 			},
 		},
+		"/reload": {
+			Usage:       "/reload",
+			Description: "Reload skills, prompts, and context files",
+			Risk:        policy.RiskLow,
+			NeedsIdle:   true,
+			Run: func(_ []string) tea.Cmd {
+				return a.cmdReload()
+			},
+		},
 		"/exit": {
 			Usage:       "/exit",
 			Description: "Quit",
@@ -220,6 +240,18 @@ Keyboard shortcuts:
 				desc = "(no description)"
 			}
 			fmt.Fprintf(&sb, "  /%-16s %s (%s)\n", t.Name, desc, t.Source)
+		}
+	}
+
+	// Append skills if any.
+	if len(a.Skills) > 0 {
+		sb.WriteString("\n\nSkills:\n")
+		for _, s := range a.Skills {
+			desc := s.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			fmt.Fprintf(&sb, "  /skill:%-11s %s (%s)\n", s.Name, desc, s.Source)
 		}
 	}
 
@@ -418,6 +450,14 @@ func (a *App) cmdCopy() tea.Cmd {
 	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Copied %d characters to clipboard.", n)))
 }
 
+func (a *App) cmdReload() tea.Cmd {
+	a.Session.Reload()
+	a.Templates = config.LoadPromptTemplates(a.Cwd)
+	a.Skills = a.Session.Skills()
+	return tui.SendCommandResult(tui.CommandStyle.Render(
+		fmt.Sprintf("Reloaded: %d skills, %d prompts.", len(a.Skills), len(a.Templates))))
+}
+
 // findTemplate returns the first template matching name (case-insensitive), or nil.
 func (a *App) findTemplate(name string) *config.PromptTemplate {
 	lower := strings.ToLower(name)
@@ -434,4 +474,53 @@ func (a *App) sendAsPrompt(text string) tea.Cmd {
 	return func() tea.Msg {
 		return tui.PromptMsg{Text: text}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Skill invocation
+// ---------------------------------------------------------------------------
+
+// parseSkillCommand checks if name matches "skill:xxx" and returns the skill name.
+func parseSkillCommand(name string) (string, bool) {
+	after, ok := strings.CutPrefix(name, "skill:")
+	if !ok || after == "" {
+		return "", false
+	}
+	return after, true
+}
+
+// findSkill returns the first skill matching name (case-insensitive), or nil.
+func (a *App) findSkill(name string) *config.Skill {
+	lower := strings.ToLower(name)
+	for i := range a.Skills {
+		if strings.ToLower(a.Skills[i].Name) == lower {
+			return &a.Skills[i]
+		}
+	}
+	return nil
+}
+
+// invokeSkill reads the skill file, strips frontmatter, wraps it in a <skill> XML block,
+// and sends it as a prompt to the agent.
+func (a *App) invokeSkill(skill *config.Skill, userArgs string) tea.Cmd {
+	data, err := os.ReadFile(skill.FilePath)
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(
+			fmt.Sprintf("Failed to read skill file: %v", err)))
+	}
+
+	body := strings.TrimSpace(config.StripFrontmatter(string(data)))
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<skill name=%q location=%q>\n", skill.Name, skill.FilePath)
+	fmt.Fprintf(&sb, "References are relative to %s.\n\n", skill.BaseDir)
+	sb.WriteString(body)
+	sb.WriteString("\n</skill>")
+
+	if userArgs != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(userArgs)
+	}
+
+	return a.sendAsPrompt(sb.String())
 }

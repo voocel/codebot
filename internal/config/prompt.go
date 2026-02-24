@@ -15,12 +15,15 @@ type ToolInfo struct {
 }
 
 // BuildSystemPrompt constructs the system prompt from the working directory, context files,
-// and available tools. When tools is non-empty the tool section is generated dynamically;
-// otherwise a static fallback is used.
-func BuildSystemPrompt(cwd string, ctx ContextFiles, tools []ToolInfo) string {
+// available tools, and loaded skills. When tools is non-empty the tool section is generated
+// dynamically; otherwise a static fallback is used.
+func BuildSystemPrompt(cwd string, ctx ContextFiles, tools []ToolInfo, skills []Skill) string {
 	// If SYSTEM.md exists, it replaces the entire default prompt.
 	if ctx.SystemOverride != "" {
 		prompt := ctx.SystemOverride
+		if skillBlock := FormatSkillsForPrompt(skills); skillBlock != "" && hasReadTool(tools) {
+			prompt += "\n\n## Skills\n" + skillBlock
+		}
 		if ctx.Agents != "" {
 			prompt += "\n\n## Project Context\n" + ctx.Agents
 		}
@@ -72,6 +75,13 @@ func BuildSystemPrompt(cwd string, ctx ContextFiles, tools []ToolInfo) string {
 	}
 	sb.WriteByte('\n')
 
+	// Skills section: injected when read tool is available (or static fallback).
+	if skillBlock := FormatSkillsForPrompt(skills); skillBlock != "" && (len(tools) == 0 || hasReadTool(tools)) {
+		sb.WriteString("\n## Skills\n")
+		sb.WriteString(skillBlock)
+		sb.WriteString("\n")
+	}
+
 	if ctx.Agents != "" {
 		sb.WriteString("\n## Project Context\n")
 		sb.WriteString(ctx.Agents)
@@ -114,4 +124,13 @@ func buildGuidelines(tools []ToolInfo) string {
 		"- If a task is ambiguous, ask for clarification.",
 	)
 	return strings.Join(lines, "\n")
+}
+
+func hasReadTool(tools []ToolInfo) bool {
+	for _, t := range tools {
+		if t.Name == "read" {
+			return true
+		}
+	}
+	return false
 }

@@ -101,13 +101,7 @@ func loadTemplate(path, source string) (PromptTemplate, error) {
 
 // parseFrontmatterDescription extracts "description: ..." from frontmatter text.
 func parseFrontmatterDescription(fm string) string {
-	for _, line := range strings.Split(fm, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "description:") {
-			return strings.TrimSpace(line[len("description:"):])
-		}
-	}
-	return ""
+	return parseFrontmatterField(fm, "description")
 }
 
 // firstLine returns the first non-empty line, truncated to maxLen characters.

@@ -100,6 +100,11 @@ func PlansDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "plans")
 }
 
+// SkillsDir returns <cwd>/.codebot/skills/.
+func SkillsDir(cwd string) string {
+	return filepath.Join(cwd, ConfigDir, "skills")
+}
+
 // UserConfigDir returns ~/.codebot/.
 func UserConfigDir() string {
 	home, err := os.UserHomeDir()
@@ -170,9 +175,9 @@ func DefaultModelName(prov string) string {
 	case "anthropic":
 		return "claude-sonnet-4-5"
 	case "gemini":
-		return "gemini-2.5-flash"
+		return "gemini-3.0-flash"
 	default:
-		return "gpt-4.1-mini"
+		return "gpt-5-mini"
 	}
 }
 

@@ -31,9 +31,13 @@ func LoadContextFiles(cwd string) ContextFiles {
 	var cf ContextFiles
 	var agentParts []string
 
-	// Walk from root to cwd, collecting AGENTS.md
+	// Walk from root to cwd, collecting AGENTS.md (fallback: CLAUDE.md).
 	for _, dir := range parentChain(cwd) {
-		if content := readFileOr(filepath.Join(dir, "AGENTS.md")); content != "" {
+		content := readFileOr(filepath.Join(dir, "AGENTS.md"))
+		if content == "" {
+			content = readFileOr(filepath.Join(dir, "CLAUDE.md"))
+		}
+		if content != "" {
 			agentParts = append(agentParts, content)
 		}
 	}

@@ -24,6 +24,9 @@ type App struct {
 	// Templates are user-defined prompt templates loaded from .md files.
 	Templates []config.PromptTemplate
 
+	// Skills are loaded skill definitions.
+	Skills []config.Skill
+
 	// PlanStore persists plans to <cwd>/.codebot/plans/.
 	PlanStore *storage.PlanStore
 

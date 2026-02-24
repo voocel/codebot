@@ -19,6 +19,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 		GitBranch:     gitBranch,
 		PolicyProfile: profile,
 		Templates:     config.LoadPromptTemplates(cwd),
+		Skills:        sess.Skills(),
 		PlanStore:     storage.NewPlanStore(config.PlansDir(cwd)),
 	}
 

@@ -35,6 +35,8 @@ type SessionConfig struct {
 	// ContextFiles holds loaded context files for dynamic system prompt rebuilding.
 	// When tools change the prompt is regenerated from these inputs.
 	ContextFiles config.ContextFiles
+	// Skills holds loaded skills for system prompt injection and /skill: commands.
+	Skills []config.Skill
 }
 
 // Session is the business-logic core that wraps Agent + session persistence.
@@ -59,6 +61,7 @@ type Session struct {
 	allTools     []agentcore.Tool
 	activeTools  []agentcore.Tool
 	contextFiles config.ContextFiles
+	skills       []config.Skill
 	suffix       string // optional prompt suffix (e.g. plan context)
 
 	listeners []func(SessionEvent)
@@ -98,9 +101,10 @@ func NewSession(cfg SessionConfig) *Session {
 		cwd:         cfg.Cwd,
 		createModel: modelFactory,
 		lazyPersist: cfg.LazyPersist,
-		allTools:    cfg.Tools,
-		activeTools: cfg.Tools,
+		allTools:     cfg.Tools,
+		activeTools:  cfg.Tools,
 		contextFiles: cfg.ContextFiles,
+		skills:       cfg.Skills,
 	}
 
 	// Subscribe to agent events for auto-persistence and event forwarding.
@@ -437,6 +441,19 @@ func (s *Session) SetSystemSuffix(suffix string) {
 	s.rebuildPrompt()
 }
 
+// Skills returns the loaded skills list.
+func (s *Session) Skills() []config.Skill {
+	return s.skills
+}
+
+// Reload rescans context files, skills, and prompt templates from disk,
+// then rebuilds the system prompt. Call this after adding/removing skill files.
+func (s *Session) Reload() {
+	s.contextFiles = config.LoadContextFiles(s.cwd)
+	s.skills = config.LoadSkills(s.cwd)
+	s.rebuildPrompt()
+}
+
 // rebuildPrompt regenerates the system prompt from the current active tools,
 // context files, and suffix, then pushes it to the agent.
 func (s *Session) rebuildPrompt() {
@@ -444,7 +461,7 @@ func (s *Session) rebuildPrompt() {
 	for i, t := range s.activeTools {
 		infos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
 	}
-	base := config.BuildSystemPrompt(s.cwd, s.contextFiles, infos)
+	base := config.BuildSystemPrompt(s.cwd, s.contextFiles, infos, s.skills)
 	if s.suffix != "" {
 		base += "\n\n" + s.suffix
 	}

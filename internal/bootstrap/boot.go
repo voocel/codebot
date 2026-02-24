@@ -146,6 +146,7 @@ func Boot(opts Options) (*Runtime, error) {
 	}
 
 	ctxFiles := config.LoadContextFiles(cwd)
+	skills := config.LoadSkills(cwd)
 
 	pol := policy.New(policy.Config{
 		Profile:     profile,
@@ -160,7 +161,7 @@ func Boot(opts Options) (*Runtime, error) {
 		toolInfos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
 	}
 
-	systemPrompt := config.BuildSystemPrompt(cwd, ctxFiles, toolInfos)
+	systemPrompt := config.BuildSystemPrompt(cwd, ctxFiles, toolInfos, skills)
 
 	ag := agentcore.NewAgent(
 		agentcore.WithModel(chatModel),
@@ -206,6 +207,7 @@ func Boot(opts Options) (*Runtime, error) {
 		CreateModel:  createModel,
 		Tools:        builtTools,
 		ContextFiles: ctxFiles,
+		Skills:       skills,
 	})
 	closeStoreOnError = false
 

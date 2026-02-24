@@ -61,7 +61,7 @@ func TestBuildSystemPromptDynamicTools(t *testing.T) {
 		{Name: "read", Description: "Read files"},
 		{Name: "bash", Description: "Run commands"},
 	}
-	prompt := BuildSystemPrompt("/tmp/ws", ContextFiles{}, tools)
+	prompt := BuildSystemPrompt("/tmp/ws", ContextFiles{}, tools, nil)
 
 	if !strings.Contains(prompt, "**read**") {
 		t.Error("prompt should list read tool")
@@ -81,7 +81,7 @@ func TestBuildSystemPromptDynamicTools(t *testing.T) {
 func TestBuildSystemPromptStaticFallback(t *testing.T) {
 	t.Parallel()
 
-	prompt := BuildSystemPrompt("/tmp/ws", ContextFiles{}, nil)
+	prompt := BuildSystemPrompt("/tmp/ws", ContextFiles{}, nil, nil)
 
 	// Static fallback should contain all tools
 	for _, tool := range []string{"read", "write", "edit", "bash", "find", "grep", "ls"} {
