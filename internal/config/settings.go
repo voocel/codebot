@@ -25,6 +25,9 @@ type Settings struct {
 	ShowTokens    *bool   `json:"show_tokens,omitempty"`
 
 	MaxTurns *int `json:"max_turns,omitempty"`
+
+	SearchProvider *string `json:"search_provider,omitempty"`
+	SearchAPIKey   *string `json:"search_api_key,omitempty"`
 }
 
 // Resolved holds settings resolved to concrete values (no pointers).
@@ -38,6 +41,8 @@ type Resolved struct {
 	ThinkingLevel   string
 	ShowTokens      bool
 	MaxTurns        int
+	SearchProvider  string
+	SearchAPIKey    string
 }
 
 // Resolve converts Settings to Resolved using defaults for unset fields.
@@ -76,6 +81,12 @@ func (s Settings) Resolve() Resolved {
 	}
 	if s.MaxTurns != nil {
 		r.MaxTurns = *s.MaxTurns
+	}
+	if s.SearchProvider != nil {
+		r.SearchProvider = *s.SearchProvider
+	}
+	if s.SearchAPIKey != nil {
+		r.SearchAPIKey = *s.SearchAPIKey
 	}
 	return r
 }
@@ -199,6 +210,14 @@ func ResolveAll(cwd string) Resolved {
 	// Model: settings > default per provider
 	if settings.DefaultModel == "" {
 		settings.DefaultModel = DefaultModelName(settings.DefaultProvider)
+	}
+
+	// Search API key: settings > env
+	if settings.SearchAPIKey == "" {
+		settings.SearchAPIKey = os.Getenv("TAVILY_API_KEY")
+	}
+	if settings.SearchProvider == "" && settings.SearchAPIKey != "" {
+		settings.SearchProvider = "tavily"
 	}
 
 	return settings

@@ -10,7 +10,7 @@ import (
 
 // Skill represents a loadable skill file.
 type Skill struct {
-	Name                   string // validated skill name (lowercase)
+	Name                   string // validated skill name (stored lowercase)
 	Description            string // from frontmatter or first line
 	FilePath               string // absolute path to the .md file
 	BaseDir                string // parent directory (for relative path resolution)
@@ -82,8 +82,8 @@ func findSkillInDir(dir, dirName, source string) (Skill, bool) {
 	// Check for SKILL.md directly in this directory.
 	skillFile := filepath.Join(dir, "SKILL.md")
 	if s, err := loadSkill(skillFile, source); err == nil {
-		if s.Name == "SKILL" {
-			s.Name = dirName
+		if s.Name == "skill" {
+			s.Name = strings.ToLower(dirName)
 		}
 		if validSkillName(s.Name) {
 			return s, true
@@ -129,6 +129,9 @@ func loadSkill(path, source string) (Skill, error) {
 		}
 	}
 
+	// Normalize to lowercase for consistent lookup and override.
+	name = strings.ToLower(name)
+
 	if description == "" {
 		description = firstLine(StripFrontmatter(content), 60)
 	}
@@ -143,15 +146,12 @@ func loadSkill(path, source string) (Skill, error) {
 	}, nil
 }
 
-// validSkillName checks that a skill name conforms to [a-z0-9-]+, max 64 chars,
-// no leading/trailing hyphens, no consecutive hyphens.
-var reSkillName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+// validSkillName checks that a skill name conforms to [a-zA-Z0-9_-]+, max 64 chars,
+// no leading/trailing hyphens or underscores. Name is expected to be lowercased already.
+var reSkillName = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
 
 func validSkillName(name string) bool {
 	if len(name) == 0 || len(name) > 64 {
-		return false
-	}
-	if strings.Contains(name, "--") {
 		return false
 	}
 	return reSkillName.MatchString(name)

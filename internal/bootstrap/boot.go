@@ -21,6 +21,7 @@ import (
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 // Options controls how runtime bootstraps.
@@ -156,6 +157,10 @@ func Boot(opts Options) (*Runtime, error) {
 	})
 
 	builtTools := buildTools(cwd, opts.ToolFactories)
+	builtTools = append(builtTools,
+		localtools.NewWebFetch(),
+		localtools.NewWebSearch(settings.SearchAPIKey),
+	)
 	toolInfos := make([]config.ToolInfo, len(builtTools))
 	for i, t := range builtTools {
 		toolInfos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}

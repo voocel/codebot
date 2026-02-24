@@ -63,8 +63,8 @@ var (
 
 // Footer
 var FooterStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("245")).
-	Background(ColorStatusBg).
+	Foreground(lipgloss.Color("235")).
+	Background(lipgloss.Color("#b5e6b5")).
 	Padding(0, 1)
 
 // Selection menu (plan approval, etc.)
@@ -78,6 +78,9 @@ var PlanBoxStyle = lipgloss.NewStyle().
 	Border(lipgloss.RoundedBorder()).
 	BorderForeground(ColorAccent).
 	Padding(0, 1)
+
+// Plan mode tag
+var PlanTagStyle = lipgloss.NewStyle().Foreground(ColorAccent)
 
 // General purpose
 var (

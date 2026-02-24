@@ -242,31 +242,23 @@ func extractTitle(content string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Footer
+// Status bar integration
 // ---------------------------------------------------------------------------
 
-func (a *App) planFooter(m *tui.Model) string {
+func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {
 	switch a.planState {
 	case planPlanning:
-		return "plan mode (read-only)"
+		return &tui.PlanBarInfo{Tag: "plan mode"}
 	case planReview:
 		if m.Running {
-			return "plan mode (submitting...)"
+			return &tui.PlanBarInfo{Tag: "submitting plan..."}
 		}
-		choices := []string{"Execute plan", "Edit plan", "Cancel"}
-		var sb strings.Builder
-		for i, c := range choices {
-			if i > 0 {
-				sb.WriteByte('\n')
-			}
-			if i == a.planChoice {
-				sb.WriteString(tui.ChoiceActiveStyle.Render("> " + c))
-			} else {
-				sb.WriteString(tui.ChoiceInactiveStyle.Render("  " + c))
-			}
+		return &tui.PlanBarInfo{
+			Tag:     "plan mode",
+			Choices: []string{"Execute plan", "Edit plan", "Cancel"},
+			Active:  a.planChoice,
 		}
-		return sb.String()
 	default:
-		return ""
+		return nil
 	}
 }

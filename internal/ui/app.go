@@ -47,7 +47,7 @@ func (a *App) Config() tui.Config {
 		OnKey:       a.onKey(),
 		OnEvent:     a.planOnEvent,
 		StatusRight: a.statusRight,
-		OnFooter:    a.planFooter,
+		StatusPlan:  a.planStatus,
 	}
 }
 
@@ -57,12 +57,12 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 		// Plan pending approval: up/down to select, enter to confirm.
 		if a.planState == planReview && !m.Running {
 			switch msg.String() {
-			case "up", "k":
+			case "up", "k", "left", "h":
 				if a.planChoice > 0 {
 					a.planChoice--
 				}
 				return true, nil
-			case "down", "j":
+			case "down", "j", "right", "l":
 				if a.planChoice < 2 {
 					a.planChoice++
 				}

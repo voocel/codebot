@@ -10,7 +10,10 @@ import (
 func TestValidSkillName(t *testing.T) {
 	t.Parallel()
 
-	valid := []string{"a", "commit", "code-review", "my-skill-1", "a1b"}
+	valid := []string{
+		"a", "commit", "code-review", "my-skill-1", "a1b",
+		"has_underscore", "code_review", "has--double", "my_skill_1",
+	}
 	for _, name := range valid {
 		if !validSkillName(name) {
 			t.Errorf("expected %q to be valid", name)
@@ -18,8 +21,8 @@ func TestValidSkillName(t *testing.T) {
 	}
 
 	invalid := []string{
-		"", "-start", "end-", "has--double", "UPPER", "has space",
-		"has.dot", "has_underscore",
+		"", "-start", "end-", "_start", "end_", "has space",
+		"has.dot",
 		// 65 chars
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaа",
 	}
@@ -143,9 +146,12 @@ func TestLoadSkillsFromDir(t *testing.T) {
 	os.MkdirAll(nestedDir, 0o755)
 	writeFile(t, filepath.Join(nestedDir, "SKILL.md"), "---\ndescription: Deploy helper\n---\nDeploy stuff")
 
+	// Uppercase filename: dir/Code_Review.md → name becomes "code_review"
+	writeFile(t, filepath.Join(dir, "Code_Review.md"), "---\ndescription: Uppercase test\n---\nReview")
+
 	skills := loadSkillsFromDir(dir, "test")
-	if len(skills) != 3 {
-		t.Fatalf("expected 3 skills, got %d", len(skills))
+	if len(skills) != 4 {
+		t.Fatalf("expected 4 skills, got %d", len(skills))
 	}
 
 	byName := make(map[string]Skill, len(skills))
@@ -166,6 +172,11 @@ func TestLoadSkillsFromDir(t *testing.T) {
 		t.Error("missing deploy skill from nested dir")
 	} else if s.Description != "Deploy helper" {
 		t.Errorf("deploy description = %q", s.Description)
+	}
+	if s, ok := byName["code_review"]; !ok {
+		t.Error("missing code_review skill (from Code_Review.md)")
+	} else if s.Description != "Uppercase test" {
+		t.Errorf("code_review description = %q", s.Description)
 	}
 }
 

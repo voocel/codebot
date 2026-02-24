@@ -11,6 +11,13 @@ import (
 	"github.com/voocel/agentcore"
 )
 
+// PlanBarInfo provides plan mode status for the status bar.
+type PlanBarInfo struct {
+	Tag     string   // appended to status bar (e.g., "plan mode")
+	Choices []string // horizontal selection menu items
+	Active  int      // active choice index
+}
+
 // Config provides hooks for extending the base TUI behavior.
 type Config struct {
 	Placeholder string
@@ -19,7 +26,7 @@ type Config struct {
 	OnKey       func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
 	OnEvent     func(m *Model, ev agentcore.Event) tea.Cmd
 	StatusRight func(m *Model) string
-	OnFooter    func(m *Model) string
+	StatusPlan  func(m *Model) *PlanBarInfo
 }
 
 // Driver defines the minimal conversation operations required by the TUI.
@@ -189,13 +196,13 @@ func (m Model) View() string {
 		parts = append(parts, m.renderRunSummary(), "")
 	}
 
+	// Plan choices (above status bar, only during plan review)
+	if bar := m.RenderPlanBar(); bar != "" {
+		parts = append(parts, bar)
+	}
+
 	// Status bar (above input)
 	parts = append(parts, m.RenderStatusBar())
-
-	// Optional footer
-	if footer := m.RenderFooter(); footer != "" {
-		parts = append(parts, footer)
-	}
 
 	// Separator + input + bottom border
 	parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))

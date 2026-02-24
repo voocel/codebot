@@ -42,6 +42,11 @@ func (m *Model) renderWelcome() string {
 
 // RenderStatusBar renders the status line above the input (running state + turn).
 func (m *Model) RenderStatusBar() string {
+	var plan *PlanBarInfo
+	if m.config.StatusPlan != nil {
+		plan = m.config.StatusPlan(m)
+	}
+
 	var status string
 	if m.Running {
 		status = m.Spinner.View() + " running"
@@ -50,10 +55,38 @@ func (m *Model) RenderStatusBar() string {
 	}
 	status += "  " + MutedStyle.Render(fmt.Sprintf("turn %d", m.TurnCount))
 
+	// Append plan mode tag.
+	if plan != nil && plan.Tag != "" {
+		status += "  " + PlanTagStyle.Render("◇ "+plan.Tag)
+	}
+
 	if m.Width > 0 {
 		status = truncate.StringWithTail(status, uint(max(m.Width-2, 1)), "…")
 	}
 	return status
+}
+
+// RenderPlanBar renders the plan choices bar (empty string when inactive).
+func (m *Model) RenderPlanBar() string {
+	if m.config.StatusPlan == nil {
+		return ""
+	}
+	plan := m.config.StatusPlan(m)
+	if plan == nil || len(plan.Choices) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, c := range plan.Choices {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		if i == plan.Active {
+			sb.WriteString(ChoiceActiveStyle.Render("▸ " + c))
+		} else {
+			sb.WriteString(ChoiceInactiveStyle.Render("  " + c))
+		}
+	}
+	return FooterStyle.Width(m.Width).Render(sb.String())
 }
 
 // RenderContextBar renders the context line below the input (env info).
@@ -73,18 +106,6 @@ func (m *Model) RenderContextBar() string {
 		line = truncate.StringWithTail(line, uint(max(m.Width-2, 1)), "…")
 	}
 	return line
-}
-
-// RenderFooter renders the optional footer bar.
-func (m *Model) RenderFooter() string {
-	if m.config.OnFooter == nil {
-		return ""
-	}
-	content := m.config.OnFooter(m)
-	if content == "" {
-		return ""
-	}
-	return FooterStyle.Width(m.Width).Render(content)
 }
 
 // ---------------------------------------------------------------------------
