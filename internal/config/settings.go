@@ -134,7 +134,9 @@ func loadSettingsFile(path string) Settings {
 	if err != nil {
 		return s
 	}
-	json.Unmarshal(data, &s)
+	if err := json.Unmarshal(data, &s); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: malformed %s: %v\n", path, err)
+	}
 	return s
 }
 

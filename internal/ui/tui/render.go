@@ -250,8 +250,8 @@ func FormatToolArgs(args json.RawMessage) string {
 	if s == "{}" || s == "null" {
 		return ""
 	}
-	if len(s) > 100 {
-		s = s[:97] + "..."
+	if len([]rune(s)) > 100 {
+		s = string([]rune(s)[:97]) + "..."
 	}
 	return s
 }
@@ -280,8 +280,8 @@ func FormatToolResult(result json.RawMessage, isError bool) string {
 		lines = lines[:5]
 		s = strings.Join(lines, "\n") + "\n..."
 	}
-	if len(s) > 300 {
-		s = s[:297] + "..."
+	if len([]rune(s)) > 300 {
+		s = string([]rune(s)[:297]) + "..."
 	}
 	return prefix + s
 }
@@ -464,8 +464,8 @@ func FormatProgressLine(result json.RawMessage) string {
 		return ""
 	}
 	s := string(result)
-	if len(s) > 200 {
-		s = s[:197] + "..."
+	if len([]rune(s)) > 200 {
+		s = string([]rune(s)[:197]) + "..."
 	}
 	return s
 }

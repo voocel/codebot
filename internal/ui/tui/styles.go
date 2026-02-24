@@ -73,6 +73,12 @@ var (
 	ChoiceInactiveStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 )
 
+// Plan box
+var PlanBoxStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(ColorAccent).
+	Padding(0, 1)
+
 // General purpose
 var (
 	MutedStyle = lipgloss.NewStyle().Foreground(ColorMuted)

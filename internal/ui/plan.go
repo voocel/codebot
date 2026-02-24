@@ -30,11 +30,11 @@ const (
 const planModePrompt = `[PLAN MODE - Read-Only]
 You are in plan mode. Explore and analyze the codebase, then create a detailed implementation plan.
 
-Available tools: read, find, grep, ls, bash (read-only commands only), exit_plan_mode
-Disabled tools: write, edit
+IMPORTANT: When your plan is ready, you MUST:
+1. Write the FULL plan as text in the conversation (so the user can read it)
+2. Then call exit_plan_mode with both title and content parameters
 
-Write your plan as free-form text, then call exit_plan_mode when done.
-Do NOT modify any files.`
+Do NOT call exit_plan_mode before writing the plan. Do NOT modify any files.`
 
 func buildPlanContextSuffix(title, content string) string {
 	return fmt.Sprintf("[APPROVED PLAN]\nExecute the following plan.\n\nPlan: %s\n\n%s", title, content)
@@ -84,7 +84,7 @@ func (a *App) enterPlanMode(task string) tea.Cmd {
 	a.planContent = ""
 	a.planTitle = ""
 
-	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan.\nWhen done, call exit_plan_mode."
+	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan.\nWrite your complete plan as text, then call exit_plan_mode with the title and content."
 	if task != "" {
 		prompt += "\n\nTask: " + task
 	}
@@ -157,10 +157,12 @@ func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
 			return a.onExitPlanMode(ev.Result)
 		}
 	case agentcore.EventAgentEnd:
-		// Show approval menu only after agent fully stops.
+		// Show plan box and approval menu after agent fully stops.
 		if a.planState == planReview {
-			return tea.Println("\n" + tui.CommandStyle.Render(
-				fmt.Sprintf("Plan ready: %s\nSelect an action below.", a.planTitle)))
+			title := tui.ChoiceActiveStyle.Render("Plan: " + a.planTitle)
+			hint := tui.MutedStyle.Render("Select an action below.")
+			box := tui.PlanBoxStyle.Render(title + "\n" + hint)
+			return tea.Println("\n" + box)
 		}
 	}
 	return nil
@@ -186,12 +188,20 @@ func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
 		return nil
 	}
 
-	a.planContent = a.Session.LastAssistantText()
-
+	// Extract plan content and title from tool arguments.
 	var resp struct {
-		Title string `json:"title"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
 	}
-	if json.Unmarshal(result, &resp) == nil && resp.Title != "" {
+	_ = json.Unmarshal(result, &resp)
+
+	// Primary source: tool argument. Fallback: last assistant text.
+	a.planContent = resp.Content
+	if a.planContent == "" {
+		a.planContent = a.Session.LastAssistantText()
+	}
+
+	if resp.Title != "" {
 		a.planTitle = resp.Title
 	} else {
 		a.planTitle = extractTitle(a.planContent)

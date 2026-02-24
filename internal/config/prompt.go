@@ -58,16 +58,19 @@ func BuildSystemPrompt(cwd string, ctx ContextFiles, tools []ToolInfo) string {
 `)
 	}
 
-	sb.WriteString(`
-## Guidelines
-- Read files before modifying them. Understand the code first.
+	sb.WriteString("\n## Guidelines\n")
+	if len(tools) > 0 {
+		sb.WriteString(buildGuidelines(tools))
+	} else {
+		sb.WriteString(`- Read files before modifying them. Understand the code first.
 - Use find/grep to explore unfamiliar codebases before making changes.
 - Use edit for targeted changes. Use write only for new files or full rewrites.
 - Prefer simple, correct solutions. Don't over-engineer.
 - When executing commands, prefer absolute paths.
 - Explain what you're doing briefly, then act. Don't ask for permission unless the operation is destructive.
-- If a task is ambiguous, ask for clarification.
-`)
+- If a task is ambiguous, ask for clarification.`)
+	}
+	sb.WriteByte('\n')
 
 	if ctx.Agents != "" {
 		sb.WriteString("\n## Project Context\n")
@@ -82,4 +85,33 @@ func BuildSystemPrompt(cwd string, ctx ContextFiles, tools []ToolInfo) string {
 	}
 
 	return sb.String()
+}
+
+// buildGuidelines generates guidelines based on the available tools.
+// Only tool-specific guidelines are included when the corresponding tool is present.
+func buildGuidelines(tools []ToolInfo) string {
+	has := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		has[t.Name] = true
+	}
+
+	var lines []string
+	if has["write"] || has["edit"] {
+		lines = append(lines, "- Read files before modifying them. Understand the code first.")
+	}
+	if has["find"] || has["grep"] {
+		lines = append(lines, "- Use find/grep to explore unfamiliar codebases before making changes.")
+	}
+	if has["edit"] && has["write"] {
+		lines = append(lines, "- Use edit for targeted changes. Use write only for new files or full rewrites.")
+	}
+	lines = append(lines, "- Prefer simple, correct solutions. Don't over-engineer.")
+	if has["bash"] {
+		lines = append(lines, "- When executing commands, prefer absolute paths.")
+	}
+	lines = append(lines,
+		"- Explain what you're doing briefly, then act. Don't ask for permission unless the operation is destructive.",
+		"- If a task is ambiguous, ask for clarification.",
+	)
+	return strings.Join(lines, "\n")
 }

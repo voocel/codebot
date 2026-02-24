@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -24,12 +22,22 @@ const (
 	ProfileStrict   Profile = "strict"
 )
 
+// AuditEntry is the data passed to an optional audit hook.
+type AuditEntry struct {
+	Time    time.Time
+	Profile Profile
+	Tool    string
+	Args    map[string]any
+	Allow   bool
+	Reason  string // empty when allowed
+}
+
 // Config configures the policy engine.
 type Config struct {
 	Profile     Profile
 	Workspace   string
 	Interactive bool
-	AuditPath   string
+	OnAudit     func(AuditEntry) // nil = no auditing
 }
 
 // Engine validates tool calls before execution.
@@ -37,8 +45,7 @@ type Engine struct {
 	profile     Profile
 	workspace   string
 	interactive bool
-	auditPath   string
-	mu          sync.Mutex
+	onAudit     func(AuditEntry)
 }
 
 // New creates a policy engine.
@@ -47,18 +54,31 @@ func New(cfg Config) *Engine {
 	if p == "" {
 		p = ProfileBalanced
 	}
+	ws := resolveSymlinks(filepath.Clean(cfg.Workspace))
 	return &Engine{
 		profile:     p,
-		workspace:   filepath.Clean(cfg.Workspace),
+		workspace:   ws,
 		interactive: cfg.Interactive,
-		auditPath:   strings.TrimSpace(cfg.AuditPath),
+		onAudit:     cfg.OnAudit,
 	}
 }
 
 // Permission validates one tool call.
 func (e *Engine) Permission(_ context.Context, call agentcore.ToolCall) error {
 	err := e.check(call)
-	e.audit(call, err)
+	if e.onAudit != nil {
+		entry := AuditEntry{
+			Time:    time.Now(),
+			Profile: e.profile,
+			Tool:    call.Name,
+			Args:    summarizeArgs(call.Args),
+			Allow:   err == nil,
+		}
+		if err != nil {
+			entry.Reason = err.Error()
+		}
+		e.onAudit(entry)
+	}
 	return err
 }
 
@@ -112,42 +132,6 @@ func (e *Engine) check(call agentcore.ToolCall) error {
 	}
 }
 
-func (e *Engine) audit(call agentcore.ToolCall, decisionErr error) {
-	if e.auditPath == "" {
-		return
-	}
-
-	entry := map[string]any{
-		"time":    time.Now().Format(time.RFC3339Nano),
-		"profile": string(e.profile),
-		"tool":    call.Name,
-		"args":    summarizeArgs(call.Args),
-		"allow":   decisionErr == nil,
-	}
-	if decisionErr != nil {
-		entry["reason"] = decisionErr.Error()
-	}
-
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	data = append(data, '\n')
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if err := os.MkdirAll(filepath.Dir(e.auditPath), 0o755); err != nil {
-		return
-	}
-	f, err := os.OpenFile(e.auditPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(data)
-}
-
 func (e *Engine) allowPath(path string) error {
 	if e.workspace == "" {
 		return nil
@@ -159,10 +143,34 @@ func (e *Engine) allowPath(path string) error {
 		p = filepath.Clean(p)
 	}
 
+	// Resolve symlinks to prevent traversal via symbolic links.
+	// For non-existent paths (write target), resolve the existing parent.
+	p = resolveSymlinks(p)
+
 	if !isSubPath(e.workspace, p) {
 		return fmt.Errorf("policy: path outside workspace denied: %s", path)
 	}
 	return nil
+}
+
+// resolveSymlinks resolves symlinks in a path. For non-existent paths,
+// it resolves the longest existing ancestor and appends the remaining tail.
+func resolveSymlinks(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	// Walk up to find the deepest existing ancestor.
+	dir := filepath.Dir(p)
+	tail := filepath.Base(p)
+	for dir != p {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, tail)
+		}
+		tail = filepath.Join(filepath.Base(dir), tail)
+		p = dir
+		dir = filepath.Dir(dir)
+	}
+	return p
 }
 
 func isSubPath(base, target string) bool {
@@ -217,8 +225,8 @@ func summarizeArgs(raw json.RawMessage) map[string]any {
 		}
 		switch vv := v.(type) {
 		case string:
-			if len(vv) > 200 {
-				vv = vv[:200] + "..."
+			if len([]rune(vv)) > 200 {
+				vv = string([]rune(vv)[:200]) + "..."
 			}
 			result[k] = vv
 		default:
@@ -423,7 +431,7 @@ func isDangerousRM(args []string) bool {
 
 	for _, t := range targets {
 		switch strings.TrimSpace(t) {
-		case "/", "/*", "/.", "/..":
+		case "/", "/*", "/.", "/..", "~", "~/*":
 			return true
 		}
 	}

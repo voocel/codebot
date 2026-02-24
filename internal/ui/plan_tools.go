@@ -36,7 +36,7 @@ func (t *enterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (js
 	_ = json.Unmarshal(args, &a)
 	return json.Marshal(map[string]string{
 		"status":  "entered",
-		"message": "You are now in plan mode. Explore the codebase and write a detailed implementation plan. When done, call exit_plan_mode.",
+		"message": "You are now in plan mode. Explore the codebase and write a detailed implementation plan. Write the full plan as text, then call exit_plan_mode with title and content.",
 	})
 }
 
@@ -51,23 +51,29 @@ func newExitPlanModeTool() *exitPlanModeTool { return &exitPlanModeTool{} }
 func (t *exitPlanModeTool) Name() string  { return "exit_plan_mode" }
 func (t *exitPlanModeTool) Label() string { return "Exit Plan Mode" }
 func (t *exitPlanModeTool) Description() string {
-	return "Signal that your implementation plan is complete and ready for user review. " +
-		"Call this after writing your plan as text in the conversation."
+	return "Submit your completed implementation plan for user review. " +
+		"You MUST write the full plan as text in the conversation first so the user can see it, " +
+		"then call this tool with the same content in the 'content' parameter."
 }
 
 func (t *exitPlanModeTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("title", schema.String("Short title summarizing the plan (under 60 chars)")),
+		schema.Property("title", schema.String("Short title summarizing the plan (under 60 chars)")).Required(),
+		schema.Property("content", schema.String("The full plan content (markdown). Must match the text you just wrote.")).Required(),
 	)
 }
 
 func (t *exitPlanModeTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
-		Title string `json:"title"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
 	}
 	_ = json.Unmarshal(args, &a)
 	if a.Title == "" {
 		return nil, fmt.Errorf("title is required")
+	}
+	if a.Content == "" {
+		return nil, fmt.Errorf("content is required — write your plan first, then pass it here")
 	}
 	return json.Marshal(map[string]string{
 		"status":  "submitted",

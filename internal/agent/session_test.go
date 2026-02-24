@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -186,5 +187,130 @@ func textMessage(role agentcore.Role, text string) agentcore.Message {
 	return agentcore.Message{
 		Role:    role,
 		Content: []agentcore.ContentBlock{agentcore.TextBlock(text)},
+	}
+}
+
+// stubTool is a minimal agentcore.Tool for testing tool/prompt switching.
+type stubTool struct {
+	name string
+	desc string
+}
+
+func (t *stubTool) Name() string                                                    { return t.name }
+func (t *stubTool) Description() string                                             { return t.desc }
+func (t *stubTool) Schema() map[string]any                                          { return nil }
+func (t *stubTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) { return nil, nil }
+
+func TestSetToolsRebuildsPrompt(t *testing.T) {
+	t.Parallel()
+
+	allTools := []agentcore.Tool{
+		&stubTool{name: "read", desc: "Read file contents"},
+		&stubTool{name: "write", desc: "Write file contents"},
+		&stubTool{name: "edit", desc: "Edit file contents"},
+		&stubTool{name: "bash", desc: "Execute shell commands"},
+		&stubTool{name: "find", desc: "Find files by pattern"},
+		&stubTool{name: "grep", desc: "Search file contents"},
+		&stubTool{name: "ls", desc: "List directory contents"},
+	}
+
+	ag := agentcore.NewAgent(
+		agentcore.WithModel(&stubChatModel{}),
+		agentcore.WithTools(allTools...),
+	)
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      "/tmp/test",
+		Tools:    allTools,
+	})
+	t.Cleanup(s.Close)
+
+	// Switch to read-only tools.
+	readOnly := s.ToolsByName("read", "find", "grep", "ls")
+	s.SetTools(readOnly...)
+
+	prompt := ag.State().SystemPrompt
+	if strings.Contains(prompt, "**write**") {
+		t.Fatal("prompt should not contain write tool after switching to read-only")
+	}
+	if strings.Contains(prompt, "**edit**") {
+		t.Fatal("prompt should not contain edit tool after switching to read-only")
+	}
+	if !strings.Contains(prompt, "**read**") {
+		t.Fatal("prompt should contain read tool")
+	}
+
+	// Guidelines should omit write/edit-specific lines.
+	if strings.Contains(prompt, "Use edit for targeted changes") {
+		t.Fatal("prompt should not contain edit guideline in read-only mode")
+	}
+	if strings.Contains(prompt, "Read files before modifying them") {
+		t.Fatal("prompt should not contain modification guideline in read-only mode")
+	}
+}
+
+func TestRestoreAllToolsRebuildsPrompt(t *testing.T) {
+	t.Parallel()
+
+	allTools := []agentcore.Tool{
+		&stubTool{name: "read", desc: "Read file contents"},
+		&stubTool{name: "write", desc: "Write file contents"},
+		&stubTool{name: "edit", desc: "Edit file contents"},
+	}
+	extra := &stubTool{name: "plan_mode", desc: "Enter plan mode"}
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(allTools...))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      "/tmp/test",
+		Tools:    allTools,
+	})
+	t.Cleanup(s.Close)
+
+	s.RestoreAllTools(extra)
+
+	prompt := ag.State().SystemPrompt
+	if !strings.Contains(prompt, "**write**") {
+		t.Fatal("prompt should contain write tool after restore")
+	}
+	if !strings.Contains(prompt, "**plan_mode**") {
+		t.Fatal("prompt should contain extra plan_mode tool after restore")
+	}
+}
+
+func TestSetSystemSuffixRebuildsPrompt(t *testing.T) {
+	t.Parallel()
+
+	tools := []agentcore.Tool{
+		&stubTool{name: "read", desc: "Read file contents"},
+	}
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(tools...))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      "/tmp/test",
+		Tools:    tools,
+	})
+	t.Cleanup(s.Close)
+
+	s.SetSystemSuffix("[PLAN MODE]")
+
+	prompt := ag.State().SystemPrompt
+	if !strings.Contains(prompt, "[PLAN MODE]") {
+		t.Fatal("prompt should contain suffix")
+	}
+	if !strings.Contains(prompt, "**read**") {
+		t.Fatal("prompt should still contain tool descriptions with suffix")
+	}
+
+	// Clear suffix.
+	s.SetSystemSuffix("")
+
+	prompt = ag.State().SystemPrompt
+	if strings.Contains(prompt, "[PLAN MODE]") {
+		t.Fatal("prompt should not contain suffix after clearing")
 	}
 }

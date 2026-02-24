@@ -243,17 +243,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.Input.SetHeight(1)
 		m.ShowSummary = false
 
-		userLine := "\n" + m.renderUserMessage(text)
-
-		// Persist welcome to scrollback before it leaves the live area.
-		var output string
-		if m.ShowWelcome {
-			output = m.renderWelcome() + "\n" + userLine
-			m.ShowWelcome = false
-		} else {
-			output = userLine
-		}
-
+		output := m.renderPromptOutput(text)
+		m.ShowWelcome = false
 		if m.Driver == nil {
 			output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
 		} else if m.Running {
@@ -324,20 +315,21 @@ func (m Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	}
 	m.ShowSummary = false
 
-	userLine := "\n" + m.renderUserMessage(text)
-
-	var output string
-	if m.ShowWelcome {
-		output = m.renderWelcome() + "\n" + userLine
-		m.ShowWelcome = false
-	} else {
-		output = userLine
-	}
-
+	output := m.renderPromptOutput(text)
+	m.ShowWelcome = false
 	if m.Driver == nil {
 		output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
 	} else if err := m.Driver.Prompt(text); err != nil {
 		output += "\n" + ErrorStyle.Render("  error: "+err.Error())
 	}
 	return m, tea.Println(output)
+}
+
+// renderPromptOutput renders a user message with optional welcome banner for scrollback.
+func (m Model) renderPromptOutput(text string) string {
+	userLine := "\n" + m.renderUserMessage(text)
+	if m.ShowWelcome {
+		return m.renderWelcome() + "\n" + userLine
+	}
+	return userLine
 }

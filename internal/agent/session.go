@@ -32,9 +32,9 @@ type SessionConfig struct {
 	// Tools is the full set of tools registered with the agent.
 	// Used by ToolsByName / RestoreAllTools for plan mode filtering.
 	Tools []agentcore.Tool
-	// SystemPrompt is the base system prompt passed to the agent.
-	// Used by SetSystemSuffix to append/restore contextual instructions.
-	SystemPrompt string
+	// ContextFiles holds loaded context files for dynamic system prompt rebuilding.
+	// When tools change the prompt is regenerated from these inputs.
+	ContextFiles config.ContextFiles
 }
 
 // Session is the business-logic core that wraps Agent + session persistence.
@@ -54,9 +54,12 @@ type Session struct {
 
 	createModel ModelFactory
 
-	// Full tool set and base prompt for plan mode tool/prompt switching.
-	allTools   []agentcore.Tool
-	basePrompt string
+	// Tool/prompt management: activeTools tracks the current set, allTools is the
+	// boot-time full set. When tools change the system prompt is rebuilt automatically.
+	allTools     []agentcore.Tool
+	activeTools  []agentcore.Tool
+	contextFiles config.ContextFiles
+	suffix       string // optional prompt suffix (e.g. plan context)
 
 	listeners []func(SessionEvent)
 	unsub     func() // unsubscribe from agent events
@@ -96,7 +99,8 @@ func NewSession(cfg SessionConfig) *Session {
 		createModel: modelFactory,
 		lazyPersist: cfg.LazyPersist,
 		allTools:    cfg.Tools,
-		basePrompt:  cfg.SystemPrompt,
+		activeTools: cfg.Tools,
+		contextFiles: cfg.ContextFiles,
 	}
 
 	// Subscribe to agent events for auto-persistence and event forwarding.
@@ -405,31 +409,46 @@ func (s *Session) ToolsByName(names ...string) []agentcore.Tool {
 	return result
 }
 
-// SetTools directly replaces the agent's active tool set.
+// SetTools replaces the active tool set and rebuilds the system prompt to match.
 func (s *Session) SetTools(tools ...agentcore.Tool) {
+	s.activeTools = tools
 	s.agent.SetTools(tools...)
+	s.rebuildPrompt()
 }
 
-// RestoreAllTools restores the full tool set, optionally appending extra tools.
+// RestoreAllTools restores the full tool set, optionally appending extra tools,
+// and rebuilds the system prompt to match.
 func (s *Session) RestoreAllTools(extra ...agentcore.Tool) {
 	if len(extra) == 0 {
-		s.agent.SetTools(s.allTools...)
-		return
+		s.activeTools = s.allTools
+	} else {
+		combined := make([]agentcore.Tool, len(s.allTools), len(s.allTools)+len(extra))
+		copy(combined, s.allTools)
+		s.activeTools = append(combined, extra...)
 	}
-	tools := make([]agentcore.Tool, len(s.allTools), len(s.allTools)+len(extra))
-	copy(tools, s.allTools)
-	tools = append(tools, extra...)
-	s.agent.SetTools(tools...)
+	s.agent.SetTools(s.activeTools...)
+	s.rebuildPrompt()
 }
 
-// SetSystemSuffix appends a suffix to the base system prompt.
-// An empty suffix restores the original prompt.
+// SetSystemSuffix sets (or clears) a suffix appended after the base system prompt.
+// Triggers a prompt rebuild with the current active tools.
 func (s *Session) SetSystemSuffix(suffix string) {
-	if suffix == "" {
-		s.agent.SetSystemPrompt(s.basePrompt)
-		return
+	s.suffix = suffix
+	s.rebuildPrompt()
+}
+
+// rebuildPrompt regenerates the system prompt from the current active tools,
+// context files, and suffix, then pushes it to the agent.
+func (s *Session) rebuildPrompt() {
+	infos := make([]config.ToolInfo, len(s.activeTools))
+	for i, t := range s.activeTools {
+		infos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
 	}
-	s.agent.SetSystemPrompt(s.basePrompt + "\n\n" + suffix)
+	base := config.BuildSystemPrompt(s.cwd, s.contextFiles, infos)
+	if s.suffix != "" {
+		base += "\n\n" + s.suffix
+	}
+	s.agent.SetSystemPrompt(base)
 }
 
 // --------------------------------------------------------------------------
@@ -633,7 +652,17 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 			if err := s.compactWithReason("overflow"); err == nil {
 				// Auto-continue after overflow compaction (like pi-mono's willRetry=true).
 				go func() {
-					_ = s.agent.Continue()
+					if err := s.agent.Continue(); err != nil {
+						s.emit(SessionEvent{
+							Type:  SEError,
+							Error: fmt.Errorf("overflow auto-continue: %w", err),
+						})
+						// Forward the deferred EventAgentEnd so listeners can finalize.
+						s.emit(SessionEvent{
+							Type:       SEAgentEvent,
+							AgentEvent: &agentcore.Event{Type: agentcore.EventAgentEnd},
+						})
+					}
 				}()
 				return // Don't forward EventAgentEnd yet — agent will restart.
 			}

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,13 +11,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/memory"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/policy"
+	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
 )
 
@@ -148,7 +151,7 @@ func Boot(opts Options) (*Runtime, error) {
 		Profile:     profile,
 		Workspace:   cwd,
 		Interactive: !opts.NonTTYMode,
-		AuditPath:   filepath.Join(cwd, config.ConfigDir, "audit.log"),
+		OnAudit:     fileAuditor(filepath.Join(cwd, config.ConfigDir, "audit.log")),
 	})
 
 	builtTools := buildTools(cwd, opts.ToolFactories)
@@ -202,7 +205,7 @@ func Boot(opts Options) (*Runtime, error) {
 		Cwd:          cwd,
 		CreateModel:  createModel,
 		Tools:        builtTools,
-		SystemPrompt: systemPrompt,
+		ContextFiles: ctxFiles,
 	})
 	closeStoreOnError = false
 
@@ -301,5 +304,36 @@ func parseProfile(s string) (policy.Profile, error) {
 		return policy.ProfileBalanced, nil
 	default:
 		return "", fmt.Errorf("invalid policy profile %q (allowed: off, balanced, strict)", s)
+	}
+}
+
+func fileAuditor(path string) func(policy.AuditEntry) {
+	var mu sync.Mutex
+	return func(e policy.AuditEntry) {
+		entry := map[string]any{
+			"time":    e.Time.Format(time.RFC3339Nano),
+			"profile": string(e.Profile),
+			"tool":    e.Tool,
+			"args":    e.Args,
+			"allow":   e.Allow,
+		}
+		if e.Reason != "" {
+			entry["reason"] = e.Reason
+		}
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return
+		}
+		data = append(data, '\n')
+
+		mu.Lock()
+		defer mu.Unlock()
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = f.Write(data)
 	}
 }
