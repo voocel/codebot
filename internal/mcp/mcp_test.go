@@ -125,6 +125,31 @@ func TestMCPToolAdapter(t *testing.T) {
 	})
 }
 
+func TestManagerDirtyFlag(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager()
+	defer m.Close()
+
+	// Initially not dirty.
+	if _, ok := m.RefreshIfDirty(t.Context()); ok {
+		t.Error("expected not dirty initially")
+	}
+
+	// Simulate a list_changed notification.
+	m.dirty.Store(true)
+
+	// First check consumes the flag.
+	if _, ok := m.RefreshIfDirty(t.Context()); !ok {
+		t.Error("expected dirty after Store(true)")
+	}
+
+	// Second check: already consumed.
+	if _, ok := m.RefreshIfDirty(t.Context()); ok {
+		t.Error("expected not dirty after consume")
+	}
+}
+
 // --- helpers ---
 
 func writeMCPConfig(t *testing.T, data string) string {
@@ -135,4 +160,3 @@ func writeMCPConfig(t *testing.T, data string) string {
 	os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(data), 0o644)
 	return dir
 }
-

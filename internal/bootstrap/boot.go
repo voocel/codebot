@@ -172,6 +172,7 @@ func Boot(opts Options) (*Runtime, error) {
 	// Start MCP servers and collect their tools.
 	var mcpManager *mcpclient.Manager
 	mcpServers := mcpclient.LoadAllMCPServers(cwd)
+	baseTools := builtTools // snapshot before MCP tools are appended
 	if len(mcpServers) > 0 {
 		mcpManager = mcpclient.NewManager()
 		if errs := mcpManager.StartAll(context.Background(), mcpServers); len(errs) > 0 {
@@ -249,6 +250,20 @@ func Boot(opts Options) (*Runtime, error) {
 		Skills:       skills,
 	})
 	closeStoreOnError = false
+
+	// Before each agent turn, refresh MCP tools if any server signaled a change.
+	if mcpManager != nil {
+		sess.SetBeforePrompt(func() {
+			mcpTools, ok := mcpManager.RefreshIfDirty(context.Background())
+			if !ok {
+				return
+			}
+			all := make([]agentcore.Tool, len(baseTools), len(baseTools)+len(mcpTools))
+			copy(all, baseTools)
+			all = append(all, mcpTools...)
+			sess.ReplaceAllTools(all)
+		})
+	}
 
 	return &Runtime{
 		Cwd:           cwd,

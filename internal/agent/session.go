@@ -63,6 +63,7 @@ type Session struct {
 	contextFiles config.ContextFiles
 	skills       []config.Skill
 	suffix       string // optional prompt suffix (e.g. plan context)
+	beforePrompt func() // called before each agent turn (e.g. MCP tool refresh)
 
 	listeners []func(SessionEvent)
 	unsub     func() // unsubscribe from agent events
@@ -118,7 +119,15 @@ func NewSession(cfg SessionConfig) *Session {
 
 // Prompt sends a user message to the agent.
 func (s *Session) Prompt(text string) error {
+	if s.beforePrompt != nil {
+		s.beforePrompt()
+	}
 	return s.agent.Prompt(text)
+}
+
+// SetBeforePrompt registers a function called before each agent turn.
+func (s *Session) SetBeforePrompt(fn func()) {
+	s.beforePrompt = fn
 }
 
 // Steer queues a steering message to interrupt the agent mid-run.
@@ -431,6 +440,15 @@ func (s *Session) RestoreAllTools(extra ...agentcore.Tool) {
 		s.activeTools = append(combined, extra...)
 	}
 	s.agent.SetTools(s.activeTools...)
+	s.rebuildPrompt()
+}
+
+// ReplaceAllTools replaces the base tool set, updates active tools, and rebuilds
+// the system prompt. Must be called from the main loop (not from a goroutine).
+func (s *Session) ReplaceAllTools(tools []agentcore.Tool) {
+	s.allTools = tools
+	s.activeTools = tools
+	s.agent.SetTools(tools...)
 	s.rebuildPrompt()
 }
 

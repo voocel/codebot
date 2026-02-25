@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/voocel/agentcore"
 )
@@ -12,6 +13,7 @@ import (
 type Manager struct {
 	mu      sync.Mutex
 	clients map[string]*Client
+	dirty   atomic.Bool // set when any server signals tools/list_changed
 }
 
 // NewManager creates an empty Manager.
@@ -31,7 +33,7 @@ func (m *Manager) StartAll(ctx context.Context, servers map[string]ServerConfig)
 	ch := make(chan result, len(servers))
 	for name, cfg := range servers {
 		go func(name string, cfg ServerConfig) {
-			c, err := Connect(ctx, name, cfg)
+			c, err := Connect(ctx, name, cfg, func() { m.dirty.Store(true) })
 			ch <- result{name: name, client: c, err: err}
 		}(name, cfg)
 	}
@@ -48,6 +50,16 @@ func (m *Manager) StartAll(ctx context.Context, servers map[string]ServerConfig)
 		m.mu.Unlock()
 	}
 	return errs
+}
+
+// RefreshIfDirty re-fetches tools from all servers if any sent a list_changed
+// notification since the last call. Returns the new tool list and true,
+// or nil and false if nothing changed. Safe to call from the main loop.
+func (m *Manager) RefreshIfDirty(ctx context.Context) ([]agentcore.Tool, bool) {
+	if !m.dirty.CompareAndSwap(true, false) {
+		return nil, false
+	}
+	return m.Tools(ctx), true
 }
 
 // Tools returns all MCP tools from connected servers as agentcore.Tool adapters.

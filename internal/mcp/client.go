@@ -15,12 +15,14 @@ const connectTimeout = 30 * time.Second
 
 // Client wraps a single MCP server connection.
 type Client struct {
-	name    string
-	session *mcp.ClientSession
+	name     string
+	session  *mcp.ClientSession
+	onChange func() // called when server sends notifications/tools/list_changed
 }
 
 // Connect establishes an MCP connection using the transport specified in cfg.
-func Connect(ctx context.Context, name string, cfg ServerConfig) (*Client, error) {
+// onChange is called when the server sends a tools/list_changed notification.
+func Connect(ctx context.Context, name string, cfg ServerConfig, onChange func()) (*Client, error) {
 	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 
@@ -32,17 +34,29 @@ func Connect(ctx context.Context, name string, cfg ServerConfig) (*Client, error
 		transport = buildStdioTransport(cfg)
 	}
 
+	c := &Client{name: name, onChange: onChange}
+
+	var opts *mcp.ClientOptions
+	if onChange != nil {
+		opts = &mcp.ClientOptions{
+			ToolListChangedHandler: func(_ context.Context, _ *mcp.ToolListChangedRequest) {
+				c.onChange()
+			},
+		}
+	}
+
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "codebot",
 		Version: "1.0.0",
-	}, nil)
+	}, opts)
 
 	session, err := client.Connect(connectCtx, transport, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s: %w", name, err)
 	}
 
-	return &Client{name: name, session: session}, nil
+	c.session = session
+	return c, nil
 }
 
 func buildStdioTransport(cfg ServerConfig) *mcp.CommandTransport {

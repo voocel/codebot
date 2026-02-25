@@ -41,7 +41,7 @@ Each layer has one job. No layer knows about the layers above it.
 **Interface**
 - Interactive TUI with real-time streaming and markdown rendering
 - Non-interactive print mode for pipes and scripts (`-p`)
-- Slash commands: `/model`, `/thinking`, `/compact`, `/fork`, `/resume`, ...
+- Slash commands: `/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
 
 ## Quick Start
 
