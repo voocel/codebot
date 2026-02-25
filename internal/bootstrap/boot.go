@@ -165,8 +165,8 @@ func Boot(opts Options) (*Runtime, error) {
 
 	builtTools := buildTools(cwd, opts.ToolFactories)
 	builtTools = append(builtTools,
-		localtools.NewWebFetch(),
-		localtools.NewWebSearch(settings.SearchAPIKey),
+		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
+		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
 	)
 
 	// Start MCP servers and collect their tools.

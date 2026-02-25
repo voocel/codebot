@@ -11,9 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"codeberg.org/readeck/go-readability/v2"
-	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
-	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
 	"github.com/voocel/agentcore/schema"
 )
 
@@ -21,20 +18,43 @@ const (
 	fetchTimeout = 30 * time.Second
 	fetchMaxRead = 5 * 1024 * 1024 // 5MB max download
 	fetchMaxOut  = 50 * 1024       // 50KB output limit
-	fetchUA      = "Mozilla/5.0 (compatible; Codebot/1.0)"
+	jinaReadURL  = "https://r.jina.ai/"
 )
 
-// WebFetchTool fetches a URL and converts its content to Markdown.
-type WebFetchTool struct {
-	Client *http.Client // nil uses default with timeout
+// FetchProvider performs web page content extraction.
+type FetchProvider interface {
+	Fetch(ctx context.Context, targetURL string) (string, error)
 }
 
-func NewWebFetch() *WebFetchTool { return &WebFetchTool{} }
+// WebFetchTool fetches web content and returns markdown.
+type WebFetchTool struct {
+	provider     FetchProvider
+	providerName string
+}
+
+// NewWebFetch creates a WebFetchTool for the configured provider.
+// Supported providers: tavily, jina.
+func NewWebFetch(providerName, apiKey string) *WebFetchTool {
+	name := strings.ToLower(strings.TrimSpace(providerName))
+	switch name {
+	case "tavily":
+		var provider FetchProvider
+		if apiKey != "" {
+			provider = &TavilyFetchProvider{APIKey: apiKey}
+		}
+		return &WebFetchTool{provider: provider, providerName: "tavily"}
+	default:
+		return &WebFetchTool{
+			provider:     &JinaFetchProvider{APIKey: apiKey},
+			providerName: "jina",
+		}
+	}
+}
 
 func (t *WebFetchTool) Name() string  { return "web_fetch" }
 func (t *WebFetchTool) Label() string { return "Fetch Web Page" }
 func (t *WebFetchTool) Description() string {
-	return "Fetch a web page and convert its main content to Markdown. Strips ads, navigation, and scripts. Output is truncated to 50KB."
+	return "Fetch a web page and return markdown content. Output is truncated to 50KB."
 }
 func (t *WebFetchTool) Schema() map[string]any {
 	return schema.Object(
@@ -57,70 +77,33 @@ func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (json.
 		return nil, fmt.Errorf("url is required")
 	}
 
-	parsed, err := url.Parse(a.URL)
+	targetURL, err := url.Parse(strings.TrimSpace(a.URL))
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)
 	}
-	if parsed.Scheme == "http" {
-		parsed.Scheme = "https"
-	}
-	if parsed.Scheme != "https" {
+	switch strings.ToLower(targetURL.Scheme) {
+	case "http", "https":
+	default:
 		return nil, fmt.Errorf("only http/https URLs are supported")
 	}
 
-	client := t.Client
-	if client == nil {
-		client = &http.Client{Timeout: fetchTimeout}
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", fetchUA)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", parsed.Host, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, parsed.Host)
-	}
-
-	body := io.LimitReader(resp.Body, fetchMaxRead)
-
-	// Extract main content using readability.
-	article, err := readability.FromReader(body, parsed)
-	if err != nil {
-		return nil, fmt.Errorf("extract content: %w", err)
-	}
-	if article.Node == nil {
-		return json.Marshal(fmt.Sprintf("Could not extract readable content from %s", parsed.Host))
-	}
-
-	// Convert the readability node to Markdown.
-	domain := parsed.Scheme + "://" + parsed.Host
-	md, err := htmltomarkdown.ConvertNode(article.Node, converter.WithDomain(domain))
-	if err != nil {
-		// Fallback: render as plain text.
-		var buf bytes.Buffer
-		if rerr := article.RenderText(&buf); rerr != nil {
-			return nil, fmt.Errorf("convert content: %w", err)
+	if t.provider == nil {
+		if t.providerName != "" {
+			return json.Marshal(fmt.Sprintf("Web fetch provider %q is not configured. Supported providers: tavily, jina.", t.providerName))
 		}
-		md = buf.Bytes()
+		return json.Marshal("Web fetch is not configured. Set search_provider to tavily/jina with corresponding API key.")
+	}
+
+	content, err := t.provider.Fetch(ctx, targetURL.String())
+	if err != nil {
+		return nil, fmt.Errorf("fetch failed: %w", err)
 	}
 
 	var sb strings.Builder
-	if title := article.Title(); title != "" {
-		fmt.Fprintf(&sb, "# %s\n\n", title)
-	}
 	if a.Prompt != "" {
 		fmt.Fprintf(&sb, "> Extraction focus: %s\n\n", a.Prompt)
 	}
-	sb.Write(md)
+	sb.WriteString(content)
 
 	result := sb.String()
 	if len(result) > fetchMaxOut {
@@ -128,4 +111,132 @@ func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (json.
 	}
 
 	return json.Marshal(result)
+}
+
+// ---------------------------------------------------------------------------
+// Tavily fetch provider (POST https://api.tavily.com/extract)
+// ---------------------------------------------------------------------------
+
+type TavilyFetchProvider struct {
+	APIKey string
+	Client *http.Client
+}
+
+type tavilyExtractRequest struct {
+	URLs   []string `json:"urls"`
+	Format string   `json:"format,omitempty"`
+}
+
+type tavilyExtractResponse struct {
+	Results []struct {
+		URL        string `json:"url"`
+		RawContent string `json:"raw_content"`
+	} `json:"results"`
+	FailedResults []struct {
+		URL   string `json:"url"`
+		Error string `json:"error"`
+	} `json:"failed_results"`
+}
+
+func (p *TavilyFetchProvider) Fetch(ctx context.Context, targetURL string) (string, error) {
+	body, err := json.Marshal(tavilyExtractRequest{
+		URLs:   []string{targetURL},
+		Format: "markdown",
+	})
+	if err != nil {
+		return "", err
+	}
+
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: fetchTimeout}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.tavily.com/extract", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.APIKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("tavily extract API error (HTTP %d): %s", resp.StatusCode, string(errBody))
+	}
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, fetchMaxRead))
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	var tr tavilyExtractResponse
+	if err := json.Unmarshal(respBody, &tr); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(tr.Results) == 0 {
+		if len(tr.FailedResults) > 0 {
+			return "", fmt.Errorf("tavily extract failed: %s", tr.FailedResults[0].Error)
+		}
+		return "", fmt.Errorf("no content extracted")
+	}
+	return tr.Results[0].RawContent, nil
+}
+
+// ---------------------------------------------------------------------------
+// Jina fetch provider (GET https://r.jina.ai/{url})
+// ---------------------------------------------------------------------------
+
+type JinaFetchProvider struct {
+	APIKey  string
+	Client  *http.Client
+	BaseURL string
+}
+
+func (p *JinaFetchProvider) Fetch(ctx context.Context, targetURL string) (string, error) {
+	baseURL := strings.TrimSpace(p.BaseURL)
+	if baseURL == "" {
+		baseURL = jinaReadURL
+	}
+	if !strings.HasSuffix(baseURL, "/") {
+		baseURL += "/"
+	}
+
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: fetchTimeout}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+targetURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "text/markdown")
+	req.Header.Set("X-Respond-With", "markdown")
+	if strings.TrimSpace(p.APIKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(p.APIKey))
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch via jina reader: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("jina reader API error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, fetchMaxRead))
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+	return string(body), nil
 }

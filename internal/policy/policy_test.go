@@ -117,6 +117,12 @@ func TestIsDangerousCommandAvoidsFalsePositives(t *testing.T) {
 		"wget http://localhost:8080/health",
 		`echo "don't use sudo"`,
 		`grep "rm -rf /" scripts.txt`,
+		// Command wrappers in safe usage.
+		"env FOO=bar go test ./...",
+		"command -v rm",
+		"exec go build ./...",
+		"eval echo hello",
+		"builtin echo test",
 	}
 
 	for _, c := range cases {
@@ -141,6 +147,22 @@ func TestIsDangerousCommandBlocksHighRiskPatterns(t *testing.T) {
 		"mkfs.ext4 /dev/sdb1",
 		"echo a > /dev/sda",
 		"shutdown -h now",
+		// Workspace-relative destructive patterns.
+		"rm -rf .",
+		"rm -rf ./",
+		"rm -rf ..",
+		"rm -rf ../",
+		"rm -rf *",
+		"rm -rf ../*",
+		// Command wrapper bypass.
+		"env sudo rm -rf /",
+		"env -i sudo rm -rf /",
+		"env FOO=bar sudo rm -rf /",
+		"command rm -rf /",
+		"builtin rm -rf /",
+		"exec rm -rf /",
+		"eval sudo rm -rf /",
+		`eval "rm -rf /"`,
 	}
 
 	for _, c := range cases {

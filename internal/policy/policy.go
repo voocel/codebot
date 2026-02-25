@@ -270,6 +270,12 @@ func isDangerousSegment(seg string) bool {
 	base := commandBase(fields[0])
 	rest := fields[1:]
 
+	// Unwrap command wrappers so "env sudo rm -rf /" is treated as "sudo rm -rf /".
+	base, rest = unwrapPrefix(base, rest)
+	if base == "" {
+		return false
+	}
+
 	switch base {
 	case "sudo":
 		return true
@@ -384,6 +390,38 @@ func commandBase(raw string) string {
 	return strings.ToLower(path.Base(raw))
 }
 
+// unwrapPrefix strips command wrappers (env, command, builtin, eval, exec)
+// to expose the real command. For example:
+//
+//	"env" ["sudo", "rm"] → "sudo" ["rm"]
+//	"command" ["-v", "rm"] → "rm" []
+//	"eval" ["rm", "-rf", "/"] → "rm" ["-rf", "/"]
+func unwrapPrefix(base string, rest []string) (string, []string) {
+	for len(rest) > 0 {
+		switch base {
+		case "env":
+			// Skip flags (-i, -u, etc.) and inline assignments (FOO=bar).
+			for len(rest) > 0 && (strings.HasPrefix(rest[0], "-") || isEnvAssignment(rest[0])) {
+				rest = rest[1:]
+			}
+		case "command", "builtin", "exec":
+			for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+				rest = rest[1:]
+			}
+		case "eval":
+			// eval takes no flags; next token is the command.
+		default:
+			return base, rest
+		}
+		if len(rest) == 0 {
+			return "", nil
+		}
+		base = commandBase(rest[0])
+		rest = rest[1:]
+	}
+	return base, rest
+}
+
 func isDangerousRM(args []string) bool {
 	recursive := false
 	force := false
@@ -431,7 +469,8 @@ func isDangerousRM(args []string) bool {
 
 	for _, t := range targets {
 		switch strings.TrimSpace(t) {
-		case "/", "/*", "/.", "/..", "~", "~/*":
+		case "/", "/*", "/.", "/..", "~", "~/*",
+			".", "./", "..", "../", "*", "../*":
 			return true
 		}
 	}

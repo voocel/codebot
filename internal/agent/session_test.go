@@ -280,6 +280,145 @@ func TestRestoreAllToolsRebuildsPrompt(t *testing.T) {
 	}
 }
 
+func TestResolveCredentialsDefaultProvider(t *testing.T) {
+	t.Parallel()
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent: ag,
+		Settings: config.Resolved{
+			DefaultProvider: "openai",
+			APIKey:          "openai-key",
+			BaseURL:         "https://openai.example.com",
+		},
+		Cwd: t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	apiKey, baseURL := s.resolveCredentials("openai")
+	if apiKey != "openai-key" {
+		t.Fatalf("expected openai-key, got %s", apiKey)
+	}
+	if baseURL != "https://openai.example.com" {
+		t.Fatalf("expected https://openai.example.com, got %s", baseURL)
+	}
+}
+
+func TestResolveCredentialsCrossProviderFromEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-key")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.com")
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent: ag,
+		Settings: config.Resolved{
+			DefaultProvider: "openai",
+			APIKey:          "openai-key",
+			BaseURL:         "https://openai.example.com",
+		},
+		Cwd: t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	apiKey, baseURL := s.resolveCredentials("anthropic")
+	if apiKey != "anthropic-key" {
+		t.Fatalf("expected anthropic-key, got %s", apiKey)
+	}
+	if baseURL != "https://anthropic.example.com" {
+		t.Fatalf("expected https://anthropic.example.com, got %s", baseURL)
+	}
+}
+
+func TestResolveCredentialsCrossProviderNoFallback(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent: ag,
+		Settings: config.Resolved{
+			DefaultProvider: "openai",
+			APIKey:          "openai-key",
+			BaseURL:         "https://openai.example.com",
+		},
+		Cwd: t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	apiKey, baseURL := s.resolveCredentials("anthropic")
+	if apiKey != "" {
+		t.Fatalf("expected empty apiKey for unconfigured provider, got %s", apiKey)
+	}
+	if baseURL != "" {
+		t.Fatalf("expected empty baseURL for unconfigured provider, got %s", baseURL)
+	}
+}
+
+func TestSwitchSessionCrossProviderCredentials(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-key")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+
+	dir := t.TempDir()
+	mgr := storage.NewManager(dir)
+	current, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create current session: %v", err)
+	}
+	t.Cleanup(func() { _ = current.Close() })
+
+	target, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create target session: %v", err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+
+	if err := target.AppendMessage(textMessage(agentcore.RoleUser, "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := target.AppendModelChange("anthropic", "claude-sonnet-4-5"); err != nil {
+		t.Fatalf("append model change: %v", err)
+	}
+
+	var capturedKey, capturedBase string
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:   ag,
+		Store:   current,
+		Manager: mgr,
+		Settings: config.Resolved{
+			DefaultProvider: "openai",
+			DefaultModel:    "gpt-5",
+			APIKey:          "openai-key",
+			BaseURL:         "https://openai.example.com",
+			ContextWindow:   128000,
+			MaxTurns:        30,
+		},
+		Cwd: dir,
+		CreateModel: func(_, _ string, apiKey, baseURL string) (agentcore.ChatModel, error) {
+			capturedKey = apiKey
+			capturedBase = baseURL
+			return &stubChatModel{}, nil
+		},
+	})
+	t.Cleanup(s.Close)
+
+	if err := s.SwitchSession(target.Header().SessionID); err != nil {
+		t.Fatalf("switch session: %v", err)
+	}
+
+	if capturedKey != "anthropic-key" {
+		t.Fatalf("expected CreateModel to receive anthropic-key, got %s", capturedKey)
+	}
+	if capturedBase != "" {
+		t.Fatalf("expected empty baseURL for anthropic, got %s", capturedBase)
+	}
+	if s.APIKey() != "anthropic-key" {
+		t.Fatalf("expected session apiKey=anthropic-key, got %s", s.APIKey())
+	}
+	if s.BaseURL() != "" {
+		t.Fatalf("expected session baseURL empty, got %s", s.BaseURL())
+	}
+}
+
 func TestSetSystemSuffixRebuildsPrompt(t *testing.T) {
 	t.Parallel()
 

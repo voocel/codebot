@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ConfigDir is the project-level config directory name.
@@ -212,12 +213,34 @@ func ResolveAll(cwd string) Resolved {
 		settings.DefaultModel = DefaultModelName(settings.DefaultProvider)
 	}
 
-	// Search API key: settings > env
-	if settings.SearchAPIKey == "" {
-		settings.SearchAPIKey = os.Getenv("TAVILY_API_KEY")
-	}
-	if settings.SearchProvider == "" && settings.SearchAPIKey != "" {
-		settings.SearchProvider = "tavily"
+	// Search provider / API key resolution.
+	searchProvider := strings.ToLower(strings.TrimSpace(settings.SearchProvider))
+	switch searchProvider {
+	case "jina", "jina.ai", "jinaai":
+		settings.SearchProvider = "jina"
+		if settings.SearchAPIKey == "" {
+			settings.SearchAPIKey = os.Getenv("JINA_API_KEY")
+		}
+	case "tavily":
+		if settings.SearchAPIKey == "" {
+			settings.SearchAPIKey = os.Getenv("TAVILY_API_KEY")
+		}
+	default:
+		// Backward-compatible default: when provider is unset and a key is configured
+		// in settings, keep using tavily.
+		if settings.SearchProvider == "" && settings.SearchAPIKey != "" {
+			settings.SearchProvider = "tavily"
+			break
+		}
+		if settings.SearchProvider == "" {
+			if tavilyKey := os.Getenv("TAVILY_API_KEY"); tavilyKey != "" {
+				settings.SearchProvider = "tavily"
+				settings.SearchAPIKey = tavilyKey
+			} else if jinaKey := os.Getenv("JINA_API_KEY"); jinaKey != "" {
+				settings.SearchProvider = "jina"
+				settings.SearchAPIKey = jinaKey
+			}
+		}
 	}
 
 	return settings

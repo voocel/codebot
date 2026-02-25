@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -157,8 +158,8 @@ func (s *Session) ClearConversation() {
 
 // SetModel switches the LLM model and persists the change.
 func (s *Session) SetModel(prov, model, apiKey string) error {
+	_, baseURL := s.resolveCredentials(prov)
 	s.mu.Lock()
-	baseURL := s.baseURL
 	store := s.store
 	s.mu.Unlock()
 	chatModel, err := s.createModel(prov, model, apiKey, baseURL)
@@ -178,6 +179,7 @@ func (s *Session) SetModel(prov, model, apiKey string) error {
 	s.provider = prov
 	s.modelName = model
 	s.apiKey = apiKey
+	s.baseURL = baseURL
 	s.mu.Unlock()
 
 	s.emit(SessionEvent{
@@ -203,9 +205,7 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 		return "", err
 	}
 
-	s.mu.Lock()
-	apiKey := s.apiKey
-	s.mu.Unlock()
+	apiKey, _ := s.resolveCredentials(entry.Provider)
 
 	if err := s.SetModel(entry.Provider, entry.ID, apiKey); err != nil {
 		return "", err
@@ -277,6 +277,25 @@ func (s *Session) BaseURL() string {
 	return s.baseURL
 }
 
+// resolveCredentials returns the API key and base URL for the given provider.
+// For the default provider, configured credentials are returned.
+// For other providers, only provider-specific environment variables are used;
+// default provider credentials are never leaked to a different provider.
+func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
+	s.mu.Lock()
+	defaultProv := s.settings.DefaultProvider
+	defaultKey := s.settings.APIKey
+	defaultBase := s.settings.BaseURL
+	s.mu.Unlock()
+
+	if prov == defaultProv {
+		return defaultKey, defaultBase
+	}
+	apiKey = os.Getenv(config.EnvKeyName(prov))
+	baseURL = os.Getenv(config.BaseURLEnvName(prov))
+	return
+}
+
 // --------------------------------------------------------------------------
 // Session operations
 // --------------------------------------------------------------------------
@@ -317,8 +336,6 @@ func (s *Session) SwitchSession(id string) error {
 	s.mu.Lock()
 	oldStore := s.store
 	mgr := s.mgr
-	apiKey := s.apiKey
-	baseURL := s.baseURL
 	curProvider := s.provider
 	curModel := s.modelName
 	s.mu.Unlock()
@@ -349,9 +366,11 @@ func (s *Session) SwitchSession(id string) error {
 		targetModel = snapshot.Model
 	}
 
+	targetKey, targetBase := s.resolveCredentials(targetProvider)
+
 	var restoredModel agentcore.ChatModel
 	if snapshot.Model != "" || snapshot.Provider != "" {
-		restoredModel, err = s.createModel(targetProvider, targetModel, apiKey, baseURL)
+		restoredModel, err = s.createModel(targetProvider, targetModel, targetKey, targetBase)
 		if err != nil {
 			return fmt.Errorf("restore model %s/%s: %w", targetProvider, targetModel, err)
 		}
@@ -380,6 +399,8 @@ func (s *Session) SwitchSession(id string) error {
 	s.store = newStore
 	s.provider = targetProvider
 	s.modelName = targetModel
+	s.apiKey = targetKey
+	s.baseURL = targetBase
 	s.autoNamed = newStore.Header().Name != ""
 	if snapshot.Thinking != "" {
 		clamped := snapshot.Thinking
