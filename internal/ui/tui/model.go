@@ -250,7 +250,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.Input.SetHeight(1)
 		m.ShowSummary = false
 
-		output := m.renderPromptOutput(text)
+		output := m.RenderPromptOutput(text)
 		m.ShowWelcome = false
 		if m.Driver == nil {
 			output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
@@ -322,7 +322,7 @@ func (m Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	}
 	m.ShowSummary = false
 
-	output := m.renderPromptOutput(text)
+	output := m.RenderPromptOutput(text)
 	m.ShowWelcome = false
 	if m.Driver == nil {
 		output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
@@ -332,8 +332,8 @@ func (m Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Println(output)
 }
 
-// renderPromptOutput renders a user message with optional welcome banner for scrollback.
-func (m Model) renderPromptOutput(text string) string {
+// RenderPromptOutput renders a user message with optional welcome banner for scrollback.
+func (m Model) RenderPromptOutput(text string) string {
 	userLine := "\n" + m.renderUserMessage(text)
 	if m.ShowWelcome {
 		return m.renderWelcome() + "\n" + userLine

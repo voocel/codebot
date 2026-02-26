@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 )
 
 func TestTavilySearchReal(t *testing.T) {
-	key := "TAVILY_API_KEY"
+	key := os.Getenv("TAVILY_API_KEY")
 
 	tool := NewWebSearch("tavily", key)
 	args, _ := json.Marshal(webSearchArgs{Query: "Go programming language", MaxResults: 3})
@@ -25,7 +26,7 @@ func TestTavilySearchReal(t *testing.T) {
 }
 
 func TestJinaSearchReal(t *testing.T) {
-	key := "JINA_API_KEY"
+	key := os.Getenv("JINA_API_KEY")
 
 	tool := NewWebSearch("jina", key)
 	args, _ := json.Marshal(webSearchArgs{Query: "Go programming language", MaxResults: 3})

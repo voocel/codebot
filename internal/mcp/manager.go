@@ -11,14 +11,18 @@ import (
 
 // Manager manages the lifecycle of multiple MCP server connections.
 type Manager struct {
-	mu      sync.Mutex
-	clients map[string]*Client
-	dirty   atomic.Bool // set when any server signals tools/list_changed
+	mu       sync.Mutex
+	clients  map[string]*Client
+	failures map[string]string // server name → error message
+	dirty    atomic.Bool       // set when any server signals tools/list_changed
 }
 
 // NewManager creates an empty Manager.
 func NewManager() *Manager {
-	return &Manager{clients: make(map[string]*Client)}
+	return &Manager{
+		clients:  make(map[string]*Client),
+		failures: make(map[string]string),
+	}
 }
 
 // StartAll connects to all configured MCP servers in parallel.
@@ -43,6 +47,9 @@ func (m *Manager) StartAll(ctx context.Context, servers map[string]ServerConfig)
 		r := <-ch
 		if r.err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", r.name, r.err))
+			m.mu.Lock()
+			m.failures[r.name] = r.err.Error()
+			m.mu.Unlock()
 			continue
 		}
 		m.mu.Lock()
@@ -103,4 +110,30 @@ func (m *Manager) Close() {
 		_ = c.Close()
 		delete(m.clients, name)
 	}
+}
+
+// ServerStatus describes a connected or failed MCP server.
+type ServerStatus struct {
+	Name      string
+	ToolCount int
+	Error     string // non-empty if connection failed
+}
+
+// Status returns the status of all MCP servers, including failed ones.
+func (m *Manager) Status(ctx context.Context) []ServerStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]ServerStatus, 0, len(m.clients)+len(m.failures))
+	for _, c := range m.clients {
+		n := 0
+		if tools, err := c.ListTools(ctx); err == nil {
+			n = len(tools)
+		}
+		out = append(out, ServerStatus{Name: c.Name(), ToolCount: n})
+	}
+	for name, errMsg := range m.failures {
+		out = append(out, ServerStatus{Name: name, Error: errMsg})
+	}
+	return out
 }

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -149,6 +150,14 @@ func (a *App) commandRegistry() map[string]commandSpec {
 			Risk:        policy.RiskLow,
 			Run: func(_ []string) tea.Cmd {
 				return a.cmdSettings()
+			},
+		},
+		"/mcp": {
+			Usage:       "/mcp",
+			Description: "Show MCP server status",
+			Risk:        policy.RiskLow,
+			Run: func(_ []string) tea.Cmd {
+				return a.cmdMCP()
 			},
 		},
 		"/copy": {
@@ -448,6 +457,36 @@ func (a *App) cmdCopy() tea.Cmd {
 	}
 	n := len([]rune(text))
 	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Copied %d characters to clipboard.", n)))
+}
+
+func (a *App) cmdMCP() tea.Cmd {
+	if a.MCPManager == nil {
+		return tui.SendCommandResult(tui.CommandStyle.Render("No MCP servers configured."))
+	}
+
+	servers := a.MCPManager.Status(context.Background())
+	if len(servers) == 0 {
+		return tui.SendCommandResult(tui.CommandStyle.Render("No MCP servers found."))
+	}
+
+	var connected, failed int
+	totalTools := 0
+	var sb strings.Builder
+	sb.WriteString("\nMCP Servers:\n")
+	for _, s := range servers {
+		if s.Error != "" {
+			fmt.Fprintf(&sb, "%s %-20s %s\n",
+				tui.ErrorStyle.Render("●"), s.Name, tui.ErrorStyle.Render(s.Error))
+			failed++
+		} else {
+			fmt.Fprintf(&sb, "%s %-20s %d tools\n",
+				tui.DiffAddStyle.Render("●"), s.Name, s.ToolCount)
+			totalTools += s.ToolCount
+			connected++
+		}
+	}
+	fmt.Fprintf(&sb, "\nTotal: %d connected, %d failed, %d tools", connected, failed, totalTools)
+	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 }
 
 func (a *App) cmdReload() tea.Cmd {

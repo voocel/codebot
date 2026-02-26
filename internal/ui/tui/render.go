@@ -135,7 +135,7 @@ func (m *Model) RenderMarkdown(content string) string {
 // renderRunSummary renders per-run stats shown after agent completion.
 func (m *Model) renderRunSummary() string {
 	s := m.RunStats
-	return MutedStyle.Render(fmt.Sprintf("  ─ %d turns · %d tools · ↑%s ↓%s tokens",
+	return MutedStyle.Render(fmt.Sprintf("─ %d turns · %d tools · ↑%s ↓%s tokens",
 		s.Turns, s.ToolCalls, FormatTokens(s.Input), FormatTokens(s.Output)))
 }
 

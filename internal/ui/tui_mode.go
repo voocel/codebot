@@ -6,13 +6,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, mcpMgr *mcpclient.Manager) error {
 	adapter := &App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -21,6 +22,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 		Templates:     config.LoadPromptTemplates(cwd),
 		Skills:        sess.Skills(),
 		PlanStore:     storage.NewPlanStore(config.PlansDir(cwd)),
+		MCPManager:    mcpMgr,
 	}
 
 	m := tui.New(sess, modelName, adapter.Config())

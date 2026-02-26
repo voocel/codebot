@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/tui"
@@ -26,6 +27,9 @@ type App struct {
 
 	// Skills are loaded skill definitions.
 	Skills []config.Skill
+
+	// MCPManager manages MCP server connections.
+	MCPManager *mcpclient.Manager
 
 	// PlanStore persists plans to <cwd>/.codebot/plans/.
 	PlanStore *storage.PlanStore
@@ -89,7 +93,9 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 			return false, nil
 		}
 		m.Input.Reset()
-		return true, a.handleCommand(text)
+		echo := tea.Println(m.RenderPromptOutput(text))
+		m.ShowWelcome = false
+		return true, tea.Sequence(echo, a.handleCommand(text))
 	}
 }
 
