@@ -123,6 +123,22 @@ func buildGuidelines(tools []ToolInfo) string {
 		"- Explain what you're doing briefly, then act. Don't ask for permission unless the operation is destructive.",
 		"- If a task is ambiguous, ask for clarification.",
 	)
+	if has["subagent"] {
+		lines = append(lines,
+			"- When exploring multiple files or doing open-ended searches, use the subagent tool (explore type) to keep the main context clean.",
+			"- Use read/grep directly when you already know the specific file path.",
+			"- Sub-agents cannot see conversation history — provide sufficient context in the task description.",
+			"- Use the tasks array to launch multiple sub-agents in parallel when needed.",
+			"- Set background=true for long-running tasks; you will receive a <task-notification> when it completes and can continue other work meanwhile.",
+		)
+	}
+	if has["enter_plan_mode"] {
+		lines = append(lines,
+			"- For non-trivial tasks (new features, multi-file changes, architectural decisions), proactively use enter_plan_mode to explore and plan before coding.",
+			"- Skip plan mode for simple fixes, single-line changes, or when the user gives very specific instructions.",
+			"- If the user says \"plan\", \"think through\", \"design first\", or similar — enter plan mode.",
+		)
+	}
 	return strings.Join(lines, "\n")
 }
 

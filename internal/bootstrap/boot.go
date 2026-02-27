@@ -169,10 +169,15 @@ func Boot(opts Options) (*Runtime, error) {
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
 	)
 
+	// SubAgent tool: delegate tasks to isolated sub-agents (explore, plan, coder).
+	// Background mode is natively supported by agentcore.SubAgentTool.
+	subagentTool := buildSubAgentTool(cwd, chatModel, builtTools)
+	builtTools = append(builtTools, subagentTool)
+
 	// Start MCP servers and collect their tools.
 	var mcpManager *mcpclient.Manager
 	mcpServers := mcpclient.LoadAllMCPServers(cwd)
-	baseTools := builtTools // snapshot before MCP tools are appended
+	baseTools := builtTools // snapshot before MCP tools are appended (includes subagent)
 	if len(mcpServers) > 0 {
 		mcpManager = mcpclient.NewManager()
 		if errs := mcpManager.StartAll(context.Background(), mcpServers); len(errs) > 0 {
@@ -219,6 +224,9 @@ func Boot(opts Options) (*Runtime, error) {
 		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
 		agentcore.WithPermission(pol.Permission),
 	)
+
+	// Bind background task notifier so completed tasks are injected as follow-up messages.
+	subagentTool.SetNotifyFn(ag.FollowUp)
 
 	if len(snapshot.Messages) > 0 {
 		if err := ag.SetMessages(snapshot.Messages); err != nil {

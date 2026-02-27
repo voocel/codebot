@@ -19,8 +19,21 @@ func newEnterPlanModeTool() *enterPlanModeTool { return &enterPlanModeTool{} }
 func (t *enterPlanModeTool) Name() string  { return "enter_plan_mode" }
 func (t *enterPlanModeTool) Label() string { return "Enter Plan Mode" }
 func (t *enterPlanModeTool) Description() string {
-	return "Enter plan mode to explore the codebase and design an implementation plan before making changes. " +
-		"Use this proactively when a task is non-trivial and benefits from planning first."
+	return `Enter plan mode to explore the codebase and design an implementation plan before making changes.
+
+Use this PROACTIVELY when ANY of these apply:
+- New feature or non-trivial functionality
+- Multiple valid implementation approaches exist
+- Changes affect existing behavior or structure
+- Architectural decisions needed (patterns, technologies)
+- Multi-file changes (more than 2-3 files)
+- Unclear requirements or uncertain scope
+- User explicitly asks to plan, think through, or design first
+
+Do NOT use for:
+- Single-line or few-line fixes (typos, obvious bugs)
+- A single function with clear, specific requirements
+- Pure research or information queries`
 }
 
 func (t *enterPlanModeTool) Schema() map[string]any {

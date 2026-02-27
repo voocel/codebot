@@ -164,7 +164,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
+	m.Input.SetHeight(maxInputHeight)
 	m.Input, cmd = m.Input.Update(msg)
+	m.adjustInputHeight()
 	return m, cmd
 }
 
@@ -269,6 +271,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "alt+enter", "ctrl+j":
+		m.Input.SetHeight(maxInputHeight)
 		m.Input.InsertString("\n")
 		m.adjustInputHeight()
 		return m, nil
@@ -280,7 +283,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// No paste hook — fall through to textarea for text paste.
 		var cmd tea.Cmd
+		m.Input.SetHeight(maxInputHeight)
 		m.Input, cmd = m.Input.Update(msg)
+		m.adjustInputHeight()
 		return m, cmd
 
 	case "enter":
@@ -328,7 +333,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
+	m.Input.SetHeight(maxInputHeight) // expand before Update so repositionView uses correct YOffset
 	m.Input, cmd = m.Input.Update(msg)
+	m.adjustInputHeight()
 	return m, cmd
 }
 
@@ -338,20 +345,32 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.Ready = true
 	m.Input.SetWidth(m.Width - 2)
 	m.Glamour = NewGlamourRenderer(m.Width - 4)
+	m.adjustInputHeight()
 	return m, nil
 }
 
 const maxInputHeight = 8
 
-// adjustInputHeight grows/shrinks the textarea to fit the content lines.
+// adjustInputHeight grows/shrinks the textarea to fit the content,
+// accounting for both explicit newlines and soft-wrapping.
 func (m *Model) adjustInputHeight() {
-	lines := strings.Count(m.Input.Value(), "\n") + 1
-	if lines > maxInputHeight {
-		lines = maxInputHeight
+	w := m.Input.Width()
+	if w <= 0 {
+		w = 1
 	}
-	if lines < 1 {
-		lines = 1
+	lines := 0
+	for _, line := range strings.Split(m.Input.Value(), "\n") {
+		// Each logical line takes at least 1 visual row, plus extra rows for wrapping.
+		// Use lipgloss.Width for correct CJK / double-width character measurement.
+		visualLen := lipgloss.Width(line)
+		if visualLen == 0 {
+			lines++
+		} else {
+			lines += (visualLen + w - 1) / w
+		}
 	}
+	lines = max(lines, 1)
+	lines = min(lines, maxInputHeight)
 	m.Input.SetHeight(lines)
 }
 
