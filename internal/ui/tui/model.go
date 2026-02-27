@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -25,6 +26,7 @@ type Config struct {
 	GitBranch   string
 	OnKey       func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
 	OnEvent     func(m *Model, ev agentcore.Event) tea.Cmd
+	OnPaste     func(m *Model) tea.Cmd // Ctrl+V: read clipboard image, return ImageAttachedMsg
 	StatusRight func(m *Model) string
 	StatusPlan  func(m *Model) *PlanBarInfo
 }
@@ -32,6 +34,7 @@ type Config struct {
 // Driver defines the minimal conversation operations required by the TUI.
 type Driver interface {
 	Prompt(text string) error
+	PromptWithBlocks(blocks []agentcore.ContentBlock) error
 	Steer(text string)
 	Abort()
 }
@@ -71,6 +74,8 @@ type Model struct {
 	ShowWelcome bool
 	ShowSummary bool
 	RunStats    runStats
+	Images      []agentcore.ContentBlock // attached images (from Ctrl+V clipboard paste)
+	Pasting     int                      // number of async clipboard reads in progress
 
 	Glamour *glamour.TermRenderer
 	config  Config
@@ -140,6 +145,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleCommandResult(msg)
 	case PromptMsg:
 		return m.handlePrompt(msg)
+	case ImageAttachedMsg:
+		m.Pasting--
+		m.Images = append(m.Images, msg.Block)
+		return m, nil
+	case PasteTextMsg:
+		// Clipboard had no image — delegate to textarea for text paste.
+		m.Pasting--
+		return m, textarea.Paste
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.Spinner, cmd = m.Spinner.Update(msg)
@@ -204,6 +217,15 @@ func (m Model) View() string {
 	// Status bar (above input)
 	parts = append(parts, m.RenderStatusBar())
 
+	// Image attachments (above separator)
+	if len(m.Images) > 0 {
+		var tags []string
+		for i := range m.Images {
+			tags = append(tags, fmt.Sprintf("[Image #%d]", i+1))
+		}
+		parts = append(parts, CommandStyle.Render(strings.Join(tags, " ")))
+	}
+
 	// Separator + input + bottom border
 	parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 	parts = append(parts, m.Input.View())
@@ -239,24 +261,55 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.adjustInputHeight()
 		return m, nil
 
+	case "ctrl+v":
+		if m.config.OnPaste != nil {
+			m.Pasting++
+			return m, m.config.OnPaste(&m)
+		}
+		// No paste hook — fall through to textarea for text paste.
+		var cmd tea.Cmd
+		m.Input, cmd = m.Input.Update(msg)
+		return m, cmd
+
 	case "enter":
+		// Block send while clipboard image read is in progress.
+		if m.Pasting > 0 {
+			return m, nil
+		}
 		text := strings.TrimSpace(m.Input.Value())
-		if text == "" {
+		if text == "" && len(m.Images) == 0 {
 			m.Input.Reset()
 			m.Input.SetHeight(1)
 			return m, nil
 		}
+		images := m.Images
+		m.Images = nil
 		m.Input.Reset()
 		m.Input.SetHeight(1)
 		m.ShowSummary = false
 
-		output := m.RenderPromptOutput(text)
+		displayText := text
+		if len(images) > 0 {
+			var tags []string
+			for i := range images {
+				tags = append(tags, fmt.Sprintf("[Image #%d]", i+1))
+			}
+			if displayText != "" {
+				displayText += " " + strings.Join(tags, " ")
+			} else {
+				displayText = strings.Join(tags, " ")
+			}
+		}
+
+		output := m.RenderPromptOutput(displayText)
 		m.ShowWelcome = false
 		if m.Driver == nil {
 			output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
 		} else if m.Running {
+			// Steer only supports text; put images back for next submission.
+			m.Images = images
 			m.Driver.Steer(text)
-		} else if err := m.Driver.Prompt(text); err != nil {
+		} else if err := m.promptWithImages(text, images); err != nil {
 			output += "\n" + ErrorStyle.Render("  error: "+err.Error())
 		}
 		return m, tea.Println(output)
@@ -292,12 +345,17 @@ func (m *Model) adjustInputHeight() {
 
 // handleCommandResult processes slash command results.
 func (m Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
+	// Reset paste state — onPaste errors arrive as CommandResultMsg.
+	if m.Pasting > 0 {
+		m.Pasting--
+	}
 	if msg.Quit {
 		return m, tea.Quit
 	}
 	if msg.Clear {
 		m.TurnCount = 0
 		m.ShowWelcome = true
+		m.Images = nil
 	}
 	if msg.NewModel != "" {
 		m.ModelName = msg.NewModel
@@ -326,10 +384,25 @@ func (m Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	m.ShowWelcome = false
 	if m.Driver == nil {
 		output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
-	} else if err := m.Driver.Prompt(text); err != nil {
+	} else if err := m.promptWithImages(text, nil); err != nil {
 		output += "\n" + ErrorStyle.Render("  error: "+err.Error())
 	}
 	return m, tea.Println(output)
+}
+
+// promptWithImages sends user text with optional clipboard image attachments.
+// Falls back to plain text prompt when no images are present.
+func (m Model) promptWithImages(text string, images []agentcore.ContentBlock) error {
+	if len(images) == 0 {
+		return m.Driver.Prompt(text)
+	}
+	if text == "" {
+		text = "Describe this image"
+	}
+	blocks := make([]agentcore.ContentBlock, 0, 1+len(images))
+	blocks = append(blocks, agentcore.TextBlock(text))
+	blocks = append(blocks, images...)
+	return m.Driver.PromptWithBlocks(blocks)
 }
 
 // RenderPromptOutput renders a user message with optional welcome banner for scrollback.

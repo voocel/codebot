@@ -28,3 +28,11 @@ func SendCommandResult(text string) tea.Cmd {
 type PromptMsg struct {
 	Text string
 }
+
+// ImageAttachedMsg notifies the Model that an image has been pasted from clipboard.
+type ImageAttachedMsg struct {
+	Block agentcore.ContentBlock // pre-built ImageBlock (base64 + mime)
+}
+
+// PasteTextMsg signals that Ctrl+V found no image; the textarea should paste text.
+type PasteTextMsg struct{}

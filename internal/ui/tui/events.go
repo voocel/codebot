@@ -104,10 +104,18 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		cmds = append(cmds, tea.Println(header))
 
 	case agentcore.EventToolExecUpdate:
-		if line := FormatProgressLine(ev.Result); line != "" {
-			if buf, ok := m.ToolOutputBuf[ev.ToolID]; ok {
-				buf.WriteString(line)
-				buf.WriteByte('\n')
+		switch ev.UpdateKind {
+		case agentcore.ToolExecUpdatePreview:
+			rendered := RenderEditResult(ev.Result)
+			if rendered != "" {
+				cmds = append(cmds, tea.Println(indentBlock(rendered, 2)))
+			}
+		case agentcore.ToolExecUpdateProgress:
+			if line := FormatProgressLine(ev.Result); line != "" {
+				if buf, ok := m.ToolOutputBuf[ev.ToolID]; ok {
+					buf.WriteString(line)
+					buf.WriteByte('\n')
+				}
 			}
 		}
 
@@ -117,7 +125,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 
 		var rendered string
 		if ev.Tool == "edit" && !ev.IsError {
-			rendered = RenderEditResult(ev.Result)
+			// Diff already shown in preview; just show the success message.
+			rendered = FormatToolResult(ev.Result, false)
 		} else {
 			rendered = FormatToolResult(ev.Result, ev.IsError)
 		}

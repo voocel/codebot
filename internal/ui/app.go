@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/ui/imageinput"
 	"github.com/voocel/codebot/internal/config"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
@@ -49,6 +50,7 @@ func (a *App) Config() tui.Config {
 		Cwd:         a.Cwd,
 		GitBranch:   a.GitBranch,
 		OnKey:       a.onKey(),
+		OnPaste:     a.onPaste,
 		OnEvent:     a.planOnEvent,
 		StatusRight: a.statusRight,
 		StatusPlan:  a.planStatus,
@@ -114,4 +116,22 @@ func (a *App) statusRight(m *tui.Model) string {
 		return tui.TokenStyle.Render(fmt.Sprintf("tokens: %d", totalTokens)) + " · " + thinkingTag
 	}
 	return thinkingTag
+}
+
+// onPaste returns a tea.Cmd that asynchronously reads clipboard image data.
+func (a *App) onPaste(m *tui.Model) tea.Cmd {
+	return func() tea.Msg {
+		data, err := imageinput.ReadImage()
+		if err != nil {
+			return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("clipboard: " + err.Error())}
+		}
+		if data == nil {
+			return tui.PasteTextMsg{} // no image — trigger text paste fallback
+		}
+		block, err := imageinput.FromBytes(data)
+		if err != nil {
+			return tui.CommandResultMsg{Text: tui.ErrorStyle.Render(err.Error())}
+		}
+		return tui.ImageAttachedMsg{Block: block}
+	}
 }

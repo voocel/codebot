@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
@@ -124,6 +125,19 @@ func (s *Session) Prompt(text string) error {
 		s.beforePrompt()
 	}
 	return s.agent.Prompt(text)
+}
+
+// PromptWithBlocks sends a multimodal user message (text + images) to the agent.
+func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
+	if s.beforePrompt != nil {
+		s.beforePrompt()
+	}
+	msg := agentcore.Message{
+		Role:      agentcore.RoleUser,
+		Content:   blocks,
+		Timestamp: time.Now(),
+	}
+	return s.agent.PromptMessages(msg)
 }
 
 // SetBeforePrompt registers a function called before each agent turn.
