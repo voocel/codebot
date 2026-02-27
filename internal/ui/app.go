@@ -51,6 +51,7 @@ func (a *App) Config() tui.Config {
 		GitBranch:   a.GitBranch,
 		OnKey:       a.onKey(),
 		OnPaste:     a.onPaste,
+		OnDrop:      a.onDrop,
 		OnEvent:     a.planOnEvent,
 		StatusRight: a.statusRight,
 		StatusPlan:  a.planStatus,
@@ -94,6 +95,15 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 		if !strings.HasPrefix(text, "/") {
 			return false, nil
 		}
+		// Slash commands are "/word ..."; file paths like "/Users/..." contain
+		// a second slash before any space — skip those.
+		cmd := text[1:]
+		if i := strings.IndexAny(cmd, " \t"); i > 0 {
+			cmd = cmd[:i]
+		}
+		if strings.Contains(cmd, "/") {
+			return false, nil
+		}
 		m.Input.Reset()
 		echo := tea.Println(m.RenderPromptOutput(text))
 		m.ShowWelcome = false
@@ -123,14 +133,30 @@ func (a *App) onPaste(m *tui.Model) tea.Cmd {
 	return func() tea.Msg {
 		data, err := imageinput.ReadImage()
 		if err != nil {
-			return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("clipboard: " + err.Error())}
+			return tui.PasteErrorMsg{Text: tui.ErrorStyle.Render("clipboard: " + err.Error())}
 		}
 		if data == nil {
 			return tui.PasteTextMsg{} // no image — trigger text paste fallback
 		}
 		block, err := imageinput.FromBytes(data)
 		if err != nil {
-			return tui.CommandResultMsg{Text: tui.ErrorStyle.Render(err.Error())}
+			return tui.PasteErrorMsg{Text: tui.ErrorStyle.Render(err.Error())}
+		}
+		return tui.ImageAttachedMsg{Block: block}
+	}
+}
+
+// onDrop handles file drag-drop: if the pasted text is an image path, load it.
+// Returns nil when the text is not an image path (lets textarea handle it).
+func (a *App) onDrop(m *tui.Model, text string) tea.Cmd {
+	path := imageinput.ParseDroppedPath(text)
+	if path == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		block, err := imageinput.LoadFile(path)
+		if err != nil {
+			return tui.PasteErrorMsg{Text: tui.ErrorStyle.Render(err.Error())}
 		}
 		return tui.ImageAttachedMsg{Block: block}
 	}

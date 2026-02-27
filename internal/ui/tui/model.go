@@ -26,7 +26,8 @@ type Config struct {
 	GitBranch   string
 	OnKey       func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
 	OnEvent     func(m *Model, ev agentcore.Event) tea.Cmd
-	OnPaste     func(m *Model) tea.Cmd // Ctrl+V: read clipboard image, return ImageAttachedMsg
+	OnPaste     func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
+	OnDrop      func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
 	StatusRight func(m *Model) string
 	StatusPlan  func(m *Model) *PlanBarInfo
 }
@@ -75,7 +76,7 @@ type Model struct {
 	ShowSummary bool
 	RunStats    runStats
 	Images      []agentcore.ContentBlock // attached images (from Ctrl+V clipboard paste)
-	Pasting     int                      // number of async clipboard reads in progress
+	Pasting     int                      // number of async image reads in progress (clipboard paste or drag-drop)
 
 	Glamour *glamour.TermRenderer
 	config  Config
@@ -153,6 +154,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clipboard had no image — delegate to textarea for text paste.
 		m.Pasting--
 		return m, textarea.Paste
+	case PasteErrorMsg:
+		m.Pasting--
+		return m, tea.Println(indentBlock(msg.Text, 2))
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.Spinner, cmd = m.Spinner.Update(msg)
@@ -242,6 +246,14 @@ func (m Model) View() string {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.config.OnKey != nil {
 		if handled, cmd := m.config.OnKey(&m, msg); handled {
+			return m, cmd
+		}
+	}
+
+	// Drag-drop: detect bracketed paste containing an image file path.
+	if msg.Paste && m.config.OnDrop != nil {
+		if cmd := m.config.OnDrop(&m, string(msg.Runes)); cmd != nil {
+			m.Pasting++
 			return m, cmd
 		}
 	}
@@ -345,10 +357,6 @@ func (m *Model) adjustInputHeight() {
 
 // handleCommandResult processes slash command results.
 func (m Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
-	// Reset paste state — onPaste errors arrive as CommandResultMsg.
-	if m.Pasting > 0 {
-		m.Pasting--
-	}
 	if msg.Quit {
 		return m, tea.Quit
 	}

@@ -36,3 +36,9 @@ type ImageAttachedMsg struct {
 
 // PasteTextMsg signals that Ctrl+V found no image; the textarea should paste text.
 type PasteTextMsg struct{}
+
+// PasteErrorMsg carries an error from clipboard paste or file drag-drop.
+// Decrements Pasting counter and displays the error text.
+type PasteErrorMsg struct {
+	Text string
+}

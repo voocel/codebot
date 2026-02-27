@@ -1,6 +1,8 @@
 package imageinput
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -55,5 +57,62 @@ func TestFromBytes_Empty(t *testing.T) {
 	_, err := FromBytes(nil)
 	if err == nil {
 		t.Fatal("expected error for empty data")
+	}
+}
+
+func TestParseDroppedPath(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"raw png", "/tmp/test.png", "/tmp/test.png"},
+		{"raw jpg", "/home/user/photo.jpg", "/home/user/photo.jpg"},
+		{"raw jpeg", "/tmp/shot.JPEG", "/tmp/shot.JPEG"},
+		{"single quoted", "'/tmp/my file.png'", "/tmp/my file.png"},
+		{"double quoted", `"/tmp/my file.webp"`, "/tmp/my file.webp"},
+		{"escaped spaces", `/tmp/my\ file.png`, "/tmp/my file.png"},
+		{"escaped parens", `/tmp/photo\ \(1\).png`, "/tmp/photo (1).png"},
+		{"escaped ampersand", `/tmp/A\ \&\ B.jpg`, "/tmp/A & B.jpg"},
+		{"whitespace padding", "  /tmp/test.gif  ", "/tmp/test.gif"},
+		{"multi-file newline", "/tmp/a.png\n/tmp/b.png", ""},
+		{"multi-file crlf", "/tmp/a.png\r\n/tmp/b.png", ""},
+		{"non-image txt", "/tmp/readme.txt", ""},
+		{"non-image go", "/tmp/main.go", ""},
+		{"empty", "", ""},
+		{"just spaces", "   ", ""},
+		{"no extension", "/tmp/noext", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseDroppedPath(tt.in)
+			if got != tt.want {
+				t.Errorf("ParseDroppedPath(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadFile(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.png")
+	if err := os.WriteFile(tmp, minimalPNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	block, err := LoadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if block.Image == nil {
+		t.Fatal("expected image block")
+	}
+	if block.Image.MimeType != "image/png" {
+		t.Errorf("mime = %q, want image/png", block.Image.MimeType)
+	}
+}
+
+func TestLoadFile_NotFound(t *testing.T) {
+	_, err := LoadFile("/nonexistent/path.png")
+	if err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }
