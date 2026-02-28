@@ -170,8 +170,17 @@ func Boot(opts Options) (*Runtime, error) {
 	)
 
 	// SubAgent tool: delegate tasks to isolated sub-agents (explore, plan, coder).
-	// Background mode is natively supported by agentcore.SubAgentTool.
-	subagentTool := buildSubAgentTool(cwd, chatModel, builtTools)
+	subagentTool := buildSubAgentTool(subAgentDeps{
+		Cwd:          cwd,
+		Model:        chatModel,
+		AllTools:     builtTools,
+		CreateModel:  createModel,
+		Registry:     registry,
+		Provider:     activeProvider,
+		APIKey:       activeAPIKey,
+		BaseURL:      activeBaseURL,
+		ExploreModel: settings.SmallModel,
+	})
 	builtTools = append(builtTools, subagentTool)
 
 	// Start MCP servers and collect their tools.

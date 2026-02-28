@@ -1,48 +1,101 @@
 package bootstrap
 
 import (
+	"fmt"
+
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/tools"
+	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/provider"
 )
 
-// buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
-//
-// Parameters:
-//   - cwd: working directory for tool instances
-//   - model: the main agent's ChatModel (sub-agents inherit it)
-//   - allTools: the main agent's tool set BEFORE subagent is appended
-//     (coder sub-agent uses this set minus the subagent tool to prevent nesting)
-func buildSubAgentTool(cwd string, model agentcore.ChatModel, allTools []agentcore.Tool) *agentcore.SubAgentTool {
-	readOnly := readOnlyTools(cwd)
-	coderTools := filterOutSubagent(allTools)
+// subAgentDeps holds everything needed to build and configure the SubAgentTool.
+type subAgentDeps struct {
+	Cwd      string
+	Model    agentcore.ChatModel // main agent's model (inherited by plan/coder)
+	AllTools []agentcore.Tool    // main agent's tools BEFORE subagent is appended
 
-	return agentcore.NewSubAgentTool(
+	// For creating alternative models (e.g. a cheaper model for explore).
+	CreateModel  agent.ModelFactory
+	Registry     *provider.ModelRegistry
+	Provider     string
+	APIKey       string
+	BaseURL      string
+	ExploreModel string // optional model pattern for explore (e.g. "haiku", "gpt-4o-mini")
+}
+
+// buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
+func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
+	readOnly := readOnlyTools(deps.Cwd)
+	coderTools := filterOutSubagent(deps.AllTools)
+
+	exploreModel := deps.Model
+	if deps.ExploreModel != "" {
+		if m, err := resolveModel(deps); err == nil {
+			exploreModel = m
+		}
+	}
+
+	sat := agentcore.NewSubAgentTool(
 		agentcore.SubAgentConfig{
 			Name:         "explore",
 			Description:  "Fast code exploration. Search files, match patterns, read code. Read-only.",
-			Model:        model,
-			SystemPrompt: config.ExploreSubAgentPrompt(cwd),
+			Model:        exploreModel,
+			SystemPrompt: config.ExploreSubAgentPrompt(deps.Cwd),
 			Tools:        readOnly,
 			MaxTurns:     20,
 		},
 		agentcore.SubAgentConfig{
 			Name:         "plan",
 			Description:  "Software architect. Explore code and design implementation strategies with step-by-step plans.",
-			Model:        model,
-			SystemPrompt: config.PlanSubAgentPrompt(cwd),
+			Model:        deps.Model,
+			SystemPrompt: config.PlanSubAgentPrompt(deps.Cwd),
 			Tools:        readOnly,
 			MaxTurns:     25,
 		},
 		agentcore.SubAgentConfig{
 			Name:         "coder",
 			Description:  "General-purpose coding agent. Independently search, read, and write code to complete subtasks.",
-			Model:        model,
-			SystemPrompt: config.CoderSubAgentPrompt(cwd),
+			Model:        deps.Model,
+			SystemPrompt: config.CoderSubAgentPrompt(deps.Cwd),
 			Tools:        coderTools,
 			MaxTurns:     30,
 		},
 	)
+
+	// Enable LLM to override model at call time via the "model" parameter.
+	if deps.CreateModel != nil && deps.Registry != nil {
+		sat.SetCreateModel(func(name string) (agentcore.ChatModel, error) {
+			entry, _, err := deps.Registry.Resolve(name)
+			if err != nil {
+				return nil, err
+			}
+			apiKey, baseURL := deps.APIKey, deps.BaseURL
+			if entry.Provider != deps.Provider {
+				apiKey, baseURL = "", "" // let factory resolve from env
+			}
+			return deps.CreateModel(entry.Provider, entry.ID, apiKey, baseURL)
+		})
+	}
+
+	return sat
+}
+
+// resolveModel resolves deps.ExploreModel to a ChatModel instance.
+func resolveModel(deps subAgentDeps) (agentcore.ChatModel, error) {
+	if deps.Registry == nil || deps.CreateModel == nil {
+		return nil, fmt.Errorf("model registry or factory not available")
+	}
+	entry, _, err := deps.Registry.Resolve(deps.ExploreModel)
+	if err != nil {
+		return nil, err
+	}
+	apiKey, baseURL := deps.APIKey, deps.BaseURL
+	if entry.Provider != deps.Provider {
+		apiKey, baseURL = "", ""
+	}
+	return deps.CreateModel(entry.Provider, entry.ID, apiKey, baseURL)
 }
 
 // readOnlyTools constructs a read-only tool set for explore/plan sub-agents.

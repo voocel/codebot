@@ -29,6 +29,8 @@ type Settings struct {
 
 	SearchProvider *string `json:"search_provider,omitempty"`
 	SearchAPIKey   *string `json:"search_api_key,omitempty"`
+
+	SmallModel *string `json:"small_model,omitempty"` // lightweight model for explore sub-agent (e.g. "haiku", "gpt-4o-mini")
 }
 
 // Resolved holds settings resolved to concrete values (no pointers).
@@ -44,6 +46,7 @@ type Resolved struct {
 	MaxTurns        int
 	SearchProvider  string
 	SearchAPIKey    string
+	SmallModel    string // lightweight model for explore sub-agent (e.g. "haiku", "gpt-4o-mini")
 }
 
 // Resolve converts Settings to Resolved using defaults for unset fields.
@@ -88,6 +91,9 @@ func (s Settings) Resolve() Resolved {
 	}
 	if s.SearchAPIKey != nil {
 		r.SearchAPIKey = *s.SearchAPIKey
+	}
+	if s.SmallModel != nil {
+		r.SmallModel = *s.SmallModel
 	}
 	return r
 }
