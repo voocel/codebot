@@ -1,13 +1,10 @@
 package bootstrap
 
 import (
-	"fmt"
-
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/provider"
 )
 
 // subAgentDeps holds everything needed to build and configure the SubAgentTool.
@@ -17,12 +14,11 @@ type subAgentDeps struct {
 	AllTools []agentcore.Tool    // main agent's tools BEFORE subagent is appended
 
 	// For creating alternative models (e.g. a cheaper model for explore).
-	CreateModel  agent.ModelFactory
-	Registry     *provider.ModelRegistry
-	Provider     string
-	APIKey       string
-	BaseURL      string
-	ExploreModel string // optional model pattern for explore (e.g. "haiku", "gpt-4o-mini")
+	CreateModel agent.ModelFactory
+	Provider    string
+	APIKey      string
+	BaseURL     string
+	SmallModel  string // model name for explore sub-agent, passed as-is to the provider
 }
 
 // buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
@@ -31,8 +27,8 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 	coderTools := filterOutSubagent(deps.AllTools)
 
 	exploreModel := deps.Model
-	if deps.ExploreModel != "" {
-		if m, err := resolveModel(deps); err == nil {
+	if deps.SmallModel != "" && deps.CreateModel != nil {
+		if m, err := deps.CreateModel(deps.Provider, deps.SmallModel, deps.APIKey, deps.BaseURL); err == nil {
 			exploreModel = m
 		}
 	}
@@ -40,7 +36,7 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 	sat := agentcore.NewSubAgentTool(
 		agentcore.SubAgentConfig{
 			Name:         "explore",
-			Description:  "Fast code exploration. Search files, match patterns, read code. Read-only.",
+			Description:  "Fast codebase exploration agent. Use when you need to find files by patterns, search code for keywords, or answer questions about the codebase (e.g. 'how does authentication work?'). Read-only, no modifications.",
 			Model:        exploreModel,
 			SystemPrompt: config.ExploreSubAgentPrompt(deps.Cwd),
 			Tools:        readOnly,
@@ -65,37 +61,15 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 	)
 
 	// Enable LLM to override model at call time via the "model" parameter.
-	if deps.CreateModel != nil && deps.Registry != nil {
+	if deps.CreateModel != nil {
+		factory := deps.CreateModel
+		prov, apiKey, baseURL := deps.Provider, deps.APIKey, deps.BaseURL
 		sat.SetCreateModel(func(name string) (agentcore.ChatModel, error) {
-			entry, _, err := deps.Registry.Resolve(name)
-			if err != nil {
-				return nil, err
-			}
-			apiKey, baseURL := deps.APIKey, deps.BaseURL
-			if entry.Provider != deps.Provider {
-				apiKey, baseURL = "", "" // let factory resolve from env
-			}
-			return deps.CreateModel(entry.Provider, entry.ID, apiKey, baseURL)
+			return factory(prov, name, apiKey, baseURL)
 		})
 	}
 
 	return sat
-}
-
-// resolveModel resolves deps.ExploreModel to a ChatModel instance.
-func resolveModel(deps subAgentDeps) (agentcore.ChatModel, error) {
-	if deps.Registry == nil || deps.CreateModel == nil {
-		return nil, fmt.Errorf("model registry or factory not available")
-	}
-	entry, _, err := deps.Registry.Resolve(deps.ExploreModel)
-	if err != nil {
-		return nil, err
-	}
-	apiKey, baseURL := deps.APIKey, deps.BaseURL
-	if entry.Provider != deps.Provider {
-		apiKey, baseURL = "", ""
-	}
-	return deps.CreateModel(entry.Provider, entry.ID, apiKey, baseURL)
 }
 
 // readOnlyTools constructs a read-only tool set for explore/plan sub-agents.

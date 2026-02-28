@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -291,23 +290,11 @@ func (s *Session) BaseURL() string {
 	return s.baseURL
 }
 
-// resolveCredentials returns the API key and base URL for the given provider.
-// For the default provider, configured credentials are returned.
-// For other providers, only provider-specific environment variables are used;
-// default provider credentials are never leaked to a different provider.
+// resolveCredentials returns the API key and base URL from settings.
 func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 	s.mu.Lock()
-	defaultProv := s.settings.DefaultProvider
-	defaultKey := s.settings.APIKey
-	defaultBase := s.settings.BaseURL
-	s.mu.Unlock()
-
-	if prov == defaultProv {
-		return defaultKey, defaultBase
-	}
-	apiKey = os.Getenv(config.EnvKeyName(prov))
-	baseURL = os.Getenv(config.BaseURLEnvName(prov))
-	return
+	defer s.mu.Unlock()
+	return s.settings.APIKey, s.settings.BaseURL
 }
 
 // --------------------------------------------------------------------------

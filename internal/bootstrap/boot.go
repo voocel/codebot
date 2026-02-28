@@ -90,8 +90,8 @@ func Boot(opts Options) (*Runtime, error) {
 	// Interactive setup when API key is missing.
 	if settings.APIKey == "" {
 		if opts.NonTTYMode {
-			return nil, fmt.Errorf("api key not set. set %s or configure %s",
-				config.EnvKeyName(settings.DefaultProvider), config.SettingsPath(cwd))
+			return nil, fmt.Errorf("api key not set, configure api_key in %s",
+				config.SettingsPath(cwd))
 		}
 		err := config.RunSetup(cwd, settings, func(prov string) []config.ModelOption {
 			entries := registry.FindByProvider(prov)
@@ -138,16 +138,6 @@ func Boot(opts Options) (*Runtime, error) {
 	activeAPIKey := settings.APIKey
 	activeBaseURL := settings.BaseURL
 
-	// When restored provider differs from default provider, resolve provider-specific credentials.
-	if activeProvider != settings.DefaultProvider {
-		if envKey := os.Getenv(config.EnvKeyName(activeProvider)); envKey != "" {
-			activeAPIKey = envKey
-		}
-		if envBase := os.Getenv(config.BaseURLEnvName(activeProvider)); envBase != "" {
-			activeBaseURL = envBase
-		}
-	}
-
 	chatModel, err := createModel(activeProvider, activeModel, activeAPIKey, activeBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("create model: %w", err)
@@ -171,15 +161,14 @@ func Boot(opts Options) (*Runtime, error) {
 
 	// SubAgent tool: delegate tasks to isolated sub-agents (explore, plan, coder).
 	subagentTool := buildSubAgentTool(subAgentDeps{
-		Cwd:          cwd,
-		Model:        chatModel,
-		AllTools:     builtTools,
-		CreateModel:  createModel,
-		Registry:     registry,
-		Provider:     activeProvider,
-		APIKey:       activeAPIKey,
-		BaseURL:      activeBaseURL,
-		ExploreModel: settings.SmallModel,
+		Cwd:         cwd,
+		Model:       chatModel,
+		AllTools:    builtTools,
+		CreateModel: createModel,
+		Provider:    activeProvider,
+		APIKey:      activeAPIKey,
+		BaseURL:     activeBaseURL,
+		SmallModel:  settings.SmallModel,
 	})
 	builtTools = append(builtTools, subagentTool)
 

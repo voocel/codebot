@@ -287,11 +287,14 @@ func FormatToolResult(result json.RawMessage, isError bool) string {
 		return prefix + "(no output)"
 	}
 
-	// Extract "message" from JSON objects for cleaner display.
+	// Extract "message" or "output" from JSON objects for cleaner display.
 	var obj map[string]any
 	if json.Unmarshal(result, &obj) == nil {
 		if msg, ok := obj["message"].(string); ok && msg != "" {
 			return prefix + msg
+		}
+		if out, ok := obj["output"].(string); ok && out != "" {
+			return prefix + out
 		}
 	}
 

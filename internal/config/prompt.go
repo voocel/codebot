@@ -125,11 +125,12 @@ func buildGuidelines(tools []ToolInfo) string {
 	)
 	if has["subagent"] {
 		lines = append(lines,
-			"- When exploring multiple files or doing open-ended searches, use the subagent tool (explore type) to keep the main context clean.",
-			"- Use read/grep directly when you already know the specific file path.",
+			"- Use the subagent tool with specialized agents when the task matches the agent's description. Subagents protect the main context from excessive search results.",
+			"- For simple, directed searches (a specific file/class/function), use read/grep/find directly.",
+			"- For broader tasks — analyzing a project, understanding a codebase, tracing a feature across files, or any exploration that will clearly require more than 3 searches — you MUST use the subagent tool with agent=explore instead of doing it yourself.",
 			"- Sub-agents cannot see conversation history — provide sufficient context in the task description.",
 			"- Use the tasks array to launch multiple sub-agents in parallel when needed.",
-			"- Set background=true for long-running tasks; you will receive a <task-notification> when it completes and can continue other work meanwhile.",
+			"- Set background=true for long-running tasks; you will receive a <task-notification> when it completes.",
 		)
 	}
 	if has["enter_plan_mode"] {

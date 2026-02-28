@@ -89,14 +89,14 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		}
 
 	case agentcore.EventToolExecStart:
-		m.PendingTools[ev.ToolID] = ev.Tool
-		m.ToolOutputBuf[ev.ToolID] = &strings.Builder{}
-		m.RunStats.ToolCalls++
-
 		label := ev.Tool
 		if ev.ToolLabel != "" {
 			label = ev.ToolLabel
 		}
+		m.PendingTools[ev.ToolID] = label
+		m.ToolOutputBuf[ev.ToolID] = &strings.Builder{}
+		m.RunStats.ToolCalls++
+
 		header := "\n" + ToolIconStyle.Render("● ") + ToolNameStyle.Render(label)
 		if argsStr := FormatToolArgs(ev.Args); argsStr != "" {
 			header += "\n" + indentBlock(ToolArgsStyle.Render(m.wrapTextForIndent(argsStr, 2)), 2)

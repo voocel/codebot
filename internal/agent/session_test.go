@@ -303,10 +303,8 @@ func TestResolveCredentialsDefaultProvider(t *testing.T) {
 	}
 }
 
-func TestResolveCredentialsCrossProviderFromEnv(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "anthropic-key")
-	t.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.com")
-
+func TestResolveCredentialsCrossProviderUsesMainCredentials(t *testing.T) {
+	t.Parallel()
 	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
 	s := NewSession(SessionConfig{
 		Agent: ag,
@@ -320,43 +318,15 @@ func TestResolveCredentialsCrossProviderFromEnv(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	apiKey, baseURL := s.resolveCredentials("anthropic")
-	if apiKey != "anthropic-key" {
-		t.Fatalf("expected anthropic-key, got %s", apiKey)
+	if apiKey != "openai-key" {
+		t.Fatalf("expected openai-key, got %s", apiKey)
 	}
-	if baseURL != "https://anthropic.example.com" {
-		t.Fatalf("expected https://anthropic.example.com, got %s", baseURL)
-	}
-}
-
-func TestResolveCredentialsCrossProviderNoFallback(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("ANTHROPIC_BASE_URL", "")
-
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
-	s := NewSession(SessionConfig{
-		Agent: ag,
-		Settings: config.Resolved{
-			DefaultProvider: "openai",
-			APIKey:          "openai-key",
-			BaseURL:         "https://openai.example.com",
-		},
-		Cwd: t.TempDir(),
-	})
-	t.Cleanup(s.Close)
-
-	apiKey, baseURL := s.resolveCredentials("anthropic")
-	if apiKey != "" {
-		t.Fatalf("expected empty apiKey for unconfigured provider, got %s", apiKey)
-	}
-	if baseURL != "" {
-		t.Fatalf("expected empty baseURL for unconfigured provider, got %s", baseURL)
+	if baseURL != "https://openai.example.com" {
+		t.Fatalf("expected https://openai.example.com, got %s", baseURL)
 	}
 }
 
 func TestSwitchSessionCrossProviderCredentials(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "anthropic-key")
-	t.Setenv("ANTHROPIC_BASE_URL", "")
-
 	dir := t.TempDir()
 	mgr := storage.NewManager(dir)
 	current, err := mgr.Create(dir)
@@ -405,17 +375,18 @@ func TestSwitchSessionCrossProviderCredentials(t *testing.T) {
 		t.Fatalf("switch session: %v", err)
 	}
 
-	if capturedKey != "anthropic-key" {
-		t.Fatalf("expected CreateModel to receive anthropic-key, got %s", capturedKey)
+	// Cross-provider uses the same credentials from settings.
+	if capturedKey != "openai-key" {
+		t.Fatalf("expected CreateModel to receive openai-key, got %s", capturedKey)
 	}
-	if capturedBase != "" {
-		t.Fatalf("expected empty baseURL for anthropic, got %s", capturedBase)
+	if capturedBase != "https://openai.example.com" {
+		t.Fatalf("expected https://openai.example.com, got %s", capturedBase)
 	}
-	if s.APIKey() != "anthropic-key" {
-		t.Fatalf("expected session apiKey=anthropic-key, got %s", s.APIKey())
+	if s.APIKey() != "openai-key" {
+		t.Fatalf("expected session apiKey=openai-key, got %s", s.APIKey())
 	}
-	if s.BaseURL() != "" {
-		t.Fatalf("expected session baseURL empty, got %s", s.BaseURL())
+	if s.BaseURL() != "https://openai.example.com" {
+		t.Fatalf("expected session baseURL=https://openai.example.com, got %s", s.BaseURL())
 	}
 }
 

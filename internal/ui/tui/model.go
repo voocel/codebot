@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -58,6 +59,8 @@ type Model struct {
 	Input   textarea.Model
 	Spinner spinner.Model
 
+	ToolSpinner spinner.Model // breathing-dot spinner for tool execution
+
 	Streaming *strings.Builder
 	Thinking  *strings.Builder
 	IsStream  bool
@@ -93,6 +96,13 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(ColorAssistant)
 
+	tsp := spinner.New()
+	tsp.Spinner = spinner.Spinner{
+		Frames: []string{"●", "◉", "○", "◉"},
+		FPS:    time.Second / 4,
+	}
+	tsp.Style = lipgloss.NewStyle().Foreground(ColorTool)
+
 	ta := textarea.New()
 	placeholder := "Ask anything... (Enter send, Ctrl+J newline, Esc abort)"
 	if c.Placeholder != "" {
@@ -116,6 +126,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		Driver:        driver,
 		ModelName:     modelName,
 		Spinner:       sp,
+		ToolSpinner:   tsp,
 		Input:         ta,
 		Streaming:     &strings.Builder{},
 		Thinking:      &strings.Builder{},
@@ -130,7 +141,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.Spinner.Tick, textarea.Blink)
+	return tea.Batch(m.Spinner.Tick, m.ToolSpinner.Tick, textarea.Blink)
 }
 
 // Update implements tea.Model.
@@ -158,9 +169,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Pasting--
 		return m, tea.Println(indentBlock(msg.Text, 2))
 	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.Spinner, cmd = m.Spinner.Update(msg)
-		return m, cmd
+		var cmd1, cmd2 tea.Cmd
+		m.Spinner, cmd1 = m.Spinner.Update(msg)
+		m.ToolSpinner, cmd2 = m.ToolSpinner.Update(msg)
+		return m, tea.Batch(cmd1, cmd2)
 	}
 
 	var cmd tea.Cmd
@@ -199,12 +211,12 @@ func (m Model) View() string {
 
 	// Live: pending tool execution
 	for id, name := range m.PendingTools {
-		line := m.Spinner.View() + " " + ToolNameStyle.Render(name)
+		line := m.ToolSpinner.View() + " " + ToolNameStyle.Render(name)
 		if buf, ok := m.ToolOutputBuf[id]; ok && buf.Len() > 0 {
 			output := RenderStreamingOutput(buf.String(), 5)
 			line += "\n" + indentBlock(m.wrapTextForIndent(output, 2), 2)
 		}
-		parts = append(parts, line)
+		parts = append(parts, "", line)
 	}
 
 	// Blank line before chrome

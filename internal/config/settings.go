@@ -132,10 +132,56 @@ func UserConfigDir() string {
 	return filepath.Join(home, ConfigDir)
 }
 
-// LoadSettings loads settings from <cwd>/.codebot/settings.json.
+// LoadSettings loads and merges settings from global (~/.codebot/settings.json)
+// and project (<cwd>/.codebot/settings.json). Project-level values override global.
 func LoadSettings(cwd string) Resolved {
-	s := loadSettingsFile(SettingsPath(cwd))
-	return s.Resolve()
+	var global Settings
+	if dir := UserConfigDir(); dir != "" {
+		global = loadSettingsFile(filepath.Join(dir, "settings.json"))
+	}
+	project := loadSettingsFile(SettingsPath(cwd))
+	return mergeSettings(global, project).Resolve()
+}
+
+// mergeSettings merges two Settings; non-nil fields in override take precedence.
+func mergeSettings(base, override Settings) Settings {
+	if override.DefaultProvider != nil {
+		base.DefaultProvider = override.DefaultProvider
+	}
+	if override.DefaultModel != nil {
+		base.DefaultModel = override.DefaultModel
+	}
+	if override.APIKey != nil {
+		base.APIKey = override.APIKey
+	}
+	if override.BaseURL != nil {
+		base.BaseURL = override.BaseURL
+	}
+	if override.ContextWindow != nil {
+		base.ContextWindow = override.ContextWindow
+	}
+	if override.AutoCompaction != nil {
+		base.AutoCompaction = override.AutoCompaction
+	}
+	if override.ThinkingLevel != nil {
+		base.ThinkingLevel = override.ThinkingLevel
+	}
+	if override.ShowTokens != nil {
+		base.ShowTokens = override.ShowTokens
+	}
+	if override.MaxTurns != nil {
+		base.MaxTurns = override.MaxTurns
+	}
+	if override.SearchProvider != nil {
+		base.SearchProvider = override.SearchProvider
+	}
+	if override.SearchAPIKey != nil {
+		base.SearchAPIKey = override.SearchAPIKey
+	}
+	if override.SmallModel != nil {
+		base.SmallModel = override.SmallModel
+	}
+	return base
 }
 
 // SaveSettings writes settings to <cwd>/.codebot/settings.json.
@@ -163,30 +209,6 @@ func loadSettingsFile(path string) Settings {
 	return s
 }
 
-// EnvKeyName returns the environment variable name for the API key of the given provider.
-func EnvKeyName(prov string) string {
-	switch prov {
-	case "anthropic":
-		return "ANTHROPIC_API_KEY"
-	case "gemini":
-		return "GEMINI_API_KEY"
-	default:
-		return "OPENAI_API_KEY"
-	}
-}
-
-// BaseURLEnvName returns the environment variable name for the base URL of the given provider.
-func BaseURLEnvName(prov string) string {
-	switch prov {
-	case "anthropic":
-		return "ANTHROPIC_BASE_URL"
-	case "gemini":
-		return "GEMINI_BASE_URL"
-	default:
-		return "OPENAI_BASE_URL"
-	}
-}
-
 // DefaultModelName returns the default model name for a given provider.
 func DefaultModelName(prov string) string {
 	switch prov {
@@ -199,54 +221,20 @@ func DefaultModelName(prov string) string {
 	}
 }
 
-// ResolveAll merges settings file and environment variables
-// into a single resolved configuration. Precedence: settings > env.
+// ResolveAll merges global and project settings, applies defaults,
+// and returns a fully resolved configuration.
 func ResolveAll(cwd string) Resolved {
 	settings := LoadSettings(cwd)
-
-	// API key: settings > env
-	if settings.APIKey == "" {
-		settings.APIKey = os.Getenv(EnvKeyName(settings.DefaultProvider))
-	}
-
-	// Base URL: settings > env
-	if settings.BaseURL == "" {
-		settings.BaseURL = os.Getenv(BaseURLEnvName(settings.DefaultProvider))
-	}
 
 	// Model: settings > default per provider
 	if settings.DefaultModel == "" {
 		settings.DefaultModel = DefaultModelName(settings.DefaultProvider)
 	}
 
-	// Search provider / API key resolution.
-	searchProvider := strings.ToLower(strings.TrimSpace(settings.SearchProvider))
-	switch searchProvider {
+	// Normalize search provider name.
+	switch strings.ToLower(strings.TrimSpace(settings.SearchProvider)) {
 	case "jina", "jina.ai", "jinaai":
 		settings.SearchProvider = "jina"
-		if settings.SearchAPIKey == "" {
-			settings.SearchAPIKey = os.Getenv("JINA_API_KEY")
-		}
-	case "tavily":
-		if settings.SearchAPIKey == "" {
-			settings.SearchAPIKey = os.Getenv("TAVILY_API_KEY")
-		}
-	default:
-		// Backward-compatible default: when provider is unset and a key is configured
-		// in settings, keep using tavily.
-		if settings.SearchProvider == "" && settings.SearchAPIKey != "" {
-			settings.SearchProvider = "tavily"
-			break
-		}
-		if settings.SearchProvider == "" {
-			if tavilyKey := os.Getenv("TAVILY_API_KEY"); tavilyKey != "" {
-				settings.SearchProvider = "tavily"
-				settings.SearchAPIKey = tavilyKey
-			} else if jinaKey := os.Getenv("JINA_API_KEY"); jinaKey != "" {
-				settings.SearchProvider = "jina"
-				settings.SearchAPIKey = jinaKey
-			}
-		}
 	}
 
 	return settings
