@@ -291,23 +291,14 @@ func FormatToolResult(result json.RawMessage, isError bool) string {
 	var obj map[string]any
 	if json.Unmarshal(result, &obj) == nil {
 		if msg, ok := obj["message"].(string); ok && msg != "" {
-			return prefix + msg
+			return prefix + truncateResult(msg)
 		}
 		if out, ok := obj["output"].(string); ok && out != "" {
-			return prefix + out
+			return prefix + truncateResult(out)
 		}
 	}
 
-	s := strings.TrimSpace(string(result))
-	lines := strings.SplitN(s, "\n", 6)
-	if len(lines) > 5 {
-		lines = lines[:5]
-		s = strings.Join(lines, "\n") + "\n..."
-	}
-	if len([]rune(s)) > 300 {
-		s = string([]rune(s)[:297]) + "..."
-	}
-	return prefix + s
+	return prefix + truncateResult(strings.TrimSpace(string(result)))
 }
 
 // TruncateLines truncates text to maxLines, appending "..." if truncated.
@@ -315,6 +306,21 @@ func TruncateLines(s string, maxLines int) string {
 	lines := strings.SplitN(s, "\n", maxLines+1)
 	if len(lines) > maxLines {
 		return strings.Join(lines[:maxLines], "\n") + "..."
+	}
+	return s
+}
+
+// truncateResult truncates a tool result string to a reasonable display size.
+func truncateResult(s string) string {
+	lines := strings.SplitN(s, "\n", 6)
+	if len(lines) > 5 {
+		lines = lines[:5]
+		s = strings.Join(lines, "\n") + "\n..."
+	} else {
+		s = strings.Join(lines, "\n")
+	}
+	if len([]rune(s)) > 300 {
+		s = string([]rune(s)[:297]) + "..."
 	}
 	return s
 }
@@ -487,9 +493,161 @@ func FormatProgressLine(result json.RawMessage) string {
 	if len(result) == 0 {
 		return ""
 	}
-	s := string(result)
-	if len([]rune(s)) > 200 {
-		s = string([]rune(s)[:197]) + "..."
+	// Try structured subagent progress.
+	var sp struct {
+		Agent string          `json:"agent"`
+		Tool  string          `json:"tool"`
+		Args  json.RawMessage `json:"args"`
+		Turn  int             `json:"turn"`
+		Error bool            `json:"error"`
 	}
-	return s
+	if json.Unmarshal(result, &sp) == nil && sp.Agent != "" {
+		return formatSubagentProgress(sp.Agent, sp.Tool, sp.Args, sp.Turn, sp.Error)
+	}
+	// Fallback: plain JSON string.
+	var s string
+	if json.Unmarshal(result, &s) == nil && s != "" {
+		return truncateRunes(s, 200)
+	}
+	return truncateRunes(string(result), 200)
+}
+
+// formatSubagentProgress renders a structured subagent progress line.
+func formatSubagentProgress(agent, tool string, args json.RawMessage, turn int, isError bool) string {
+	prefix := MutedStyle.Render("[") + ToolNameStyle.Render(agent) + MutedStyle.Render("] ")
+	if turn > 0 {
+		return prefix + MutedStyle.Render(fmt.Sprintf("turn %d completed", turn))
+	}
+	if isError {
+		return prefix + ToolNameStyle.Render(tool) + MutedStyle.Render(" failed")
+	}
+	line := prefix + ToolNameStyle.Render(tool)
+	if hint := toolArgHint(args); hint != "" {
+		line += MutedStyle.Render(" " + hint)
+	}
+	return line
+}
+
+// toolArgHint extracts a short hint from tool args for display.
+func toolArgHint(args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(args, &m) != nil {
+		return ""
+	}
+	// Try common field names in priority order.
+	for _, key := range []string{"file_path", "path", "pattern", "glob", "command"} {
+		raw, ok := m[key]
+		if !ok {
+			continue
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil && s != "" {
+			return truncateRunes(s, 60)
+		}
+	}
+	return ""
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-3]) + "..."
+}
+
+// ---------------------------------------------------------------------------
+// Subagent display
+// ---------------------------------------------------------------------------
+
+// parseSubagentHeader extracts agent name and task hint from subagent tool args.
+func parseSubagentHeader(args json.RawMessage) (name, hint string) {
+	if len(args) == 0 {
+		return "subagent", ""
+	}
+	var p struct {
+		Agent string          `json:"agent"`
+		Task  string          `json:"task"`
+		Tasks json.RawMessage `json:"tasks"`
+		Chain json.RawMessage `json:"chain"`
+	}
+	if json.Unmarshal(args, &p) != nil {
+		return "subagent", ""
+	}
+	if p.Agent != "" {
+		return p.Agent, p.Task
+	}
+	if len(p.Tasks) > 2 { // not empty "[]"
+		return "parallel", ""
+	}
+	if len(p.Chain) > 2 {
+		return "chain", ""
+	}
+	return "subagent", ""
+}
+
+// renderSubagentCard wraps content in an amber-bordered card for visual distinction.
+// Content exceeding roughly one screen height is truncated with a line-count hint.
+func (m *Model) renderSubagentCard(content string) string {
+	w := max(m.Width, 30)
+	cw := w - 6 // 2(indent) + 2(border) + 2(padding)
+	wrapped := strings.TrimRight(reflowwrap.String(content, cw), "\n")
+
+	// Truncate to approximately one screen height.
+	maxLines := max(m.Height-4, 12)
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) > maxLines {
+		remaining := len(lines) - maxLines
+		wrapped = strings.Join(lines[:maxLines], "\n") +
+			"\n" + MutedStyle.Render(fmt.Sprintf("... (%d more lines)", remaining))
+	}
+
+	// Muted tone — subagent output is secondary to the main conversation.
+	wrapped = MutedStyle.Render(wrapped)
+
+	return SubagentCardStyle.Width(w - 4).Render(wrapped)
+}
+
+// FormatSubagentOutput extracts the full output from a subagent result,
+// appending usage stats as a footer. Returns content for card display.
+func FormatSubagentOutput(result json.RawMessage) string {
+	if len(result) == 0 {
+		return "(no output)"
+	}
+
+	var obj struct {
+		Output string `json:"output"`
+		Error  string `json:"error"`
+		Usage  *struct {
+			Input  int     `json:"input"`
+			Output int     `json:"output"`
+			Turns  int     `json:"turns"`
+			Tools  int     `json:"tools"`
+			Cost   float64 `json:"cost"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(result, &obj); err != nil {
+		return FormatToolResult(result, false)
+	}
+
+	if obj.Error != "" {
+		return "error: " + obj.Error
+	}
+
+	output := strings.TrimSpace(obj.Output)
+	if output == "" {
+		// No "output" field — parallel result, background ack, etc.
+		return FormatToolResult(result, false)
+	}
+
+	// Append usage stats footer.
+	if u := obj.Usage; u != nil {
+		stats := fmt.Sprintf("%d turns · %d tools · ↑%s ↓%s tokens",
+			u.Turns, u.Tools, FormatTokens(u.Input), FormatTokens(u.Output))
+		output += "\n\n" + MutedStyle.Render(stats)
+	}
+	return output
 }

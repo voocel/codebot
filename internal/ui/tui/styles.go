@@ -79,6 +79,12 @@ var PlanBoxStyle = lipgloss.NewStyle().
 	BorderForeground(ColorAccent).
 	Padding(0, 1)
 
+// Subagent result card
+var SubagentCardStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(ColorTool). // amber, matches tool header
+	Padding(0, 1)
+
 // Plan mode tag
 var PlanTagStyle = lipgloss.NewStyle().Foreground(ColorAccent)
 

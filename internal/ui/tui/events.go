@@ -93,13 +93,24 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		if ev.ToolLabel != "" {
 			label = ev.ToolLabel
 		}
-		m.PendingTools[ev.ToolID] = label
 		m.ToolOutputBuf[ev.ToolID] = &strings.Builder{}
 		m.RunStats.ToolCalls++
 
-		header := "\n" + ToolIconStyle.Render("● ") + ToolNameStyle.Render(label)
-		if argsStr := FormatToolArgs(ev.Args); argsStr != "" {
-			header += "\n" + indentBlock(ToolArgsStyle.Render(m.wrapTextForIndent(argsStr, 2)), 2)
+		var header string
+		if ev.Tool == "subagent" {
+			// Subagent: clean header with agent name → task hint.
+			name, hint := parseSubagentHeader(ev.Args)
+			m.PendingTools[ev.ToolID] = name
+			header = "\n" + ToolIconStyle.Render("● ") + ToolNameStyle.Render(name)
+			if hint != "" {
+				header += MutedStyle.Render(" → ") + ToolArgsStyle.Render(truncateRunes(hint, 80))
+			}
+		} else {
+			m.PendingTools[ev.ToolID] = label
+			header = "\n" + ToolIconStyle.Render("● ") + ToolNameStyle.Render(label)
+			if argsStr := FormatToolArgs(ev.Args); argsStr != "" {
+				header += "\n" + indentBlock(ToolArgsStyle.Render(m.wrapTextForIndent(argsStr, 2)), 2)
+			}
 		}
 		cmds = append(cmds, tea.Println(header))
 
@@ -123,18 +134,24 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		delete(m.PendingTools, ev.ToolID)
 		delete(m.ToolOutputBuf, ev.ToolID)
 
-		var rendered string
-		if ev.Tool == "edit" && !ev.IsError {
-			// Diff already shown in preview; just show the success message.
-			rendered = FormatToolResult(ev.Result, false)
+		if ev.Tool == "subagent" && !ev.IsError {
+			// Subagent: render full result in a bordered card for visual distinction.
+			content := FormatSubagentOutput(ev.Result)
+			card := m.renderSubagentCard(content)
+			cmds = append(cmds, tea.Println(indentBlock(card, 2)))
 		} else {
-			rendered = FormatToolResult(ev.Result, ev.IsError)
+			var rendered string
+			if ev.Tool == "edit" && !ev.IsError {
+				rendered = FormatToolResult(ev.Result, false)
+			} else {
+				rendered = FormatToolResult(ev.Result, ev.IsError)
+			}
+			style := ToolResultStyle
+			if ev.IsError {
+				style = ErrorStyle
+			}
+			cmds = append(cmds, tea.Println(indentBlock(style.Render(m.wrapTextForIndent(rendered, 2)), 2)))
 		}
-		style := ToolResultStyle
-		if ev.IsError {
-			style = ErrorStyle
-		}
-		cmds = append(cmds, tea.Println(indentBlock(style.Render(m.wrapTextForIndent(rendered, 2)), 2)))
 
 	case agentcore.EventError:
 		// Context cancellation is a normal operation (user Esc, plan submission stop).

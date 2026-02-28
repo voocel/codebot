@@ -70,8 +70,9 @@ type Model struct {
 	PendingTools  map[string]string           // toolID -> tool name
 	ToolOutputBuf map[string]*strings.Builder // toolID -> streaming output
 
-	Width int
-	Ready bool
+	Width  int
+	Height int
+	Ready  bool
 
 	Cwd         string
 	GitBranch   string
@@ -213,7 +214,7 @@ func (m Model) View() string {
 	for id, name := range m.PendingTools {
 		line := m.ToolSpinner.View() + " " + ToolNameStyle.Render(name)
 		if buf, ok := m.ToolOutputBuf[id]; ok && buf.Len() > 0 {
-			output := RenderStreamingOutput(buf.String(), 5)
+			output := RenderStreamingOutput(buf.String(), 8)
 			line += "\n" + indentBlock(m.wrapTextForIndent(output, 2), 2)
 		}
 		parts = append(parts, "", line)
@@ -354,6 +355,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleResize processes terminal resize events.
 func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.Width = msg.Width
+	m.Height = msg.Height
 	m.Ready = true
 	m.Input.SetWidth(m.Width - 2)
 	m.Glamour = NewGlamourRenderer(m.Width - 4)
