@@ -218,7 +218,8 @@ func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
 	// Stop the agent so LLM doesn't get another turn.
 	// Safe: tool_result is written to messages AFTER executeToolCalls returns
 	// (loop.go:167-173), then ctx.Err() check (loop.go:102-106) exits cleanly.
-	a.Session.Abort()
+	// AbortSilent: programmatic cancellation — no abort marker in history.
+	a.Session.AbortSilent()
 
 	return nil
 }

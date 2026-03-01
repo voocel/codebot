@@ -149,9 +149,15 @@ func (s *Session) Steer(text string) {
 	s.agent.Steer(agentcore.UserMsg(text))
 }
 
-// Abort cancels the running agent.
+// Abort cancels the running agent and emits an abort marker message.
 func (s *Session) Abort() {
 	s.agent.Abort()
+}
+
+// AbortSilent cancels the running agent without emitting an abort marker.
+// Use for programmatic cancellation (e.g. plan mode transitions).
+func (s *Session) AbortSilent() {
+	s.agent.AbortSilent()
 }
 
 // IsRunning reports whether the underlying agent is currently processing.

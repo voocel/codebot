@@ -2,7 +2,9 @@ package ui
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -70,7 +72,7 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 			}
 
 		case agentcore.EventError:
-			if ae.Err != nil {
+			if ae.Err != nil && !errors.Is(ae.Err, context.Canceled) {
 				fmt.Fprintf(os.Stderr, "error: %v\n", ae.Err)
 				setExitErr(ae.Err)
 			}
