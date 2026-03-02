@@ -15,7 +15,7 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, mcpMgr *mcpclient.Manager, askTool *tools.AskUserTool) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, mcpMgr *mcpclient.Manager) error {
 	adapter := &App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -30,21 +30,23 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 	m := tui.New(sess, modelName, adapter.Config())
 	p := tea.NewProgram(m)
 
-	// Wire AskUserQuestion tool to TUI.
-	if askTool != nil {
-		askTool.SetHandler(func(ctx context.Context, questions []tools.Question) (map[string]string, error) {
-			respCh := make(chan map[string]string, 1)
-			p.Send(tui.AskUserMsg{Questions: questions, RespCh: respCh})
-			select {
-			case answers, ok := <-respCh:
-				if !ok || answers == nil {
-					return nil, fmt.Errorf("user cancelled")
+	// Wire AskUserQuestion tool to TUI (find from session's registered tools).
+	if found := sess.ToolsByName("ask_user"); len(found) > 0 {
+		if askTool, ok := found[0].(*tools.AskUserTool); ok {
+			askTool.SetHandler(func(ctx context.Context, questions []tools.Question) (*tools.AskUserResponse, error) {
+				respCh := make(chan *tools.AskUserResponse, 1)
+				p.Send(tui.AskUserMsg{Questions: questions, RespCh: respCh})
+				select {
+				case resp, ok := <-respCh:
+					if !ok || resp == nil {
+						return nil, fmt.Errorf("user cancelled")
+					}
+					return resp, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
 				}
-				return answers, nil
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		})
+			})
+		}
 	}
 
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {

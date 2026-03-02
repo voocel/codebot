@@ -45,7 +45,7 @@ func main() {
 	if rt.Session != nil && rt.Session.ModelName() != "" {
 		modelName = rt.Session.ModelName()
 	}
-	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, rt.PolicyProfile, rt.MCPManager, rt.AskUserTool); err != nil {
+	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, rt.PolicyProfile, rt.MCPManager); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

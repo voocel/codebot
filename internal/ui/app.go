@@ -36,10 +36,12 @@ type App struct {
 	PlanStore *storage.PlanStore
 
 	// Plan mode state.
-	planState   planState
-	planContent string // free-form plan text from LLM
-	planTitle   string // short title extracted from plan content
-	planChoice  int    // selected option in planReview menu
+	planState     planState
+	planContent   string // free-form plan text from LLM
+	planTitle     string // short title extracted from plan content
+	planChoice    int    // selected option in planReview menu
+	planOtherMode bool   // typing custom feedback
+	planOtherBuf  string // custom feedback buffer
 }
 
 // Config returns a tui.Config with all hooks wired to this App.
@@ -61,31 +63,9 @@ func (a *App) Config() tui.Config {
 // onKey returns a hook that intercepts slash commands and plan approval keys.
 func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	return func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
-		// Plan pending approval: up/down to select, enter to confirm.
+		// Plan pending approval: AskUser-style interaction.
 		if a.planState == planReview && !m.Running {
-			switch msg.String() {
-			case "up", "k", "left", "h":
-				if a.planChoice > 0 {
-					a.planChoice--
-				}
-				return true, nil
-			case "down", "j", "right", "l":
-				if a.planChoice < 2 {
-					a.planChoice++
-				}
-				return true, nil
-			case "enter":
-				switch a.planChoice {
-				case 0:
-					return true, a.executePlan()
-				case 1:
-					return true, a.editPlan()
-				case 2:
-					return true, a.cancelPlanMode()
-				}
-			}
-			// Block other input while awaiting approval.
-			return true, nil
+			return a.handlePlanReviewKey(msg)
 		}
 
 		if msg.String() != "enter" {

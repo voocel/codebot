@@ -51,7 +51,6 @@ type Runtime struct {
 	Settings     config.Resolved
 	Session      *agent.Session
 	MCPManager   *mcpclient.Manager
-	AskUserTool  *localtools.AskUserTool
 }
 
 // Close releases runtime resources.
@@ -282,7 +281,6 @@ func Boot(opts Options) (*Runtime, error) {
 		Settings:      settings,
 		Session:       sess,
 		MCPManager:    mcpManager,
-		AskUserTool:   askTool,
 	}, nil
 }
 

@@ -12,17 +12,18 @@ import (
 // AskUserMsg is sent by the AskUser handler to show questions in the TUI.
 type AskUserMsg struct {
 	Questions []tools.Question
-	RespCh    chan<- map[string]string
+	RespCh    chan<- *tools.AskUserResponse
 }
 
 // askUserState tracks the interactive question UI.
 type askUserState struct {
 	questions []tools.Question
-	respCh    chan<- map[string]string
+	respCh    chan<- *tools.AskUserResponse
 
 	current  int               // current question index
 	cursor   int               // selected option index (last = "Other")
-	answers  map[string]string // header → answer
+	answers  map[string]string // question text → answer
+	notes    map[string]string // question text → custom note
 	selected map[int]bool      // multiSelect: toggled option indices
 	done     bool              // true after submit or cancel
 
@@ -57,6 +58,7 @@ func initAskUser(msg AskUserMsg) *askUserState {
 		questions: msg.Questions,
 		respCh:   msg.RespCh,
 		answers:  make(map[string]string),
+		notes:    make(map[string]string),
 		selected: make(map[int]bool),
 	}
 }
@@ -131,7 +133,7 @@ func handleOtherInput(s *askUserState, key tea.KeyMsg) (bool, tea.Cmd) {
 			return true, nil // reject empty
 		}
 		s.otherMode = false
-		return commitAnswer(s, text)
+		return commitAnswer(s, text, true)
 	case "backspace":
 		if len(s.otherBuf) > 0 {
 			// Truncate by rune for correct CJK handling.
@@ -168,17 +170,20 @@ func handleAskUserEnter(s *askUserState) (bool, tea.Cmd) {
 		if len(labels) == 0 {
 			return true, nil // must select at least one
 		}
-		return commitAnswer(s, strings.Join(labels, ", "))
+		return commitAnswer(s, strings.Join(labels, ", "), false)
 	}
 
 	// Single select.
-	return commitAnswer(s, q.Options[s.cursor].Label)
+	return commitAnswer(s, q.Options[s.cursor].Label, false)
 }
 
 // commitAnswer records the answer and advances to next question or submits.
-func commitAnswer(s *askUserState, answer string) (bool, tea.Cmd) {
+func commitAnswer(s *askUserState, answer string, isCustom bool) (bool, tea.Cmd) {
 	q := s.questions[s.current]
-	s.answers[q.Header] = answer
+	s.answers[q.Question] = answer
+	if isCustom {
+		s.notes[q.Question] = answer
+	}
 
 	// Advance to next question.
 	s.current++
@@ -191,16 +196,22 @@ func commitAnswer(s *askUserState, answer string) (bool, tea.Cmd) {
 	}
 
 	// All questions answered — send response.
-	answers := make(map[string]string, len(s.answers))
-	for k, v := range s.answers {
-		answers[k] = v
+	resp := &tools.AskUserResponse{
+		Answers: make(map[string]string, len(s.answers)),
+		Notes:   make(map[string]string, len(s.notes)),
 	}
-	s.respCh <- answers
+	for k, v := range s.answers {
+		resp.Answers[k] = v
+	}
+	for k, v := range s.notes {
+		resp.Notes[k] = v
+	}
+	s.respCh <- resp
 	s.done = true
 	return true, nil
 }
 
-// renderAskUser renders the question UI in flat inline style (matching Claude Code).
+// renderAskUser renders the question UI (no border, minimal style).
 func renderAskUser(s *askUserState) string {
 	q := s.questions[s.current]
 
@@ -271,5 +282,5 @@ func renderAskUser(s *askUserState) string {
 		b.WriteString(askHintStyle.Render("Enter to select · ↑↓ Navigate · Esc to cancel"))
 	}
 
-	return b.String()
+	return indentBlock(b.String(), 2)
 }

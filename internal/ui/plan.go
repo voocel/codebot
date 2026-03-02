@@ -108,22 +108,6 @@ func (a *App) executePlan() tea.Cmd {
 	return a.sendAsPrompt("The plan has been approved. Execute it now.")
 }
 
-func (a *App) editPlan() tea.Cmd {
-	if a.planState != planReview {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan to edit."))
-	}
-
-	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash", "subagent")
-	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
-	a.Session.SetSystemSuffix(planModePrompt)
-	a.planState = planPlanning
-	a.planContent = ""
-	a.planTitle = ""
-
-	return tui.SendCommandResult(tui.CommandStyle.Render(
-		"Back to plan mode. Type your feedback to revise the plan."))
-}
-
 func (a *App) cancelPlanMode() tea.Cmd {
 	if a.planState == planOff {
 		return tui.SendCommandResult(tui.CommandStyle.Render("Not in plan mode."))
@@ -138,6 +122,116 @@ func (a *App) resetPlanState() {
 	a.planState = planOff
 	a.planContent = ""
 	a.planTitle = ""
+	a.planOtherMode = false
+	a.planOtherBuf = ""
+}
+
+// ---------------------------------------------------------------------------
+// Plan review keyboard handling (AskUser-style)
+// ---------------------------------------------------------------------------
+
+const planOptionCount = 3 // 2 choices + "Type here"
+
+func (a *App) handlePlanReviewKey(msg tea.KeyMsg) (bool, tea.Cmd) {
+	// In otherMode, handle typing.
+	if a.planOtherMode {
+		return a.handlePlanOtherInput(msg)
+	}
+
+	// Esc and Ctrl+C cancel plan mode.
+	switch msg.String() {
+	case "esc":
+		return true, a.cancelPlanMode()
+	case "ctrl+c":
+		return true, a.cancelPlanMode()
+
+	case "up", "k":
+		if a.planChoice > 0 {
+			a.planChoice--
+		}
+		return true, nil
+
+	case "down", "j", "tab":
+		if a.planChoice < planOptionCount-1 {
+			a.planChoice++
+		}
+		return true, nil
+
+	case "enter":
+		return a.handlePlanEnter()
+	}
+
+	// Number shortcuts: 1-3.
+	if len(msg.Runes) == 1 {
+		r := msg.Runes[0]
+		if r >= '1' && r <= '9' {
+			idx := int(r - '1')
+			if idx < planOptionCount {
+				a.planChoice = idx
+				return a.handlePlanEnter()
+			}
+		}
+	}
+
+	// Absorb all other keys.
+	return true, nil
+}
+
+func (a *App) handlePlanEnter() (bool, tea.Cmd) {
+	switch a.planChoice {
+	case 0:
+		return true, a.executePlan()
+	case 1:
+		return true, a.cancelPlanMode()
+	default:
+		// "Type here" option.
+		a.planOtherMode = true
+		a.planOtherBuf = ""
+		return true, nil
+	}
+}
+
+func (a *App) handlePlanOtherInput(msg tea.KeyMsg) (bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		a.planOtherMode = false
+		a.planOtherBuf = ""
+		return true, nil
+	case "enter":
+		text := strings.TrimSpace(a.planOtherBuf)
+		if text == "" {
+			return true, nil
+		}
+		a.planOtherMode = false
+		a.planOtherBuf = ""
+		return true, a.editPlanWithFeedback(text)
+	case "backspace":
+		if len(a.planOtherBuf) > 0 {
+			runes := []rune(a.planOtherBuf)
+			a.planOtherBuf = string(runes[:len(runes)-1])
+		}
+		return true, nil
+	default:
+		if len(msg.Runes) > 0 {
+			a.planOtherBuf += string(msg.Runes)
+		}
+		return true, nil
+	}
+}
+
+func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
+	if a.planState != planReview {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan to edit."))
+	}
+
+	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash", "subagent")
+	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
+	a.Session.SetSystemSuffix(planModePrompt)
+	a.planState = planPlanning
+	a.planContent = ""
+	a.planTitle = ""
+
+	return a.sendAsPrompt("User feedback on the plan: " + feedback + "\n\nPlease revise the plan accordingly.")
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +308,8 @@ func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
 
 	a.planState = planReview
 	a.planChoice = 0
+	a.planOtherMode = false
+	a.planOtherBuf = ""
 
 	// Stop the agent so LLM doesn't get another turn.
 	// Safe: tool_result is written to messages AFTER executeToolCalls returns
@@ -255,9 +351,12 @@ func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {
 			return &tui.PlanBarInfo{Tag: "submitting plan..."}
 		}
 		return &tui.PlanBarInfo{
-			Tag:     "plan mode",
-			Choices: []string{"Execute plan", "Edit plan", "Cancel"},
-			Active:  a.planChoice,
+			Tag:       "plan mode",
+			Prompt:    "Would you like to proceed?",
+			Choices:   []string{"Execute plan", "Cancel"},
+			Active:    a.planChoice,
+			OtherMode: a.planOtherMode,
+			OtherBuf:  a.planOtherBuf,
 		}
 	default:
 		return nil

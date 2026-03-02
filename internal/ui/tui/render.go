@@ -42,6 +42,11 @@ func (m *Model) renderWelcome() string {
 
 // RenderStatusBar renders the status line above the input (running state + turn).
 func (m *Model) RenderStatusBar() string {
+	// Quit confirmation hint overrides normal status.
+	if m.QuitPending {
+		return lipgloss.NewStyle().Foreground(ColorTool).Bold(true).Render("Press Ctrl+C again to exit")
+	}
+
 	var plan *PlanBarInfo
 	if m.config.StatusPlan != nil {
 		plan = m.config.StatusPlan(m)
@@ -66,7 +71,7 @@ func (m *Model) RenderStatusBar() string {
 	return status
 }
 
-// RenderPlanBar renders the plan choices bar (empty string when inactive).
+// RenderPlanBar renders the plan review card (AskUser-style). Empty when inactive.
 func (m *Model) RenderPlanBar() string {
 	if m.config.StatusPlan == nil {
 		return ""
@@ -75,18 +80,54 @@ func (m *Model) RenderPlanBar() string {
 	if plan == nil || len(plan.Choices) == 0 {
 		return ""
 	}
-	var sb strings.Builder
-	for i, c := range plan.Choices {
-		if i > 0 {
-			sb.WriteByte('\n')
-		}
-		if i == plan.Active {
-			sb.WriteString(ChoiceActiveStyle.Render("▸ " + c))
-		} else {
-			sb.WriteString(ChoiceInactiveStyle.Render("  " + c))
-		}
+
+	optionCount := len(plan.Choices) + 1 // +1 for "Type here"
+
+	var b strings.Builder
+
+	// Prompt text.
+	if plan.Prompt != "" {
+		b.WriteString(askQuestionStyle.Render(plan.Prompt))
+		b.WriteString("\n\n")
 	}
-	return FooterStyle.Width(m.Width).Render(sb.String())
+
+	// Numbered options.
+	for i, c := range plan.Choices {
+		num := fmt.Sprintf("%d. ", i+1)
+		if i == plan.Active {
+			b.WriteString(askOptionActiveStyle.Render("> " + num + c))
+		} else {
+			b.WriteString(askOptionInactiveStyle.Render("  " + num + c))
+		}
+		b.WriteByte('\n')
+	}
+
+	// Separator before "Type here".
+	b.WriteString(askDescStyle.Render("  ───"))
+	b.WriteByte('\n')
+
+	// "Type here" option.
+	otherIdx := len(plan.Choices)
+	otherNum := fmt.Sprintf("%d. ", otherIdx+1)
+	if plan.Active == otherIdx {
+		if plan.OtherMode {
+			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + plan.OtherBuf + "█"))
+		} else {
+			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + "Type here to tell Claude what to change"))
+		}
+	} else {
+		b.WriteString(askOptionInactiveStyle.Render("  " + otherNum + "Type here to tell Claude what to change"))
+	}
+	b.WriteString("\n\n")
+
+	// Hint line.
+	if plan.OtherMode {
+		b.WriteString(askHintStyle.Render("Enter to confirm · Esc to go back"))
+	} else {
+		b.WriteString(askHintStyle.Render(fmt.Sprintf("Enter to select · ↑↓ Navigate · 1-%d Shortcut · Esc to cancel", optionCount)))
+	}
+
+	return indentBlock(b.String(), 2)
 }
 
 // RenderContextBar renders the context line below the input (env info).

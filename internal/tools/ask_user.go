@@ -11,9 +11,15 @@ import (
 	"github.com/voocel/agentcore/schema"
 )
 
+// AskUserResponse carries answers and optional user notes (from custom input).
+type AskUserResponse struct {
+	Answers map[string]string // question text → answer
+	Notes   map[string]string // question text → custom note (only for "Type something")
+}
+
 // AskUserHandler blocks until the user answers all questions.
-// Returns a map of header → answer. Returns error on cancel or timeout.
-type AskUserHandler func(ctx context.Context, questions []Question) (map[string]string, error)
+// Returns answers and notes. Returns error on cancel or timeout.
+type AskUserHandler func(ctx context.Context, questions []Question) (*AskUserResponse, error)
 
 // Question is a single question with selectable options.
 type Question struct {
@@ -91,12 +97,12 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (json.R
 		return json.Marshal("AskUserQuestion requires an interactive terminal. Make your best judgment and proceed without asking.")
 	}
 
-	answers, err := h(ctx, a.Questions)
+	resp, err := h(ctx, a.Questions)
 	if err != nil {
 		return json.Marshal(fmt.Sprintf("User interaction failed: %s. Make your best judgment and proceed.", err))
 	}
 
-	return json.Marshal(formatAnswers(a.Questions, answers))
+	return json.Marshal(formatAnswers(a.Questions, resp))
 }
 
 func validateQuestions(questions []Question) error {
@@ -131,15 +137,21 @@ func validateQuestions(questions []Question) error {
 	return nil
 }
 
-func formatAnswers(questions []Question, answers map[string]string) string {
-	if len(answers) == 0 {
+func formatAnswers(questions []Question, resp *AskUserResponse) string {
+	if resp == nil || len(resp.Answers) == 0 {
 		return "User provided no answers. Make your best judgment and proceed."
 	}
-	parts := make([]string, 0, len(answers))
+	var parts []string
 	for _, q := range questions {
-		if answer, ok := answers[q.Header]; ok {
-			parts = append(parts, fmt.Sprintf("%q=%q", q.Header, answer))
+		answer, ok := resp.Answers[q.Question]
+		if !ok {
+			continue
 		}
+		entry := fmt.Sprintf("%q=%q", q.Question, answer)
+		if note, hasNote := resp.Notes[q.Question]; hasNote {
+			entry += " user notes: " + note
+		}
+		parts = append(parts, entry)
 	}
-	return fmt.Sprintf("User answered: %s. Continue with the user's answers in mind.", strings.Join(parts, ", "))
+	return fmt.Sprintf("User has answered your questions: %s. You can now continue with the user's answers in mind.", strings.Join(parts, ", "))
 }

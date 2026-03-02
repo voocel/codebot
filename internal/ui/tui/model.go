@@ -16,8 +16,13 @@ import (
 // PlanBarInfo provides plan mode status for the status bar.
 type PlanBarInfo struct {
 	Tag     string   // appended to status bar (e.g., "plan mode")
-	Choices []string // horizontal selection menu items
+	Choices []string // selectable options
 	Active  int      // active choice index
+
+	// Plan review card fields.
+	Prompt    string // e.g., "Would you like to proceed?"
+	OtherMode bool   // typing custom feedback
+	OtherBuf  string // custom feedback buffer
 }
 
 // Config provides hooks for extending the base TUI behavior.
@@ -86,6 +91,8 @@ type Model struct {
 	config  Config
 
 	AskUser *askUserState // non-nil when ask-user UI is active
+
+	QuitPending bool // true after first Ctrl+C, waiting for second to quit
 }
 
 // New creates a Model with the given agent, model name, and optional config.
@@ -142,6 +149,9 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	}
 }
 
+// quitResetMsg resets QuitPending after timeout.
+type quitResetMsg struct{}
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(m.Spinner.Tick, m.ToolSpinner.Tick, textarea.Blink)
@@ -173,6 +183,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Println(indentBlock(msg.Text, 2))
 	case AskUserMsg:
 		m.AskUser = initAskUser(msg)
+		return m, nil
+	case quitResetMsg:
+		m.QuitPending = false
 		return m, nil
 	case spinner.TickMsg:
 		var cmd1, cmd2 tea.Cmd
@@ -225,11 +238,6 @@ func (m Model) View() string {
 		parts = append(parts, "", line)
 	}
 
-	// Ask-user question card
-	if m.AskUser != nil {
-		parts = append(parts, "", indentBlock(renderAskUser(m.AskUser), 2))
-	}
-
 	// Blank line before chrome
 	parts = append(parts, "")
 
@@ -238,27 +246,34 @@ func (m Model) View() string {
 		parts = append(parts, m.renderRunSummary(), "")
 	}
 
-	// Plan choices (above status bar, only during plan review)
-	if bar := m.RenderPlanBar(); bar != "" {
-		parts = append(parts, bar)
-	}
-
-	// Status bar (above input)
-	parts = append(parts, m.RenderStatusBar())
-
-	// Image attachments (above separator)
-	if len(m.Images) > 0 {
-		var tags []string
-		for i := range m.Images {
-			tags = append(tags, fmt.Sprintf("[Image #%d]", i+1))
+	// Plan review / AskUser replace status bar + input area.
+	planBar := m.RenderPlanBar()
+	if planBar != "" {
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, planBar)
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		// Status bar below plan review card.
+		parts = append(parts, m.RenderStatusBar())
+	} else if m.AskUser != nil {
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, renderAskUser(m.AskUser))
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, m.RenderStatusBar())
+	} else {
+		// Status bar (above input)
+		parts = append(parts, m.RenderStatusBar())
+		// Normal: image attachments + input
+		if len(m.Images) > 0 {
+			var tags []string
+			for i := range m.Images {
+				tags = append(tags, fmt.Sprintf("[Image #%d]", i+1))
+			}
+			parts = append(parts, CommandStyle.Render(strings.Join(tags, " ")))
 		}
-		parts = append(parts, CommandStyle.Render(strings.Join(tags, " ")))
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, m.Input.View())
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 	}
-
-	// Separator + input + bottom border
-	parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
-	parts = append(parts, m.Input.View())
-	parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 
 	// Context bar (below input)
 	parts = append(parts, m.RenderContextBar())
@@ -271,13 +286,31 @@ func (m Model) View() string {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Ask-user UI is modal — intercepts all keys when active.
 	if m.AskUser != nil {
+		// Ctrl+C in AskUser: dismiss + abort (same as Esc).
+		if msg.String() == "ctrl+c" {
+			close(m.AskUser.respCh)
+			m.AskUser = nil
+			if m.Running && m.Driver != nil {
+				m.Driver.Abort()
+			}
+			return m, nil
+		}
 		handled, cmd := handleAskUserKey(m.AskUser, msg)
 		if handled {
 			if m.AskUser.done {
 				m.AskUser = nil
+				// Esc dismisses AskUser and also aborts the agent run.
+				if msg.String() == "esc" && m.Running && m.Driver != nil {
+					m.Driver.Abort()
+				}
 			}
 			return m, cmd
 		}
+	}
+
+	// Any non-Ctrl+C key resets quit pending state.
+	if m.QuitPending && msg.String() != "ctrl+c" {
+		m.QuitPending = false
 	}
 
 	if m.config.OnKey != nil {
@@ -296,7 +329,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c":
-		return m, tea.Quit
+		if m.QuitPending {
+			return m, tea.Quit
+		}
+		if m.Running && m.Driver != nil {
+			m.Driver.Abort()
+		}
+		m.QuitPending = true
+		return m, tea.Tick(time.Second, func(time.Time) tea.Msg {
+			return quitResetMsg{}
+		})
 
 	case "esc":
 		if m.Running && m.Driver != nil {
