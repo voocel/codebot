@@ -1,0 +1,33 @@
+{
+  // Format: "provider/model". Providers: anthropic, openai, gemini
+  "model": "anthropic/claude-sonnet-4-6",
+  "small_model": "anthropic/claude-haiku-4-5", // for SubAgents; empty = same as main
+
+  // Per-provider credentials. Only configure the ones you use.
+  "providers": {
+    "anthropic": { "api_key": "" },
+    "openai":    { "api_key": "", "base_url": "" },
+    "gemini":    { "api_key": "" }
+  },
+
+  "context_window": 128000,  // tokens
+  "auto_compaction": true,   // compact when context fills up
+  "thinking_level": "low",   // off | low | medium | high | xhigh
+  "max_turns": 30,
+
+  "search_provider": "tavily", // tavily | jina
+  "search_api_key": "",
+
+  // MCP servers: stdio (local process) or http (remote endpoint)
+  "mcp_servers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "remote-api": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer your-token-here" }
+    }
+  }
+}
