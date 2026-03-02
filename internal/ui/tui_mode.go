@@ -49,6 +49,15 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 		}
 	}
 
+	// Wire Task tools to TUI — notify on every task mutation.
+	if found := sess.ToolsByName("task_create"); len(found) > 0 {
+		if ct, ok := found[0].(*tools.TaskCreateTool); ok {
+			ct.SetNotifyFn(func(snap tools.TaskSnapshot) {
+				p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
+			})
+		}
+	}
+
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {
 		if ev.Type == agent.SEAgentEvent && ev.AgentEvent != nil {
 			p.Send(tui.AgentEventMsg{Event: *ev.AgentEvent})

@@ -180,6 +180,54 @@ func (m *Model) renderRunSummary() string {
 		s.Turns, s.ToolCalls, FormatTokens(s.Input), FormatTokens(s.Output)))
 }
 
+// renderTaskList renders the task progress bar and task list.
+func (m *Model) renderTaskList() string {
+	snap := m.Tasks
+	if snap == nil || snap.Total == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+
+	// Progress bar: [████░░░░] 2/5 completed
+	barWidth := min(snap.Total, 20)
+	filled := 0
+	if snap.Total > 0 {
+		filled = snap.Completed * barWidth / snap.Total
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+	b.WriteString(MutedStyle.Render(fmt.Sprintf("[%s] %d/%d completed", bar, snap.Completed, snap.Total)))
+
+	// One line per task.
+	for _, t := range snap.Tasks {
+		b.WriteByte('\n')
+		var icon string
+		var color lipgloss.TerminalColor
+		switch t.Status {
+		case "pending":
+			icon = "○"
+			color = ColorMuted
+		case "in_progress":
+			icon = "◐"
+			color = ColorTool
+		case "completed":
+			icon = "●"
+			color = ColorSuccess
+		default:
+			icon = "○"
+			color = ColorMuted
+		}
+		text := t.Subject
+		if t.Status == "in_progress" && t.ActiveForm != "" {
+			text = t.ActiveForm
+		}
+		style := lipgloss.NewStyle().Foreground(color)
+		b.WriteString(style.Render(fmt.Sprintf("%s #%s %s", icon, t.ID, text)))
+	}
+
+	return indentBlock(b.String(), 2)
+}
+
 // FormatTokens formats a token count with k/M suffix for readability.
 func FormatTokens(n int) string {
 	switch {

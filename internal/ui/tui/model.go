@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/tools"
 )
 
 // PlanBarInfo provides plan mode status for the status bar.
@@ -91,6 +92,8 @@ type Model struct {
 	config  Config
 
 	AskUser *askUserState // non-nil when ask-user UI is active
+
+	Tasks *tools.TaskSnapshot // non-nil when tasks exist; displayed above input
 
 	QuitPending bool // true after first Ctrl+C, waiting for second to quit
 }
@@ -184,6 +187,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AskUserMsg:
 		m.AskUser = initAskUser(msg)
 		return m, nil
+	case TaskListUpdateMsg:
+		if msg.Snapshot.Total == 0 {
+			m.Tasks = nil
+		} else {
+			snap := msg.Snapshot
+			m.Tasks = &snap
+		}
+		return m, nil
 	case quitResetMsg:
 		m.QuitPending = false
 		return m, nil
@@ -244,6 +255,11 @@ func (m Model) View() string {
 	// Run summary (shown after agent completes, cleared on next input)
 	if m.ShowSummary {
 		parts = append(parts, m.renderRunSummary(), "")
+	}
+
+	// Task list (persistent, non-modal display above input)
+	if m.Tasks != nil && m.Tasks.Total > 0 {
+		parts = append(parts, m.renderTaskList(), "")
 	}
 
 	// Plan review / AskUser replace status bar + input area.

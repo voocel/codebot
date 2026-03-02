@@ -91,21 +91,21 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	}
 }
 
-// statusRight displays context usage in the status bar.
+// statusRight displays context usage and cost in the status bar.
 func (a *App) statusRight(m *tui.Model) string {
-	thinking := a.Session.Settings().ThinkingLevel
-	if thinking == "" {
-		thinking = "off"
-	}
-	thinkingTag := tui.TokenStyle.Render(fmt.Sprintf("thinking:%s", thinking))
-
+	var parts []string
 	if cu := a.Session.ContextUsage(); cu != nil {
-		return tui.TokenStyle.Render(fmt.Sprintf("ctx: %.0f%%", cu.Percent)) + " · " + thinkingTag
+		parts = append(parts, fmt.Sprintf("ctx: %.0f%%", cu.Percent))
+	} else if totalTokens := a.Session.TotalTokens(); totalTokens > 0 {
+		parts = append(parts, fmt.Sprintf("tokens: %d", totalTokens))
 	}
-	if totalTokens := a.Session.TotalTokens(); totalTokens > 0 {
-		return tui.TokenStyle.Render(fmt.Sprintf("tokens: %d", totalTokens)) + " · " + thinkingTag
+	if _, _, cost := a.Session.CostEstimate(); cost > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", cost))
 	}
-	return thinkingTag
+	if len(parts) == 0 {
+		return ""
+	}
+	return tui.TokenStyle.Render(strings.Join(parts, " · "))
 }
 
 // onPaste returns a tea.Cmd that asynchronously reads clipboard image data.

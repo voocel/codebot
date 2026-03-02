@@ -3,6 +3,7 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/tools"
 )
 
 // AgentEventMsg bridges agentcore events into the bubbletea Elm loop.
@@ -41,4 +42,9 @@ type PasteTextMsg struct{}
 // Decrements Pasting counter and displays the error text.
 type PasteErrorMsg struct {
 	Text string
+}
+
+// TaskListUpdateMsg notifies the TUI that the task list has changed.
+type TaskListUpdateMsg struct {
+	Snapshot tools.TaskSnapshot
 }

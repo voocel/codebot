@@ -155,11 +155,13 @@ func Boot(opts Options) (*Runtime, error) {
 
 	builtTools := buildTools(cwd, opts.ToolFactories)
 	askTool := localtools.NewAskUser()
+	_, taskTools := localtools.NewTaskTools()
 	builtTools = append(builtTools,
 		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
 		askTool,
 	)
+	builtTools = append(builtTools, taskTools...)
 
 	// SubAgent tool: delegate tasks to isolated sub-agents (explore, plan, coder).
 	subagentTool := buildSubAgentTool(subAgentDeps{
