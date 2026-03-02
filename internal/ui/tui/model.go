@@ -84,6 +84,8 @@ type Model struct {
 
 	Glamour *glamour.TermRenderer
 	config  Config
+
+	AskUser *askUserState // non-nil when ask-user UI is active
 }
 
 // New creates a Model with the given agent, model name, and optional config.
@@ -169,6 +171,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PasteErrorMsg:
 		m.Pasting--
 		return m, tea.Println(indentBlock(msg.Text, 2))
+	case AskUserMsg:
+		m.AskUser = initAskUser(msg)
+		return m, nil
 	case spinner.TickMsg:
 		var cmd1, cmd2 tea.Cmd
 		m.Spinner, cmd1 = m.Spinner.Update(msg)
@@ -220,6 +225,11 @@ func (m Model) View() string {
 		parts = append(parts, "", line)
 	}
 
+	// Ask-user question card
+	if m.AskUser != nil {
+		parts = append(parts, "", indentBlock(renderAskUser(m.AskUser), 2))
+	}
+
 	// Blank line before chrome
 	parts = append(parts, "")
 
@@ -259,6 +269,17 @@ func (m Model) View() string {
 
 // handleKey processes keyboard input.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Ask-user UI is modal — intercepts all keys when active.
+	if m.AskUser != nil {
+		handled, cmd := handleAskUserKey(m.AskUser, msg)
+		if handled {
+			if m.AskUser.done {
+				m.AskUser = nil
+			}
+			return m, cmd
+		}
+	}
+
 	if m.config.OnKey != nil {
 		if handled, cmd := m.config.OnKey(&m, msg); handled {
 			return m, cmd

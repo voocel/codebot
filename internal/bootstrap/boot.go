@@ -48,9 +48,10 @@ type Runtime struct {
 
 	PolicyProfile policy.Profile
 
-	Settings   config.Resolved
-	Session    *agent.Session
-	MCPManager *mcpclient.Manager
+	Settings     config.Resolved
+	Session      *agent.Session
+	MCPManager   *mcpclient.Manager
+	AskUserTool  *localtools.AskUserTool
 }
 
 // Close releases runtime resources.
@@ -154,9 +155,11 @@ func Boot(opts Options) (*Runtime, error) {
 	})
 
 	builtTools := buildTools(cwd, opts.ToolFactories)
+	askTool := localtools.NewAskUser()
 	builtTools = append(builtTools,
 		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
+		askTool,
 	)
 
 	// SubAgent tool: delegate tasks to isolated sub-agents (explore, plan, coder).
@@ -211,6 +214,7 @@ func Boot(opts Options) (*Runtime, error) {
 		agentcore.WithSystemPrompt(systemPrompt),
 		agentcore.WithTools(builtTools...),
 		agentcore.WithMaxTurns(settings.MaxTurns),
+		agentcore.WithMaxToolConcurrency(4),
 		agentcore.WithContextPipeline(
 			memory.NewCompaction(memory.CompactionConfig{
 				Model:         chatModel,
@@ -278,6 +282,7 @@ func Boot(opts Options) (*Runtime, error) {
 		Settings:      settings,
 		Session:       sess,
 		MCPManager:    mcpManager,
+		AskUserTool:   askTool,
 	}, nil
 }
 

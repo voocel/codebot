@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,11 +10,12 @@ import (
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, mcpMgr *mcpclient.Manager) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, mcpMgr *mcpclient.Manager, askTool *tools.AskUserTool) error {
 	adapter := &App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -27,6 +29,23 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 
 	m := tui.New(sess, modelName, adapter.Config())
 	p := tea.NewProgram(m)
+
+	// Wire AskUserQuestion tool to TUI.
+	if askTool != nil {
+		askTool.SetHandler(func(ctx context.Context, questions []tools.Question) (map[string]string, error) {
+			respCh := make(chan map[string]string, 1)
+			p.Send(tui.AskUserMsg{Questions: questions, RespCh: respCh})
+			select {
+			case answers, ok := <-respCh:
+				if !ok || answers == nil {
+					return nil, fmt.Errorf("user cancelled")
+				}
+				return answers, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		})
+	}
 
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {
 		if ev.Type == agent.SEAgentEvent && ev.AgentEvent != nil {
