@@ -1,5 +1,7 @@
 # Codebot
 
+[English](README.md) | [中文](README_zh.md)
+
 Terminal-native AI coding agent. Built on [agentcore](https://github.com/voocel/agentcore), a minimal agent execution kernel.
 
 ```
@@ -23,9 +25,12 @@ Each layer has one job. No layer knows about the layers above it.
 
 **Agent**
 - Streaming responses with extended thinking (off → xhigh)
-- Tool execution: read, write, edit, bash, grep, find, ls
+- Tool execution: read, write, edit, bash, grep, find, ls, web_search, web_fetch
+- Task management: task_create, task_get, task_update, task_list (SubAgent coordination)
+- SubAgent delegation with parallel/chain execution
 - Automatic context compaction when window fills up
 - Multi-provider: Anthropic, OpenAI, Gemini
+- MCP (Model Context Protocol) server integration
 
 **Sessions**
 - Append-only JSONL persistence — crash-safe, human-readable
@@ -40,6 +45,10 @@ Each layer has one job. No layer knows about the layers above it.
 
 **Interface**
 - Interactive TUI with real-time streaming and markdown rendering
+- Plan mode: agent proposes changes, user reviews and approves
+- AskUser: structured multi-choice questions from agent to user
+- Image paste (Ctrl+V) with selection (↑) and deletion (Delete)
+- Task progress display: progress bar + status icons above input
 - Non-interactive print mode for pipes and scripts (`-p`)
 - Slash commands: `/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
 
@@ -77,10 +86,16 @@ codebot -policy-profile strict
 3. **Convention over configuration** — sensible defaults, explicit overrides
 4. **Secure by default** — balanced policy, audit trail, workspace boundaries
 
+## Configuration
+
+Config files: `~/.codebot/settings.json` (global) or `.codebot/settings.json` (project-level, takes precedence).
+
+All fields are optional. See [settings.example.jsonc](settings.example.jsonc) for the full reference with comments.
+
 ## Requirements
 
 - Go 1.25+
-- API key for at least one provider (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`)
+- API key for at least one provider
 
 ## License
 

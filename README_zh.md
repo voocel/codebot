@@ -1,0 +1,102 @@
+# Codebot
+
+[English](README.md) | [中文](README_zh.md)
+
+终端原生 AI 编程助手。基于 [agentcore](https://github.com/voocel/agentcore) 构建，一个极简的 Agent 执行内核。
+
+```
+╭──────────────────────────────────────────────────────╮
+│ ◆ Codebot                                            │
+│ anthropic/claude-sonnet-4.6 · ~/project (main)       │
+│                                                      │
+│ Enter send · Ctrl+J newline · Esc abort · /help      │
+╰──────────────────────────────────────────────────────╯
+```
+
+## 为什么
+
+大多数 AI 编程工具要么是臃肿的框架，要么是薄薄的 API 封装。Codebot 介于两者之间：一个**完整的 Agent**，具备会话管理、安全策略和精致的 TUI。
+
+核心思路：**agentcore 负责执行，codebot 负责编排。**
+
+每一层只做一件事，下层不感知上层。
+
+## 功能
+
+**Agent**
+- 流式响应，支持扩展思考（off → xhigh）
+- 工具执行：read, write, edit, bash, grep, find, ls, web_search, web_fetch
+- 任务管理：task_create, task_get, task_update, task_list（SubAgent 协调）
+- SubAgent 委托，支持并行/链式执行
+- 上下文满时自动压缩
+- 多 Provider：Anthropic, OpenAI, Gemini
+- MCP（Model Context Protocol）服务器集成
+
+**会话**
+- 仅追加 JSONL 持久化 — 崩溃安全、人类可读
+- 恢复会话（`-c` 最近，`-r` 选择），支持分叉、回放
+- 模型和思考级别按会话保存
+
+**安全**
+- 三种策略：`strict` / `balanced` / `off`
+- 危险命令拦截（rm -rf, sudo, dd, ...）
+- 工作区范围的文件访问控制
+- 每次工具决策的 JSON 审计日志
+
+**界面**
+- 交互式 TUI，实时流式输出和 Markdown 渲染
+- Plan 模式：Agent 提出修改方案，用户审核批准
+- AskUser：Agent 向用户发起结构化多选问题
+- 图片粘贴（Ctrl+V），支持选择（↑）和删除（Delete）
+- 任务进度展示：进度条 + 状态图标，固定在输入区上方
+- 非交互管道模式（`-p`）
+- 斜杠命令：`/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
+
+## 快速开始
+
+```bash
+# 全局安装
+go install github.com/voocel/codebot/cmd/codebot@latest
+
+# 或从源码构建
+git clone https://github.com/voocel/codebot.git
+cd codebot && go build -o codebot ./cmd/codebot
+```
+
+## 使用
+
+```bash
+# 交互式 TUI
+codebot
+
+# 管道模式
+echo "explain main.go" | codebot -p
+
+# 继续上次会话
+codebot -c
+
+# 严格安全策略
+codebot -policy-profile strict
+```
+
+## 设计原则
+
+1. **复用优先** — agentcore 做 Agent 循环，codebot 不重复造轮子
+2. **拒绝过早抽象** — 每个接口至少有两个真实调用者
+3. **约定优于配置** — 合理默认值，显式覆盖
+4. **默认安全** — balanced 策略、审计追踪、工作区边界
+
+## 配置
+
+配置文件：`~/.codebot/settings.json`（全局）或 `.codebot/settings.json`（项目级，优先）。
+
+所有字段可选，参考 [settings.example.jsonc](settings.example.jsonc) 了解完整配置项及说明。
+
+## 环境要求
+
+- Go 1.25+
+- 至少一个 Provider 的 API Key
+
+## 许可证
+
+MIT
