@@ -77,12 +77,14 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 		Store:   current,
 		Manager: mgr,
 		Settings: config.Resolved{
-			DefaultProvider: "openai",
-			DefaultModel:    "good-model",
-			APIKey:          "k",
-			ContextWindow:   128000,
-			AutoCompaction:  false,
-			MaxTurns:        30,
+			Provider: "openai",
+			Model:    "good-model",
+			Providers: map[string]config.ProviderConfig{
+				"openai": {APIKey: "k"},
+			},
+			ContextWindow:  128000,
+			AutoCompaction: false,
+			MaxTurns:       30,
 		},
 		Cwd: dir,
 		CreateModel: func(_ string, model string, _ string, _ string) (agentcore.ChatModel, error) {
@@ -140,12 +142,14 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 		Store:   store,
 		Manager: mgr,
 		Settings: config.Resolved{
-			DefaultProvider: "openai",
-			DefaultModel:    "good-model",
-			APIKey:          "k",
-			ContextWindow:   128000,
-			AutoCompaction:  false,
-			MaxTurns:        30,
+			Provider: "openai",
+			Model:    "good-model",
+			Providers: map[string]config.ProviderConfig{
+				"openai": {APIKey: "k"},
+			},
+			ContextWindow:  128000,
+			AutoCompaction: false,
+			MaxTurns:       30,
 		},
 		Cwd: dir,
 		CreateModel: func(_ string, _ string, _ string, _ string) (agentcore.ChatModel, error) {
@@ -165,7 +169,7 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 	oldProvider := s.Provider()
 	oldModel := s.ModelName()
 
-	err = s.SetModel("openai", "new-model", "k")
+	err = s.SetModel("openai", "new-model")
 	if err == nil {
 		t.Fatalf("expected set model failure")
 	}
@@ -280,20 +284,24 @@ func TestRestoreAllToolsRebuildsPrompt(t *testing.T) {
 	}
 }
 
-func TestResolveCredentialsDefaultProvider(t *testing.T) {
+func TestResolveCredentialsPerProvider(t *testing.T) {
 	t.Parallel()
 	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
 	s := NewSession(SessionConfig{
 		Agent: ag,
 		Settings: config.Resolved{
-			DefaultProvider: "openai",
-			APIKey:          "openai-key",
-			BaseURL:         "https://openai.example.com",
+			Provider: "openai",
+			Model:    "gpt-5",
+			Providers: map[string]config.ProviderConfig{
+				"openai":    {APIKey: "openai-key", BaseURL: "https://openai.example.com"},
+				"anthropic": {APIKey: "ant-key"},
+			},
 		},
 		Cwd: t.TempDir(),
 	})
 	t.Cleanup(s.Close)
 
+	// Default provider
 	apiKey, baseURL := s.resolveCredentials("openai")
 	if apiKey != "openai-key" {
 		t.Fatalf("expected openai-key, got %s", apiKey)
@@ -301,28 +309,20 @@ func TestResolveCredentialsDefaultProvider(t *testing.T) {
 	if baseURL != "https://openai.example.com" {
 		t.Fatalf("expected https://openai.example.com, got %s", baseURL)
 	}
-}
 
-func TestResolveCredentialsCrossProviderUsesMainCredentials(t *testing.T) {
-	t.Parallel()
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
-	s := NewSession(SessionConfig{
-		Agent: ag,
-		Settings: config.Resolved{
-			DefaultProvider: "openai",
-			APIKey:          "openai-key",
-			BaseURL:         "https://openai.example.com",
-		},
-		Cwd: t.TempDir(),
-	})
-	t.Cleanup(s.Close)
-
-	apiKey, baseURL := s.resolveCredentials("anthropic")
-	if apiKey != "openai-key" {
-		t.Fatalf("expected openai-key, got %s", apiKey)
+	// Cross-provider resolves its own credentials
+	apiKey, baseURL = s.resolveCredentials("anthropic")
+	if apiKey != "ant-key" {
+		t.Fatalf("expected ant-key, got %s", apiKey)
 	}
-	if baseURL != "https://openai.example.com" {
-		t.Fatalf("expected https://openai.example.com, got %s", baseURL)
+	if baseURL != "" {
+		t.Fatalf("expected empty baseURL for anthropic, got %s", baseURL)
+	}
+
+	// Unknown provider returns empty
+	apiKey, baseURL = s.resolveCredentials("unknown")
+	if apiKey != "" || baseURL != "" {
+		t.Fatalf("expected empty for unknown provider, got %s/%s", apiKey, baseURL)
 	}
 }
 
@@ -355,12 +355,14 @@ func TestSwitchSessionCrossProviderCredentials(t *testing.T) {
 		Store:   current,
 		Manager: mgr,
 		Settings: config.Resolved{
-			DefaultProvider: "openai",
-			DefaultModel:    "gpt-5",
-			APIKey:          "openai-key",
-			BaseURL:         "https://openai.example.com",
-			ContextWindow:   128000,
-			MaxTurns:        30,
+			Provider: "openai",
+			Model:    "gpt-5",
+			Providers: map[string]config.ProviderConfig{
+				"openai":    {APIKey: "openai-key", BaseURL: "https://openai.example.com"},
+				"anthropic": {APIKey: "ant-key"},
+			},
+			ContextWindow: 128000,
+			MaxTurns:      30,
 		},
 		Cwd: dir,
 		CreateModel: func(_, _ string, apiKey, baseURL string) (agentcore.ChatModel, error) {
@@ -375,18 +377,12 @@ func TestSwitchSessionCrossProviderCredentials(t *testing.T) {
 		t.Fatalf("switch session: %v", err)
 	}
 
-	// Cross-provider uses the same credentials from settings.
-	if capturedKey != "openai-key" {
-		t.Fatalf("expected CreateModel to receive openai-key, got %s", capturedKey)
+	// Cross-provider uses anthropic's own credentials.
+	if capturedKey != "ant-key" {
+		t.Fatalf("expected CreateModel to receive ant-key, got %s", capturedKey)
 	}
-	if capturedBase != "https://openai.example.com" {
-		t.Fatalf("expected https://openai.example.com, got %s", capturedBase)
-	}
-	if s.APIKey() != "openai-key" {
-		t.Fatalf("expected session apiKey=openai-key, got %s", s.APIKey())
-	}
-	if s.BaseURL() != "https://openai.example.com" {
-		t.Fatalf("expected session baseURL=https://openai.example.com, got %s", s.BaseURL())
+	if capturedBase != "" {
+		t.Fatalf("expected empty baseURL for anthropic, got %s", capturedBase)
 	}
 }
 

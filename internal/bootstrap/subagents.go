@@ -15,10 +15,9 @@ type subAgentDeps struct {
 
 	// For creating alternative models (e.g. a cheaper model for explore).
 	CreateModel agent.ModelFactory
-	Provider    string
-	APIKey      string
-	BaseURL     string
-	SmallModel  string // model name for explore sub-agent, passed as-is to the provider
+	Provider    string                         // main provider name
+	Providers   map[string]config.ProviderConfig // per-provider credentials
+	SmallModel  string                         // "provider/model" for explore sub-agent
 }
 
 // buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
@@ -28,7 +27,12 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 
 	exploreModel := deps.Model
 	if deps.SmallModel != "" && deps.CreateModel != nil {
-		if m, err := deps.CreateModel(deps.Provider, deps.SmallModel, deps.APIKey, deps.BaseURL); err == nil {
+		prov, model := config.ParseModelID(deps.SmallModel)
+		if prov == "" {
+			prov = deps.Provider
+		}
+		apiKey, baseURL := resolveFromProviders(deps.Providers, prov)
+		if m, err := deps.CreateModel(prov, model, apiKey, baseURL); err == nil {
 			exploreModel = m
 		}
 	}
@@ -63,13 +67,27 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 	// Enable LLM to override model at call time via the "model" parameter.
 	if deps.CreateModel != nil {
 		factory := deps.CreateModel
-		prov, apiKey, baseURL := deps.Provider, deps.APIKey, deps.BaseURL
+		providers := deps.Providers
+		defaultProv := deps.Provider
 		sat.SetCreateModel(func(name string) (agentcore.ChatModel, error) {
-			return factory(prov, name, apiKey, baseURL)
+			prov, model := config.ParseModelID(name)
+			if prov == "" {
+				prov = defaultProv
+			}
+			apiKey, baseURL := resolveFromProviders(providers, prov)
+			return factory(prov, model, apiKey, baseURL)
 		})
 	}
 
 	return sat
+}
+
+// resolveFromProviders returns credentials for a provider from the map.
+func resolveFromProviders(providers map[string]config.ProviderConfig, prov string) (apiKey, baseURL string) {
+	if pc, ok := providers[prov]; ok {
+		return pc.APIKey, pc.BaseURL
+	}
+	return "", ""
 }
 
 // readOnlyTools constructs a read-only tool set for explore/plan sub-agents.

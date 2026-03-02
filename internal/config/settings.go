@@ -11,65 +11,90 @@ import (
 // ConfigDir is the project-level config directory name.
 const ConfigDir = ".codebot"
 
+// ProviderConfig holds credentials for a single provider.
+type ProviderConfig struct {
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+}
+
 // Settings holds application-level configuration.
 // Fields use pointer types so unset fields fall back to defaults.
 type Settings struct {
-	DefaultProvider *string `json:"default_provider,omitempty"`
-	DefaultModel    *string `json:"default_model,omitempty"`
-	APIKey          *string `json:"api_key,omitempty"`
-	BaseURL         *string `json:"base_url,omitempty"`
+	Model      *string                    `json:"model,omitempty"`      // "provider/model" e.g. "anthropic/claude-sonnet-4-6"
+	SmallModel *string                    `json:"small_model,omitempty"` // "provider/model" for explore sub-agent
+	Providers  map[string]*ProviderConfig `json:"providers,omitempty"`
 
 	ContextWindow  *int  `json:"context_window,omitempty"`
 	AutoCompaction *bool `json:"auto_compaction,omitempty"`
 
 	ThinkingLevel *string `json:"thinking_level,omitempty"`
-	ShowTokens    *bool   `json:"show_tokens,omitempty"`
 
 	MaxTurns *int `json:"max_turns,omitempty"`
 
 	SearchProvider *string `json:"search_provider,omitempty"`
 	SearchAPIKey   *string `json:"search_api_key,omitempty"`
-
-	SmallModel *string `json:"small_model,omitempty"` // lightweight model for explore sub-agent (e.g. "haiku", "gpt-4o-mini")
 }
 
 // Resolved holds settings resolved to concrete values (no pointers).
 type Resolved struct {
-	DefaultProvider string
-	DefaultModel    string
-	APIKey          string
-	BaseURL         string
-	ContextWindow   int
-	AutoCompaction  bool
-	ThinkingLevel   string
-	ShowTokens      bool
-	MaxTurns        int
-	SearchProvider  string
-	SearchAPIKey    string
-	SmallModel    string // lightweight model for explore sub-agent (e.g. "haiku", "gpt-4o-mini")
+	Provider   string                     // active provider name
+	Model      string                     // active model name (without provider prefix)
+	Providers  map[string]ProviderConfig  // per-provider credentials
+	SmallModel string                     // "provider/model" or ""
+
+	ContextWindow  int
+	AutoCompaction bool
+	ThinkingLevel  string
+	MaxTurns       int
+	SearchProvider string
+	SearchAPIKey   string
+}
+
+// ProviderCredentials returns API key and base URL for the given provider.
+func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
+	if pc, ok := r.Providers[prov]; ok {
+		return pc.APIKey, pc.BaseURL
+	}
+	return "", ""
+}
+
+// ParseModelID splits "provider/model" into (provider, model).
+// If no "/" is present, returns ("", id).
+func ParseModelID(id string) (provider, model string) {
+	if i := strings.IndexByte(id, '/'); i >= 0 {
+		return id[:i], id[i+1:]
+	}
+	return "", id
+}
+
+// FormatModelID combines provider and model into "provider/model".
+func FormatModelID(provider, model string) string {
+	if provider == "" {
+		return model
+	}
+	return provider + "/" + model
 }
 
 // Resolve converts Settings to Resolved using defaults for unset fields.
 func (s Settings) Resolve() Resolved {
 	r := Resolved{
-		DefaultProvider: "openai",
-		ContextWindow:   128000,
-		AutoCompaction:  true,
-		ThinkingLevel:   "low",
-		ShowTokens:      true,
-		MaxTurns:        30,
+		Provider:       "openai",
+		Providers:      make(map[string]ProviderConfig),
+		ContextWindow:  128000,
+		AutoCompaction: true,
+		ThinkingLevel:  "low",
+		MaxTurns:       30,
 	}
-	if s.DefaultProvider != nil {
-		r.DefaultProvider = *s.DefaultProvider
+	if s.Model != nil {
+		r.Provider, r.Model = ParseModelID(*s.Model)
 	}
-	if s.DefaultModel != nil {
-		r.DefaultModel = *s.DefaultModel
+	if s.SmallModel != nil {
+		r.SmallModel = *s.SmallModel
 	}
-	if s.APIKey != nil {
-		r.APIKey = *s.APIKey
-	}
-	if s.BaseURL != nil {
-		r.BaseURL = *s.BaseURL
+	for k, v := range s.Providers {
+		if v != nil {
+			r.Providers[k] = *v
+		}
 	}
 	if s.ContextWindow != nil {
 		r.ContextWindow = *s.ContextWindow
@@ -80,9 +105,6 @@ func (s Settings) Resolve() Resolved {
 	if s.ThinkingLevel != nil {
 		r.ThinkingLevel = *s.ThinkingLevel
 	}
-	if s.ShowTokens != nil {
-		r.ShowTokens = *s.ShowTokens
-	}
 	if s.MaxTurns != nil {
 		r.MaxTurns = *s.MaxTurns
 	}
@@ -91,9 +113,6 @@ func (s Settings) Resolve() Resolved {
 	}
 	if s.SearchAPIKey != nil {
 		r.SearchAPIKey = *s.SearchAPIKey
-	}
-	if s.SmallModel != nil {
-		r.SmallModel = *s.SmallModel
 	}
 	return r
 }
@@ -145,17 +164,19 @@ func LoadSettings(cwd string) Resolved {
 
 // mergeSettings merges two Settings; non-nil fields in override take precedence.
 func mergeSettings(base, override Settings) Settings {
-	if override.DefaultProvider != nil {
-		base.DefaultProvider = override.DefaultProvider
+	if override.Model != nil {
+		base.Model = override.Model
 	}
-	if override.DefaultModel != nil {
-		base.DefaultModel = override.DefaultModel
+	if override.SmallModel != nil {
+		base.SmallModel = override.SmallModel
 	}
-	if override.APIKey != nil {
-		base.APIKey = override.APIKey
-	}
-	if override.BaseURL != nil {
-		base.BaseURL = override.BaseURL
+	if len(override.Providers) > 0 {
+		if base.Providers == nil {
+			base.Providers = make(map[string]*ProviderConfig)
+		}
+		for k, v := range override.Providers {
+			base.Providers[k] = v
+		}
 	}
 	if override.ContextWindow != nil {
 		base.ContextWindow = override.ContextWindow
@@ -166,9 +187,6 @@ func mergeSettings(base, override Settings) Settings {
 	if override.ThinkingLevel != nil {
 		base.ThinkingLevel = override.ThinkingLevel
 	}
-	if override.ShowTokens != nil {
-		base.ShowTokens = override.ShowTokens
-	}
 	if override.MaxTurns != nil {
 		base.MaxTurns = override.MaxTurns
 	}
@@ -177,9 +195,6 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.SearchAPIKey != nil {
 		base.SearchAPIKey = override.SearchAPIKey
-	}
-	if override.SmallModel != nil {
-		base.SmallModel = override.SmallModel
 	}
 	return base
 }
@@ -227,8 +242,8 @@ func ResolveAll(cwd string) Resolved {
 	settings := LoadSettings(cwd)
 
 	// Model: settings > default per provider
-	if settings.DefaultModel == "" {
-		settings.DefaultModel = DefaultModelName(settings.DefaultProvider)
+	if settings.Model == "" {
+		settings.Model = DefaultModelName(settings.Provider)
 	}
 
 	// Normalize search provider name.

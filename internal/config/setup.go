@@ -34,7 +34,7 @@ func RunSetup(cwd string, settings Resolved, listModels ModelLister) error {
 	fmt.Println("Select provider:")
 	for i, p := range providerList {
 		marker := ""
-		if p.key == settings.DefaultProvider {
+		if p.key == settings.Provider {
 			marker = " (current)"
 		}
 		fmt.Printf("  %d. %s%s\n", i+1, p.name, marker)
@@ -66,15 +66,20 @@ func RunSetup(cwd string, settings Resolved, listModels ModelLister) error {
 		}
 	}
 
-	s := Settings{
-		DefaultProvider: &prov,
-		APIKey:          &apiKey,
-	}
+	pc := &ProviderConfig{APIKey: apiKey}
 	if baseURL != "" {
-		s.BaseURL = &baseURL
+		pc.BaseURL = baseURL
+	}
+
+	s := Settings{
+		Providers: map[string]*ProviderConfig{prov: pc},
 	}
 	if model != "" {
-		s.DefaultModel = &model
+		modelID := FormatModelID(prov, model)
+		s.Model = &modelID
+	} else {
+		modelID := FormatModelID(prov, DefaultModelName(prov))
+		s.Model = &modelID
 	}
 
 	if err := SaveSettings(cwd, s); err != nil {

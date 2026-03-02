@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/voocel/codebot/internal/bootstrap"
+	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui"
 )
 
@@ -41,7 +42,7 @@ func main() {
 		return
 	}
 
-	modelName := rt.Settings.DefaultModel
+	modelName := config.FormatModelID(rt.Settings.Provider, rt.Settings.Model)
 	if rt.Session != nil && rt.Session.ModelName() != "" {
 		modelName = rt.Session.ModelName()
 	}

@@ -32,12 +32,11 @@ func (s *Session) compactWithReason(reason string) error {
 	s.mu.Lock()
 	prov := s.provider
 	model := s.modelName
-	apiKey := s.apiKey
-	baseURL := s.baseURL
 	ctxWindow := s.settings.ContextWindow
 	store := s.store
 	s.mu.Unlock()
 
+	apiKey, baseURL := s.resolveCredentials(prov)
 	compactModel, err := s.createModel(prov, model, apiKey, baseURL)
 	if err != nil {
 		return fmt.Errorf("create compaction model: %w", err)

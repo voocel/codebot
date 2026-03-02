@@ -87,10 +87,11 @@ func Boot(opts Options) (*Runtime, error) {
 		createModel = provider.CreateModel
 	}
 
-	// Interactive setup when API key is missing.
-	if settings.APIKey == "" {
+	// Interactive setup when API key is missing for the active provider.
+	apiKey, _ := settings.ProviderCredentials(settings.Provider)
+	if apiKey == "" {
 		if opts.NonTTYMode {
-			return nil, fmt.Errorf("api key not set, configure api_key in %s",
+			return nil, fmt.Errorf("api key not set, configure providers in %s",
 				config.SettingsPath(cwd))
 		}
 		err := config.RunSetup(cwd, settings, func(prov string) []config.ModelOption {
@@ -127,16 +128,15 @@ func Boot(opts Options) (*Runtime, error) {
 		}
 	}
 
-	activeProvider := settings.DefaultProvider
+	activeProvider := settings.Provider
 	if snapshot.Provider != "" {
 		activeProvider = snapshot.Provider
 	}
-	activeModel := settings.DefaultModel
+	activeModel := settings.Model
 	if snapshot.Model != "" {
 		activeModel = snapshot.Model
 	}
-	activeAPIKey := settings.APIKey
-	activeBaseURL := settings.BaseURL
+	activeAPIKey, activeBaseURL := settings.ProviderCredentials(activeProvider)
 
 	chatModel, err := createModel(activeProvider, activeModel, activeAPIKey, activeBaseURL)
 	if err != nil {
@@ -170,8 +170,7 @@ func Boot(opts Options) (*Runtime, error) {
 		AllTools:    builtTools,
 		CreateModel: createModel,
 		Provider:    activeProvider,
-		APIKey:      activeAPIKey,
-		BaseURL:     activeBaseURL,
+		Providers:   settings.Providers,
 		SmallModel:  settings.SmallModel,
 	})
 	builtTools = append(builtTools, subagentTool)
@@ -243,10 +242,8 @@ func Boot(opts Options) (*Runtime, error) {
 		ag.SetThinkingLevel(agentcore.ThinkingLevel(settings.ThinkingLevel))
 	}
 
-	settings.DefaultProvider = activeProvider
-	settings.DefaultModel = activeModel
-	settings.APIKey = activeAPIKey
-	settings.BaseURL = activeBaseURL
+	settings.Provider = activeProvider
+	settings.Model = activeModel
 
 	sess := agent.NewSession(agent.SessionConfig{
 		Agent:        ag,

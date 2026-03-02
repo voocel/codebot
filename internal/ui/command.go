@@ -298,9 +298,11 @@ func (a *App) cmdModel(args []string) tea.Cmd {
 	resolved, err := a.Session.ResolveAndSetModel(pattern)
 	if err != nil {
 		// Fallback: try direct provider/model if registry fails
-		prov := a.Session.Provider()
-		apiKey := a.Session.APIKey()
-		if setErr := a.Session.SetModel(prov, pattern, apiKey); setErr != nil {
+		prov, model := config.ParseModelID(pattern)
+		if prov == "" {
+			prov = a.Session.Provider()
+		}
+		if setErr := a.Session.SetModel(prov, model); setErr != nil {
 			return tui.SendCommandResult(tui.ErrorStyle.Render(
 				fmt.Sprintf("Failed to switch model: %v", setErr)))
 		}
@@ -435,7 +437,7 @@ func (a *App) cmdSettings() tea.Cmd {
 	apiKey := a.Session.APIKey()
 	masked := maskKey(apiKey)
 	info := fmt.Sprintf("Provider: %s\nModel: %s\nAPI Key: %s\nBase URL: %s\nThinking level: %s\nContext window: %d\nAuto compaction: %v\nMax turns: %d\nConfig: %s",
-		s.DefaultProvider, a.Session.ModelName(), masked, baseURL,
+		s.Provider, a.Session.ModelName(), masked, baseURL,
 		thinking, s.ContextWindow, s.AutoCompaction, s.MaxTurns, config.SettingsPath(a.Cwd))
 	return tui.SendCommandResult(tui.CommandStyle.Render(info))
 }

@@ -51,8 +51,7 @@ type Session struct {
 
 	provider  string
 	modelName string
-	apiKey    string
-	baseURL   string
+	providers map[string]config.ProviderConfig
 	cwd       string
 
 	createModel ModelFactory
@@ -96,10 +95,9 @@ func NewSession(cfg SessionConfig) *Session {
 		mgr:         cfg.Manager,
 		registry:    cfg.Registry,
 		settings:    cfg.Settings,
-		provider:    cfg.Settings.DefaultProvider,
-		modelName:   cfg.Settings.DefaultModel,
-		apiKey:      cfg.Settings.APIKey,
-		baseURL:     cfg.Settings.BaseURL,
+		provider:    cfg.Settings.Provider,
+		modelName:   cfg.Settings.Model,
+		providers:   cfg.Settings.Providers,
 		cwd:         cfg.Cwd,
 		createModel: modelFactory,
 		lazyPersist: cfg.LazyPersist,
@@ -176,8 +174,8 @@ func (s *Session) ClearConversation() {
 // --------------------------------------------------------------------------
 
 // SetModel switches the LLM model and persists the change.
-func (s *Session) SetModel(prov, model, apiKey string) error {
-	_, baseURL := s.resolveCredentials(prov)
+func (s *Session) SetModel(prov, model string) error {
+	apiKey, baseURL := s.resolveCredentials(prov)
 	s.mu.Lock()
 	store := s.store
 	s.mu.Unlock()
@@ -197,8 +195,6 @@ func (s *Session) SetModel(prov, model, apiKey string) error {
 	s.mu.Lock()
 	s.provider = prov
 	s.modelName = model
-	s.apiKey = apiKey
-	s.baseURL = baseURL
 	s.mu.Unlock()
 
 	s.emit(SessionEvent{
@@ -224,9 +220,7 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 		return "", err
 	}
 
-	apiKey, _ := s.resolveCredentials(entry.Provider)
-
-	if err := s.SetModel(entry.Provider, entry.ID, apiKey); err != nil {
+	if err := s.SetModel(entry.Provider, entry.ID); err != nil {
 		return "", err
 	}
 	if thinkingLevel != "" {
@@ -282,25 +276,26 @@ func (s *Session) Provider() string {
 	return s.provider
 }
 
-// APIKey returns the current API key.
+// APIKey returns the API key for the current provider.
 func (s *Session) APIKey() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.apiKey
+	apiKey, _ := s.resolveCredentials(s.Provider())
+	return apiKey
 }
 
-// BaseURL returns the current base URL.
+// BaseURL returns the base URL for the current provider.
 func (s *Session) BaseURL() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.baseURL
+	_, baseURL := s.resolveCredentials(s.Provider())
+	return baseURL
 }
 
-// resolveCredentials returns the API key and base URL from settings.
+// resolveCredentials returns the API key and base URL for a provider.
 func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.settings.APIKey, s.settings.BaseURL
+	if pc, ok := s.providers[prov]; ok {
+		return pc.APIKey, pc.BaseURL
+	}
+	return "", ""
 }
 
 // --------------------------------------------------------------------------
@@ -406,8 +401,6 @@ func (s *Session) SwitchSession(id string) error {
 	s.store = newStore
 	s.provider = targetProvider
 	s.modelName = targetModel
-	s.apiKey = targetKey
-	s.baseURL = targetBase
 	s.autoNamed = newStore.Header().Name != ""
 	if snapshot.Thinking != "" {
 		clamped := snapshot.Thinking

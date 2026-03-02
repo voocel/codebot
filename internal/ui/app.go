@@ -6,11 +6,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
-	"github.com/voocel/codebot/internal/ui/imageinput"
 	"github.com/voocel/codebot/internal/config"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/ui/imageinput"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
