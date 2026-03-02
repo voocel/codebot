@@ -289,13 +289,15 @@ func (s *Session) BaseURL() string {
 }
 
 // resolveCredentials returns the API key and base URL for a provider.
+// Checks the session providers map first, then falls back to environment variables.
 func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if pc, ok := s.providers[prov]; ok {
+	pc, ok := s.providers[prov]
+	s.mu.Unlock()
+	if ok && pc.APIKey != "" {
 		return pc.APIKey, pc.BaseURL
 	}
-	return "", ""
+	return config.EnvCredentials(prov)
 }
 
 // --------------------------------------------------------------------------

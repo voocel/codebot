@@ -82,12 +82,13 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 	return sat
 }
 
-// resolveFromProviders returns credentials for a provider from the map.
+// resolveFromProviders returns credentials for a provider from the map,
+// falling back to standard environment variables.
 func resolveFromProviders(providers map[string]config.ProviderConfig, prov string) (apiKey, baseURL string) {
-	if pc, ok := providers[prov]; ok {
+	if pc, ok := providers[prov]; ok && pc.APIKey != "" {
 		return pc.APIKey, pc.BaseURL
 	}
-	return "", ""
+	return config.EnvCredentials(prov)
 }
 
 // readOnlyTools constructs a read-only tool set for explore/plan sub-agents.

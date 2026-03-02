@@ -50,12 +50,42 @@ type Resolved struct {
 	SearchAPIKey   string
 }
 
+// providerEnvVars maps provider names to their standard environment variable names.
+var providerEnvVars = map[string]struct{ key, base string }{
+	"anthropic": {"ANTHROPIC_API_KEY", ""},
+	"openai":    {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
+	"gemini":    {"GEMINI_API_KEY", ""},
+}
+
 // ProviderCredentials returns API key and base URL for the given provider.
+// It checks the providers map first, then falls back to standard environment variables.
 func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
-	if pc, ok := r.Providers[prov]; ok {
+	if pc, ok := r.Providers[prov]; ok && pc.APIKey != "" {
 		return pc.APIKey, pc.BaseURL
 	}
-	return "", ""
+	return EnvCredentials(prov)
+}
+
+// ProviderEnvKey returns the standard environment variable name for a provider's API key.
+func ProviderEnvKey(prov string) string {
+	if ev, ok := providerEnvVars[prov]; ok {
+		return ev.key
+	}
+	return strings.ToUpper(prov) + "_API_KEY"
+}
+
+// EnvCredentials returns API key and base URL from standard environment variables
+// for the given provider (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY).
+func EnvCredentials(prov string) (apiKey, baseURL string) {
+	envVars, ok := providerEnvVars[prov]
+	if !ok {
+		return "", ""
+	}
+	apiKey = os.Getenv(envVars.key)
+	if envVars.base != "" {
+		baseURL = os.Getenv(envVars.base)
+	}
+	return apiKey, baseURL
 }
 
 // ParseModelID splits "provider/model" into (provider, model).

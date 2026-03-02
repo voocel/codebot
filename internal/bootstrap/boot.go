@@ -91,8 +91,8 @@ func Boot(opts Options) (*Runtime, error) {
 	apiKey, _ := settings.ProviderCredentials(settings.Provider)
 	if apiKey == "" {
 		if opts.NonTTYMode {
-			return nil, fmt.Errorf("api key not set, configure providers in %s",
-				config.SettingsPath(cwd))
+			return nil, fmt.Errorf("api key not set; set %s or configure providers in %s",
+				config.ProviderEnvKey(settings.Provider), config.SettingsPath(cwd))
 		}
 		err := config.RunSetup(cwd, settings, func(prov string) []config.ModelOption {
 			entries := registry.FindByProvider(prov)
