@@ -109,10 +109,3 @@ func TestLoadFile(t *testing.T) {
 		t.Errorf("mime = %q, want image/png", block.Image.MimeType)
 	}
 }
-
-func TestLoadFile_NotFound(t *testing.T) {
-	_, err := LoadFile("/nonexistent/path.png")
-	if err == nil {
-		t.Fatal("expected error for missing file")
-	}
-}

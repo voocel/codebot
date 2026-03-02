@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,6 +87,7 @@ type Model struct {
 	ShowSummary bool
 	RunStats    runStats
 	Images      []agentcore.ContentBlock // attached images (from Ctrl+V clipboard paste)
+	ImageCursor int                      // -1 = not selecting; 0+ = selected image index
 	Pasting     int                      // number of async image reads in progress (clipboard paste or drag-drop)
 
 	Glamour *glamour.TermRenderer
@@ -148,6 +150,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		Cwd:           c.Cwd,
 		GitBranch:     c.GitBranch,
 		ShowWelcome:   true,
+		ImageCursor:   -1,
 		config:        c,
 	}
 }
@@ -282,9 +285,20 @@ func (m Model) View() string {
 		if len(m.Images) > 0 {
 			var tags []string
 			for i := range m.Images {
-				tags = append(tags, fmt.Sprintf("[Image #%d]", i+1))
+				tag := fmt.Sprintf("[Image #%d]", i+1)
+				if m.ImageCursor == i {
+					tags = append(tags, ImageSelectedStyle.Render(tag))
+				} else {
+					tags = append(tags, CommandStyle.Render(tag))
+				}
 			}
-			parts = append(parts, CommandStyle.Render(strings.Join(tags, " ")))
+			line := strings.Join(tags, " ")
+			if m.ImageCursor >= 0 {
+				line += " " + MutedStyle.Render("Delete to remove · Esc to cancel")
+			} else {
+				line += " " + MutedStyle.Render("(↑ to select)")
+			}
+			parts = append(parts, line)
 		}
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, m.Input.View())
@@ -343,6 +357,35 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Image selection mode: navigate and delete attached images.
+	if m.ImageCursor >= 0 {
+		switch msg.String() {
+		case "left", "h":
+			if m.ImageCursor > 0 {
+				m.ImageCursor--
+			}
+			return m, nil
+		case "right", "l":
+			if m.ImageCursor < len(m.Images)-1 {
+				m.ImageCursor++
+			}
+			return m, nil
+		case "delete", "backspace":
+			m.Images = slices.Delete(m.Images, m.ImageCursor, m.ImageCursor+1)
+			if len(m.Images) == 0 {
+				m.ImageCursor = -1
+			} else if m.ImageCursor >= len(m.Images) {
+				m.ImageCursor = len(m.Images) - 1
+			}
+			return m, nil
+		case "esc", "down":
+			m.ImageCursor = -1
+			return m, nil
+		}
+		// Other keys (ctrl+c, enter, etc.): exit selection, fall through to normal handling.
+		m.ImageCursor = -1
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		if m.QuitPending {
@@ -393,6 +436,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		images := m.Images
 		m.Images = nil
+		m.ImageCursor = -1
 		m.Input.Reset()
 		m.Input.SetHeight(1)
 		m.ShowSummary = false
@@ -422,6 +466,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			output += "\n" + ErrorStyle.Render("  error: "+err.Error())
 		}
 		return m, tea.Println(output)
+
+	case "up":
+		// Enter image selection when cursor is on the first line of input.
+		if len(m.Images) > 0 && !m.Running && m.Input.Line() == 0 {
+			m.ImageCursor = len(m.Images) - 1
+			return m, nil
+		}
 	}
 
 	var cmd tea.Cmd

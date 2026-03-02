@@ -50,6 +50,9 @@ var ErrorStyle = lipgloss.NewStyle().
 var CommandStyle = lipgloss.NewStyle().
 	Foreground(ColorCommand)
 
+// Image tag selected (reverse video highlight)
+var ImageSelectedStyle = lipgloss.NewStyle().Reverse(true)
+
 // Separator
 var SeparatorStyle = lipgloss.NewStyle().
 	Foreground(ColorSeparator)
