@@ -55,6 +55,10 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 			ct.SetNotifyFn(func(snap tools.TaskSnapshot) {
 				p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
 			})
+			// Send initial snapshot for resumed sessions with persisted tasks.
+			if snap := ct.Store().Snapshot(); snap.Total > 0 {
+				p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
+			}
 		}
 	}
 

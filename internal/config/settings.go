@@ -172,6 +172,11 @@ func PlansDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "plans")
 }
 
+// TasksDir returns <cwd>/.codebot/tasks/.
+func TasksDir(cwd string) string {
+	return filepath.Join(cwd, ConfigDir, "tasks")
+}
+
 // SkillsDir returns <cwd>/.codebot/skills/.
 func SkillsDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "skills")

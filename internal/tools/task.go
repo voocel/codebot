@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,8 +33,8 @@ type Task struct {
 	ActiveForm  string         `json:"activeForm,omitempty"`
 	Status      TaskStatus     `json:"status"`
 	Owner       string         `json:"owner,omitempty"`
-	Blocks      []string       `json:"blocks,omitempty"`
-	BlockedBy   []string       `json:"blockedBy,omitempty"`
+	Blocks      []string       `json:"blocks"`
+	BlockedBy   []string       `json:"blockedBy"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
@@ -48,12 +50,13 @@ type TaskSnapshot struct {
 // TaskNotifyFn is called after each store mutation with the latest snapshot.
 type TaskNotifyFn func(TaskSnapshot)
 
-// TaskStore is an in-memory, thread-safe task store with auto-increment IDs.
+// TaskStore is a thread-safe task store with optional file persistence.
 type TaskStore struct {
 	mu       sync.RWMutex
 	tasks    map[string]*Task
 	nextID   int
 	notifyFn TaskNotifyFn
+	dir      string // persistence directory; empty = in-memory only
 }
 
 // NewTaskStore creates an empty store.
@@ -82,13 +85,21 @@ func (s *TaskStore) Create(subject, description, activeForm string, metadata map
 		Description: description,
 		ActiveForm:  activeForm,
 		Status:      TaskPending,
+		Blocks:      []string{},
+		BlockedBy:   []string{},
 		Metadata:    metadata,
 	}
 	s.tasks[id] = t
-	snap := s.snapshot()
+	cp := copyTask(t)
+	dir := s.dir
+	hwm := s.nextID - 1
 	s.mu.Unlock()
-	s.notify(snap)
-	return copyTask(t)
+	if dir != "" {
+		s.persist(cp)
+		s.writeHighWaterMark(hwm)
+	}
+	s.notify()
+	return cp
 }
 
 // Get returns a copy of the task or false if not found.
@@ -126,9 +137,9 @@ func (s *TaskStore) Update(id string, opts UpdateOpts) (*Task, error) {
 	if opts.Status != nil {
 		if *opts.Status == "deleted" {
 			delete(s.tasks, id)
-			snap := s.snapshot()
 			s.mu.Unlock()
-			s.notify(snap)
+			s.removeFile(id)
+			s.notify()
 			return nil, nil
 		}
 		t.Status = *opts.Status
@@ -159,11 +170,13 @@ func (s *TaskStore) Update(id string, opts UpdateOpts) (*Task, error) {
 	}
 	// Dependency tracking: bidirectional, matching Claude Code's addDependency().
 	// addBlocks: this task blocks others → add id to each target's blockedBy.
+	var touched []*Task // tasks modified by dependency updates
 	if len(opts.AddBlocks) > 0 {
 		t.Blocks = appendUnique(t.Blocks, opts.AddBlocks...)
 		for _, blockedID := range opts.AddBlocks {
 			if other, exists := s.tasks[blockedID]; exists {
 				other.BlockedBy = appendUnique(other.BlockedBy, id)
+				touched = append(touched, other)
 			}
 		}
 	}
@@ -173,14 +186,29 @@ func (s *TaskStore) Update(id string, opts UpdateOpts) (*Task, error) {
 		for _, blockerID := range opts.AddBlockedBy {
 			if other, exists := s.tasks[blockerID]; exists {
 				other.Blocks = appendUnique(other.Blocks, id)
+				touched = append(touched, other)
 			}
 		}
 	}
 
 	cp := copyTask(t)
-	snap := s.snapshot()
+	var touchedCopies []*Task
+	for _, other := range touched {
+		touchedCopies = append(touchedCopies, copyTask(other))
+	}
+
+	// If all tasks are now completed, clean up.
+	allDone := s.allCompleted()
+
 	s.mu.Unlock()
-	s.notify(snap)
+	s.persist(cp)
+	for _, tc := range touchedCopies {
+		s.persist(tc)
+	}
+	if allDone {
+		s.clearAll()
+	}
+	s.notify()
 	return cp, nil
 }
 
@@ -225,9 +253,10 @@ func (s *TaskStore) snapshot() TaskSnapshot {
 	return snap
 }
 
-func (s *TaskStore) notify(snap TaskSnapshot) {
+func (s *TaskStore) notify() {
 	s.mu.RLock()
 	fn := s.notifyFn
+	snap := s.snapshot()
 	s.mu.RUnlock()
 	if fn != nil {
 		fn(snap)
@@ -269,6 +298,144 @@ func appendUnique(base []string, vals ...string) []string {
 }
 
 // ---------------------------------------------------------------------------
+// Persistence helpers
+// ---------------------------------------------------------------------------
+
+const highWaterMarkFile = ".highwatermark"
+
+// SetDir enables file persistence. It creates the directory if needed and
+// loads any existing tasks from disk. Call before the store is used.
+func (s *TaskStore) SetDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create task dir: %w", err)
+	}
+	s.mu.Lock()
+	s.dir = dir
+	s.mu.Unlock()
+	return s.loadFromDir()
+}
+
+// Snapshot returns the current read-only snapshot (public, for initial TUI state).
+func (s *TaskStore) Snapshot() TaskSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshot()
+}
+
+// loadFromDir reads all {id}.json files and .highwatermark from s.dir.
+func (s *TaskStore) loadFromDir() error {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return fmt.Errorf("read task dir: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	hwm := s.readHighWaterMark()
+	maxID := hwm
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		idStr := strings.TrimSuffix(name, ".json")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			continue // skip non-numeric files
+		}
+
+		data, err := os.ReadFile(filepath.Join(s.dir, name))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: read task %s: %v\n", name, err)
+			continue
+		}
+		var t Task
+		if err := json.Unmarshal(data, &t); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: parse task %s: %v\n", name, err)
+			continue
+		}
+		s.tasks[t.ID] = &t
+		if id > maxID {
+			maxID = id
+		}
+	}
+	s.nextID = maxID + 1
+	return nil
+}
+
+// persist writes a single task to {dir}/{id}.json.
+func (s *TaskStore) persist(t *Task) {
+	if s.dir == "" {
+		return
+	}
+	data, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: marshal task %s: %v\n", t.ID, err)
+		return
+	}
+	path := filepath.Join(s.dir, t.ID+".json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: write task %s: %v\n", t.ID, err)
+	}
+}
+
+// removeFile deletes {dir}/{id}.json.
+func (s *TaskStore) removeFile(id string) {
+	if s.dir == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(s.dir, id+".json"))
+}
+
+// readHighWaterMark reads the .highwatermark file (must be called with mu held).
+func (s *TaskStore) readHighWaterMark() int {
+	data, err := os.ReadFile(filepath.Join(s.dir, highWaterMarkFile))
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	return n
+}
+
+// writeHighWaterMark writes the .highwatermark file.
+func (s *TaskStore) writeHighWaterMark(id int) {
+	if s.dir == "" {
+		return
+	}
+	_ = os.WriteFile(
+		filepath.Join(s.dir, highWaterMarkFile),
+		[]byte(strconv.Itoa(id)),
+		0o644,
+	)
+}
+
+// allCompleted reports whether all tasks are completed (must be called with mu held).
+func (s *TaskStore) allCompleted() bool {
+	if len(s.tasks) == 0 {
+		return false
+	}
+	for _, t := range s.tasks {
+		if t.Status != TaskCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+// clearAll removes all tasks from memory and deletes the task directory.
+func (s *TaskStore) clearAll() {
+	s.mu.Lock()
+	clear(s.tasks)
+	dir := s.dir
+	s.mu.Unlock()
+	if dir != "" {
+		_ = os.RemoveAll(dir)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TaskCreateTool
 // ---------------------------------------------------------------------------
 
@@ -292,6 +459,9 @@ func (t *TaskCreateTool) Schema() map[string]any {
 func (t *TaskCreateTool) SetNotifyFn(fn TaskNotifyFn) {
 	t.store.SetNotifyFn(fn)
 }
+
+// Store returns the underlying TaskStore (used for persistence wiring).
+func (t *TaskCreateTool) Store() *TaskStore { return t.store }
 
 type taskCreateArgs struct {
 	Subject     string `json:"subject"`

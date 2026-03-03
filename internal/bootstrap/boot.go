@@ -155,13 +155,19 @@ func Boot(opts Options) (*Runtime, error) {
 
 	builtTools := buildTools(cwd, opts.ToolFactories)
 	askTool := localtools.NewAskUser()
-	_, taskTools := localtools.NewTaskTools()
+	taskStore, taskTools := localtools.NewTaskTools()
 	builtTools = append(builtTools,
 		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
 		askTool,
 	)
 	builtTools = append(builtTools, taskTools...)
+
+	// Enable task persistence scoped to this session.
+	taskDir := filepath.Join(config.TasksDir(cwd), store.Header().SessionID)
+	if err := taskStore.SetDir(taskDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: task persistence: %v\n", err)
+	}
 
 	// SubAgent tool: delegate tasks to isolated sub-agents (explore, plan, coder).
 	subagentTool := buildSubAgentTool(subAgentDeps{
