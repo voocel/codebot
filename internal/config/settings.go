@@ -20,7 +20,8 @@ type ProviderConfig struct {
 // Settings holds application-level configuration.
 // Fields use pointer types so unset fields fall back to defaults.
 type Settings struct {
-	Model      *string                    `json:"model,omitempty"`      // "provider/model" e.g. "anthropic/claude-sonnet-4-6"
+	Provider   *string                    `json:"provider,omitempty"`    // provider name (matches key in providers map)
+	Model      *string                    `json:"model,omitempty"`       // model name sent to API as-is
 	SmallModel *string                    `json:"small_model,omitempty"` // "provider/model" for explore sub-agent
 	Providers  map[string]*ProviderConfig `json:"providers,omitempty"`
 
@@ -37,8 +38,8 @@ type Settings struct {
 
 // Resolved holds settings resolved to concrete values (no pointers).
 type Resolved struct {
-	Provider   string                     // active provider name
-	Model      string                     // active model name (without provider prefix)
+	Provider   string                    // active provider name
+	Model      string                    // model name sent to API as-is
 	Providers  map[string]ProviderConfig  // per-provider credentials
 	SmallModel string                     // "provider/model" or ""
 
@@ -98,8 +99,9 @@ func ParseModelID(id string) (provider, model string) {
 }
 
 // FormatModelID combines provider and model into "provider/model".
+// If model already contains "/", it is returned as-is.
 func FormatModelID(provider, model string) string {
-	if provider == "" {
+	if provider == "" || strings.Contains(model, "/") {
 		return model
 	}
 	return provider + "/" + model
@@ -115,8 +117,11 @@ func (s Settings) Resolve() Resolved {
 		ThinkingLevel:  "low",
 		MaxTurns:       30,
 	}
+	if s.Provider != nil && *s.Provider != "" {
+		r.Provider = *s.Provider
+	}
 	if s.Model != nil {
-		r.Provider, r.Model = ParseModelID(*s.Model)
+		r.Model = *s.Model
 	}
 	if s.SmallModel != nil {
 		r.SmallModel = *s.SmallModel
@@ -194,6 +199,9 @@ func LoadSettings(cwd string) Resolved {
 
 // mergeSettings merges two Settings; non-nil fields in override take precedence.
 func mergeSettings(base, override Settings) Settings {
+	if override.Provider != nil {
+		base.Provider = override.Provider
+	}
 	if override.Model != nil {
 		base.Model = override.Model
 	}

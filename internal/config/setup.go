@@ -72,15 +72,13 @@ func RunSetup(cwd string, settings Resolved, listModels ModelLister) error {
 	}
 
 	s := Settings{
+		Provider:  &prov,
 		Providers: map[string]*ProviderConfig{prov: pc},
 	}
-	if model != "" {
-		modelID := FormatModelID(prov, model)
-		s.Model = &modelID
-	} else {
-		modelID := FormatModelID(prov, DefaultModelName(prov))
-		s.Model = &modelID
+	if model == "" {
+		model = DefaultModelName(prov)
 	}
+	s.Model = &model
 
 	if err := SaveSettings(cwd, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)

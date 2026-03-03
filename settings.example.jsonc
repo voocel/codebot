@@ -1,7 +1,8 @@
 {
-  // Format: "provider/model". Providers: anthropic, openai, gemini
-  "model": "anthropic/claude-sonnet-4-6",
-  "small_model": "anthropic/claude-haiku-4-5", // for SubAgents; empty = same as main
+  // Providers: anthropic, openai, gemini
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
+  "small_model": "claude-haiku-4-5", // for SubAgents; empty = same as main
 
   // Per-provider credentials. Only configure the ones you use.
   "providers": {
