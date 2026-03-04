@@ -55,13 +55,22 @@
 ## 快速开始
 
 ```bash
-# 全局安装
+# 安装
 go install github.com/voocel/codebot/cmd/codebot@latest
 
-# 或从源码构建
+# 设置 API Key 并运行
+export ANTHROPIC_API_KEY=sk-ant-...
+codebot
+```
+
+或从源码构建：
+
+```bash
 git clone https://github.com/voocel/codebot.git
 cd codebot && go build -o codebot ./cmd/codebot
 ```
+
+支持的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`GEMINI_API_KEY`。更多配置项参考 [settings.example.jsonc](settings.example.jsonc)。
 
 ## 使用
 

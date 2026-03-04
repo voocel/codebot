@@ -55,13 +55,22 @@ Each layer has one job. No layer knows about the layers above it.
 ## Quick Start
 
 ```bash
-# Install globally
+# Install
 go install github.com/voocel/codebot/cmd/codebot@latest
 
-# Or build from source
+# Set API key and run
+export ANTHROPIC_API_KEY=sk-ant-...
+codebot
+```
+
+Or build from source:
+
+```bash
 git clone https://github.com/voocel/codebot.git
 cd codebot && go build -o codebot ./cmd/codebot
 ```
+
+Supported environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`. For more options see [settings.example.jsonc](settings.example.jsonc).
 
 ## Usage
 

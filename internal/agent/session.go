@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -743,9 +744,17 @@ func (s *Session) persistMessage(msg agentcore.Message) {
 	s.mu.Unlock()
 	if store != nil {
 		if err := store.AppendMessage(msg); err != nil {
+			// Enrich error with tool call details for diagnosis.
+			detail := err.Error()
+			for _, tc := range msg.ToolCalls() {
+				if !json.Valid(tc.Args) {
+					detail = fmt.Sprintf("%s [invalid args in %s(%s): %s]",
+						detail, tc.Name, tc.ID, truncateBytes(tc.Args, 200))
+				}
+			}
 			s.emit(SessionEvent{
 				Type:  SEError,
-				Error: fmt.Errorf("persist message: %w", err),
+				Error: fmt.Errorf("persist message: %s", detail),
 			})
 		}
 	}
@@ -761,6 +770,14 @@ func (s *Session) flushPendingMessages() {
 	for _, msg := range pending {
 		s.persistMessage(msg)
 	}
+}
+
+// truncateBytes returns at most n bytes from b, appending "..." if truncated.
+func truncateBytes(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "..."
 }
 
 // reclampThinking re-clamps the current thinking level to the new model's capabilities.
