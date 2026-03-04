@@ -180,6 +180,17 @@ func (m *Model) renderRunSummary() string {
 		s.Turns, s.ToolCalls, FormatTokens(s.Input), FormatTokens(s.Output)))
 }
 
+// renderQueuedMsgs renders queued messages sent while agent is running.
+func (m *Model) renderQueuedMsgs() string {
+	var b strings.Builder
+	for _, msg := range m.QueuedMsgs {
+		text := truncateRunes(msg, 80)
+		b.WriteString(QueuedMsgStyle.Render("  ↳ " + text))
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // renderTaskList renders the task progress bar and task list.
 func (m *Model) renderTaskList() string {
 	snap := m.Tasks

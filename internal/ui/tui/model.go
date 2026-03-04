@@ -97,6 +97,8 @@ type Model struct {
 
 	Tasks *tools.TaskSnapshot // non-nil when tasks exist; displayed above input
 
+	QueuedMsgs []string // messages queued while agent is running (display only)
+
 	QuitPending bool // true after first Ctrl+C, waiting for second to quit
 }
 
@@ -281,6 +283,10 @@ func (m Model) View() string {
 	} else {
 		// Status bar (above input)
 		parts = append(parts, m.RenderStatusBar())
+		// Queued messages (sent while agent is running)
+		if len(m.QueuedMsgs) > 0 {
+			parts = append(parts, m.renderQueuedMsgs())
+		}
 		// Normal: image attachments + input
 		if len(m.Images) > 0 {
 			var tags []string
@@ -462,6 +468,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Steer only supports text; put images back for next submission.
 			m.Images = images
 			m.Driver.Steer(text)
+			m.QueuedMsgs = append(m.QueuedMsgs, text)
 		} else if err := m.promptWithImages(text, images); err != nil {
 			output += "\n" + ErrorStyle.Render("  error: "+err.Error())
 		}

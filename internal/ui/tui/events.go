@@ -24,6 +24,7 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 	case agentcore.EventAgentEnd:
 		m.Running = false
 		m.ShowSummary = true
+		m.QueuedMsgs = nil
 		clear(m.PendingTools)
 		clear(m.ToolOutputBuf)
 		if m.AskUser != nil {
