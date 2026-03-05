@@ -52,22 +52,39 @@
 - 非交互管道模式（`-p`）
 - 斜杠命令：`/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
 
-## 快速开始
+## 安装
+
+**预编译二进制（推荐）：**
 
 ```bash
-# 安装
-go install github.com/voocel/codebot/cmd/codebot@latest
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/voocel/codebot/main/scripts/install.sh | sh
 
-# 设置 API Key 并运行
-export ANTHROPIC_API_KEY=sk-ant-...
-codebot
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/voocel/codebot/main/scripts/install.ps1 | iex
 ```
 
-或从源码构建：
+或直接从 [GitHub Releases](https://github.com/voocel/codebot/releases) 下载。
+
+**通过 Go 安装：**
+
+```bash
+go install github.com/voocel/codebot/cmd/codebot@latest
+```
+
+**从源码构建：**
 
 ```bash
 git clone https://github.com/voocel/codebot.git
 cd codebot && go build -o codebot ./cmd/codebot
+```
+
+## 快速开始
+
+```bash
+# 设置 API Key 并运行
+export ANTHROPIC_API_KEY=sk-ant-...
+codebot
 ```
 
 支持的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`GEMINI_API_KEY`。更多配置项参考 [settings.example.jsonc](settings.example.jsonc)。
@@ -103,8 +120,8 @@ codebot -policy-profile strict
 
 ## 环境要求
 
-- Go 1.25+
 - 至少一个 Provider 的 API Key
+- Go 1.25+（仅通过 `go install` 或源码构建时需要）
 
 ## 许可证
 

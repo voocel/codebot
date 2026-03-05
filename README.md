@@ -52,22 +52,39 @@ Each layer has one job. No layer knows about the layers above it.
 - Non-interactive print mode for pipes and scripts (`-p`)
 - Slash commands: `/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
 
-## Quick Start
+## Installation
+
+**Pre-built binary (recommended):**
 
 ```bash
-# Install
-go install github.com/voocel/codebot/cmd/codebot@latest
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/voocel/codebot/main/scripts/install.sh | sh
 
-# Set API key and run
-export ANTHROPIC_API_KEY=sk-ant-...
-codebot
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/voocel/codebot/main/scripts/install.ps1 | iex
 ```
 
-Or build from source:
+Or download directly from [GitHub Releases](https://github.com/voocel/codebot/releases).
+
+**With Go:**
+
+```bash
+go install github.com/voocel/codebot/cmd/codebot@latest
+```
+
+**Build from source:**
 
 ```bash
 git clone https://github.com/voocel/codebot.git
 cd codebot && go build -o codebot ./cmd/codebot
+```
+
+## Quick Start
+
+```bash
+# Set API key and run
+export ANTHROPIC_API_KEY=sk-ant-...
+codebot
 ```
 
 Supported environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`. For more options see [settings.example.jsonc](settings.example.jsonc).
@@ -103,8 +120,8 @@ All fields are optional. See [settings.example.jsonc](settings.example.jsonc) fo
 
 ## Requirements
 
-- Go 1.25+
 - API key for at least one provider
+- Go 1.25+ (only if installing via `go install` or building from source)
 
 ## License
 
