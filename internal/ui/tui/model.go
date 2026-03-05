@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/storage" // input history
 	"github.com/voocel/codebot/internal/tools"
 )
 
@@ -32,6 +33,7 @@ type Config struct {
 	Placeholder string
 	Cwd         string
 	GitBranch   string
+	History     *storage.History                     // input history (Up/Down navigation)
 	OnKey       func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
 	OnEvent     func(m *Model, ev agentcore.Event) tea.Cmd
 	OnPaste     func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
@@ -100,6 +102,10 @@ type Model struct {
 	QueuedMsgs []string // messages queued while agent is running (display only)
 
 	QuitPending bool // true after first Ctrl+C, waiting for second to quit
+
+	history   *storage.History // input history store (nil = disabled)
+	histIdx   int              // -1 = not browsing; 0+ = current position (0 = most recent)
+	histDraft string           // stashed input before history navigation
 }
 
 // New creates a Model with the given agent, model name, and optional config.
@@ -154,6 +160,8 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		ShowWelcome:   true,
 		ImageCursor:   -1,
 		config:        c,
+		history:       c.History,
+		histIdx:       -1,
 	}
 }
 
@@ -440,6 +448,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Input.SetHeight(1)
 			return m, nil
 		}
+		if m.history != nil && text != "" {
+			m.history.Add(text)
+		}
+		m.histIdx = -1
+		m.histDraft = ""
+
 		images := m.Images
 		m.Images = nil
 		m.ImageCursor = -1
@@ -478,6 +492,38 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Enter image selection when cursor is on the first line of input.
 		if len(m.Images) > 0 && !m.Running && m.Input.Line() == 0 {
 			m.ImageCursor = len(m.Images) - 1
+			return m, nil
+		}
+		// History navigation: cursor on first line + history available.
+		if m.history != nil && m.history.Len() > 0 && m.Input.Line() == 0 && !m.Running {
+			if m.histIdx == -1 {
+				m.histDraft = m.Input.Value()
+				m.histIdx = 0
+			} else if m.histIdx < m.history.Len()-1 {
+				m.histIdx++
+			}
+			m.Input.Reset()
+			m.Input.SetValue(m.history.Get(m.histIdx))
+			m.Input.CursorEnd()
+			m.adjustInputHeight()
+			return m, nil
+		}
+
+	case "down":
+		// History navigation: browsing history + cursor on last line.
+		if m.histIdx >= 0 && m.Input.Line() == m.Input.LineCount()-1 {
+			if m.histIdx > 0 {
+				m.histIdx--
+				m.Input.Reset()
+				m.Input.SetValue(m.history.Get(m.histIdx))
+			} else {
+				m.histIdx = -1
+				m.Input.Reset()
+				m.Input.SetValue(m.histDraft)
+				m.histDraft = ""
+			}
+			m.Input.CursorEnd()
+			m.adjustInputHeight()
 			return m, nil
 		}
 	}

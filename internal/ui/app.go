@@ -35,6 +35,9 @@ type App struct {
 	// PlanStore persists plans to <cwd>/.codebot/plans/.
 	PlanStore *storage.PlanStore
 
+	// History provides input history for Up/Down navigation.
+	History *storage.History
+
 	// Plan mode state.
 	planState     planState
 	planContent   string // free-form plan text from LLM
@@ -51,6 +54,7 @@ func (a *App) Config() tui.Config {
 	return tui.Config{
 		Cwd:         a.Cwd,
 		GitBranch:   a.GitBranch,
+		History:     a.History,
 		OnKey:       a.onKey(),
 		OnPaste:     a.onPaste,
 		OnDrop:      a.onDrop,

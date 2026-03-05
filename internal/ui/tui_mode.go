@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
@@ -25,6 +26,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 		Skills:        sess.Skills(),
 		PlanStore:     storage.NewPlanStore(config.PlansDir(cwd)),
 		MCPManager:    mcpMgr,
+		History:       newInputHistory(sess, cwd),
 	}
 
 	m := tui.New(sess, modelName, adapter.Config())
@@ -79,4 +81,17 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 		return fmt.Errorf("run tui: %w", err)
 	}
 	return nil
+}
+
+// newInputHistory creates a History scoped to the current session and project.
+func newInputHistory(sess *agent.Session, cwd string) *storage.History {
+	var sessionID string
+	if info, err := sess.CurrentSessionInfo(); err == nil {
+		sessionID = info.ID
+	}
+	return storage.NewHistory(
+		filepath.Join(config.UserConfigDir(), "history.jsonl"),
+		cwd,
+		sessionID,
+	)
 }
