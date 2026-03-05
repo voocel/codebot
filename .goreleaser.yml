@@ -46,11 +46,24 @@ checksum:
 
 changelog:
   sort: asc
+  groups:
+    - title: "New Features"
+      regexp: '^feat'
+    - title: "Bug Fixes"
+      regexp: '^fix'
+    - title: "Performance"
+      regexp: '^perf'
+    - title: "Refactor"
+      regexp: '^refactor'
+    - title: "Others"
+      order: 999
   filters:
     exclude:
       - "^docs:"
       - "^test:"
       - "^chore:"
+      - "^ci:"
+      - "^style:"
 
 release:
   github:
