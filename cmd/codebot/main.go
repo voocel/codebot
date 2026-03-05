@@ -10,7 +10,15 @@ import (
 	"github.com/voocel/codebot/internal/ui"
 )
 
+// Set via ldflags by GoReleaser.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	printFlag := flag.Bool("p", false, "Print mode (non-interactive, pipe-friendly)")
 	jsonFlag := flag.Bool("json", false, "JSON output mode (implies -p)")
 	continueFlag := flag.Bool("c", false, "Continue most recent session")
@@ -18,6 +26,11 @@ func main() {
 	sessionFlag := flag.String("session", "", "Session file path to resume")
 	policyProfileFlag := flag.String("policy-profile", "balanced", "Policy profile: strict, balanced, off")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("codebot %s (%s %s)\n", version, commit[:min(7, len(commit))], date)
+		return
+	}
 
 	printMode := *printFlag || *jsonFlag
 

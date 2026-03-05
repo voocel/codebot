@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: codebot
+    main: ./cmd/codebot
+    binary: codebot
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.CommitDate}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: codebot-archive
+    ids:
+      - codebot
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: "{{ .ProjectName }}_checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: voocel
+    name: codebot
