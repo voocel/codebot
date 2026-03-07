@@ -239,6 +239,15 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 	if err := s.SetModel(entry.Provider, entry.ID); err != nil {
 		return "", err
 	}
+
+	// Sync context window from model registry.
+	if entry.ContextWindow > 0 {
+		s.agent.SetContextWindow(entry.ContextWindow)
+		s.mu.Lock()
+		s.settings.ContextWindow = entry.ContextWindow
+		s.mu.Unlock()
+	}
+
 	if thinkingLevel != "" {
 		s.SetThinkingLevel(thinkingLevel)
 	}

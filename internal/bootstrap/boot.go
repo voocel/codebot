@@ -143,6 +143,15 @@ func Boot(opts Options) (*Runtime, error) {
 		return nil, fmt.Errorf("create model: %w", err)
 	}
 
+	// Resolve context window: user setting > model registry > fallback 128k.
+	if settings.ContextWindow <= 0 {
+		if entry, _, err := registry.Resolve(activeModel); err == nil && entry.ContextWindow > 0 {
+			settings.ContextWindow = entry.ContextWindow
+		} else {
+			settings.ContextWindow = 128000
+		}
+	}
+
 	ctxFiles := config.LoadContextFiles(cwd)
 	skills := config.LoadSkills(cwd)
 

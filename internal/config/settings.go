@@ -26,7 +26,6 @@ type Settings struct {
 	SmallModel *string                    `json:"small_model,omitempty"` // "provider/model" for explore sub-agent
 	Providers  map[string]*ProviderConfig `json:"providers,omitempty"`
 
-	ContextWindow  *int  `json:"context_window,omitempty"`
 	AutoCompaction *bool `json:"auto_compaction,omitempty"`
 
 	ThinkingLevel *string `json:"thinking_level,omitempty"`
@@ -44,7 +43,7 @@ type Resolved struct {
 	Providers  map[string]ProviderConfig  // per-provider credentials
 	SmallModel string                     // "provider/model" or ""
 
-	ContextWindow  int
+	ContextWindow  int // auto-detected from model registry at boot
 	AutoCompaction bool
 	ThinkingLevel  string
 	MaxTurns       int
@@ -113,7 +112,6 @@ func (s Settings) Resolve() Resolved {
 	r := Resolved{
 		Provider:       "openai",
 		Providers:      make(map[string]ProviderConfig),
-		ContextWindow:  128000,
 		AutoCompaction: true,
 		ThinkingLevel:  "low",
 		MaxTurns:       30,
@@ -131,9 +129,6 @@ func (s Settings) Resolve() Resolved {
 		if v != nil {
 			r.Providers[k] = *v
 		}
-	}
-	if s.ContextWindow != nil {
-		r.ContextWindow = *s.ContextWindow
 	}
 	if s.AutoCompaction != nil {
 		r.AutoCompaction = *s.AutoCompaction
@@ -238,9 +233,6 @@ func mergeSettings(base, override Settings) Settings {
 		for k, v := range override.Providers {
 			base.Providers[k] = v
 		}
-	}
-	if override.ContextWindow != nil {
-		base.ContextWindow = override.ContextWindow
 	}
 	if override.AutoCompaction != nil {
 		base.AutoCompaction = override.AutoCompaction
