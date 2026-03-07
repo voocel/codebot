@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -26,7 +27,7 @@ var providerList = []struct {
 }
 
 // RunSetup runs an interactive first-time configuration wizard.
-func RunSetup(cwd string, settings Resolved, listModels ModelLister) error {
+func RunSetup(settings Resolved, listModels ModelLister) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("\nWelcome to codebot! Let's configure your settings.")
@@ -80,11 +81,11 @@ func RunSetup(cwd string, settings Resolved, listModels ModelLister) error {
 	}
 	s.Model = &model
 
-	if err := SaveSettings(cwd, s); err != nil {
+	if err := SaveSettings(s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
 
-	fmt.Printf("\nSettings saved to %s\n\n", SettingsPath(cwd))
+	fmt.Printf("\nSettings saved to %s\n\n", filepath.Join(UserConfigDir(), "settings.json"))
 	return nil
 }
 

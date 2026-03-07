@@ -92,9 +92,9 @@ func Boot(opts Options) (*Runtime, error) {
 	if apiKey == "" {
 		if opts.NonTTYMode {
 			return nil, fmt.Errorf("api key not set; set %s or configure providers in %s",
-				config.ProviderEnvKey(settings.Provider), config.SettingsPath(cwd))
+				config.ProviderEnvKey(settings.Provider), filepath.Join(config.UserConfigDir(), "settings.json"))
 		}
-		err := config.RunSetup(cwd, settings, func(prov string) []config.ModelOption {
+		err := config.RunSetup(settings, func(prov string) []config.ModelOption {
 			entries := registry.FindByProvider(prov)
 			result := make([]config.ModelOption, len(entries))
 			for i, e := range entries {
@@ -150,7 +150,7 @@ func Boot(opts Options) (*Runtime, error) {
 		Profile:     profile,
 		Workspace:   cwd,
 		Interactive: !opts.NonTTYMode,
-		OnAudit:     fileAuditor(filepath.Join(cwd, config.ConfigDir, "audit.log")),
+		OnAudit:     fileAuditor(config.AuditLogPath()),
 	})
 
 	builtTools := buildTools(cwd, opts.ToolFactories)
@@ -164,10 +164,10 @@ func Boot(opts Options) (*Runtime, error) {
 	builtTools = append(builtTools, taskTools...)
 
 	// Apply output size limits to tools that may produce large output.
-	builtTools = localtools.WrapWithOutputLimit(builtTools, cwd)
+	builtTools = localtools.WrapWithOutputLimit(builtTools)
 
 	// Enable task persistence scoped to this session.
-	taskDir := filepath.Join(config.TasksDir(cwd), store.Header().SessionID)
+	taskDir := filepath.Join(config.TasksDir(), store.Header().SessionID)
 	if err := taskStore.SetDir(taskDir); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: task persistence: %v\n", err)
 	}
@@ -283,7 +283,7 @@ func Boot(opts Options) (*Runtime, error) {
 		})
 	}
 
-	go localtools.CleanOldOutputs(cwd)
+	go localtools.CleanOldOutputs()
 
 	return &Runtime{
 		Cwd:           cwd,

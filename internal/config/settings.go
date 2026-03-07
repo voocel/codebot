@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -157,9 +158,10 @@ func SettingsPath(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "settings.json")
 }
 
-// SessionsDir returns <cwd>/.codebot/sessions/.
+// SessionsDir returns ~/.codebot/sessions/<projectID>/.
+// Sessions are stored globally but scoped by project.
 func SessionsDir(cwd string) string {
-	return filepath.Join(cwd, ConfigDir, "sessions")
+	return filepath.Join(UserConfigDir(), "sessions", projectID(cwd))
 }
 
 // PromptsDir returns <cwd>/.codebot/prompts/.
@@ -167,19 +169,35 @@ func PromptsDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "prompts")
 }
 
-// PlansDir returns <cwd>/.codebot/plans/.
+// PlansDir returns ~/.codebot/plans/<projectID>/.
 func PlansDir(cwd string) string {
-	return filepath.Join(cwd, ConfigDir, "plans")
+	return filepath.Join(UserConfigDir(), "plans", projectID(cwd))
 }
 
-// TasksDir returns <cwd>/.codebot/tasks/.
-func TasksDir(cwd string) string {
-	return filepath.Join(cwd, ConfigDir, "tasks")
+// TasksDir returns ~/.codebot/tasks/.
+func TasksDir() string {
+	return filepath.Join(UserConfigDir(), "tasks")
 }
 
 // SkillsDir returns <cwd>/.codebot/skills/.
 func SkillsDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "skills")
+}
+
+// AuditLogPath returns ~/.codebot/audit.log.
+func AuditLogPath() string {
+	return filepath.Join(UserConfigDir(), "audit.log")
+}
+
+// projectID returns a stable short directory name for a project path.
+// Format: <dirname>-<sha256_first_8_hex>.
+func projectID(cwd string) string {
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		abs = cwd
+	}
+	h := sha256.Sum256([]byte(abs))
+	return fmt.Sprintf("%s-%x", filepath.Base(abs), h[:4])
 }
 
 // UserConfigDir returns ~/.codebot/.
@@ -242,10 +260,11 @@ func mergeSettings(base, override Settings) Settings {
 	return base
 }
 
-// SaveSettings writes settings to <cwd>/.codebot/settings.json.
-func SaveSettings(cwd string, s Settings) error {
-	path := SettingsPath(cwd)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// SaveSettings writes settings to ~/.codebot/settings.json (global).
+func SaveSettings(s Settings) error {
+	dir := UserConfigDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 	data, err := json.MarshalIndent(s, "", "  ")

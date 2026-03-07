@@ -16,9 +16,14 @@ const (
 	DefaultOutputLimit = 30 * 1024
 	outputHead         = 1000 // characters to keep from the start
 	outputTail         = 1000 // characters to keep from the end
-	outputSubDir       = ".codebot/tool-outputs"
+	outputSubDir       = "codebot-outputs"
 	outputCleanupAge   = 7 * 24 * time.Hour
 )
+
+// outputDir returns the directory for storing truncated tool output.
+func outputDir() string {
+	return filepath.Join(os.TempDir(), outputSubDir)
+}
 
 // limitableTools is the set of tools whose output should be size-limited.
 var limitableTools = map[string]struct{}{
@@ -34,17 +39,16 @@ var limitableTools = map[string]struct{}{
 // OutputLimitedTool wraps a Tool and truncates oversized output to disk.
 type OutputLimitedTool struct {
 	inner agentcore.Tool
-	cwd   string
 	limit int
 }
 
 // WrapWithOutputLimit wraps tools in the limitable set with output truncation.
 // Tools not in the set are returned unchanged.
-func WrapWithOutputLimit(tools []agentcore.Tool, cwd string) []agentcore.Tool {
+func WrapWithOutputLimit(tools []agentcore.Tool) []agentcore.Tool {
 	out := make([]agentcore.Tool, len(tools))
 	for i, t := range tools {
 		if _, ok := limitableTools[t.Name()]; ok {
-			out[i] = &OutputLimitedTool{inner: t, cwd: cwd, limit: DefaultOutputLimit}
+			out[i] = &OutputLimitedTool{inner: t, limit: DefaultOutputLimit}
 		} else {
 			out[i] = t
 		}
@@ -87,7 +91,7 @@ func (t *OutputLimitedTool) truncateAndSave(result json.RawMessage) json.RawMess
 }
 
 func (t *OutputLimitedTool) saveToFile(text string) string {
-	dir := filepath.Join(t.cwd, outputSubDir)
+	dir := outputDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "(save failed)"
 	}
@@ -121,8 +125,8 @@ func buildTruncatedOutput(text, path string) json.RawMessage {
 }
 
 // CleanOldOutputs removes tool output files older than 7 days.
-func CleanOldOutputs(cwd string) {
-	dir := filepath.Join(cwd, outputSubDir)
+func CleanOldOutputs() {
+	dir := outputDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return

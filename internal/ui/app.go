@@ -32,7 +32,7 @@ type App struct {
 	// MCPManager manages MCP server connections.
 	MCPManager *mcpclient.Manager
 
-	// PlanStore persists plans to <cwd>/.codebot/plans/.
+	// PlanStore persists plans to ~/.codebot/plans/.
 	PlanStore *storage.PlanStore
 
 	// History provides input history for Up/Down navigation.
