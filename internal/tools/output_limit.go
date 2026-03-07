@@ -1,0 +1,143 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/voocel/agentcore"
+)
+
+const (
+	// DefaultOutputLimit is the maximum tool output size before truncation (30KB).
+	DefaultOutputLimit = 30 * 1024
+	outputHead         = 1000 // characters to keep from the start
+	outputTail         = 1000 // characters to keep from the end
+	outputSubDir       = ".codebot/tool-outputs"
+	outputCleanupAge   = 7 * 24 * time.Hour
+)
+
+// limitableTools is the set of tools whose output should be size-limited.
+var limitableTools = map[string]struct{}{
+	"read":       {},
+	"bash":       {},
+	"grep":       {},
+	"find":       {},
+	"ls":         {},
+	"web_fetch":  {},
+	"web_search": {},
+}
+
+// OutputLimitedTool wraps a Tool and truncates oversized output to disk.
+type OutputLimitedTool struct {
+	inner agentcore.Tool
+	cwd   string
+	limit int
+}
+
+// WrapWithOutputLimit wraps tools in the limitable set with output truncation.
+// Tools not in the set are returned unchanged.
+func WrapWithOutputLimit(tools []agentcore.Tool, cwd string) []agentcore.Tool {
+	out := make([]agentcore.Tool, len(tools))
+	for i, t := range tools {
+		if _, ok := limitableTools[t.Name()]; ok {
+			out[i] = &OutputLimitedTool{inner: t, cwd: cwd, limit: DefaultOutputLimit}
+		} else {
+			out[i] = t
+		}
+	}
+	return out
+}
+
+func (t *OutputLimitedTool) Name() string           { return t.inner.Name() }
+func (t *OutputLimitedTool) Description() string     { return t.inner.Description() }
+func (t *OutputLimitedTool) Schema() map[string]any  { return t.inner.Schema() }
+
+// Label forwards the optional ToolLabeler interface.
+func (t *OutputLimitedTool) Label() string {
+	if labeler, ok := t.inner.(agentcore.ToolLabeler); ok {
+		return labeler.Label()
+	}
+	return t.inner.Name()
+}
+
+func (t *OutputLimitedTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	result, err := t.inner.Execute(ctx, args)
+	if err != nil {
+		return result, err
+	}
+	if len(result) <= t.limit {
+		return result, nil
+	}
+	return t.truncateAndSave(result), nil
+}
+
+func (t *OutputLimitedTool) truncateAndSave(result json.RawMessage) json.RawMessage {
+	// Unwrap JSON string to get raw text; fall back to raw bytes.
+	var text string
+	if err := json.Unmarshal(result, &text); err != nil {
+		text = string(result)
+	}
+
+	path := t.saveToFile(text)
+	return buildTruncatedOutput(text, path)
+}
+
+func (t *OutputLimitedTool) saveToFile(text string) string {
+	dir := filepath.Join(t.cwd, outputSubDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "(save failed)"
+	}
+	filename := fmt.Sprintf("%s-%d.txt", t.inner.Name(), time.Now().UnixMilli())
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return "(save failed)"
+	}
+	return path
+}
+
+func buildTruncatedOutput(text, path string) json.RawMessage {
+	runes := []rune(text)
+	headEnd := min(outputHead, len(runes))
+	head := string(runes[:headEnd])
+
+	var tail string
+	if len(runes) > outputHead+outputTail {
+		tail = string(runes[len(runes)-outputTail:])
+	}
+
+	omitted := len(runes) - headEnd
+	if tail != "" {
+		omitted -= outputTail
+	}
+
+	summary := fmt.Sprintf("%s\n\n[Output saved to %s] [%d characters omitted]\n\n%s",
+		head, path, omitted, tail)
+	data, _ := json.Marshal(summary)
+	return data
+}
+
+// CleanOldOutputs removes tool output files older than 7 days.
+func CleanOldOutputs(cwd string) {
+	dir := filepath.Join(cwd, outputSubDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-outputCleanupAge)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}

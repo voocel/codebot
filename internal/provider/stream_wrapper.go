@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/llm"
 )
 
 // WrapStreamSafe normalizes streaming behavior:
@@ -66,4 +67,15 @@ func (m *streamSafeModel) ProviderName() string {
 		return pn.ProviderName()
 	}
 	return ""
+}
+
+// GetConfig forwards the GenerationConfig accessor when the inner model supports it.
+func (m *streamSafeModel) GetConfig() *llm.GenerationConfig {
+	type configGetter interface {
+		GetConfig() *llm.GenerationConfig
+	}
+	if cg, ok := m.inner.(configGetter); ok {
+		return cg.GetConfig()
+	}
+	return nil
 }

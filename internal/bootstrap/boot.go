@@ -163,6 +163,9 @@ func Boot(opts Options) (*Runtime, error) {
 	)
 	builtTools = append(builtTools, taskTools...)
 
+	// Apply output size limits to tools that may produce large output.
+	builtTools = localtools.WrapWithOutputLimit(builtTools, cwd)
+
 	// Enable task persistence scoped to this session.
 	taskDir := filepath.Join(config.TasksDir(cwd), store.Header().SessionID)
 	if err := taskStore.SetDir(taskDir); err != nil {
@@ -259,6 +262,7 @@ func Boot(opts Options) (*Runtime, error) {
 		Settings:     settings,
 		Cwd:          cwd,
 		CreateModel:  createModel,
+		ChatModel:    chatModel,
 		Tools:        builtTools,
 		ContextFiles: ctxFiles,
 		Skills:       skills,
@@ -278,6 +282,8 @@ func Boot(opts Options) (*Runtime, error) {
 			sess.ReplaceAllTools(all)
 		})
 	}
+
+	go localtools.CleanOldOutputs(cwd)
 
 	return &Runtime{
 		Cwd:           cwd,

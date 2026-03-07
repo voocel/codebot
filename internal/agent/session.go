@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
@@ -30,6 +31,9 @@ type SessionConfig struct {
 	// LazyPersist buffers user messages and flushes them only when
 	// an assistant response arrives. Disabled by default for safety.
 	LazyPersist bool
+	// ChatModel is the active ChatModel reference, used for max_tokens adjustment
+	// during overflow recovery.
+	ChatModel agentcore.ChatModel
 
 	// Tools is the full set of tools registered with the agent.
 	// Used by ToolsByName / RestoreAllTools for plan mode filtering.
@@ -72,6 +76,12 @@ type Session struct {
 	// Retry/overflow tracking (set by handleAgentEvent, reset on EventAgentEnd).
 	retryAttempt     int
 	overflowDetected bool
+	overflowErr      error // last overflow error, for parsing input/limit tokens
+
+	// max_tokens reduction: try reducing before expensive LLM compaction.
+	chatModel         agentcore.ChatModel
+	maxTokensReduced  bool
+	originalMaxTokens int
 
 	// Lazy persistence: buffer user messages until assistant responds.
 	lazyPersist    bool
@@ -102,6 +112,7 @@ func NewSession(cfg SessionConfig) *Session {
 		cwd:         cfg.Cwd,
 		createModel: modelFactory,
 		lazyPersist: cfg.LazyPersist,
+		chatModel:    cfg.ChatModel,
 		allTools:     cfg.Tools,
 		activeTools:  cfg.Tools,
 		contextFiles: cfg.ContextFiles,
@@ -122,6 +133,7 @@ func (s *Session) Prompt(text string) error {
 	if s.beforePrompt != nil {
 		s.beforePrompt()
 	}
+	s.microcompact()
 	return s.agent.Prompt(text)
 }
 
@@ -130,6 +142,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 	if s.beforePrompt != nil {
 		s.beforePrompt()
 	}
+	s.microcompact()
 	msg := agentcore.Message{
 		Role:      agentcore.RoleUser,
 		Content:   blocks,
@@ -196,6 +209,8 @@ func (s *Session) SetModel(prov, model string) error {
 	s.mu.Lock()
 	s.provider = prov
 	s.modelName = model
+	s.chatModel = chatModel
+	s.maxTokensReduced = false
 	s.mu.Unlock()
 
 	s.emit(SessionEvent{
@@ -674,6 +689,7 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 		if agentcore.IsContextOverflow(ev.RetryInfo.Err) {
 			s.mu.Lock()
 			s.overflowDetected = true
+			s.overflowErr = ev.RetryInfo.Err
 			s.mu.Unlock()
 		} else {
 			s.mu.Lock()
@@ -695,8 +711,11 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 		s.mu.Lock()
 		retryAttempt := s.retryAttempt
 		overflow := s.overflowDetected
+		overflowErr := s.overflowErr
+		alreadyReduced := s.maxTokensReduced
 		s.retryAttempt = 0
 		s.overflowDetected = false
+		s.overflowErr = nil
 		s.mu.Unlock()
 
 		if retryAttempt > 0 {
@@ -708,15 +727,33 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 		}
 
 		if overflow {
-			if err := s.compactWithReason("overflow"); err == nil {
-				// Auto-continue after overflow compaction (like pi-mono's willRetry=true).
+			// Try reducing max_tokens first (zero-cost), but only if not already tried.
+			// If already reduced and still overflowing, fall through to compaction.
+			if !alreadyReduced && s.tryReduceMaxTokens(overflowErr) {
 				go func() {
 					if err := s.agent.Continue(); err != nil {
 						s.emit(SessionEvent{
 							Type:  SEError,
 							Error: fmt.Errorf("overflow auto-continue: %w", err),
 						})
-						// Forward the deferred EventAgentEnd so listeners can finalize.
+						s.emit(SessionEvent{
+							Type:       SEAgentEvent,
+							AgentEvent: &agentcore.Event{Type: agentcore.EventAgentEnd},
+						})
+					}
+				}()
+				return
+			}
+			// Restore max_tokens before compaction (avoid side effects on shared config).
+			s.restoreMaxTokens()
+			if err := s.compactWithReason("overflow"); err == nil {
+				// Auto-continue after overflow compaction.
+				go func() {
+					if err := s.agent.Continue(); err != nil {
+						s.emit(SessionEvent{
+							Type:  SEError,
+							Error: fmt.Errorf("overflow auto-continue: %w", err),
+						})
 						s.emit(SessionEvent{
 							Type:       SEAgentEvent,
 							AgentEvent: &agentcore.Event{Type: agentcore.EventAgentEnd},
@@ -726,6 +763,8 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 				return // Don't forward EventAgentEnd yet — agent will restart.
 			}
 		} else {
+			// Normal completion: restore max_tokens if it was reduced.
+			s.restoreMaxTokens()
 			s.checkAutoCompaction()
 		}
 	}
@@ -853,4 +892,133 @@ func (s *Session) emit(ev SessionEvent) {
 			fn(ev)
 		}
 	}
+}
+
+// tryReduceMaxTokens attempts to recover from an overflow error by reducing
+// the model's max_tokens instead of performing an expensive LLM compaction.
+// Returns true if max_tokens was successfully reduced and a retry is possible.
+func (s *Session) tryReduceMaxTokens(overflowErr error) bool {
+	s.mu.Lock()
+	chatModel := s.chatModel
+	s.mu.Unlock()
+
+	if overflowErr == nil || chatModel == nil {
+		return false
+	}
+
+	inputTokens, contextLimit, ok := parseOverflowError(overflowErr)
+	if !ok {
+		return false
+	}
+
+	// Reserve a buffer so the model has room to respond.
+	const minOutput = 3000
+	const buffer = 1000
+	available := contextLimit - inputTokens - buffer
+	if available < minOutput {
+		return false
+	}
+
+	type configGetter interface {
+		GetConfig() *llm.GenerationConfig
+	}
+	cg, ok := chatModel.(configGetter)
+	if !ok {
+		return false
+	}
+	cfg := cg.GetConfig()
+	if cfg == nil {
+		return false
+	}
+
+	s.mu.Lock()
+	if !s.maxTokensReduced {
+		s.originalMaxTokens = cfg.MaxTokens
+	}
+	s.maxTokensReduced = true
+	s.mu.Unlock()
+
+	cfg.MaxTokens = available
+	return true
+}
+
+// restoreMaxTokens restores the original max_tokens value after a successful
+// response following a max_tokens reduction.
+func (s *Session) restoreMaxTokens() {
+	s.mu.Lock()
+	reduced := s.maxTokensReduced
+	original := s.originalMaxTokens
+	chatModel := s.chatModel
+	s.maxTokensReduced = false
+	s.mu.Unlock()
+
+	if !reduced || chatModel == nil {
+		return
+	}
+
+	type configGetter interface {
+		GetConfig() *llm.GenerationConfig
+	}
+	if cg, ok := chatModel.(configGetter); ok {
+		if cfg := cg.GetConfig(); cfg != nil {
+			cfg.MaxTokens = original
+		}
+	}
+}
+
+// parseOverflowError extracts inputTokens and contextLimit from an overflow
+// error message. Returns ok=true if both values were found and make sense.
+func parseOverflowError(err error) (inputTokens, contextLimit int, ok bool) {
+	if err == nil {
+		return 0, 0, false
+	}
+	msg := err.Error()
+
+	// Extract numbers from the error message, filtering to plausible token counts.
+	var nums []int
+	i := 0
+	for i < len(msg) {
+		if msg[i] >= '0' && msg[i] <= '9' {
+			j := i
+			for j < len(msg) && msg[j] >= '0' && msg[j] <= '9' {
+				j++
+			}
+			n := 0
+			for _, c := range msg[i:j] {
+				n = n*10 + int(c-'0')
+			}
+			// Only consider numbers in plausible token count range (1000..10M).
+			if n >= 1000 && n <= 10_000_000 {
+				nums = append(nums, n)
+			}
+			i = j
+		} else {
+			i++
+		}
+	}
+
+	if len(nums) < 2 {
+		return 0, 0, false
+	}
+
+	// The two largest numbers are input tokens and context limit.
+	// Input > limit (that's why it overflowed).
+	max1, max2 := 0, 0
+	for _, n := range nums {
+		if n > max1 {
+			max2 = max1
+			max1 = n
+		} else if n > max2 {
+			max2 = n
+		}
+	}
+
+	inputTokens = max1
+	contextLimit = max2
+
+	// Sanity: limit should be reasonable and input must exceed it.
+	if contextLimit < 1000 || inputTokens <= contextLimit {
+		return 0, 0, false
+	}
+	return inputTokens, contextLimit, true
 }
