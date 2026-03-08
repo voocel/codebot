@@ -160,9 +160,9 @@ func SessionsDir(cwd string) string {
 	return filepath.Join(UserConfigDir(), "sessions", projectID(cwd))
 }
 
-// PromptsDir returns <cwd>/.codebot/prompts/.
-func PromptsDir(cwd string) string {
-	return filepath.Join(cwd, ConfigDir, "prompts")
+// CommandsDir returns <cwd>/.codebot/commands/.
+func CommandsDir(cwd string) string {
+	return filepath.Join(cwd, ConfigDir, "commands")
 }
 
 // PlansDir returns ~/.codebot/plans/<projectID>/.

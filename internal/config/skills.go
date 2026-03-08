@@ -184,6 +184,22 @@ func StripFrontmatter(content string) string {
 	return strings.TrimLeft(after, "\r\n")
 }
 
+// firstLine returns the first non-empty line, truncated to maxLen characters.
+func firstLine(s string, maxLen int) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > maxLen {
+			return string(runes[:maxLen])
+		}
+		return line
+	}
+	return ""
+}
+
 // FormatSkillsForPrompt generates the XML block injected into the system prompt.
 // Skills with DisableModelInvocation=true are excluded.
 func FormatSkillsForPrompt(skills []Skill) string {

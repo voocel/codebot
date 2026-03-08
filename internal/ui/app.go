@@ -23,8 +23,8 @@ type App struct {
 	// PolicyProfile controls slash-command risk gating.
 	PolicyProfile policy.Profile
 
-	// Templates are user-defined prompt templates loaded from .md files.
-	Templates []config.PromptTemplate
+	// Commands are user-defined slash commands loaded from .md files.
+	Commands []config.FileCommand
 
 	// Skills are loaded skill definitions.
 	Skills []config.Skill
@@ -38,8 +38,11 @@ type App struct {
 	// History provides input history for Up/Down navigation.
 	History *storage.History
 
-	// registry holds all slash commands (initialized by initRegistry).
+	// registry holds all slash commands assembled from built-ins and file-backed sources.
 	registry *Registry
+
+	// CommandLoaders allow alternative command sources to be injected at app construction time.
+	CommandLoaders []CommandLoader
 
 	// Plan mode state.
 	planState     planState
@@ -137,7 +140,7 @@ func (a *App) completions(prefix string) []tui.CompletionItem {
 	var items []tui.CompletionItem
 	seen := make(map[string]bool)
 	for _, cmd := range a.registry.All() {
-		spec := cmd.Spec()
+		spec := a.registry.EffectiveSpec(cmd)
 		if spec.Hidden {
 			continue
 		}

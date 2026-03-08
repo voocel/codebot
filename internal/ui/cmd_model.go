@@ -39,12 +39,13 @@ func (c *ModelCommand) Spec() CommandSpec {
 		Description: "Show or switch model",
 		Risk:        policy.RiskLow,
 		NeedsIdle:   true,
+		Kind:        CommandKindBuiltin,
 	}
 }
 
-func (c *ModelCommand) Run(ctx *CommandContext, args []string) tea.Cmd {
-	if len(args) > 0 {
-		return ctx.App.cmdModel(args)
+func (c *ModelCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
+	if len(inv.Args) > 0 {
+		return ctx.App.cmdModel(inv.Args)
 	}
 
 	// Open interactive selector — only show current provider's models.
@@ -117,7 +118,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		idx := int(msg.Runes[0]-'1')
+		idx := int(msg.Runes[0] - '1')
 		if idx < len(s.models) {
 			s.cursor = idx
 			c.refreshThinking()

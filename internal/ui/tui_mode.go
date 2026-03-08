@@ -22,14 +22,14 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 		Cwd:           cwd,
 		GitBranch:     gitBranch,
 		PolicyProfile: profile,
-		Templates:     config.LoadPromptTemplates(cwd),
-		Skills:        sess.Skills(),
+		Commands: config.LoadFileCommands(cwd),
+		Skills:   sess.Skills(),
 		PlanStore:     storage.NewPlanStore(config.PlansDir(cwd)),
 		MCPManager:    mcpMgr,
 		History:       newInputHistory(sess, cwd),
 	}
 
-	adapter.registry = adapter.initRegistry()
+	adapter.rebuildRegistry()
 	m := tui.New(sess, modelName, adapter.Config())
 	p := tea.NewProgram(m)
 
