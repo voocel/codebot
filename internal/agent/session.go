@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -219,8 +220,19 @@ func (s *Session) SetModel(prov, model string) error {
 		Provider:  prov,
 	})
 
-	// Re-clamp thinking level for the new provider.
+	// Re-clamp thinking level for the new provider (may call SetThinkingLevel).
 	s.reclampThinking()
+
+	// Persist model + thinking level together to avoid double disk write.
+	s.mu.Lock()
+	thinkLvl := s.settings.ThinkingLevel
+	s.mu.Unlock()
+	if err := config.PatchGlobalSettings(config.Settings{
+		Model:         &model,
+		ThinkingLevel: &thinkLvl,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: persist model setting: %v\n", err)
+	}
 
 	return nil
 }
@@ -285,6 +297,14 @@ func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
 		Type:  SEThinkingChanged,
 		Level: level,
 	})
+
+	// Persist thinking level to global settings.json.
+	lvl := string(level)
+	if err := config.PatchGlobalSettings(config.Settings{
+		ThinkingLevel: &lvl,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: persist thinking level setting: %v\n", err)
+	}
 }
 
 // ModelName returns the current model name.

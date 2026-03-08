@@ -266,6 +266,18 @@ func SaveSettings(s Settings) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
+// PatchGlobalSettings loads the global settings, applies the patch, and saves back.
+// Only non-nil fields in patch are updated.
+func PatchGlobalSettings(patch Settings) error {
+	dir := UserConfigDir()
+	if dir == "" {
+		return fmt.Errorf("cannot determine user config directory")
+	}
+	existing := loadSettingsFile(filepath.Join(dir, "settings.json"))
+	merged := mergeSettings(existing, patch)
+	return SaveSettings(merged)
+}
+
 func loadSettingsFile(path string) Settings {
 	var s Settings
 	data, err := os.ReadFile(path)

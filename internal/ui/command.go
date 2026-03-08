@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -15,36 +14,26 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-type commandSpec struct {
-	Usage       string
-	Description string
-	Risk        policy.CommandRisk
-	NeedsIdle   bool
-	Hidden      bool
-	Run         func(args []string) tea.Cmd
-}
-
 func (a *App) handleCommand(input string) tea.Cmd {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
 		return nil
 	}
 
-	cmd := strings.ToLower(parts[0])
+	name := strings.ToLower(parts[0])
 	args := parts[1:]
-	registry := a.commandRegistry()
 
-	spec, ok := registry[cmd]
-	if ok {
+	if cmd, ok := a.registry.Lookup(strings.TrimPrefix(name, "/")); ok {
+		spec := cmd.Spec()
 		if err := validateCommand(a.PolicyProfile, spec, a.Session.IsRunning()); err != nil {
 			return tui.SendCommandResult(tui.ErrorStyle.Render("Command blocked: " + err.Error()))
 		}
-		return spec.Run(args)
+		return cmd.Run(&CommandContext{App: a}, args)
 	}
 
 	// Fallback: check skill commands (/skill:name).
-	name := strings.TrimPrefix(cmd, "/")
-	if skillName, ok := parseSkillCommand(name); ok {
+	bare := strings.TrimPrefix(name, "/")
+	if skillName, ok := parseSkillCommand(bare); ok {
 		if skill := a.findSkill(skillName); skill != nil {
 			rawArgs := strings.TrimSpace(strings.TrimPrefix(input, parts[0]))
 			return a.invokeSkill(skill, rawArgs)
@@ -54,17 +43,17 @@ func (a *App) handleCommand(input string) tea.Cmd {
 	}
 
 	// Fallback: check prompt templates.
-	if tmpl := a.findTemplate(name); tmpl != nil {
+	if tmpl := a.findTemplate(bare); tmpl != nil {
 		rawArgs := strings.TrimSpace(strings.TrimPrefix(input, parts[0]))
 		expanded := Expand(tmpl.Content, ParseArgs(rawArgs))
 		return a.sendAsPrompt(expanded)
 	}
 
 	return tui.SendCommandResult(tui.CommandStyle.Render(
-		fmt.Sprintf("Unknown command: %s. Type /help for available commands.", cmd)))
+		fmt.Sprintf("Unknown command: %s. Type /help for available commands.", name)))
 }
 
-func validateCommand(profile policy.Profile, spec commandSpec, isRunning bool) error {
+func validateCommand(profile policy.Profile, spec CommandSpec, isRunning bool) error {
 	if err := policy.AllowCommand(profile, spec.Risk, true); err != nil {
 		return err
 	}
@@ -74,153 +63,116 @@ func validateCommand(profile policy.Profile, spec commandSpec, isRunning bool) e
 	return nil
 }
 
-func (a *App) commandRegistry() map[string]commandSpec {
-	return map[string]commandSpec{
-		"/help": {
-			Usage:       "/help",
-			Description: "Show this help",
-			Risk:        policy.RiskLow,
-			Run: func(_ []string) tea.Cmd {
-				return tui.SendCommandResult(a.helpText())
-			},
-		},
-		"/clear": {
-			Usage:       "/clear",
-			Description: "Clear current context (memory only)",
-			Risk:        policy.RiskLow,
-			NeedsIdle:   true,
-			Run: func(_ []string) tea.Cmd {
-				a.Session.ClearConversation()
-				a.resetPlanState()
-				return func() tea.Msg {
-					return tui.CommandResultMsg{
-						Text:  tui.CommandStyle.Render("Current context cleared (session history is kept)."),
-						Clear: true,
-					}
-				}
-			},
-		},
-		"/model": {
-			Usage:       "/model [name]",
-			Description: "Show or switch model",
-			Risk:        policy.RiskLow,
-			NeedsIdle:   true,
-			Run: func(args []string) tea.Cmd {
-				return a.cmdModel(args)
-			},
-		},
-		"/compact": {
-			Usage:       "/compact",
-			Description: "Compact conversation context",
-			Risk:        policy.RiskMedium,
-			NeedsIdle:   true,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdCompact()
-			},
-		},
-		"/session": {
-			Usage:       "/session",
-			Description: "Show current session info",
-			Risk:        policy.RiskLow,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdSession()
-			},
-		},
-		"/new": {
-			Usage:       "/new",
-			Description: "Start new session",
-			Risk:        policy.RiskMedium,
-			NeedsIdle:   true,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdNew()
-			},
-		},
-		"/resume": {
-			Usage:       "/resume [id|index]",
-			Description: "List sessions or resume by id/index",
-			Risk:        policy.RiskMedium,
-			NeedsIdle:   true,
-			Run: func(args []string) tea.Cmd {
-				return a.cmdResume(args)
-			},
-		},
-		"/settings": {
-			Usage:       "/settings",
-			Description: "Show current settings",
-			Risk:        policy.RiskLow,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdSettings()
-			},
-		},
-		"/mcp": {
-			Usage:       "/mcp",
-			Description: "Show MCP server status",
-			Risk:        policy.RiskLow,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdMCP()
-			},
-		},
-		"/copy": {
-			Usage:       "/copy",
-			Description: "Copy last response to clipboard",
-			Risk:        policy.RiskLow,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdCopy()
-			},
-		},
-		"/plan": {
-			Usage:       "/plan [cancel|<task>]",
-			Description: "Enter plan mode or manage plans",
-			Risk:        policy.RiskLow,
-			NeedsIdle:   true,
-			Run: func(args []string) tea.Cmd {
-				return a.cmdPlan(args)
-			},
-		},
-		"/reload": {
-			Usage:       "/reload",
-			Description: "Reload skills, prompts, and context files",
-			Risk:        policy.RiskLow,
-			NeedsIdle:   true,
-			Run: func(_ []string) tea.Cmd {
-				return a.cmdReload()
-			},
-		},
-		"/exit": {
-			Usage:       "/exit",
-			Description: "Quit",
-			Risk:        policy.RiskLow,
-			Run: func(_ []string) tea.Cmd {
-				return func() tea.Msg { return tui.CommandResultMsg{Quit: true} }
-			},
-		},
-		"/quit": {
-			Usage:       "/quit",
-			Description: "Quit",
-			Risk:        policy.RiskLow,
-			Hidden:      true,
-			Run: func(_ []string) tea.Cmd {
-				return func() tea.Msg { return tui.CommandResultMsg{Quit: true} }
-			},
-		},
+// initRegistry creates the command registry with all built-in commands.
+func (a *App) initRegistry() *Registry {
+	r := NewRegistry()
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "help", Usage: "/help", Description: "Show this help",
+		Risk: policy.RiskLow,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		return tui.SendCommandResult(ctx.App.helpText())
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "clear", Usage: "/clear", Description: "Clear current context (memory only)",
+		Risk: policy.RiskLow, NeedsIdle: true,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		ctx.App.Session.ClearConversation()
+		ctx.App.resetPlanState()
+		return func() tea.Msg {
+			return tui.CommandResultMsg{
+				Text:  tui.CommandStyle.Render("Current context cleared (session history is kept)."),
+				Clear: true,
+			}
+		}
+	}))
+
+	r.Register(NewModelCommand(a))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "compact", Usage: "/compact", Description: "Compact conversation context",
+		Risk: policy.RiskMedium, NeedsIdle: true,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		return ctx.App.cmdCompact()
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "session", Usage: "/session", Description: "Show current session info",
+		Risk: policy.RiskLow,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		return ctx.App.cmdSession()
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "new", Usage: "/new", Description: "Start new session",
+		Risk: policy.RiskMedium, NeedsIdle: true,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		return ctx.App.cmdNew()
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "resume", Usage: "/resume [id|index]", Description: "List sessions or resume by id/index",
+		Risk: policy.RiskMedium, NeedsIdle: true,
+	}, func(ctx *CommandContext, args []string) tea.Cmd {
+		return ctx.App.cmdResume(args)
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "settings", Usage: "/settings", Description: "Show current settings",
+		Risk: policy.RiskLow,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		return ctx.App.cmdSettings()
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "mcp", Usage: "/mcp", Description: "Show MCP server status",
+		Risk: policy.RiskLow,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		return ctx.App.cmdMCP()
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "copy", Usage: "/copy", Description: "Copy last response to clipboard",
+		Risk: policy.RiskLow,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		return ctx.App.cmdCopy()
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "plan", Usage: "/plan [cancel|<task>]", Description: "Enter plan mode or manage plans",
+		Risk: policy.RiskLow, NeedsIdle: true,
+	}, func(ctx *CommandContext, args []string) tea.Cmd {
+		return ctx.App.cmdPlan(args)
+	}))
+
+	r.Register(NewSimple(CommandSpec{
+		Name: "reload", Usage: "/reload", Description: "Reload skills, prompts, and context files",
+		Risk: policy.RiskLow, NeedsIdle: true,
+	}, func(ctx *CommandContext, _ []string) tea.Cmd {
+		return ctx.App.cmdReload()
+	}))
+
+	quitFn := func(_ *CommandContext, _ []string) tea.Cmd {
+		return func() tea.Msg { return tui.CommandResultMsg{Quit: true} }
 	}
+	r.Register(NewSimple(CommandSpec{
+		Name: "exit", Aliases: []string{"quit", "q"},
+		Usage: "/exit", Description: "Quit",
+		Risk: policy.RiskLow,
+	}, quitFn))
+
+	return r
 }
 
 func (a *App) helpText() string {
-	registry := a.commandRegistry()
-	var keys []string
-	for k, spec := range registry {
+	var sb strings.Builder
+	sb.WriteString("Available commands:\n")
+	for _, cmd := range a.registry.All() {
+		spec := cmd.Spec()
 		if spec.Hidden {
 			continue
 		}
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var sb strings.Builder
-	sb.WriteString("Available commands:\n")
-	for _, k := range keys {
-		spec := registry[k]
 		risk := spec.Risk
 		if risk == "" {
 			risk = policy.RiskLow

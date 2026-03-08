@@ -9,7 +9,7 @@ import (
 func TestValidateCommandRequiresIdleWhenRunning(t *testing.T) {
 	t.Parallel()
 
-	spec := commandSpec{
+	spec := CommandSpec{
 		Risk:      policy.RiskLow,
 		NeedsIdle: true,
 	}
@@ -21,7 +21,7 @@ func TestValidateCommandRequiresIdleWhenRunning(t *testing.T) {
 func TestValidateCommandAllowsInfoCommandWhenRunning(t *testing.T) {
 	t.Parallel()
 
-	spec := commandSpec{
+	spec := CommandSpec{
 		Risk:      policy.RiskLow,
 		NeedsIdle: false,
 	}
@@ -33,7 +33,7 @@ func TestValidateCommandAllowsInfoCommandWhenRunning(t *testing.T) {
 func TestValidateCommandStillAppliesRiskPolicy(t *testing.T) {
 	t.Parallel()
 
-	spec := commandSpec{
+	spec := CommandSpec{
 		Risk:      policy.RiskMedium,
 		NeedsIdle: false,
 	}

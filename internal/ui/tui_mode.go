@@ -29,6 +29,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 		History:       newInputHistory(sess, cwd),
 	}
 
+	adapter.registry = adapter.initRegistry()
 	m := tui.New(sess, modelName, adapter.Config())
 	p := tea.NewProgram(m)
 

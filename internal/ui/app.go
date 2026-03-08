@@ -38,6 +38,9 @@ type App struct {
 	// History provides input history for Up/Down navigation.
 	History *storage.History
 
+	// registry holds all slash commands (initialized by initRegistry).
+	registry *Registry
+
 	// Plan mode state.
 	planState     planState
 	planContent   string // free-form plan text from LLM
@@ -61,6 +64,8 @@ func (a *App) Config() tui.Config {
 		OnEvent:     a.planOnEvent,
 		StatusRight: a.statusRight,
 		StatusPlan:  a.planStatus,
+		Overlay:     a.overlayState,
+		Completions: a.completions,
 	}
 }
 
@@ -112,6 +117,42 @@ func (a *App) statusRight(m *tui.Model) string {
 		return ""
 	}
 	return tui.TokenStyle.Render(strings.Join(parts, " · "))
+}
+
+// overlayState bridges the registry's interactive command overlay to the TUI.
+func (a *App) overlayState(m *tui.Model) *tui.OverlayState {
+	ov := a.registry.Overlay()
+	if ov == nil || !ov.Active() {
+		return nil
+	}
+	return &tui.OverlayState{
+		HandleKey: ov.HandleKey,
+		View:      ov.View,
+	}
+}
+
+// completions returns matching slash command candidates for the given prefix.
+func (a *App) completions(prefix string) []tui.CompletionItem {
+	lower := strings.ToLower(prefix)
+	var items []tui.CompletionItem
+	seen := make(map[string]bool)
+	for _, cmd := range a.registry.All() {
+		spec := cmd.Spec()
+		if spec.Hidden {
+			continue
+		}
+		if strings.HasPrefix(spec.Name, lower) && !seen[spec.Name] {
+			items = append(items, tui.CompletionItem{Name: spec.Name, Description: spec.Description})
+			seen[spec.Name] = true
+		}
+		for _, alias := range spec.Aliases {
+			if strings.HasPrefix(alias, lower) && !seen[alias] {
+				items = append(items, tui.CompletionItem{Name: alias, Description: spec.Description})
+				seen[alias] = true
+			}
+		}
+	}
+	return items
 }
 
 // onPaste returns a tea.Cmd that asynchronously reads clipboard image data.

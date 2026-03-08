@@ -40,6 +40,20 @@ type Config struct {
 	OnDrop      func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
 	StatusRight func(m *Model) string
 	StatusPlan  func(m *Model) *PlanBarInfo
+	Overlay     func(m *Model) *OverlayState        // interactive command overlay
+	Completions func(prefix string) []CompletionItem // slash command completions
+}
+
+// CompletionItem is a single command completion candidate.
+type CompletionItem struct {
+	Name        string // command name without "/" (e.g. "model")
+	Description string
+}
+
+// OverlayState bridges an interactive command overlay to the TUI.
+type OverlayState struct {
+	HandleKey func(msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
+	View      func(width int) string
 }
 
 // Driver defines the minimal conversation operations required by the TUI.
@@ -102,6 +116,10 @@ type Model struct {
 	Tasks *tools.TaskSnapshot // non-nil when tasks exist; displayed above input
 
 	QueuedMsgs []string // messages queued while agent is running (display only)
+
+	compItems  []CompletionItem // current completion candidates
+	compIdx    int              // selected completion index
+	compActive bool             // completion menu visible
 
 	QuitPending bool // true after first Ctrl+C, waiting for second to quit
 
@@ -277,9 +295,15 @@ func (m Model) View() string {
 		parts = append(parts, m.renderTaskList(), "")
 	}
 
+	// Interactive command overlay (e.g., /model selector) replaces input area.
+	if ov := m.overlayView(); ov != "" {
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, ov)
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, m.RenderStatusBar())
+	} else
 	// Plan review / AskUser replace status bar + input area.
-	planBar := m.RenderPlanBar()
-	if planBar != "" {
+	if planBar := m.RenderPlanBar(); planBar != "" {
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, planBar)
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
@@ -315,6 +339,9 @@ func (m Model) View() string {
 				line += " " + MutedStyle.Render("(↑ to select)")
 			}
 			parts = append(parts, line)
+		}
+		if comp := m.renderCompletions(); comp != "" {
+			parts = append(parts, comp)
 		}
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, m.Input.View())
@@ -352,6 +379,41 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, cmd
 		}
+	}
+
+	// Interactive command overlay (e.g., /model selector).
+	if m.config.Overlay != nil {
+		if ov := m.config.Overlay(&m); ov != nil {
+			if handled, cmd := ov.HandleKey(msg); handled {
+				return m, cmd
+			}
+		}
+	}
+
+	// Slash command completion menu navigation.
+	if m.compActive {
+		switch msg.String() {
+		case "tab":
+			m.acceptCompletion()
+			return m, nil
+		case "enter":
+			m.acceptCompletion()
+			return m, nil
+		case "up":
+			if m.compIdx > 0 {
+				m.compIdx--
+			}
+			return m, nil
+		case "down":
+			if m.compIdx < len(m.compItems)-1 {
+				m.compIdx++
+			}
+			return m, nil
+		case "esc":
+			m.compActive = false
+			return m, nil
+		}
+		// Other keys: fall through to textarea, then recompute completions.
 	}
 
 	// Any non-Ctrl+C key resets quit pending state.
@@ -404,6 +466,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c":
+		m.compActive = false
 		if m.QuitPending {
 			return m, tea.Quit
 		}
@@ -534,6 +597,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.Input.SetHeight(maxInputHeight) // expand before Update so repositionView uses correct YOffset
 	m.Input, cmd = m.Input.Update(msg)
 	m.adjustInputHeight()
+	m.updateCompletions()
 	return m, cmd
 }
 
@@ -638,4 +702,70 @@ func (m Model) RenderPromptOutput(text string) string {
 		return m.renderWelcome() + "\n" + userLine
 	}
 	return userLine
+}
+
+// overlayView returns the rendered overlay content, or "" if no overlay is active.
+func (m Model) overlayView() string {
+	if m.config.Overlay == nil {
+		return ""
+	}
+	ov := m.config.Overlay(&m)
+	if ov == nil {
+		return ""
+	}
+	return ov.View(m.Width)
+}
+
+// ---------------------------------------------------------------------------
+// Slash command completion
+// ---------------------------------------------------------------------------
+
+// updateCompletions refreshes the completion menu based on current input.
+func (m *Model) updateCompletions() {
+	if m.config.Completions == nil {
+		m.compActive = false
+		return
+	}
+	text := m.Input.Value()
+	if !strings.HasPrefix(text, "/") || strings.ContainsAny(text, " \t") {
+		m.compActive = false
+		return
+	}
+	prefix := text[1:]
+	items := m.config.Completions(prefix)
+	m.compItems = items
+	m.compActive = len(items) > 0
+	if m.compIdx >= len(items) {
+		m.compIdx = max(len(items)-1, 0)
+	}
+}
+
+// acceptCompletion fills the selected completion into the input.
+func (m *Model) acceptCompletion() {
+	if !m.compActive || m.compIdx < 0 || m.compIdx >= len(m.compItems) {
+		return
+	}
+	name := m.compItems[m.compIdx].Name
+	m.Input.Reset()
+	m.Input.SetValue("/" + name + " ")
+	m.Input.CursorEnd()
+	m.compActive = false
+}
+
+// renderCompletions renders the completion menu.
+func (m Model) renderCompletions() string {
+	if !m.compActive || len(m.compItems) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, item := range m.compItems {
+		name := "/" + item.Name
+		if i == m.compIdx {
+			sb.WriteString(ChoiceActiveStyle.Render(fmt.Sprintf("  %-16s %s", name, item.Description)))
+		} else {
+			sb.WriteString(ChoiceInactiveStyle.Render(fmt.Sprintf("  %-16s %s", name, item.Description)))
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
