@@ -1,5 +1,5 @@
 {
-  // Providers: anthropic, openai, gemini
+  // Providers: anthropic, openai, openrouter, gemini
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
   "small_model": "claude-haiku-4-5", // for SubAgents; empty = same as main
@@ -8,6 +8,10 @@
   "providers": {
     "anthropic": { "api_key": "" },
     "openai":    { "api_key": "", "base_url": "" },
+    "openrouter": {
+      "api_key": "",
+      "base_url": "https://openrouter.ai/api/v1"
+    },
     "gemini":    { "api_key": "" }
   },
 

@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,16 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/memory"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
-	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
-
-	mcpclient "github.com/voocel/codebot/internal/mcp"
 )
 
 // Options controls how runtime bootstraps.
@@ -48,9 +43,9 @@ type Runtime struct {
 
 	PolicyProfile policy.Profile
 
-	Settings     config.Resolved
-	Session      *agent.Session
-	MCPManager   *mcpclient.Manager
+	Settings   config.Resolved
+	Session    *agent.Session
+	MCPManager *mcpclient.Manager
 }
 
 // Close releases runtime resources.
@@ -65,244 +60,31 @@ func (r *Runtime) Close() {
 
 // Boot creates a ready-to-run runtime.
 func Boot(opts Options) (*Runtime, error) {
-	cwd := opts.Cwd
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("get cwd: %w", err)
-		}
-	}
-
-	settings := config.ResolveAll(cwd)
-
-	registry := provider.NewModelRegistry()
-	provider.StartPricingRefresh(registry, config.UserConfigDir())
-	profile, err := parseProfile(opts.PolicyProfile)
+	input, err := resolveBootInput(opts)
 	if err != nil {
 		return nil, err
 	}
-	createModel := opts.ModelFactory
-	if createModel == nil {
-		createModel = provider.CreateModel
-	}
 
-	// Interactive setup when API key is missing for the active provider.
-	apiKey, _ := settings.ProviderCredentials(settings.Provider)
-	if apiKey == "" {
-		if opts.NonTTYMode {
-			return nil, fmt.Errorf("api key not set; set %s or configure providers in %s",
-				config.ProviderEnvKey(settings.Provider), filepath.Join(config.UserConfigDir(), "settings.json"))
-		}
-		err := config.RunSetup(settings, func(prov string) []config.ModelOption {
-			entries := registry.FindByProvider(prov)
-			result := make([]config.ModelOption, len(entries))
-			for i, e := range entries {
-				result[i] = config.ModelOption{ID: e.ID, Name: e.Name}
-			}
-			return result
-		})
-		if err != nil {
-			return nil, fmt.Errorf("setup: %w", err)
-		}
-		settings = config.ResolveAll(cwd)
-	}
-
-	manager := storage.NewManager(config.SessionsDir(cwd))
-	store, err := resolveSession(manager, cwd, opts.Continue, opts.Resume, opts.Session, opts.NonTTYMode)
-	if err != nil {
-		return nil, fmt.Errorf("session: %w", err)
-	}
 	closeStoreOnError := true
 	defer func() {
-		if closeStoreOnError && store != nil {
-			_ = store.Close()
+		if closeStoreOnError && input.store != nil {
+			_ = input.store.Close()
 		}
 	}()
 
-	var snapshot storage.ContextSnapshot
-	if opts.Continue || opts.Resume || opts.Session != "" {
-		snapshot, err = store.BuildSnapshot()
-		if err != nil {
-			return nil, fmt.Errorf("restore context: %w", err)
-		}
-	}
-
-	activeProvider := settings.Provider
-	if snapshot.Provider != "" {
-		activeProvider = snapshot.Provider
-	}
-	activeModel := settings.Model
-	if snapshot.Model != "" {
-		activeModel = snapshot.Model
-	}
-	activeAPIKey, activeBaseURL := settings.ProviderCredentials(activeProvider)
-
-	chatModel, err := createModel(activeProvider, activeModel, activeAPIKey, activeBaseURL)
+	spec, err := assembleBootSpec(input, opts.ToolFactories)
 	if err != nil {
-		return nil, fmt.Errorf("create model: %w", err)
+		return nil, err
 	}
 
-	// Resolve context window: user setting > model registry > fallback 128k.
-	if settings.ContextWindow <= 0 {
-		if entry, _, err := registry.Resolve(activeModel); err == nil && entry.ContextWindow > 0 {
-			settings.ContextWindow = entry.ContextWindow
-		} else {
-			settings.ContextWindow = 128000
-		}
+	rt, err := buildRuntime(input, spec)
+	if err != nil {
+		return nil, err
 	}
 
-	ctxFiles := config.LoadContextFiles(cwd)
-	skills := config.LoadSkills(cwd)
-
-	pol := policy.New(policy.Config{
-		Profile:     profile,
-		Workspace:   cwd,
-		Interactive: !opts.NonTTYMode,
-		OnAudit:     fileAuditor(config.AuditLogPath()),
-	})
-
-	builtTools := buildTools(cwd, opts.ToolFactories)
-	askTool := localtools.NewAskUser()
-	taskStore, taskTools := localtools.NewTaskTools()
-	builtTools = append(builtTools,
-		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
-		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
-		askTool,
-	)
-	builtTools = append(builtTools, taskTools...)
-
-	// Apply output size limits to tools that may produce large output.
-	builtTools = localtools.WrapWithOutputLimit(builtTools)
-
-	// Enable task persistence scoped to this session.
-	taskDir := filepath.Join(config.TasksDir(), store.Header().SessionID)
-	if err := taskStore.SetDir(taskDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: task persistence: %v\n", err)
-	}
-
-	// SubAgent tool: delegate tasks to isolated sub-agents (explore, plan, coder).
-	subagentTool := buildSubAgentTool(subAgentDeps{
-		Cwd:         cwd,
-		Model:       chatModel,
-		AllTools:    builtTools,
-		CreateModel: createModel,
-		Provider:    activeProvider,
-		Providers:   settings.Providers,
-		SmallModel:  settings.SmallModel,
-	})
-	builtTools = append(builtTools, subagentTool)
-
-	// Start MCP servers and collect their tools.
-	var mcpManager *mcpclient.Manager
-	mcpServers := mcpclient.LoadAllMCPServers(cwd)
-	baseTools := builtTools // snapshot before MCP tools are appended (includes subagent)
-	if len(mcpServers) > 0 {
-		mcpManager = mcpclient.NewManager()
-		if errs := mcpManager.StartAll(context.Background(), mcpServers); len(errs) > 0 {
-			for _, e := range errs {
-				fmt.Fprintf(os.Stderr, "mcp: %v\n", e)
-			}
-		}
-		builtTools = append(builtTools, mcpManager.Tools(context.Background())...)
-	}
-
-	toolInfos := make([]config.ToolInfo, len(builtTools))
-	for i, t := range builtTools {
-		toolInfos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
-	}
-
-	systemPrompt := config.BuildSystemPrompt(cwd, ctxFiles, toolInfos, skills)
-
-	// Append MCP server instructions to system prompt.
-	if mcpManager != nil {
-		if instructions := mcpManager.Instructions(); len(instructions) > 0 {
-			var sb strings.Builder
-			sb.WriteString(systemPrompt)
-			for _, inst := range instructions {
-				sb.WriteString("\n\n")
-				sb.WriteString(inst)
-			}
-			systemPrompt = sb.String()
-		}
-	}
-
-	ag := agentcore.NewAgent(
-		agentcore.WithModel(chatModel),
-		agentcore.WithSystemPrompt(systemPrompt),
-		agentcore.WithTools(builtTools...),
-		agentcore.WithMaxTurns(settings.MaxTurns),
-		agentcore.WithMaxToolErrors(3),
-		agentcore.WithMaxToolConcurrency(4),
-		agentcore.WithContextPipeline(
-			memory.NewCompaction(memory.CompactionConfig{
-				Model:         chatModel,
-				ContextWindow: settings.ContextWindow,
-			}),
-			memory.CompactionConvertToLLM,
-		),
-		agentcore.WithContextWindow(settings.ContextWindow),
-		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
-		agentcore.WithPermission(pol.Permission),
-	)
-
-	// Bind background task notifier so completed tasks are injected as follow-up messages.
-	subagentTool.SetNotifyFn(ag.FollowUp)
-
-	if len(snapshot.Messages) > 0 {
-		if err := ag.SetMessages(snapshot.Messages); err != nil {
-			return nil, fmt.Errorf("restore agent messages: %w", err)
-		}
-	}
-	if snapshot.Thinking != "" {
-		ag.SetThinkingLevel(agentcore.ThinkingLevel(snapshot.Thinking))
-		settings.ThinkingLevel = snapshot.Thinking
-	} else if settings.ThinkingLevel != "" {
-		ag.SetThinkingLevel(agentcore.ThinkingLevel(settings.ThinkingLevel))
-	}
-
-	settings.Provider = activeProvider
-	settings.Model = activeModel
-
-	sess := agent.NewSession(agent.SessionConfig{
-		Agent:        ag,
-		Store:        store,
-		Manager:      manager,
-		Registry:     registry,
-		Settings:     settings,
-		Cwd:          cwd,
-		CreateModel:  createModel,
-		ChatModel:    chatModel,
-		Tools:        builtTools,
-		ContextFiles: ctxFiles,
-		Skills:       skills,
-	})
 	closeStoreOnError = false
-
-	// Before each agent turn, refresh MCP tools if any server signaled a change.
-	if mcpManager != nil {
-		sess.SetBeforePrompt(func() {
-			mcpTools, ok := mcpManager.RefreshIfDirty(context.Background())
-			if !ok {
-				return
-			}
-			all := make([]agentcore.Tool, len(baseTools), len(baseTools)+len(mcpTools))
-			copy(all, baseTools)
-			all = append(all, mcpTools...)
-			sess.ReplaceAllTools(all)
-		})
-	}
-
 	go localtools.CleanOldOutputs()
-
-	return &Runtime{
-		Cwd:           cwd,
-		GitBranch:     detectGitBranch(cwd),
-		PolicyProfile: profile,
-		Settings:      settings,
-		Session:       sess,
-		MCPManager:    mcpManager,
-	}, nil
+	return rt, nil
 }
 
 func detectGitBranch(cwd string) string {

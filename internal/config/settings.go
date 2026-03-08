@@ -40,8 +40,8 @@ type Settings struct {
 type Resolved struct {
 	Provider   string                    // active provider name
 	Model      string                    // model name sent to API as-is
-	Providers  map[string]ProviderConfig  // per-provider credentials
-	SmallModel string                     // "provider/model" or ""
+	Providers  map[string]ProviderConfig // per-provider credentials
+	SmallModel string                    // "provider/model" or ""
 
 	ContextWindow  int // auto-detected from model registry at boot
 	AutoCompaction bool
@@ -53,9 +53,10 @@ type Resolved struct {
 
 // providerEnvVars maps provider names to their standard environment variable names.
 var providerEnvVars = map[string]struct{ key, base string }{
-	"anthropic": {"ANTHROPIC_API_KEY", ""},
-	"openai":    {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
-	"gemini":    {"GEMINI_API_KEY", ""},
+	"anthropic":  {"ANTHROPIC_API_KEY", ""},
+	"openai":     {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
+	"openrouter": {"OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"},
+	"gemini":     {"GEMINI_API_KEY", ""},
 }
 
 // ProviderCredentials returns API key and base URL for the given provider.

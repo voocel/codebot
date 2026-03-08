@@ -30,6 +30,11 @@ func newProviderModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, 
 			return llm.NewGeminiModel(name, apiKey, baseURL)
 		}
 		return llm.NewGeminiModel(name, apiKey)
+	case "openai", "openrouter":
+		if baseURL != "" {
+			return llm.NewOpenAIModel(name, apiKey, baseURL)
+		}
+		return llm.NewOpenAIModel(name, apiKey)
 	default:
 		if baseURL != "" {
 			return llm.NewOpenAIModel(name, apiKey, baseURL)

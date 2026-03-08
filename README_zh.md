@@ -29,7 +29,7 @@
 - 任务管理：task_create, task_get, task_update, task_list（SubAgent 协调）
 - SubAgent 委托，支持并行/链式执行
 - 上下文满时自动压缩
-- 多 Provider：Anthropic, OpenAI, Gemini
+- 多 Provider：Anthropic、OpenAI、OpenRouter、Gemini
 - MCP（Model Context Protocol）服务器集成
 
 **会话**
@@ -87,7 +87,22 @@ export ANTHROPIC_API_KEY=sk-ant-...
 codebot
 ```
 
-支持的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`GEMINI_API_KEY`。更多配置项参考 [settings.example.jsonc](settings.example.jsonc)。
+支持的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`OPENROUTER_API_KEY`、`GEMINI_API_KEY`。更多配置项参考 [settings.example.jsonc](settings.example.jsonc)。
+
+OpenRouter 也可以作为一等 provider 使用，在 `settings.json` 中这样配置：
+
+```json
+{
+  "provider": "openrouter",
+  "model": "openai/gpt-5",
+  "providers": {
+    "openrouter": {
+      "api_key": "sk-or-...",
+      "base_url": "https://openrouter.ai/api/v1"
+    }
+  }
+}
+```
 
 ## 使用
 

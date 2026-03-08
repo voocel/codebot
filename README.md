@@ -29,7 +29,7 @@ Each layer has one job. No layer knows about the layers above it.
 - Task management: task_create, task_get, task_update, task_list (SubAgent coordination)
 - SubAgent delegation with parallel/chain execution
 - Automatic context compaction when window fills up
-- Multi-provider: Anthropic, OpenAI, Gemini
+- Multi-provider: Anthropic, OpenAI, OpenRouter, Gemini
 - MCP (Model Context Protocol) server integration
 
 **Sessions**
@@ -87,7 +87,22 @@ export ANTHROPIC_API_KEY=sk-ant-...
 codebot
 ```
 
-Supported environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`. For more options see [settings.example.jsonc](settings.example.jsonc).
+Supported environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`. For more options see [settings.example.jsonc](settings.example.jsonc).
+
+OpenRouter can be used as a first-class provider in `settings.json`:
+
+```json
+{
+  "provider": "openrouter",
+  "model": "openai/gpt-5",
+  "providers": {
+    "openrouter": {
+      "api_key": "sk-or-...",
+      "base_url": "https://openrouter.ai/api/v1"
+    }
+  }
+}
+```
 
 ## Usage
 
