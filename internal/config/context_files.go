@@ -23,21 +23,26 @@ type ContextFiles struct {
 
 // LoadContextFiles searches for context files from cwd upward to the filesystem root.
 //
-// AGENTS.md files are collected from each directory from root down to cwd.
-// Closer to cwd = appended later (higher specificity).
+// Loading order (lowest to highest specificity):
+//  1. ~/.codebot/AGENTS.md (global user-level)
+//  2. AGENTS.md in each ancestor from root down to cwd
 //
+// CLAUDE.md is used as fallback when AGENTS.md is not found in a directory.
 // SYSTEM.md and APPEND_SYSTEM.md are only looked for in cwd.
 func LoadContextFiles(cwd string) ContextFiles {
 	var cf ContextFiles
 	var agentParts []string
 
+	// Global user-level AGENTS.md (lowest priority).
+	if dir := UserConfigDir(); dir != "" {
+		if content := readAgentFile(dir); content != "" {
+			agentParts = append(agentParts, content)
+		}
+	}
+
 	// Walk from root to cwd, collecting AGENTS.md (fallback: CLAUDE.md).
 	for _, dir := range parentChain(cwd) {
-		content := readFileOr(filepath.Join(dir, "AGENTS.md"))
-		if content == "" {
-			content = readFileOr(filepath.Join(dir, "CLAUDE.md"))
-		}
-		if content != "" {
+		if content := readAgentFile(dir); content != "" {
 			agentParts = append(agentParts, content)
 		}
 	}
@@ -65,6 +70,14 @@ func parentChain(dir string) []string {
 		dir = parent
 	}
 	return chain
+}
+
+// readAgentFile returns the content of AGENTS.md (or CLAUDE.md fallback) in dir.
+func readAgentFile(dir string) string {
+	if content := readFileOr(filepath.Join(dir, "AGENTS.md")); content != "" {
+		return content
+	}
+	return readFileOr(filepath.Join(dir, "CLAUDE.md"))
 }
 
 func readFileOr(path string) string {

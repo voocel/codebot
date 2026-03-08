@@ -48,4 +48,30 @@ else
     sudo mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 fi
 
+# Create global config directory and default AGENTS.md if not present.
+CONFIG_DIR="${HOME}/.codebot"
+AGENTS_FILE="${CONFIG_DIR}/AGENTS.md"
+mkdir -p "$CONFIG_DIR"
+if [ ! -f "$AGENTS_FILE" ]; then
+    cat > "$AGENTS_FILE" << 'AGENTS_EOF'
+# Codebot
+
+You are Codebot, an AI coding assistant that runs in the terminal.
+You help developers read, write, and refactor code through direct filesystem and shell access.
+
+# This file is loaded for every project as the lowest-priority context.
+# Add your personal preferences and conventions here.
+# Project-level AGENTS.md (in the project root) takes higher priority.
+
+## Code Style
+- Prefer simple, correct solutions over clever ones
+- Follow existing conventions in each project
+
+## Communication
+- Be concise and direct
+- Explain the "why" before making changes
+AGENTS_EOF
+    echo "Created default ${AGENTS_FILE}"
+fi
+
 echo "${BINARY} ${VERSION} installed to ${INSTALL_DIR}/${BINARY}"

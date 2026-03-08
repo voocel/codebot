@@ -95,15 +95,17 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	}
 }
 
-// statusRight displays context usage and cost in the status bar.
+// statusRight displays context usage, token counts, and cost in the status bar.
 func (a *App) statusRight(m *tui.Model) string {
 	var parts []string
 	if cu := a.Session.ContextUsage(); cu != nil {
 		parts = append(parts, fmt.Sprintf("ctx: %.0f%%", cu.Percent))
-	} else if totalTokens := a.Session.TotalTokens(); totalTokens > 0 {
-		parts = append(parts, fmt.Sprintf("tokens: %d", totalTokens))
 	}
-	if _, _, cost := a.Session.CostEstimate(); cost > 0 {
+	input, output, cost := a.Session.CostEstimate()
+	if input+output > 0 {
+		parts = append(parts, fmt.Sprintf("↑%s ↓%s", tui.FormatTokens(input), tui.FormatTokens(output)))
+	}
+	if cost > 0 {
 		parts = append(parts, fmt.Sprintf("$%.2f", cost))
 	}
 	if len(parts) == 0 {

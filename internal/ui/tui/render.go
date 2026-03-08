@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/truncate"
@@ -16,20 +18,66 @@ import (
 // ---------------------------------------------------------------------------
 
 func (m *Model) renderWelcome() string {
-	title := WelcomeTitleStyle.Render("◆ Codebot")
+	accent := lipgloss.NewStyle().Foreground(ColorAccent)
+	bold := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	dim := WelcomeDetailStyle
 
-	info := m.ModelName
+	logo := accent.Render("   ╭───╮") + "\n" +
+		accent.Render("   │") + bold.Render("◉ ◉") + accent.Render("│") + "\n" +
+		accent.Render("   ╰─┬─╯") + "\n" +
+		accent.Render("  ╭──┴──╮") + "\n" +
+		accent.Render("  │ ") + bold.Render(">>>") + accent.Render(" │") + "\n" +
+		accent.Render("  ╰─────╯")
+
+	// Info lines
+	var infoLines []string
+	infoLines = append(infoLines, bold.Render("Codebot")+"  "+dim.Render("AI Coding Assistant"))
+	modelLine := dim.Render(m.ModelName)
 	if m.Cwd != "" {
-		info += " · " + shortenPath(m.Cwd)
-		if m.GitBranch != "" {
-			info += " (" + m.GitBranch + ")"
-		}
+		modelLine += dim.Render(" · "+shortenPath(m.Cwd))
 	}
-	hints := "Enter send · Ctrl+J newline · Esc abort · /help commands"
+	if m.GitBranch != "" {
+		modelLine += dim.Render(" ("+m.GitBranch+")")
+	}
+	infoLines = append(infoLines, modelLine)
 
-	content := title + "\n" +
-		WelcomeDetailStyle.Render(info) + "\n\n" +
-		MutedStyle.Render(hints)
+	// Side-by-side: logo left, info right
+	logoLines := strings.Split(logo, "\n")
+	padWidth := 12 // logo fixed width
+	totalLines := len(logoLines)
+	if len(infoLines) > totalLines {
+		totalLines = len(infoLines)
+	}
+
+	// Info starts vertically centered relative to logo
+	infoStart := (len(logoLines) - len(infoLines)) / 2
+	if infoStart < 0 {
+		infoStart = 0
+	}
+
+	var rows []string
+	for i := 0; i < totalLines; i++ {
+		left := ""
+		if i < len(logoLines) {
+			left = logoLines[i]
+		}
+		// Pad left column to fixed width (accounting for ANSI escapes)
+		visible := lipgloss.Width(left)
+		if visible < padWidth {
+			left += strings.Repeat(" ", padWidth-visible)
+		}
+
+		right := ""
+		ri := i - infoStart
+		if ri >= 0 && ri < len(infoLines) {
+			right = infoLines[ri]
+		}
+		rows = append(rows, left+"  "+right)
+	}
+
+	content := strings.Join(rows, "\n")
+	hints := MutedStyle.Render("Enter send · Ctrl+J newline · Esc abort · /help commands")
+	content += "\n\n" + hints
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -37,7 +85,7 @@ func (m *Model) renderWelcome() string {
 		Padding(0, 1).
 		Render(content)
 
-	return box
+	return "\n" + box
 }
 
 // RenderStatusBar renders the status line above the input (running state + turn).
@@ -54,11 +102,13 @@ func (m *Model) RenderStatusBar() string {
 
 	var status string
 	if m.Running {
-		status = m.Spinner.View() + " running"
+		elapsed := time.Since(m.RunStats.StartedAt).Truncate(time.Second)
+		status = m.Spinner.View() + lipgloss.NewStyle().Foreground(ColorTool).Render(" running")
+		status += "  " + MutedStyle.Render(fmt.Sprintf("turn %d · %s", m.TurnCount, formatDuration(elapsed)))
 	} else {
-		status = lipgloss.NewStyle().Foreground(ColorSuccess).Render("●") + " ready"
+		status = lipgloss.NewStyle().Foreground(ColorSuccess).Render("● ready")
+		status += "  " + MutedStyle.Render(fmt.Sprintf("turn %d", m.TurnCount))
 	}
-	status += "  " + MutedStyle.Render(fmt.Sprintf("turn %d", m.TurnCount))
 
 	// Append plan mode tag.
 	if plan != nil && plan.Tag != "" {
@@ -133,8 +183,8 @@ func (m *Model) RenderPlanBar() string {
 // RenderContextBar renders the context line below the input (env info).
 func (m *Model) RenderContextBar() string {
 	var parts []string
-	if m.GitBranch != "" {
-		parts = append(parts, m.GitBranch)
+	if m.Cwd != "" {
+		parts = append(parts, filepath.Base(m.Cwd))
 	}
 	parts = append(parts, m.ModelName)
 	if m.config.StatusRight != nil {
@@ -176,8 +226,8 @@ func (m *Model) RenderMarkdown(content string) string {
 // renderRunSummary renders per-run stats shown after agent completion.
 func (m *Model) renderRunSummary() string {
 	s := m.RunStats
-	return MutedStyle.Render(fmt.Sprintf("─ %d turns · %d tools · ↑%s ↓%s tokens",
-		s.Turns, s.ToolCalls, FormatTokens(s.Input), FormatTokens(s.Output)))
+	return MutedStyle.Render(fmt.Sprintf("─ %d turns · %d tools · ↑%s ↓%s tokens · %s",
+		s.Turns, s.ToolCalls, FormatTokens(s.Input), FormatTokens(s.Output), formatDuration(s.Duration)))
 }
 
 // renderQueuedMsgs renders queued messages sent while agent is running.
@@ -350,6 +400,22 @@ func indentBlock(s string, n int) string {
 }
 
 // shortenPath replaces the home directory prefix with ~.
+// formatDuration formats a duration as "Xs", "Xm Xs", or "Xh Xm".
+func formatDuration(d time.Duration) string {
+	d = d.Truncate(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	return fmt.Sprintf("%dh %dm", h, m)
+}
+
 func shortenPath(p string) string {
 	home, err := os.UserHomeDir()
 	if err == nil && home != "" && strings.HasPrefix(p, home) {

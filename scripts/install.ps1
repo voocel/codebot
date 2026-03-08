@@ -44,6 +44,32 @@ try {
         Write-Host "Added $InstallDir to user PATH (restart terminal to take effect)"
     }
 
+    # Create global config directory and default AGENTS.md if not present.
+    $ConfigDir = Join-Path $env:USERPROFILE ".codebot"
+    $AgentsFile = Join-Path $ConfigDir "AGENTS.md"
+    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+    if (-not (Test-Path $AgentsFile)) {
+        @"
+# Codebot
+
+You are Codebot, an AI coding assistant that runs in the terminal.
+You help developers read, write, and refactor code through direct filesystem and shell access.
+
+# This file is loaded for every project as the lowest-priority context.
+# Add your personal preferences and conventions here.
+# Project-level AGENTS.md (in the project root) takes higher priority.
+
+## Code Style
+- Prefer simple, correct solutions over clever ones
+- Follow existing conventions in each project
+
+## Communication
+- Be concise and direct
+- Explain the "why" before making changes
+"@ | Set-Content -Path $AgentsFile -Encoding UTF8
+        Write-Host "Created default $AgentsFile"
+    }
+
     Write-Host "$Binary $Version installed to $InstallDir\$Binary.exe"
 } finally {
     Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue

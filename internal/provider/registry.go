@@ -142,16 +142,13 @@ func (r *ModelRegistry) FindByProvider(prov string) []ModelEntry {
 }
 
 // CostRates returns the per-1M-token cost rates for a model.
+// Uses Resolve for matching, so partial names like "sonnet" work.
 func (r *ModelRegistry) CostRates(modelID string) (inputPer1M, outputPer1M, cacheReadPer1M, cacheWritePer1M float64) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	for _, m := range r.models {
-		if strings.EqualFold(m.ID, modelID) {
-			return m.InputCostPer1M, m.OutputCostPer1M, m.CacheReadCostPer1M, m.CacheWriteCostPer1M
-		}
+	entry, _, err := r.Resolve(modelID)
+	if err != nil {
+		return 0, 0, 0, 0
 	}
-	return 0, 0, 0, 0
+	return entry.InputCostPer1M, entry.OutputCostPer1M, entry.CacheReadCostPer1M, entry.CacheWriteCostPer1M
 }
 
 // MergeModels updates existing models and adds new ones from fetched data.

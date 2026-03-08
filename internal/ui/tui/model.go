@@ -56,6 +56,8 @@ type runStats struct {
 	ToolCalls int
 	Input     int
 	Output    int
+	StartedAt time.Time
+	Duration  time.Duration
 }
 
 // Model is the bubbletea Model for the agent TUI.
@@ -477,14 +479,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		output := m.RenderPromptOutput(displayText)
 		m.ShowWelcome = false
 		if m.Driver == nil {
-			output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
+			output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: session driver is not configured", 2)), 2)
 		} else if m.Running {
 			// Steer only supports text; put images back for next submission.
 			m.Images = images
 			m.Driver.Steer(text)
 			m.QueuedMsgs = append(m.QueuedMsgs, text)
 		} else if err := m.promptWithImages(text, images); err != nil {
-			output += "\n" + ErrorStyle.Render("  error: "+err.Error())
+			output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+err.Error(), 2)), 2)
 		}
 		return m, tea.Println(output)
 
@@ -607,9 +609,9 @@ func (m Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	output := m.RenderPromptOutput(text)
 	m.ShowWelcome = false
 	if m.Driver == nil {
-		output += "\n" + ErrorStyle.Render("  error: session driver is not configured")
+		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: session driver is not configured", 2)), 2)
 	} else if err := m.promptWithImages(text, nil); err != nil {
-		output += "\n" + ErrorStyle.Render("  error: "+err.Error())
+		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+err.Error(), 2)), 2)
 	}
 	return m, tea.Println(output)
 }

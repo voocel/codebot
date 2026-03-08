@@ -232,6 +232,7 @@ func Boot(opts Options) (*Runtime, error) {
 		agentcore.WithSystemPrompt(systemPrompt),
 		agentcore.WithTools(builtTools...),
 		agentcore.WithMaxTurns(settings.MaxTurns),
+		agentcore.WithMaxToolErrors(3),
 		agentcore.WithMaxToolConcurrency(4),
 		agentcore.WithContextPipeline(
 			memory.NewCompaction(memory.CompactionConfig{

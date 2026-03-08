@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
@@ -18,11 +19,12 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 	switch ev.Type {
 	case agentcore.EventAgentStart:
 		m.Running = true
-		m.RunStats = runStats{}
+		m.RunStats = runStats{StartedAt: time.Now()}
 		m.ShowSummary = false
 
 	case agentcore.EventAgentEnd:
 		m.Running = false
+		m.RunStats.Duration = time.Since(m.RunStats.StartedAt)
 		m.ShowSummary = true
 		m.QueuedMsgs = nil
 		clear(m.PendingTools)
@@ -167,7 +169,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		if ev.Err != nil {
 			errMsg = ev.Err.Error()
 		}
-		cmds = append(cmds, tea.Println("\n"+ErrorStyle.Render("  error: "+errMsg)))
+		wrapped := indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+errMsg, 2)), 2)
+		cmds = append(cmds, tea.Println("\n"+wrapped))
 	}
 
 	if m.config.OnEvent != nil {
