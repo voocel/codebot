@@ -16,7 +16,7 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, mcpMgr *mcpclient.Manager) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager) error {
 	adapter := &App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -63,6 +63,35 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 				p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
 			}
 		}
+	}
+
+	// Wire policy permission confirmation to TUI.
+	if policyEngine != nil {
+		policyEngine.SetConfirmFn(func(ctx context.Context, req policy.PermitRequest) (policy.PermitDecision, error) {
+			respCh := make(chan tui.PermitChoice, 1)
+			p.Send(tui.PermissionMsg{
+				Tool:    req.Tool,
+				Command: req.Command,
+				Reason:  req.Reason,
+				RespCh:  respCh,
+			})
+			select {
+			case choice := <-respCh:
+				switch choice {
+				case tui.PermitChoiceAllowOnce:
+					return policy.PermitAllowOnce, nil
+				case tui.PermitChoiceAllowSession:
+					return policy.PermitAllowSession, nil
+				case tui.PermitChoiceAllowAlways:
+					return policy.PermitAllowAlways, nil
+				default:
+					return policy.PermitDeny, nil
+				}
+			case <-ctx.Done():
+				p.Send(tui.PermissionDismissMsg{})
+				return policy.PermitDeny, ctx.Err()
+			}
+		})
 	}
 
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {

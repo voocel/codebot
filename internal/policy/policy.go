@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -32,12 +33,33 @@ type AuditEntry struct {
 	Reason  string // empty when allowed
 }
 
+// PermitDecision is the user's response to an interactive permission prompt.
+type PermitDecision int
+
+const (
+	PermitDeny         PermitDecision = iota
+	PermitAllowOnce                   // allow this invocation only
+	PermitAllowSession                // allow for the rest of the session
+	PermitAllowAlways                 // persist to project config
+)
+
+// PermitRequest describes the operation awaiting user approval.
+type PermitRequest struct {
+	Tool    string // e.g. "bash"
+	Command string // full command text
+	Reason  string // e.g. "dangerous command: sudo"
+}
+
+// ConfirmFunc blocks until the user makes a permission decision.
+type ConfirmFunc func(ctx context.Context, req PermitRequest) (PermitDecision, error)
+
 // Config configures the policy engine.
 type Config struct {
-	Profile     Profile
-	Workspace   string
-	Interactive bool
-	OnAudit     func(AuditEntry) // nil = no auditing
+	Profile         Profile
+	Workspace       string
+	Interactive     bool
+	OnAudit         func(AuditEntry) // nil = no auditing
+	AllowedCommands []string         // pre-loaded from project config
 }
 
 // Engine validates tool calls before execution.
@@ -46,6 +68,11 @@ type Engine struct {
 	workspace   string
 	interactive bool
 	onAudit     func(AuditEntry)
+	confirmFn   ConfirmFunc
+	persistFn   func(cmd string) error // persists "always allow" to project config
+	mu          sync.RWMutex
+	allowed     map[string]struct{} // session-scoped allow-list (key = base command)
+	persisted   map[string]struct{} // project-level allow-list (loaded at init)
 }
 
 // New creates a policy engine.
@@ -55,17 +82,56 @@ func New(cfg Config) *Engine {
 		p = ProfileBalanced
 	}
 	ws := resolveSymlinks(filepath.Clean(cfg.Workspace))
+	persisted := make(map[string]struct{}, len(cfg.AllowedCommands))
+	for _, cmd := range cfg.AllowedCommands {
+		persisted[cmd] = struct{}{}
+	}
 	return &Engine{
 		profile:     p,
 		workspace:   ws,
 		interactive: cfg.Interactive,
 		onAudit:     cfg.OnAudit,
+		persisted:   persisted,
 	}
 }
 
+// SetConfirmFn sets the interactive confirmation callback.
+// Called by the TUI layer after the tea.Program is created.
+func (e *Engine) SetConfirmFn(fn ConfirmFunc) {
+	e.mu.Lock()
+	e.confirmFn = fn
+	e.mu.Unlock()
+}
+
+// SetPersistFn sets the callback to persist "always allow" commands to project config.
+func (e *Engine) SetPersistFn(fn func(cmd string) error) {
+	e.mu.Lock()
+	e.persistFn = fn
+	e.mu.Unlock()
+}
+
+func (e *Engine) sessionAllowed(key string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.allowed == nil {
+		return false
+	}
+	_, ok := e.allowed[key]
+	return ok
+}
+
+func (e *Engine) addSessionAllow(key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.allowed == nil {
+		e.allowed = make(map[string]struct{})
+	}
+	e.allowed[key] = struct{}{}
+}
+
 // Permission validates one tool call.
-func (e *Engine) Permission(_ context.Context, call agentcore.ToolCall) error {
-	err := e.check(call)
+func (e *Engine) Permission(ctx context.Context, call agentcore.ToolCall) error {
+	err := e.check(ctx, call)
 	if e.onAudit != nil {
 		entry := AuditEntry{
 			Time:    time.Now(),
@@ -82,7 +148,7 @@ func (e *Engine) Permission(_ context.Context, call agentcore.ToolCall) error {
 	return err
 }
 
-func (e *Engine) check(call agentcore.ToolCall) error {
+func (e *Engine) check(ctx context.Context, call agentcore.ToolCall) error {
 	if e.profile == ProfileOff {
 		return nil
 	}
@@ -118,9 +184,9 @@ func (e *Engine) check(call agentcore.ToolCall) error {
 			return fmt.Errorf("policy: bash denied in non-interactive mode")
 		}
 
-		// Balanced + interactive: deny obviously destructive commands.
+		// Balanced + interactive: prompt user for obviously destructive commands.
 		if isDangerousCommand(cmd) {
-			return fmt.Errorf("policy: dangerous command denied")
+			return e.confirmDangerous(ctx, cmd)
 		}
 		return nil
 
@@ -151,6 +217,83 @@ func (e *Engine) allowPath(path string) error {
 		return fmt.Errorf("policy: path outside workspace denied: %s", path)
 	}
 	return nil
+}
+
+func (e *Engine) confirmDangerous(ctx context.Context, cmd string) error {
+	key := dangerousBase(cmd)
+	if e.sessionAllowed(key) || e.persistedAllowed(key) {
+		return nil
+	}
+	e.mu.RLock()
+	fn := e.confirmFn
+	e.mu.RUnlock()
+	if fn == nil {
+		return fmt.Errorf("policy: dangerous command denied")
+	}
+	decision, err := fn(ctx, PermitRequest{
+		Tool:    "bash",
+		Command: cmd,
+		Reason:  "dangerous command: " + key,
+	})
+	if err != nil {
+		return fmt.Errorf("policy: permission prompt: %w", err)
+	}
+	switch decision {
+	case PermitAllowOnce:
+		return nil
+	case PermitAllowSession:
+		e.addSessionAllow(key)
+		return nil
+	case PermitAllowAlways:
+		e.addPersisted(key)
+		return nil
+	default:
+		return fmt.Errorf("policy: user denied command")
+	}
+}
+
+func (e *Engine) persistedAllowed(key string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	_, ok := e.persisted[key]
+	return ok
+}
+
+func (e *Engine) addPersisted(key string) {
+	e.mu.Lock()
+	if e.persisted == nil {
+		e.persisted = make(map[string]struct{})
+	}
+	e.persisted[key] = struct{}{}
+	fn := e.persistFn
+	e.mu.Unlock()
+	// Also add to session allow-list for immediate effect.
+	e.addSessionAllow(key)
+	if fn != nil {
+		_ = fn(key) // best-effort persist; already allowed in memory
+	}
+}
+
+// dangerousBase extracts the base command name that triggers the dangerous check.
+func dangerousBase(cmd string) string {
+	s := strings.TrimSpace(strings.ToLower(cmd))
+	for _, seg := range splitShellSegments(s) {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		fields := commandFields(seg)
+		if len(fields) == 0 {
+			continue
+		}
+		base := commandBase(fields[0])
+		rest := fields[1:]
+		base, _ = unwrapPrefix(base, rest)
+		if base != "" {
+			return base
+		}
+	}
+	return "unknown"
 }
 
 // resolveSymlinks resolves symlinks in a path. For non-existent paths,

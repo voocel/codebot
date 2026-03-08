@@ -43,6 +43,7 @@ type bootSpec struct {
 	mcpManager     *mcpclient.Manager
 	subagentTool   *agentcore.SubAgentTool
 	permission     func(context.Context, agentcore.ToolCall) error
+	policyEngine   *policy.Engine
 }
 
 func resolveBootInput(opts Options) (*bootInput, error) {
@@ -157,10 +158,15 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	skills := config.LoadSkills(input.cwd)
 
 	pol := policy.New(policy.Config{
-		Profile:     input.profile,
-		Workspace:   input.cwd,
-		Interactive: !input.nonTTY,
-		OnAudit:     fileAuditor(config.AuditLogPath()),
+		Profile:         input.profile,
+		Workspace:       input.cwd,
+		Interactive:     !input.nonTTY,
+		OnAudit:         fileAuditor(config.AuditLogPath()),
+		AllowedCommands: settings.AllowedCommands,
+	})
+	cwd := input.cwd
+	pol.SetPersistFn(func(cmd string) error {
+		return config.AddAllowedCommand(cwd, cmd)
 	})
 
 	tools, baseTools, mcpManager, subagentTool, err := buildToolset(input, settings, activeProvider, chatModel, factories)
@@ -183,6 +189,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		mcpManager:     mcpManager,
 		subagentTool:   subagentTool,
 		permission:     pol.Permission,
+		policyEngine:   pol,
 	}, nil
 }
 
@@ -317,6 +324,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Cwd:           input.cwd,
 		GitBranch:     detectGitBranch(input.cwd),
 		PolicyProfile: input.profile,
+		PolicyEngine:  spec.policyEngine,
 		Settings:      spec.settings,
 		Session:       sess,
 		MCPManager:    spec.mcpManager,

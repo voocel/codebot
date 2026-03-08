@@ -42,6 +42,7 @@ type Runtime struct {
 	GitBranch string
 
 	PolicyProfile policy.Profile
+	PolicyEngine  *policy.Engine
 
 	Settings   config.Resolved
 	Session    *agent.Session

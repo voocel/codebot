@@ -34,6 +34,8 @@ type Settings struct {
 
 	SearchProvider *string `json:"search_provider,omitempty"`
 	SearchAPIKey   *string `json:"search_api_key,omitempty"`
+
+	AllowedCommands []string `json:"allowed_commands,omitempty"` // project-level always-allow list for dangerous commands
 }
 
 // Resolved holds settings resolved to concrete values (no pointers).
@@ -49,6 +51,8 @@ type Resolved struct {
 	MaxTurns       int
 	SearchProvider string
 	SearchAPIKey   string
+
+	AllowedCommands []string // project-level always-allow list for dangerous commands
 }
 
 // providerEnvVars maps provider names to their standard environment variable names.
@@ -145,6 +149,9 @@ func (s Settings) Resolve() Resolved {
 	}
 	if s.SearchAPIKey != nil {
 		r.SearchAPIKey = *s.SearchAPIKey
+	}
+	if len(s.AllowedCommands) > 0 {
+		r.AllowedCommands = s.AllowedCommands
 	}
 	return r
 }
@@ -250,6 +257,9 @@ func mergeSettings(base, override Settings) Settings {
 	if override.SearchAPIKey != nil {
 		base.SearchAPIKey = override.SearchAPIKey
 	}
+	if len(override.AllowedCommands) > 0 {
+		base.AllowedCommands = override.AllowedCommands
+	}
 	return base
 }
 
@@ -277,6 +287,34 @@ func PatchGlobalSettings(patch Settings) error {
 	existing := loadSettingsFile(filepath.Join(dir, "settings.json"))
 	merged := mergeSettings(existing, patch)
 	return SaveSettings(merged)
+}
+
+// PatchProjectSettings loads project-level settings, applies the patch, and saves back.
+func PatchProjectSettings(cwd string, patch Settings) error {
+	path := SettingsPath(cwd)
+	existing := loadSettingsFile(path)
+	merged := mergeSettings(existing, patch)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create project config dir: %w", err)
+	}
+	data, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal settings: %w", err)
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+// AddAllowedCommand appends a command to the project-level allowed_commands list (deduplicated).
+func AddAllowedCommand(cwd, cmd string) error {
+	existing := loadSettingsFile(SettingsPath(cwd))
+	for _, c := range existing.AllowedCommands {
+		if c == cmd {
+			return nil // already present
+		}
+	}
+	existing.AllowedCommands = append(existing.AllowedCommands, cmd)
+	return PatchProjectSettings(cwd, Settings{AllowedCommands: existing.AllowedCommands})
 }
 
 func loadSettingsFile(path string) Settings {

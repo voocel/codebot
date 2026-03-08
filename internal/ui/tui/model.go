@@ -111,7 +111,8 @@ type Model struct {
 	Glamour *glamour.TermRenderer
 	config  Config
 
-	AskUser *askUserState // non-nil when ask-user UI is active
+	AskUser    *askUserState    // non-nil when ask-user UI is active
+	Permission *permissionState // non-nil when permission prompt is active
 
 	Tasks *tools.TaskSnapshot // non-nil when tasks exist; displayed above input
 
@@ -220,6 +221,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AskUserMsg:
 		m.AskUser = initAskUser(msg)
 		return m, nil
+	case PermissionMsg:
+		m.Permission = initPermission(msg)
+		return m, nil
+	case PermissionDismissMsg:
+		m.Permission = nil
+		return m, nil
 	case TaskListUpdateMsg:
 		if msg.Snapshot.Total == 0 {
 			m.Tasks = nil
@@ -314,6 +321,11 @@ func (m Model) View() string {
 		parts = append(parts, renderAskUser(m.AskUser))
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, m.RenderStatusBar())
+	} else if m.Permission != nil {
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, renderPermission(m.Permission))
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, m.RenderStatusBar())
 	} else {
 		// Status bar (above input)
 		parts = append(parts, m.RenderStatusBar())
@@ -376,6 +388,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if msg.String() == "esc" && m.Running && m.Driver != nil {
 					m.Driver.Abort()
 				}
+			}
+			return m, cmd
+		}
+	}
+
+	// Permission prompt is modal — intercepts all keys when active.
+	if m.Permission != nil {
+		if msg.String() == "ctrl+c" || msg.String() == "esc" {
+			m.Permission.respCh <- PermitChoiceDeny
+			m.Permission = nil
+			return m, nil
+		}
+		handled, cmd := handlePermissionKey(m.Permission, msg)
+		if handled {
+			if m.Permission.done {
+				m.Permission = nil
 			}
 			return m, cmd
 		}
