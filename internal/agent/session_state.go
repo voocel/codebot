@@ -65,6 +65,9 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 		if s.context.handleAgentEnd() {
 			return
 		}
+		if s.hookRunner != nil {
+			s.hookRunner.RunNotification(context.Background(), "agent response complete")
+		}
 	}
 
 	s.emit(SessionEvent{

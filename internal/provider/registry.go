@@ -52,7 +52,7 @@ func (r *ModelRegistry) Resolve(pattern string) (*ModelEntry, agentcore.Thinking
 	thinkingLevel := agentcore.ThinkingLevel("")
 	if idx := strings.LastIndex(pattern, ":"); idx > 0 {
 		suffix := pattern[idx+1:]
-		if isValidThinkingLevel(suffix) {
+		if IsValidThinkingLevel(suffix) {
 			thinkingLevel = agentcore.ThinkingLevel(suffix)
 			pattern = pattern[:idx]
 		}
@@ -186,7 +186,8 @@ func (r *ModelRegistry) MergeModels(fetched []ModelEntry) {
 	}
 }
 
-func isValidThinkingLevel(s string) bool {
+// IsValidThinkingLevel reports whether s is a recognized thinking level.
+func IsValidThinkingLevel(s string) bool {
 	switch agentcore.ThinkingLevel(s) {
 	case agentcore.ThinkingOff, agentcore.ThinkingMinimal, agentcore.ThinkingLow,
 		agentcore.ThinkingMedium, agentcore.ThinkingHigh, agentcore.ThinkingXHigh:

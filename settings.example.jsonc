@@ -1,18 +1,41 @@
 {
-  // Providers: anthropic, openai, openrouter, gemini
+  // Active provider and model (must match a key in "providers" below)
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
-  "small_model": "claude-haiku-4-5", // for SubAgents; empty = same as main
 
-  // Per-provider credentials. Only configure the ones you use.
+  // Per-provider credentials and model catalog.
+  // Provider names are free-form; use "type" to specify the API protocol.
   "providers": {
-    "anthropic": { "api_key": "" },
-    "openai":    { "api_key": "", "base_url": "" },
+    "anthropic": {
+      "api_key": "",
+      "models": ["claude-sonnet-4-6", "claude-haiku-4-5"],
+      "small_model": "claude-haiku-4-5"  // for sub-agents
+    },
+    "openai": {
+      "api_key": "",
+      "base_url": "",
+      "models": ["gpt-5.4", "gpt-5-mini"],
+      "small_model": "gpt-4o-mini"
+    },
     "openrouter": {
       "api_key": "",
-      "base_url": "https://openrouter.ai/api/v1"
+      "base_url": "https://openrouter.ai/api/v1",
+      "models": ["anthropic/claude-sonnet-4", "google/gemini-2.5-flash"]
     },
-    "gemini":    { "api_key": "" }
+    "gemini": {
+      "api_key": "",
+      "models": ["gemini-3.1-pro", "gemini-2.5-flash"],
+      "small_model": "gemini-2.5-flash"
+    },
+    // Custom proxy example: "type" specifies the API protocol (openai/anthropic/gemini).
+    // Omit "type" for well-known provider names — it will be inferred automatically.
+    "my-proxy": {
+      "type": "openai",
+      "api_key": "sk-xxx",
+      "base_url": "https://proxy.example.com/v1",
+      "models": ["gpt-5", "claude-sonnet-4-5"],
+      "small_model": "gpt-4o-mini"
+    }
   },
 
   "context_window": 128000,  // tokens

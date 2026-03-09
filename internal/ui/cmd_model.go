@@ -2,12 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/policy"
-	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -19,12 +21,27 @@ type ModelCommand struct {
 	state *modelSelectState // non-nil when interactive overlay is active
 }
 
+// modelSelectEntry represents a single selectable model in the list.
+type modelSelectEntry struct {
+	provider string // provider config key (e.g. "zenmux", "anthropic")
+	model    string // model name as configured
+}
+
+// modelGroup tracks a provider's range in the flat entries list.
+type modelGroup struct {
+	name     string // provider key
+	startIdx int    // first entry index
+	count    int    // number of entries
+}
+
 type modelSelectState struct {
-	models      []provider.ModelEntry
-	current     string   // current model ID for highlighting
-	cursor      int      // selected row
-	thinkLevels []string // available thinking levels for cursor model
-	thinkIdx    int      // current thinking level index
+	entries     []modelSelectEntry
+	groups      []modelGroup
+	current     string // current model ID
+	currentProv string // current provider key
+	cursor      int
+	thinkLevels []string
+	thinkIdx    int
 }
 
 func NewModelCommand(app *App) *ModelCommand {
@@ -48,32 +65,40 @@ func (c *ModelCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 		return ctx.App.cmdModel(inv.Args)
 	}
 
-	// Open interactive selector — only show current provider's models.
-	reg := ctx.App.Session.Registry()
-	if reg == nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("No model registry available."))
-	}
-	prov := ctx.App.Session.Provider()
-	models := reg.FindByProvider(prov)
-	if len(models) == 0 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("No models available for provider: " + prov))
+	// Build model list from all configured providers.
+	settings := ctx.App.Session.Settings()
+	entries, groups := buildModelList(settings.Providers)
+	if len(entries) == 0 {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(
+			"No models configured. Add models to your providers in .codebot/settings.json"))
 	}
 
-	current := ctx.App.Session.ModelName()
+	currentModel := ctx.App.Session.ModelName()
+	currentProv := ctx.App.Session.Provider()
+
+	// Position cursor on current model.
 	cursor := 0
-	for i, m := range models {
-		if strings.EqualFold(m.ID, current) {
+	for i, e := range entries {
+		if e.provider == currentProv && strings.EqualFold(e.model, currentModel) {
 			cursor = i
 			break
 		}
 	}
 
-	thinkLevels := reg.AvailableThinkingLevels(models[cursor].ID)
+	reg := ctx.App.Session.Registry()
+	var thinkLevels []string
+	if reg != nil {
+		thinkLevels = reg.AvailableThinkingLevels(entries[cursor].model)
+	} else {
+		thinkLevels = []string{"off"}
+	}
 	thinkIdx := currentThinkingIndex(ctx.App, thinkLevels)
 
 	c.state = &modelSelectState{
-		models:      models,
-		current:     current,
+		entries:     entries,
+		groups:      groups,
+		current:     currentModel,
+		currentProv: currentProv,
 		cursor:      cursor,
 		thinkLevels: thinkLevels,
 		thinkIdx:    thinkIdx,
@@ -99,7 +124,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 
 	case "down", "j":
-		if s.cursor < len(s.models)-1 {
+		if s.cursor < len(s.entries)-1 {
 			s.cursor++
 			c.refreshThinking()
 		}
@@ -119,39 +144,37 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		idx := int(msg.Runes[0] - '1')
-		if idx < len(s.models) {
+		if idx < len(s.entries) {
 			s.cursor = idx
 			c.refreshThinking()
 		}
 		return true, nil
 
 	case "enter":
-		selected := s.models[s.cursor]
+		entry := s.entries[s.cursor]
 		thinkLevel := ""
 		if s.thinkIdx < len(s.thinkLevels) {
 			thinkLevel = s.thinkLevels[s.thinkIdx]
 		}
 
-		pattern := selected.ID
-		if thinkLevel != "" && thinkLevel != "off" {
-			pattern += ":" + thinkLevel
-		}
+		c.app.registry.ClearOverlay()
 
-		c.app.registry.ClearOverlay() // safe: local vars already captured from state
-
-		resolved, err := c.app.Session.ResolveAndSetModel(pattern)
-		if err != nil {
+		if err := c.app.Session.SetModel(entry.provider, entry.model); err != nil {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch model: " + err.Error()))
 		}
 
-		display := resolved
+		if thinkLevel != "" && thinkLevel != "off" {
+			c.app.Session.SetThinkingLevel(agentcore.ThinkingLevel(thinkLevel))
+		}
+
+		display := config.FormatModelID(entry.provider, entry.model)
 		if thinkLevel != "" && thinkLevel != "off" {
 			display += " (thinking: " + thinkLevel + ")"
 		}
 		return true, func() tea.Msg {
 			return tui.CommandResultMsg{
 				Text:     tui.CommandStyle.Render("Switched to model: " + display),
-				NewModel: resolved,
+				NewModel: entry.model,
 			}
 		}
 
@@ -160,7 +183,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 	}
 
-	return true, nil // swallow other keys while overlay is active
+	return true, nil
 }
 
 func (c *ModelCommand) View(width int) string {
@@ -177,8 +200,21 @@ func (c *ModelCommand) View(width int) string {
 	selectedStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent).Bold(true)
 	currentMark := lipgloss.NewStyle().Foreground(tui.ColorSuccess)
 	dimStyle := tui.MutedStyle
+	headerStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent)
 
-	for i, m := range s.models {
+	reg := c.app.Session.Registry()
+
+	groupIdx := 0
+	for i, e := range s.entries {
+		// Render group header when entering a new provider section.
+		if groupIdx < len(s.groups) && s.groups[groupIdx].startIdx == i {
+			g := s.groups[groupIdx]
+			header := fmt.Sprintf("─ %s ", g.name) + strings.Repeat("─", max(0, 30-len(g.name)))
+			sb.WriteString(headerStyle.Render(header))
+			sb.WriteString("\n")
+			groupIdx++
+		}
+
 		// Number prefix.
 		num := fmt.Sprintf("%d.", i+1)
 
@@ -190,27 +226,34 @@ func (c *ModelCommand) View(width int) string {
 
 		// Current model marker.
 		marker := "  "
-		if strings.EqualFold(m.ID, s.current) {
+		isCurrent := e.provider == s.currentProv && strings.EqualFold(e.model, s.current)
+		if isCurrent {
 			marker = "* "
 		}
 
-		// Model info.
-		ctx := tui.FormatTokens(m.ContextWindow)
-
-		var reasoning string
-		if m.Reasoning {
-			reasoning = "reasoning"
-			if i == s.cursor && len(s.thinkLevels) > 1 {
-				reasoning = c.renderThinkingIndicator()
+		// Look up model metadata from registry for display.
+		var name, ctx, reasoning string
+		if reg != nil {
+			if entry, _, err := reg.Resolve(e.model); err == nil {
+				name = entry.Name
+				ctx = tui.FormatTokens(entry.ContextWindow)
+				if entry.Reasoning {
+					reasoning = "reasoning"
+				}
 			}
 		}
 
+		// Thinking indicator for selected row.
+		if i == s.cursor && len(s.thinkLevels) > 1 {
+			reasoning = c.renderThinkingIndicator()
+		}
+
 		line := fmt.Sprintf("%s%s%-2s %-30s %-18s %6s  %s",
-			prefix, marker, num, m.ID, m.Name, ctx, reasoning)
+			prefix, marker, num, e.model, name, ctx, reasoning)
 
 		if i == s.cursor {
 			sb.WriteString(selectedStyle.Render(line))
-		} else if strings.EqualFold(m.ID, s.current) {
+		} else if isCurrent {
 			sb.WriteString(currentMark.Render(line))
 		} else {
 			sb.WriteString(dimStyle.Render(line))
@@ -232,8 +275,7 @@ func (c *ModelCommand) refreshThinking() {
 	if reg == nil {
 		return
 	}
-	s.thinkLevels = reg.AvailableThinkingLevels(s.models[s.cursor].ID)
-	// Reset to current level or clamp.
+	s.thinkLevels = reg.AvailableThinkingLevels(s.entries[s.cursor].model)
 	s.thinkIdx = currentThinkingIndex(c.app, s.thinkLevels)
 }
 
@@ -268,3 +310,28 @@ func currentThinkingIndex(app *App, levels []string) int {
 	}
 	return 0
 }
+
+// buildModelList constructs a flat entries list and group metadata from providers config.
+func buildModelList(providers map[string]config.ProviderConfig) ([]modelSelectEntry, []modelGroup) {
+	// Sort provider names for stable ordering.
+	names := make([]string, 0, len(providers))
+	for name, pc := range providers {
+		if len(pc.Models) > 0 {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	var entries []modelSelectEntry
+	var groups []modelGroup
+	for _, name := range names {
+		pc := providers[name]
+		g := modelGroup{name: name, startIdx: len(entries), count: len(pc.Models)}
+		for _, m := range pc.Models {
+			entries = append(entries, modelSelectEntry{provider: name, model: m})
+		}
+		groups = append(groups, g)
+	}
+	return entries, groups
+}
+

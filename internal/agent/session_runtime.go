@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -58,11 +59,12 @@ func (s *Session) ClearConversation() {
 }
 
 func (s *Session) SetModel(prov, model string) error {
+	provType := s.providerType(prov)
 	apiKey, baseURL := s.resolveCredentials(prov)
 	s.mu.Lock()
 	store := s.store
 	s.mu.Unlock()
-	chatModel, err := s.createModel(prov, model, apiKey, baseURL)
+	chatModel, err := s.createModel(provType, model, apiKey, baseURL)
 	if err != nil {
 		return fmt.Errorf("create model %s/%s: %w", prov, model, err)
 	}
@@ -80,6 +82,10 @@ func (s *Session) SetModel(prov, model string) error {
 	s.modelName = model
 	s.chatModel = chatModel
 	s.maxTokensReduced = false
+	// Sync small_model from the new provider's config.
+	if pc, ok := s.providers[prov]; ok && pc.SmallModel != "" {
+		s.settings.SmallModel = pc.SmallModel
+	}
 	s.mu.Unlock()
 
 	s.emit(SessionEvent{
@@ -94,6 +100,7 @@ func (s *Session) SetModel(prov, model string) error {
 	thinkLvl := s.settings.ThinkingLevel
 	s.mu.Unlock()
 	if err := config.PatchGlobalSettings(config.Settings{
+		Provider:      &prov,
 		Model:         &model,
 		ThinkingLevel: &thinkLvl,
 	}); err != nil {
@@ -103,31 +110,118 @@ func (s *Session) SetModel(prov, model string) error {
 	return nil
 }
 
+// providerType returns the protocol type for a provider key.
+func (s *Session) providerType(prov string) string {
+	s.mu.Lock()
+	pc, ok := s.providers[prov]
+	s.mu.Unlock()
+	if ok {
+		return pc.ProviderType(prov)
+	}
+	if t, ok := config.KnownProviderTypes[prov]; ok {
+		return t
+	}
+	return "openai"
+}
+
 func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
-	if s.registry == nil {
-		return "", fmt.Errorf("no model registry configured")
-	}
-	entry, thinkingLevel, err := s.registry.Resolve(pattern)
-	if err != nil {
-		return "", err
-	}
-
-	if err := s.SetModel(entry.Provider, entry.ID); err != nil {
-		return "", err
+	// Extract :thinking suffix (e.g. "model:high").
+	thinkingLevel := agentcore.ThinkingLevel("")
+	if idx := strings.LastIndex(pattern, ":"); idx > 0 {
+		suffix := pattern[idx+1:]
+		if provider.IsValidThinkingLevel(suffix) {
+			thinkingLevel = agentcore.ThinkingLevel(suffix)
+			pattern = pattern[:idx]
+		}
 	}
 
-	if entry.ContextWindow > 0 {
-		s.agent.SetContextWindow(entry.ContextWindow)
-		s.mu.Lock()
-		s.settings.ContextWindow = entry.ContextWindow
-		s.mu.Unlock()
+	// Try provider/model format.
+	prov, model := config.ParseModelID(pattern)
+	if prov != "" {
+		if err := s.SetModel(prov, model); err != nil {
+			return "", err
+		}
+		s.updateContextFromRegistry(prov, model)
+		if thinkingLevel != "" {
+			s.SetThinkingLevel(thinkingLevel)
+		}
+		return model, nil
 	}
 
+	// Search across all configured providers' models lists.
+	s.mu.Lock()
+	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))
+	for k, v := range s.providers {
+		provSnapshot[k] = v
+	}
+	s.mu.Unlock()
+
+	type match struct {
+		provider string
+		model    string
+	}
+	var matches []match
+	for provName, pc := range provSnapshot {
+		for _, m := range pc.Models {
+			if strings.EqualFold(m, pattern) {
+				matches = append(matches, match{provider: provName, model: m})
+			}
+		}
+	}
+	if len(matches) == 1 {
+		m := matches[0]
+		if err := s.SetModel(m.provider, m.model); err != nil {
+			return "", err
+		}
+		s.updateContextFromRegistry(m.provider, m.model)
+		if thinkingLevel != "" {
+			s.SetThinkingLevel(thinkingLevel)
+		}
+		return m.model, nil
+	}
+	if len(matches) > 1 {
+		provs := make([]string, len(matches))
+		for i, m := range matches {
+			provs[i] = config.FormatModelID(m.provider, m.model)
+		}
+		return "", fmt.Errorf("model %q is ambiguous, found in: %s; use provider/model format", pattern, strings.Join(provs, ", "))
+	}
+
+	// Fallback: try current provider with the pattern as model name.
+	curProv := s.Provider()
+	if err := s.SetModel(curProv, pattern); err != nil {
+		return "", fmt.Errorf("model %q not found in any configured provider", pattern)
+	}
+	s.updateContextFromRegistry(curProv, pattern)
 	if thinkingLevel != "" {
 		s.SetThinkingLevel(thinkingLevel)
 	}
-	return entry.ID, nil
+	return pattern, nil
 }
+
+// updateContextFromRegistry updates context window from registry metadata if available.
+// It tries provider-qualified lookup first (e.g. "anthropic/claude-sonnet-4-5"),
+// then falls back to bare modelID for custom providers not in the registry.
+func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
+	if s.registry == nil {
+		return
+	}
+	// Try provider-qualified lookup using the protocol type.
+	provType := s.providerType(providerKey)
+	entry, _, err := s.registry.Resolve(provType + "/" + modelID)
+	if err != nil {
+		// Fallback to bare model ID for custom providers.
+		entry, _, err = s.registry.Resolve(modelID)
+	}
+	if err != nil || entry.ContextWindow <= 0 {
+		return
+	}
+	s.agent.SetContextWindow(entry.ContextWindow)
+	s.mu.Lock()
+	s.settings.ContextWindow = entry.ContextWindow
+	s.mu.Unlock()
+}
+
 
 func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
 	if s.registry != nil {
@@ -285,7 +379,8 @@ func (s *Session) SwitchSession(id string) error {
 
 	var restoredModel agentcore.ChatModel
 	if snapshot.Model != "" || snapshot.Provider != "" {
-		restoredModel, err = s.createModel(targetProvider, targetModel, targetKey, targetBase)
+		targetType := s.providerType(targetProvider)
+		restoredModel, err = s.createModel(targetType, targetModel, targetKey, targetBase)
 		if err != nil {
 			return fmt.Errorf("restore model %s/%s: %w", targetProvider, targetModel, err)
 		}

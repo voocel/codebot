@@ -12,10 +12,34 @@ import (
 // ConfigDir is the project-level config directory name.
 const ConfigDir = ".codebot"
 
-// ProviderConfig holds credentials for a single provider.
+// KnownProviderTypes maps well-known provider names to their protocol type.
+var KnownProviderTypes = map[string]string{
+	"anthropic":  "anthropic",
+	"openai":     "openai",
+	"openrouter": "openai",
+	"gemini":     "gemini",
+}
+
+// ProviderConfig holds credentials and model configuration for a single provider.
 type ProviderConfig struct {
-	APIKey  string `json:"api_key,omitempty"`
-	BaseURL string `json:"base_url,omitempty"`
+	Type       string   `json:"type,omitempty"`        // protocol: openai/anthropic/gemini; inferred from name if empty
+	APIKey     string   `json:"api_key,omitempty"`
+	BaseURL    string   `json:"base_url,omitempty"`
+	Models     []string `json:"models,omitempty"`      // available model list for this provider
+	SmallModel string   `json:"small_model,omitempty"` // lightweight model for sub-agents
+}
+
+// ProviderType returns the protocol type for this provider.
+// Uses explicit Type field first, then infers from the provider name,
+// defaulting to "openai" for unknown providers.
+func (pc ProviderConfig) ProviderType(name string) string {
+	if pc.Type != "" {
+		return pc.Type
+	}
+	if t, ok := KnownProviderTypes[name]; ok {
+		return t
+	}
+	return "openai"
 }
 
 // HookEntry describes a single hook command.
@@ -258,7 +282,31 @@ func mergeSettings(base, override Settings) Settings {
 			base.Providers = make(map[string]*ProviderConfig)
 		}
 		for k, v := range override.Providers {
-			base.Providers[k] = v
+			if v == nil {
+				continue
+			}
+			existing, ok := base.Providers[k]
+			if !ok || existing == nil {
+				base.Providers[k] = v
+				continue
+			}
+			// Field-level merge: override only non-zero fields.
+			if v.Type != "" {
+				existing.Type = v.Type
+			}
+			if v.APIKey != "" {
+				existing.APIKey = v.APIKey
+			}
+			if v.BaseURL != "" {
+				existing.BaseURL = v.BaseURL
+			}
+			if len(v.Models) > 0 {
+				existing.Models = v.Models
+			}
+			if v.SmallModel != "" {
+				existing.SmallModel = v.SmallModel
+			}
+			base.Providers[k] = existing
 		}
 	}
 	if override.AutoCompaction != nil {
@@ -284,7 +332,7 @@ func mergeSettings(base, override Settings) Settings {
 			base.Hooks = make(HooksConfig)
 		}
 		for event, entries := range override.Hooks {
-			base.Hooks[event] = entries // project-level replaces global per event
+			base.Hooks[event] = append(base.Hooks[event], entries...)
 		}
 	}
 	return base

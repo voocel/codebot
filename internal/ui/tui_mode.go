@@ -6,10 +6,8 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
@@ -18,7 +16,7 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, policyEngine *policy.Engine, hookRunner *hooks.Runner, mcpMgr *mcpclient.Manager) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager) error {
 	adapter := &App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -99,10 +97,6 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {
 		if ev.Type == agent.SEAgentEvent && ev.AgentEvent != nil {
 			p.Send(tui.AgentEventMsg{Event: *ev.AgentEvent})
-			// Fire Notification hooks when agent finishes responding.
-			if hookRunner != nil && ev.AgentEvent.Type == agentcore.EventAgentEnd {
-				hookRunner.RunNotification(context.Background(), "agent response complete")
-			}
 			return
 		}
 		if ev.Type == agent.SEError && ev.Error != nil {

@@ -5,6 +5,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
 )
@@ -29,6 +30,8 @@ type SessionConfig struct {
 	// ChatModel is the active ChatModel reference, used for max_tokens adjustment
 	// during overflow recovery.
 	ChatModel agentcore.ChatModel
+	// HookRunner fires lifecycle hooks (notification, etc.). Nil when no hooks configured.
+	HookRunner *hooks.Runner
 
 	// Tools is the full set of tools registered with the agent.
 	// Used by ToolsByName / RestoreAllTools for plan mode filtering.
@@ -62,6 +65,7 @@ type Session struct {
 	skills       []config.Skill
 	suffix       string
 	beforePrompt func()
+	hookRunner   *hooks.Runner
 
 	listeners []func(SessionEvent)
 	unsub     func()
@@ -103,8 +107,9 @@ func NewSession(cfg SessionConfig) *Session {
 		providers:    cfg.Settings.Providers,
 		cwd:          cfg.Cwd,
 		createModel:  modelFactory,
-		lazyPersist:  cfg.LazyPersist,
-		chatModel:    cfg.ChatModel,
+		lazyPersist:    cfg.LazyPersist,
+		chatModel:      cfg.ChatModel,
+		hookRunner:   cfg.HookRunner,
 		allTools:     cfg.Tools,
 		activeTools:  cfg.Tools,
 		contextFiles: cfg.ContextFiles,

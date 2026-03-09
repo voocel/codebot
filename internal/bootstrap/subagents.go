@@ -32,7 +32,8 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			prov = deps.Provider
 		}
 		apiKey, baseURL := resolveFromProviders(deps.Providers, prov)
-		if m, err := deps.CreateModel(prov, model, apiKey, baseURL); err == nil {
+		provType := resolveProviderType(deps.Providers, prov)
+		if m, err := deps.CreateModel(provType, model, apiKey, baseURL); err == nil {
 			exploreModel = m
 		}
 	}
@@ -75,7 +76,8 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 				prov = defaultProv
 			}
 			apiKey, baseURL := resolveFromProviders(providers, prov)
-			return factory(prov, model, apiKey, baseURL)
+			provType := resolveProviderType(providers, prov)
+			return factory(provType, model, apiKey, baseURL)
 		})
 	}
 
@@ -89,6 +91,17 @@ func resolveFromProviders(providers map[string]config.ProviderConfig, prov strin
 		return pc.APIKey, pc.BaseURL
 	}
 	return config.EnvCredentials(prov)
+}
+
+// resolveProviderType returns the protocol type for a provider key.
+func resolveProviderType(providers map[string]config.ProviderConfig, prov string) string {
+	if pc, ok := providers[prov]; ok {
+		return pc.ProviderType(prov)
+	}
+	if t, ok := config.KnownProviderTypes[prov]; ok {
+		return t
+	}
+	return "openai"
 }
 
 // readOnlyTools constructs a read-only tool set for explore/plan sub-agents.

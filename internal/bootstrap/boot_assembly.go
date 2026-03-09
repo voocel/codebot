@@ -141,7 +141,13 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	}
 
 	activeAPIKey, activeBaseURL := input.settings.ProviderCredentials(activeProvider)
-	chatModel, err := input.createModel(activeProvider, activeModel, activeAPIKey, activeBaseURL)
+	provType := "openai"
+	if pc, ok := input.settings.Providers[activeProvider]; ok {
+		provType = pc.ProviderType(activeProvider)
+	} else if t, ok := config.KnownProviderTypes[activeProvider]; ok {
+		provType = t
+	}
+	chatModel, err := input.createModel(provType, activeModel, activeAPIKey, activeBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("create model: %w", err)
 	}
@@ -224,6 +230,12 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		fmt.Fprintf(os.Stderr, "warning: task persistence: %v\n", err)
 	}
 
+	// Resolve small_model: prefer provider-level, fall back to global.
+	smallModel := settings.SmallModel
+	if pc, ok := settings.Providers[activeProvider]; ok && pc.SmallModel != "" {
+		smallModel = pc.SmallModel
+	}
+
 	subagentTool := buildSubAgentTool(subAgentDeps{
 		Cwd:         input.cwd,
 		Model:       chatModel,
@@ -231,7 +243,7 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		CreateModel: input.createModel,
 		Provider:    activeProvider,
 		Providers:   settings.Providers,
-		SmallModel:  settings.SmallModel,
+		SmallModel:  smallModel,
 	})
 	builtTools = append(builtTools, subagentTool)
 	baseTools := builtTools
@@ -323,6 +335,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Tools:        spec.tools,
 		ContextFiles: spec.contextFiles,
 		Skills:       spec.skills,
+		HookRunner:   spec.hookRunner,
 	})
 
 	if spec.mcpManager != nil {
@@ -346,6 +359,5 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Settings:      spec.settings,
 		Session:       sess,
 		MCPManager:    spec.mcpManager,
-		HookRunner:    spec.hookRunner,
 	}, nil
 }
