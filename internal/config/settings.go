@@ -58,8 +58,8 @@ type HooksConfig map[string][]HookEntry
 // Fields use pointer types so unset fields fall back to defaults.
 type Settings struct {
 	Provider   *string                    `json:"provider,omitempty"`    // provider name (matches key in providers map)
-	Model      *string                    `json:"model,omitempty"`       // model name sent to API as-is
-	SmallModel *string                    `json:"small_model,omitempty"` // "provider/model" for explore sub-agent
+	Model      *string                    `json:"model,omitempty"`      // model name sent to API as-is
+	SmallModel *string                    `json:"small_model,omitempty"` // sub-agent model; defaults to Model if empty
 	Providers  map[string]*ProviderConfig `json:"providers,omitempty"`
 
 	AutoCompaction *bool `json:"auto_compaction,omitempty"`
@@ -80,8 +80,8 @@ type Settings struct {
 type Resolved struct {
 	Provider   string                    // active provider name
 	Model      string                    // model name sent to API as-is
+	SmallModel string                    // sub-agent model; equals Model when not configured
 	Providers  map[string]ProviderConfig // per-provider credentials
-	SmallModel string                    // "provider/model" or ""
 
 	ContextWindow  int // auto-detected from model registry at boot
 	AutoCompaction bool
@@ -202,6 +202,12 @@ func (s Settings) Resolve() Resolved {
 // SettingsPath returns <cwd>/.codebot/settings.json.
 func SettingsPath(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "settings.json")
+}
+
+// ProjectConfigExists reports whether <cwd>/.codebot/settings.json exists.
+func ProjectConfigExists(cwd string) bool {
+	_, err := os.Stat(SettingsPath(cwd))
+	return err == nil
 }
 
 // SessionsDir returns ~/.codebot/sessions/<projectID>/.
@@ -424,6 +430,17 @@ func ResolveAll(cwd string) Resolved {
 	// Model: settings > default per provider
 	if settings.Model == "" {
 		settings.Model = DefaultModelName(settings.Provider)
+	}
+
+	// SmallModel: settings > provider config > main model.
+	// Persist to config so the user can see and edit it.
+	if settings.SmallModel == "" {
+		if pc, ok := settings.Providers[settings.Provider]; ok && pc.SmallModel != "" {
+			settings.SmallModel = pc.SmallModel
+		} else {
+			settings.SmallModel = settings.Model
+		}
+		_ = PatchGlobalSettings(Settings{SmallModel: &settings.SmallModel})
 	}
 
 	// Normalize search provider name.

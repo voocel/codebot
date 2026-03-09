@@ -230,12 +230,6 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		fmt.Fprintf(os.Stderr, "warning: task persistence: %v\n", err)
 	}
 
-	// Resolve small_model: prefer provider-level, fall back to global.
-	smallModel := settings.SmallModel
-	if pc, ok := settings.Providers[activeProvider]; ok && pc.SmallModel != "" {
-		smallModel = pc.SmallModel
-	}
-
 	subagentTool := buildSubAgentTool(subAgentDeps{
 		Cwd:         input.cwd,
 		Model:       chatModel,
@@ -243,7 +237,7 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		CreateModel: input.createModel,
 		Provider:    activeProvider,
 		Providers:   settings.Providers,
-		SmallModel:  smallModel,
+		SmallModel:  settings.SmallModel, // already resolved: provider config > main model
 	})
 	builtTools = append(builtTools, subagentTool)
 	baseTools := builtTools
