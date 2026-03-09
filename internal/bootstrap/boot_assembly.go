@@ -11,6 +11,7 @@ import (
 	"github.com/voocel/agentcore/memory"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/provider"
@@ -44,6 +45,8 @@ type bootSpec struct {
 	subagentTool   *agentcore.SubAgentTool
 	permission     func(context.Context, agentcore.ToolCall) error
 	policyEngine   *policy.Engine
+	hookMiddleware agentcore.ToolMiddleware // nil = no hooks configured
+	hookRunner     *hooks.Runner
 }
 
 func resolveBootInput(opts Options) (*bootInput, error) {
@@ -176,6 +179,15 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 
 	systemPrompt := buildSystemPrompt(input.cwd, tools, ctxFiles, skills, mcpManager)
 
+	var hookMW agentcore.ToolMiddleware
+	var hookRunner *hooks.Runner
+	if len(settings.Hooks) > 0 {
+		hookRunner = hooks.New(settings.Hooks, input.store.Header().SessionID)
+		if hookRunner != nil {
+			hookMW = hookRunner.Middleware()
+		}
+	}
+
 	return &bootSpec{
 		settings:       settings,
 		activeProvider: activeProvider,
@@ -190,6 +202,8 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		subagentTool:   subagentTool,
 		permission:     pol.Permission,
 		policyEngine:   pol,
+		hookMiddleware: hookMW,
+		hookRunner:     hookRunner,
 	}, nil
 }
 
@@ -260,7 +274,7 @@ func buildSystemPrompt(cwd string, tools []agentcore.Tool, ctxFiles config.Conte
 }
 
 func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
-	ag := agentcore.NewAgent(
+	opts := []agentcore.AgentOption{
 		agentcore.WithModel(spec.chatModel),
 		agentcore.WithSystemPrompt(spec.systemPrompt),
 		agentcore.WithTools(spec.tools...),
@@ -277,7 +291,11 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		agentcore.WithContextWindow(spec.settings.ContextWindow),
 		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
 		agentcore.WithPermission(spec.permission),
-	)
+	}
+	if spec.hookMiddleware != nil {
+		opts = append(opts, agentcore.WithMiddlewares(spec.hookMiddleware))
+	}
+	ag := agentcore.NewAgent(opts...)
 
 	spec.subagentTool.SetNotifyFn(ag.FollowUp)
 
@@ -328,5 +346,6 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Settings:      spec.settings,
 		Session:       sess,
 		MCPManager:    spec.mcpManager,
+		HookRunner:    spec.hookRunner,
 	}, nil
 }

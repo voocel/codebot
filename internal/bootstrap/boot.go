@@ -16,6 +16,7 @@ import (
 
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
@@ -47,6 +48,7 @@ type Runtime struct {
 	Settings   config.Resolved
 	Session    *agent.Session
 	MCPManager *mcpclient.Manager
+	HookRunner *hooks.Runner // nil when no hooks configured
 }
 
 // Close releases runtime resources.

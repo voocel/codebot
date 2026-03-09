@@ -1,0 +1,193 @@
+package hooks
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os/exec"
+	"time"
+
+	"github.com/voocel/codebot/internal/config"
+)
+
+// EventType identifies when a hook fires.
+type EventType string
+
+const (
+	PreToolUse   EventType = "PreToolUse"
+	PostToolUse  EventType = "PostToolUse"
+	Notification EventType = "Notification"
+)
+
+const defaultTimeout = 60 * time.Second
+
+// Payload is the JSON written to the hook command's stdin.
+type Payload struct {
+	Event   EventType       `json:"event"`
+	Tool    string          `json:"tool,omitempty"`
+	Args    json.RawMessage `json:"args,omitempty"`
+	Output  json.RawMessage `json:"output,omitempty"`
+	IsError bool            `json:"is_error,omitempty"`
+	Message string          `json:"message,omitempty"`
+}
+
+// Result is the expected JSON structure from a blocking hook's stdout.
+type Result struct {
+	Blocked bool   `json:"blocked"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// entry is a compiled, ready-to-run hook.
+type entry struct {
+	command  string
+	matcher  matcher
+	blocking bool
+	timeout  time.Duration
+}
+
+// Runner manages and executes hooks.
+type Runner struct {
+	hooks     map[EventType][]entry
+	sessionID string
+}
+
+// New parses a HooksConfig and returns a Runner.
+// Returns nil if no valid hooks are found.
+func New(cfg config.HooksConfig, sessionID string) *Runner {
+	hooks := make(map[EventType][]entry)
+
+	for event, entries := range cfg {
+		et := EventType(event)
+		if et != PreToolUse && et != PostToolUse && et != Notification {
+			log.Printf("hooks: unknown event %q, skipped", event)
+			continue
+		}
+		for _, he := range entries {
+			if he.Type != "command" || he.Command == "" {
+				continue
+			}
+			m, err := parseMatcher(he.Matcher)
+			if err != nil {
+				log.Printf("hooks: bad matcher %q: %v, skipped", he.Matcher, err)
+				continue
+			}
+			e := entry{
+				command: he.Command,
+				matcher: m,
+				timeout: defaultTimeout,
+			}
+			if he.Blocking != nil {
+				e.blocking = *he.Blocking
+			}
+			if he.Timeout != nil && *he.Timeout > 0 {
+				e.timeout = time.Duration(*he.Timeout) * time.Second
+			}
+			hooks[et] = append(hooks[et], e)
+		}
+	}
+
+	if len(hooks) == 0 {
+		return nil
+	}
+	return &Runner{hooks: hooks, sessionID: sessionID}
+}
+
+// RunPreToolUse executes all matching PreToolUse hooks.
+// A blocking hook that exits non-zero or returns {"blocked":true} returns an error.
+func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, args json.RawMessage) error {
+	payload := Payload{Event: PreToolUse, Tool: toolName, Args: args}
+	for _, e := range r.matching(PreToolUse, toolName) {
+		stdout, err := r.execCommand(ctx, e, payload)
+		if e.blocking {
+			if err != nil {
+				// Check if stdout contains a JSON block message.
+				var res Result
+				if json.Unmarshal(stdout, &res) == nil && res.Blocked {
+					reason := res.Reason
+					if reason == "" {
+						reason = "blocked by hook"
+					}
+					return fmt.Errorf("hook: %s", reason)
+				}
+				return fmt.Errorf("hook: %v", err)
+			}
+			// Even on success, check if stdout explicitly blocks.
+			var res Result
+			if json.Unmarshal(stdout, &res) == nil && res.Blocked {
+				reason := res.Reason
+				if reason == "" {
+					reason = "blocked by hook"
+				}
+				return fmt.Errorf("hook: %s", reason)
+			}
+		}
+	}
+	return nil
+}
+
+// RunPostToolUse fires matching PostToolUse hooks asynchronously.
+// Uses a detached context so hooks survive parent cancellation.
+func (r *Runner) RunPostToolUse(_ context.Context, toolName string, args, output json.RawMessage, isError bool) {
+	payload := Payload{Event: PostToolUse, Tool: toolName, Args: args, Output: output, IsError: isError}
+	for _, e := range r.matching(PostToolUse, toolName) {
+		go func(e entry) {
+			if _, err := r.execCommand(context.Background(), e, payload); err != nil {
+				log.Printf("hooks: PostToolUse %q: %v", e.command, err)
+			}
+		}(e)
+	}
+}
+
+// RunNotification fires matching Notification hooks asynchronously.
+// Uses a detached context so hooks survive parent cancellation.
+func (r *Runner) RunNotification(_ context.Context, message string) {
+	payload := Payload{Event: Notification, Message: message}
+	for _, e := range r.matching(Notification, "") {
+		go func(e entry) {
+			if _, err := r.execCommand(context.Background(), e, payload); err != nil {
+				log.Printf("hooks: Notification %q: %v", e.command, err)
+			}
+		}(e)
+	}
+}
+
+// matching returns entries for the given event that match the tool name.
+func (r *Runner) matching(event EventType, toolName string) []entry {
+	var result []entry
+	for _, e := range r.hooks[event] {
+		if e.matcher.Match(toolName) {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// execCommand runs a hook command with the payload on stdin.
+func (r *Runner) execCommand(ctx context.Context, e entry, payload Payload) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", e.command)
+	cmd.Env = append(cmd.Environ(),
+		"HOOK_EVENT="+string(payload.Event),
+		"HOOK_TOOL_NAME="+payload.Tool,
+		"HOOK_SESSION_ID="+r.sessionID,
+	)
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal hook payload: %w", err)
+	}
+	cmd.Stdin = bytes.NewReader(data)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return stdout.Bytes(), fmt.Errorf("command %q: %w (stderr: %s)", e.command, err, stderr.String())
+	}
+	return stdout.Bytes(), nil
+}

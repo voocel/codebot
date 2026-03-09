@@ -18,6 +18,18 @@ type ProviderConfig struct {
 	BaseURL string `json:"base_url,omitempty"`
 }
 
+// HookEntry describes a single hook command.
+type HookEntry struct {
+	Type     string `json:"type"`               // "command" (only type for now)
+	Command  string `json:"command"`             // shell command to execute
+	Matcher  string `json:"matcher,omitempty"`   // tool name filter: exact or /regex/
+	Blocking *bool  `json:"blocking,omitempty"`  // PreToolUse: can block execution
+	Timeout  *int   `json:"timeout,omitempty"`   // seconds (default 60)
+}
+
+// HooksConfig maps event names to their hook entries.
+type HooksConfig map[string][]HookEntry
+
 // Settings holds application-level configuration.
 // Fields use pointer types so unset fields fall back to defaults.
 type Settings struct {
@@ -36,6 +48,8 @@ type Settings struct {
 	SearchAPIKey   *string `json:"search_api_key,omitempty"`
 
 	AllowedCommands []string `json:"allowed_commands,omitempty"` // project-level always-allow list for dangerous commands
+
+	Hooks HooksConfig `json:"hooks,omitempty"` // lifecycle hooks
 }
 
 // Resolved holds settings resolved to concrete values (no pointers).
@@ -53,6 +67,8 @@ type Resolved struct {
 	SearchAPIKey   string
 
 	AllowedCommands []string // project-level always-allow list for dangerous commands
+
+	Hooks HooksConfig // lifecycle hooks
 }
 
 // providerEnvVars maps provider names to their standard environment variable names.
@@ -152,6 +168,9 @@ func (s Settings) Resolve() Resolved {
 	}
 	if len(s.AllowedCommands) > 0 {
 		r.AllowedCommands = s.AllowedCommands
+	}
+	if len(s.Hooks) > 0 {
+		r.Hooks = s.Hooks
 	}
 	return r
 }
@@ -259,6 +278,14 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if len(override.AllowedCommands) > 0 {
 		base.AllowedCommands = override.AllowedCommands
+	}
+	if len(override.Hooks) > 0 {
+		if base.Hooks == nil {
+			base.Hooks = make(HooksConfig)
+		}
+		for event, entries := range override.Hooks {
+			base.Hooks[event] = entries // project-level replaces global per event
+		}
 	}
 	return base
 }
