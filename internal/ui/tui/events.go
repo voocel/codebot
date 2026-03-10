@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -28,7 +29,10 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		m.ShowSummary = true
 		m.QueuedMsgs = nil
 		clear(m.PendingTools)
+		clear(m.ToolHeaders)
 		clear(m.ToolOutputBuf)
+		clear(m.ToolDeltaBuf)
+		clear(m.ToolThinkingBuf)
 		if m.AskUser != nil {
 			close(m.AskUser.respCh)
 			m.AskUser = nil
@@ -103,34 +107,64 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		m.ToolOutputBuf[ev.ToolID] = &strings.Builder{}
 		m.RunStats.ToolCalls++
 
-		var header string
+		// Buffer the header — it will be printed together with the result
+		// at EventToolExecEnd so parallel tools stay grouped.
 		if ev.Tool == "subagent" {
-			// Subagent: clean header with agent name → task hint.
 			name, hint := parseSubagentHeader(ev.Args)
 			m.PendingTools[ev.ToolID] = name
-			header = "\n" + ToolIconStyle.Render("● ") + ToolNameStyle.Render(name)
+			header := ToolIconStyle.Render("● ") + ToolNameStyle.Render(name)
 			if hint != "" {
 				header += MutedStyle.Render(" → ") + ToolArgsStyle.Render(truncateRunes(hint, 80))
 			}
+			m.ToolHeaders[ev.ToolID] = header
 		} else {
 			m.PendingTools[ev.ToolID] = label
-			header = "\n" + ToolIconStyle.Render("● ") + ToolNameStyle.Render(label)
-			if argsStr := FormatToolArgs(ev.Args); argsStr != "" {
-				header += "\n" + indentBlock(ToolArgsStyle.Render(m.wrapTextForIndent(argsStr, 2)), 2)
-			}
+			headerText := FormatToolHeader(ev.Tool, ev.Args)
+			m.ToolHeaders[ev.ToolID] = ToolIconStyle.Render("● ") + ToolNameStyle.Render(headerText)
 		}
-		cmds = append(cmds, tea.Println(header))
 
 	case agentcore.EventToolExecUpdate:
 		switch ev.UpdateKind {
 		case agentcore.ToolExecUpdatePreview:
 			rendered := RenderEditResult(ev.Result)
 			if rendered != "" {
-				cmds = append(cmds, tea.Println(indentBlock(rendered, 2)))
+				// Flush buffered header with the first preview.
+				if header, ok := m.ToolHeaders[ev.ToolID]; ok {
+					delete(m.ToolHeaders, ev.ToolID)
+					cmds = append(cmds, tea.Println(header+"\n"+indentBlock(rendered, 2)))
+				} else {
+					cmds = append(cmds, tea.Println(indentBlock(rendered, 2)))
+				}
 			}
 		case agentcore.ToolExecUpdateProgress:
-			if line := FormatProgressLine(ev.Result); line != "" {
+			// Detect subagent streaming events and accumulate.
+			var streaming struct {
+				Agent    string `json:"agent"`
+				Delta    string `json:"delta"`
+				Thinking string `json:"thinking"`
+			}
+			if json.Unmarshal(ev.Result, &streaming) == nil && (streaming.Delta != "" || streaming.Thinking != "") {
+				if streaming.Delta != "" {
+					buf := m.ToolDeltaBuf[ev.ToolID]
+					if buf == nil {
+						buf = &strings.Builder{}
+						m.ToolDeltaBuf[ev.ToolID] = buf
+					}
+					buf.WriteString(streaming.Delta)
+				}
+				if streaming.Thinking != "" {
+					buf := m.ToolThinkingBuf[ev.ToolID]
+					if buf == nil {
+						buf = &strings.Builder{}
+						m.ToolThinkingBuf[ev.ToolID] = buf
+					}
+					buf.Reset()
+					buf.WriteString(streaming.Thinking)
+				}
+			} else if line := FormatProgressLine(ev.Result); line != "" {
 				if buf, ok := m.ToolOutputBuf[ev.ToolID]; ok {
+					// Flush accumulated thinking/delta before the new tool/turn line.
+					m.flushSubagentStreaming(ev.ToolID, buf)
 					buf.WriteString(line)
 					buf.WriteByte('\n')
 				}
@@ -140,25 +174,36 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 	case agentcore.EventToolExecEnd:
 		delete(m.PendingTools, ev.ToolID)
 		delete(m.ToolOutputBuf, ev.ToolID)
+		delete(m.ToolDeltaBuf, ev.ToolID)
+		delete(m.ToolThinkingBuf, ev.ToolID)
 
+		// Build header + result as a single block so they stay grouped.
+		header := m.ToolHeaders[ev.ToolID]
+		delete(m.ToolHeaders, ev.ToolID)
+
+		var body string
 		if ev.Tool == "subagent" && !ev.IsError {
-			// Subagent: render full result in a bordered card for visual distinction.
 			content := FormatSubagentOutput(ev.Result)
-			card := m.renderSubagentCard(content)
-			cmds = append(cmds, tea.Println(indentBlock(card, 2)))
+			body = indentBlock(m.renderSubagentCard(content), 2)
+		} else if ev.Tool == "edit" && !ev.IsError {
+			body = indentBlock(RenderEditResult(ev.Result), 2)
 		} else {
-			var rendered string
-			if ev.Tool == "edit" && !ev.IsError {
-				rendered = FormatToolResult(ev.Result, false)
-			} else {
-				rendered = FormatToolResult(ev.Result, ev.IsError)
-			}
-			style := ToolResultStyle
+			text := FormatToolResult(ev.Result, ev.IsError)
+			text = m.wrapTextForIndent(text, 4)
 			if ev.IsError {
-				style = ErrorStyle
+				body = indentBlock(FormatToolOutput(text, 5, ErrorStyle), 2)
+			} else {
+				body = indentBlock(FormatToolOutput(text, 5), 2)
 			}
-			cmds = append(cmds, tea.Println(indentBlock(style.Render(m.wrapTextForIndent(rendered, 2)), 2)))
 		}
+
+		var block string
+		if body != "" {
+			block = header + "\n" + body
+		} else {
+			block = header
+		}
+		cmds = append(cmds, tea.Println(block))
 
 	case agentcore.EventError:
 		// Context cancellation is a normal operation (user Esc, plan submission stop).
@@ -183,4 +228,20 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// flushSubagentStreaming writes accumulated thinking/delta to the output buffer as single lines.
+func (m Model) flushSubagentStreaming(toolID string, buf *strings.Builder) {
+	if tbuf, ok := m.ToolThinkingBuf[toolID]; ok && tbuf.Len() > 0 {
+		text := strings.ReplaceAll(strings.TrimSpace(tbuf.String()), "\n", " ")
+		buf.WriteString(ThinkingBodyStyle.Render("thinking " + truncateRunes(text, 71)))
+		buf.WriteByte('\n')
+		tbuf.Reset()
+	}
+	if dbuf, ok := m.ToolDeltaBuf[toolID]; ok && dbuf.Len() > 0 {
+		text := strings.ReplaceAll(strings.TrimSpace(dbuf.String()), "\n", " ")
+		buf.WriteString(ReplyLabelStyle.Render("reply ") + truncateRunes(text, 74))
+		buf.WriteByte('\n')
+		dbuf.Reset()
+	}
 }

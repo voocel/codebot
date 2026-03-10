@@ -93,7 +93,10 @@ type Model struct {
 	Running       bool
 	TurnCount     int
 	PendingTools  map[string]string           // toolID -> tool name
+	ToolHeaders   map[string]string           // toolID -> formatted header (printed at end)
 	ToolOutputBuf map[string]*strings.Builder // toolID -> streaming output
+	ToolDeltaBuf    map[string]*strings.Builder // toolID -> accumulated subagent delta text
+	ToolThinkingBuf map[string]*strings.Builder // toolID -> accumulated subagent thinking text
 
 	Width  int
 	Height int
@@ -178,7 +181,10 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		Streaming:     &strings.Builder{},
 		Thinking:      &strings.Builder{},
 		PendingTools:  make(map[string]string),
+		ToolHeaders:   make(map[string]string),
 		ToolOutputBuf: make(map[string]*strings.Builder),
+		ToolDeltaBuf:    make(map[string]*strings.Builder),
+		ToolThinkingBuf: make(map[string]*strings.Builder),
 		Cwd:           c.Cwd,
 		GitBranch:     c.GitBranch,
 		ShowWelcome:   true,
@@ -288,6 +294,19 @@ func (m Model) View() string {
 		if buf, ok := m.ToolOutputBuf[id]; ok && buf.Len() > 0 {
 			output := RenderStreamingOutput(buf.String(), 8)
 			line += "\n" + indentBlock(m.wrapTextForIndent(output, 2), 2)
+		}
+		// Show subagent thinking (all dim — thinking is secondary).
+		if tbuf, ok := m.ToolThinkingBuf[id]; ok && tbuf.Len() > 0 {
+			text := strings.TrimSpace(tbuf.String())
+			if idx := strings.LastIndex(text, "\n"); idx >= 0 {
+				text = text[idx+1:]
+			}
+			line += "\n" + indentBlock(ThinkingBodyStyle.Render("thinking "+truncateRunes(text, 71)), 4)
+		}
+		// Show accumulated streaming text.
+		if dbuf, ok := m.ToolDeltaBuf[id]; ok && dbuf.Len() > 0 {
+			text := strings.ReplaceAll(strings.TrimSpace(dbuf.String()), "\n", " ")
+			line += "\n" + indentBlock(ReplyLabelStyle.Render("reply ")+truncateRunes(text, 74), 4)
 		}
 		parts = append(parts, "", line)
 	}

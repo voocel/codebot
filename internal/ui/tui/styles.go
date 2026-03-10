@@ -106,6 +106,8 @@ var (
 	DiffInverseAddStyle = lipgloss.NewStyle().Foreground(ColorSuccess).Reverse(true)
 
 	DiffInverseRemoveStyle = lipgloss.NewStyle().Foreground(ColorError).Reverse(true)
+
+	ReplyLabelStyle = lipgloss.NewStyle().Foreground(ColorAssistant)
 )
 
 // NewGlamourRenderer creates a glamour markdown renderer with the given width.

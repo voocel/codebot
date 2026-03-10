@@ -472,6 +472,106 @@ func shortenPath(p string) string {
 // Tool display utilities
 // ---------------------------------------------------------------------------
 
+// toolDisplayName returns a capitalized display name for a tool.
+func toolDisplayName(tool string) string {
+	names := map[string]string{
+		"bash": "Bash", "read": "Read", "edit": "Edit", "write": "Write",
+		"grep": "Grep", "find": "Find", "glob": "Glob", "ls": "Ls",
+	}
+	if n, ok := names[tool]; ok {
+		return n
+	}
+	if len(tool) > 0 {
+		return strings.ToUpper(tool[:1]) + tool[1:]
+	}
+	return tool
+}
+
+// extractToolSummary extracts a human-readable summary from tool args.
+func extractToolSummary(tool string, args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var obj map[string]any
+	if json.Unmarshal(args, &obj) != nil {
+		return ""
+	}
+	switch tool {
+	case "bash":
+		if v, ok := obj["command"].(string); ok && v != "" {
+			return v
+		}
+	case "read", "edit", "write", "ls":
+		if v, ok := obj["path"].(string); ok && v != "" {
+			return shortenPath(v)
+		}
+	case "grep":
+		if v, ok := obj["pattern"].(string); ok && v != "" {
+			return v
+		}
+	case "find", "glob":
+		if v, ok := obj["pattern"].(string); ok && v != "" {
+			return v
+		}
+	default:
+		// Use the first string value found.
+		for _, v := range obj {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// FormatToolHeader returns a one-line tool header like "Bash(git diff --stat)".
+func FormatToolHeader(tool string, args json.RawMessage) string {
+	name := toolDisplayName(tool)
+	summary := extractToolSummary(tool, args)
+	if summary != "" {
+		return name + "(" + truncateRunes(summary, 60) + ")"
+	}
+	return name
+}
+
+// FormatToolOutput formats tool result text with tree connectors.
+// First line gets "└ ", subsequent lines get "  " alignment.
+// Truncates to maxVisible lines with "… +N lines" hint.
+// Optional styles override the default ToolResultStyle for line content.
+func FormatToolOutput(text string, maxVisible int, styles ...lipgloss.Style) string {
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return ""
+	}
+	lineStyle := ToolResultStyle
+	if len(styles) > 0 {
+		lineStyle = styles[0]
+	}
+	lines := strings.Split(text, "\n")
+	hidden := 0
+	if maxVisible > 0 && len(lines) > maxVisible {
+		hidden = len(lines) - maxVisible
+		lines = lines[:maxVisible]
+	}
+	connector := MutedStyle.Render("└ ")
+	padding := "  "
+	var sb strings.Builder
+	for i, line := range lines {
+		if i == 0 {
+			sb.WriteString(connector)
+		} else {
+			sb.WriteString(padding)
+		}
+		sb.WriteString(lineStyle.Render(line))
+		sb.WriteByte('\n')
+	}
+	if hidden > 0 {
+		sb.WriteString(MutedStyle.Render(fmt.Sprintf("  … +%d lines", hidden)))
+		sb.WriteByte('\n')
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
 // FormatToolArgs formats tool arguments for display, truncating if needed.
 func FormatToolArgs(args json.RawMessage) string {
 	if len(args) == 0 {
@@ -487,7 +587,8 @@ func FormatToolArgs(args json.RawMessage) string {
 	return s
 }
 
-// FormatToolResult formats a tool result for display.
+// FormatToolResult extracts displayable text from a tool result.
+// Truncation is handled by the caller (FormatToolOutput).
 func FormatToolResult(result json.RawMessage, isError bool) string {
 	prefix := ""
 	if isError {
@@ -501,14 +602,20 @@ func FormatToolResult(result json.RawMessage, isError bool) string {
 	var obj map[string]any
 	if json.Unmarshal(result, &obj) == nil {
 		if msg, ok := obj["message"].(string); ok && msg != "" {
-			return prefix + truncateResult(msg)
+			return prefix + strings.TrimSpace(msg)
 		}
 		if out, ok := obj["output"].(string); ok && out != "" {
-			return prefix + truncateResult(out)
+			return prefix + strings.TrimSpace(out)
 		}
 	}
 
-	return prefix + truncateResult(strings.TrimSpace(string(result)))
+	// Try plain JSON string (e.g. "file1\nfile2").
+	var str string
+	if json.Unmarshal(result, &str) == nil {
+		return prefix + strings.TrimSpace(str)
+	}
+
+	return prefix + strings.TrimSpace(string(result))
 }
 
 // TruncateLines truncates text to maxLines, appending "..." if truncated.
@@ -520,33 +627,26 @@ func TruncateLines(s string, maxLines int) string {
 	return s
 }
 
-// truncateResult truncates a tool result string to a reasonable display size.
-func truncateResult(s string) string {
-	lines := strings.SplitN(s, "\n", 6)
-	if len(lines) > 5 {
-		lines = lines[:5]
-		s = strings.Join(lines, "\n") + "\n..."
-	} else {
-		s = strings.Join(lines, "\n")
-	}
-	if len([]rune(s)) > 300 {
-		s = string([]rune(s)[:297]) + "..."
-	}
-	return s
-}
-
-// RenderStreamingOutput shows the last N lines of streaming tool output.
+// RenderStreamingOutput shows the last N lines of streaming tool output
+// with tree connectors (└ on first line, spaces for alignment).
 func RenderStreamingOutput(full string, maxLines int) string {
 	all := strings.TrimRight(full, "\n")
 	lines := strings.Split(all, "\n")
 	start := max(len(lines)-maxLines, 0)
 	visible := lines[start:]
+	connector := MutedStyle.Render("└ ")
+	padding := "  "
 	var sb strings.Builder
 	if start > 0 {
-		sb.WriteString(MutedStyle.Render(fmt.Sprintf("... (%d lines above)", start)))
+		sb.WriteString(MutedStyle.Render(fmt.Sprintf("└ … +%d lines above", start)))
 		sb.WriteByte('\n')
 	}
-	for _, line := range visible {
+	for i, line := range visible {
+		if i == 0 && start == 0 {
+			sb.WriteString(connector)
+		} else {
+			sb.WriteString(padding)
+		}
 		sb.WriteString(MutedStyle.Render(line))
 		sb.WriteByte('\n')
 	}
@@ -723,19 +823,21 @@ func FormatProgressLine(result json.RawMessage) string {
 }
 
 // formatSubagentProgress renders a structured subagent progress line.
-func formatSubagentProgress(agent, tool string, args json.RawMessage, turn int, isError bool) string {
-	prefix := MutedStyle.Render("[") + ToolNameStyle.Render(agent) + MutedStyle.Render("] ")
+func formatSubagentProgress(_, tool string, args json.RawMessage, turn int, isError bool) string {
 	if turn > 0 {
-		return prefix + MutedStyle.Render(fmt.Sprintf("turn %d completed", turn))
+		return MutedStyle.Render(fmt.Sprintf("turn %d completed", turn))
 	}
 	if isError {
-		return prefix + ToolNameStyle.Render(tool) + MutedStyle.Render(" failed")
+		return ToolNameStyle.Render(tool) + MutedStyle.Render(" failed")
 	}
-	line := prefix + ToolNameStyle.Render(tool)
-	if hint := toolArgHint(args); hint != "" {
-		line += MutedStyle.Render(" " + hint)
+	if tool != "" {
+		line := ToolNameStyle.Render(tool)
+		if hint := toolArgHint(args); hint != "" {
+			line += MutedStyle.Render(" " + hint)
+		}
+		return line
 	}
-	return line
+	return ""
 }
 
 // toolArgHint extracts a short hint from tool args for display.
