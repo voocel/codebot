@@ -18,7 +18,7 @@ var (
 	ColorToken     = lipgloss.Color("249")     // light gray
 	ColorCommand   = lipgloss.Color("#89DDFF") // cyan
 	ColorStatusBg  = lipgloss.Color("236")     // dark background
-	ColorSeparator = lipgloss.Color("249")     // light gray, match welcome detail
+	ColorSeparator = lipgloss.Color("243")     // medium gray
 )
 
 // Tool blocks

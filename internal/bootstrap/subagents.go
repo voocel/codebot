@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"strings"
+
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
@@ -17,7 +19,7 @@ type subAgentDeps struct {
 	CreateModel agent.ModelFactory
 	Provider    string                         // main provider name
 	Providers   map[string]config.ProviderConfig // per-provider credentials
-	SmallModel  string                         // "provider/model" for explore sub-agent
+	SmallModel  string                         // model name for explore sub-agent
 }
 
 // buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
@@ -27,13 +29,10 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 
 	exploreModel := deps.Model
 	if deps.SmallModel != "" && deps.CreateModel != nil {
-		prov, model := config.ParseModelID(deps.SmallModel)
-		if prov == "" {
-			prov = deps.Provider
-		}
+		prov := deps.Provider
 		apiKey, baseURL := resolveFromProviders(deps.Providers, prov)
 		provType := resolveProviderType(deps.Providers, prov)
-		if m, err := deps.CreateModel(provType, model, apiKey, baseURL); err == nil {
+		if m, err := deps.CreateModel(provType, deps.SmallModel, apiKey, baseURL); err == nil {
 			exploreModel = m
 		}
 	}
@@ -71,13 +70,19 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 		providers := deps.Providers
 		defaultProv := deps.Provider
 		sat.SetCreateModel(func(name string) (agentcore.ChatModel, error) {
-			prov, model := config.ParseModelID(name)
-			if prov == "" {
-				prov = defaultProv
+			// Search all providers' model lists for an exact match.
+			prov := defaultProv
+			for provName, pc := range providers {
+				for _, m := range pc.Models {
+					if strings.EqualFold(m, name) {
+						prov = provName
+						break
+					}
+				}
 			}
 			apiKey, baseURL := resolveFromProviders(providers, prov)
 			provType := resolveProviderType(providers, prov)
-			return factory(provType, model, apiKey, baseURL)
+			return factory(provType, name, apiKey, baseURL)
 		})
 	}
 

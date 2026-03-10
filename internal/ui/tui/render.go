@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,48 @@ import (
 	"github.com/muesli/reflow/truncate"
 	reflowwrap "github.com/muesli/reflow/wrap"
 )
+
+// scanText renders text with a scanning light effect.
+// speed: how fast the light moves (chars per second).
+// band:  number of fully bright characters at center.
+// slope: number of gradient characters on each side of the band.
+func scanText(text string, now float64, speed float64, band, slope int) string {
+	runes := []rune(text)
+	n := len(runes)
+	if n == 0 {
+		return ""
+	}
+
+	total := float64(n + band + slope*2)
+	center := math.Mod(now*speed, total)
+
+	// Precompute 256-level grayscale styles (232..255 = grayscale in xterm-256).
+	// Map brightness 0.0→1.0 to color indices 240→255.
+	const dimLevel = 240
+	const brightLevel = 255
+
+	var b strings.Builder
+	for i, r := range runes {
+		fi := float64(i)
+		dist := math.Abs(fi - center)
+		halfBand := float64(band) / 2.0
+
+		var brightness float64
+		if dist <= halfBand {
+			brightness = 1.0 // fully bright inside band
+		} else if slope > 0 {
+			fade := (dist - halfBand) / float64(slope)
+			if fade < 1.0 {
+				brightness = 1.0 - fade // linear falloff
+			}
+		}
+
+		level := dimLevel + int(brightness*float64(brightLevel-dimLevel))
+		color := lipgloss.Color(fmt.Sprintf("%d", level))
+		b.WriteString(lipgloss.NewStyle().Foreground(color).Render(string(r)))
+	}
+	return b.String()
+}
 
 // ---------------------------------------------------------------------------
 // Live area renderers (used by View)
@@ -103,7 +146,8 @@ func (m *Model) RenderStatusBar() string {
 	var status string
 	if m.Running {
 		elapsed := time.Since(m.RunStats.StartedAt).Truncate(time.Second)
-		status = m.Spinner.View() + lipgloss.NewStyle().Foreground(ColorTool).Render(" running")
+		now := float64(time.Now().UnixMilli()) / 1000.0
+		status = m.Spinner.View() + " " + scanText("running", now, 20.0, 2, 2)
 		status += "  " + MutedStyle.Render(fmt.Sprintf("turn %d · %s", m.TurnCount, formatDuration(elapsed)))
 	} else {
 		status = lipgloss.NewStyle().Foreground(ColorSuccess).Render("● ready")

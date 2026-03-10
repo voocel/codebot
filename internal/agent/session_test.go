@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/storage"
 )
 
@@ -185,6 +189,41 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 	if events != 0 {
 		t.Fatalf("expected no model-changed events on failure, got %d", events)
 	}
+}
+
+func TestSessionAgentEndFiresNotificationHookWithoutUI(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "notification.marker")
+	runner := hooks.New(config.HooksConfig{
+		"Notification": {
+			{Type: "command", Command: "touch " + marker},
+		},
+	}, "sess-test")
+	if runner == nil {
+		t.Fatal("expected hook runner")
+	}
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:      ag,
+		Settings:   config.Resolved{MaxTurns: 30},
+		Cwd:        dir,
+		HookRunner: runner,
+	})
+	t.Cleanup(s.Close)
+
+	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("expected notification hook to fire on agent end without UI")
 }
 
 func textMessage(role agentcore.Role, text string) agentcore.Message {

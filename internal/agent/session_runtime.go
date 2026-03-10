@@ -147,19 +147,6 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 		}
 	}
 
-	// Try provider/model format.
-	prov, model := config.ParseModelID(pattern)
-	if prov != "" {
-		if err := s.SetModel(prov, model); err != nil {
-			return "", err
-		}
-		s.updateContextFromRegistry(prov, model)
-		if thinkingLevel != "" {
-			s.SetThinkingLevel(thinkingLevel)
-		}
-		return model, nil
-	}
-
 	// Search across all configured providers' models lists.
 	s.mu.Lock()
 	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))

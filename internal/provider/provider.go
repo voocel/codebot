@@ -30,7 +30,12 @@ func newProviderModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, 
 			return llm.NewGeminiModel(name, apiKey, baseURL)
 		}
 		return llm.NewGeminiModel(name, apiKey)
-	case "openai", "openrouter":
+	case "openrouter":
+		if baseURL != "" {
+			return llm.NewOpenRouterModel(name, apiKey, baseURL)
+		}
+		return llm.NewOpenRouterModel(name, apiKey)
+	case "openai":
 		if baseURL != "" {
 			return llm.NewOpenAIModel(name, apiKey, baseURL)
 		}

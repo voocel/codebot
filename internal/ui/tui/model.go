@@ -137,7 +137,10 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	}
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	sp.Spinner = spinner.Spinner{
+		Frames: []string{"·", "✢", "✶", "✽", "✶", "✢", "·"},
+		FPS:    time.Second / 30, // 30fps for smooth shimmer
+	}
 	sp.Style = lipgloss.NewStyle().Foreground(ColorAssistant)
 
 	tsp := spinner.New()
@@ -160,7 +163,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		return "  "
 	})
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(ColorSeparator)
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("249"))
 	ta.Focus()
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false

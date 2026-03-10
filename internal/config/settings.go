@@ -16,7 +16,7 @@ const ConfigDir = ".codebot"
 var KnownProviderTypes = map[string]string{
 	"anthropic":  "anthropic",
 	"openai":     "openai",
-	"openrouter": "openai",
+	"openrouter": "openrouter",
 	"gemini":     "gemini",
 }
 
@@ -132,15 +132,6 @@ func EnvCredentials(prov string) (apiKey, baseURL string) {
 		baseURL = os.Getenv(envVars.base)
 	}
 	return apiKey, baseURL
-}
-
-// ParseModelID splits "provider/model" into (provider, model).
-// If no "/" is present, returns ("", id).
-func ParseModelID(id string) (provider, model string) {
-	if i := strings.IndexByte(id, '/'); i >= 0 {
-		return id[:i], id[i+1:]
-	}
-	return "", id
 }
 
 // FormatModelID combines provider and model into "provider/model".

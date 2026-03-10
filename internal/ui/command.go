@@ -256,16 +256,8 @@ func (a *App) cmdModel(args []string) tea.Cmd {
 	pattern := strings.Join(args, " ")
 	resolved, err := a.Session.ResolveAndSetModel(pattern)
 	if err != nil {
-		// Fallback: try direct provider/model if registry fails
-		prov, model := config.ParseModelID(pattern)
-		if prov == "" {
-			prov = a.Session.Provider()
-		}
-		if setErr := a.Session.SetModel(prov, model); setErr != nil {
-			return tui.SendCommandResult(tui.ErrorStyle.Render(
-				fmt.Sprintf("Failed to switch model: %v", setErr)))
-		}
-		resolved = pattern
+		return tui.SendCommandResult(tui.ErrorStyle.Render(
+			fmt.Sprintf("Failed to switch model: %v", err)))
 	}
 
 	return func() tea.Msg {
