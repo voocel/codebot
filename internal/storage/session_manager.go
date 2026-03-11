@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 // Manager manages session files in a directory.
@@ -39,13 +38,8 @@ func (m *Manager) List() ([]SessionInfo, error) {
 		path := filepath.Join(m.Dir, e.Name())
 		info, err := readSessionInfo(path)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "[session] skip %s: %v\n", e.Name(), err)
 			continue
-		}
-		// Fallback to file mtime if no entry timestamps were found.
-		if info.Updated.IsZero() {
-			if fi, _ := e.Info(); fi != nil {
-				info.Updated = fi.ModTime()
-			}
 		}
 		sessions = append(sessions, info)
 	}
@@ -126,7 +120,11 @@ func readSessionInfo(path string) (SessionInfo, error) {
 	name := h.Name
 	var messageCount int
 	var firstMessage string
-	var lastTimestamp time.Time
+	// Seed with header entry's timestamp (so even header-only sessions get a valid Updated).
+	lastTimestamp := entry.Timestamp
+	if lastTimestamp.IsZero() {
+		lastTimestamp = h.Created
+	}
 
 	for scanner.Scan() {
 		var e Entry

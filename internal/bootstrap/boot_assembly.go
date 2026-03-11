@@ -79,13 +79,13 @@ func resolveBootInput(opts Options) (*bootInput, error) {
 	}
 
 	manager := storage.NewManager(config.SessionsDir(cwd))
-	store, err := resolveSession(manager, cwd, opts.Continue, opts.Resume, opts.Session, opts.NonTTYMode)
+	store, err := resolveSession(manager, cwd, opts.Continue, opts.Resume, opts.NonTTYMode)
 	if err != nil {
 		return nil, fmt.Errorf("session: %w", err)
 	}
 
 	var snapshot storage.ContextSnapshot
-	if opts.Continue || opts.Resume || opts.Session != "" {
+	if opts.Continue || opts.Resume {
 		snapshot, err = store.BuildSnapshot()
 		if err != nil {
 			_ = store.Close()

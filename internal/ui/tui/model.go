@@ -34,6 +34,7 @@ type Config struct {
 	Cwd         string
 	GitBranch   string
 	History     *storage.History                     // input history (Up/Down navigation)
+	RestoredMessages []agentcore.AgentMessage        // messages restored from a previous session (rendered on Init)
 	OnKey       func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
 	OnEvent     func(m *Model, ev agentcore.Event) tea.Cmd
 	OnPaste     func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
@@ -198,9 +199,17 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 // quitResetMsg resets QuitPending after timeout.
 type quitResetMsg struct{}
 
+// RestoreMsg is sent to replay restored session messages into scrollback.
+type RestoreMsg struct{ Msgs []agentcore.AgentMessage }
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.Spinner.Tick, m.ToolSpinner.Tick, textarea.Blink)
+	cmds := []tea.Cmd{m.Spinner.Tick, m.ToolSpinner.Tick, textarea.Blink}
+	if len(m.config.RestoredMessages) > 0 {
+		msgs := m.config.RestoredMessages
+		cmds = append(cmds, func() tea.Msg { return RestoreMsg{Msgs: msgs} })
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model.
@@ -210,6 +219,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case tea.WindowSizeMsg:
 		return m.handleResize(msg)
+	case RestoreMsg:
+		return m.handleRestore(msg)
 	case AgentEventMsg:
 		return m.HandleAgentEvent(msg.Event)
 	case CommandResultMsg:
@@ -349,8 +360,10 @@ func (m Model) View() string {
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, m.RenderStatusBar())
 	} else {
-		// Status bar (above input)
-		parts = append(parts, m.RenderStatusBar())
+		// Status bar (only shown while running or in plan mode)
+		if statusBar := m.RenderStatusBar(); statusBar != "" {
+			parts = append(parts, statusBar, "")
+		}
 		// Queued messages (sent while agent is running)
 		if len(m.QueuedMsgs) > 0 {
 			parts = append(parts, m.renderQueuedMsgs())
@@ -752,6 +765,38 @@ func (m Model) RenderPromptOutput(text string) string {
 		return m.renderWelcome() + "\n" + userLine
 	}
 	return userLine
+}
+
+// handleRestore replays restored session messages into terminal scrollback.
+// All history is rendered as a single tea.Println to guarantee display order.
+func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
+	m.ShowWelcome = false
+
+	var sb strings.Builder
+	sb.WriteString(m.renderWelcome())
+	sb.WriteString("\n\n")
+	sb.WriteString(MutedStyle.Render("  ── restored session ──"))
+
+	for _, am := range msg.Msgs {
+		switch am.GetRole() {
+		case agentcore.RoleUser:
+			if text := am.TextContent(); text != "" {
+				sb.WriteString("\n\n")
+				sb.WriteString(m.renderUserMessage(text))
+			}
+		case agentcore.RoleAssistant:
+			if content := strings.TrimSpace(am.TextContent()); content != "" {
+				rendered := m.RenderMarkdown(content)
+				indented := indentBlock(m.wrapTextForIndent(rendered, 2), 2)
+				sb.WriteString("\n\n")
+				sb.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+			}
+		}
+	}
+
+	sb.WriteString("\n\n")
+	sb.WriteString(MutedStyle.Render("  ── end of history ──"))
+	return m, tea.Println(sb.String())
 }
 
 // overlayView returns the rendered overlay content, or "" if no overlay is active.

@@ -23,7 +23,6 @@ func main() {
 	jsonFlag := flag.Bool("json", false, "JSON output mode (implies -p)")
 	continueFlag := flag.Bool("c", false, "Continue most recent session")
 	resumeFlag := flag.Bool("r", false, "Select a session to resume")
-	sessionFlag := flag.String("session", "", "Session file path to resume")
 	policyProfileFlag := flag.String("policy-profile", "balanced", "Policy profile: strict, balanced, off")
 	flag.Parse()
 
@@ -37,7 +36,6 @@ func main() {
 	rt, err := bootstrap.Boot(bootstrap.Options{
 		Continue:      *continueFlag,
 		Resume:        *resumeFlag,
-		Session:       *sessionFlag,
 		NonTTYMode:    printMode,
 		PolicyProfile: *policyProfileFlag,
 	})

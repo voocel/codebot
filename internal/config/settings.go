@@ -1,11 +1,11 @@
 package config
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -201,10 +201,10 @@ func ProjectConfigExists(cwd string) bool {
 	return err == nil
 }
 
-// SessionsDir returns ~/.codebot/sessions/<projectID>/.
+// SessionsDir returns ~/.codebot/projects/<projectID>/.
 // Sessions are stored globally but scoped by project.
 func SessionsDir(cwd string) string {
-	return filepath.Join(UserConfigDir(), "sessions", projectID(cwd))
+	return filepath.Join(UserConfigDir(), "projects", projectID(cwd))
 }
 
 // CommandsDir returns <cwd>/.codebot/commands/.
@@ -232,15 +232,16 @@ func AuditLogPath() string {
 	return filepath.Join(UserConfigDir(), "audit.log")
 }
 
-// projectID returns a stable short directory name for a project path.
-// Format: <dirname>-<sha256_first_8_hex>.
+var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+
+// projectID returns a stable, human-readable directory name for a project path.
+// Format: non-alphanumeric characters replaced with "-" (e.g. /Users/me/proj → -Users-me-proj).
 func projectID(cwd string) string {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		abs = cwd
 	}
-	h := sha256.Sum256([]byte(abs))
-	return fmt.Sprintf("%s-%x", filepath.Base(abs), h[:4])
+	return nonAlphaNum.ReplaceAllString(abs, "-")
 }
 
 // UserConfigDir returns ~/.codebot/.

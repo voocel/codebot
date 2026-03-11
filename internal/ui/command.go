@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/atotto/clipboard"
@@ -110,12 +109,7 @@ func (a *App) builtinCommands() []Command {
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdNew()
 		}),
-		NewSimple(CommandSpec{
-			Name: "resume", Usage: "/resume [id|index]", Description: "List sessions or resume by id/index",
-			Risk: policy.RiskMedium, NeedsIdle: true, Kind: CommandKindBuiltin,
-		}, func(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
-			return ctx.App.cmdResume(inv.Args)
-		}),
+		NewResumeCommand(a),
 		NewSimple(CommandSpec{
 			Name: "settings", Usage: "/settings", Description: "Show current settings",
 			Risk: policy.RiskLow, Kind: CommandKindBuiltin,
@@ -318,70 +312,6 @@ func (a *App) cmdNew() tea.Cmd {
 	}
 }
 
-func (a *App) cmdResume(args []string) tea.Cmd {
-	sessions, err := a.Session.ListSessions()
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to list sessions: " + err.Error()))
-	}
-	if len(sessions) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render("No sessions found."))
-	}
-
-	if len(args) > 0 {
-		target := strings.TrimSpace(args[0])
-		if n, convErr := strconv.Atoi(target); convErr == nil {
-			if n < 1 || n > len(sessions) {
-				return tui.SendCommandResult(tui.ErrorStyle.Render(
-					fmt.Sprintf("Invalid index %d (range: 1-%d)", n, len(sessions))))
-			}
-			target = sessions[n-1].ID
-		}
-
-		if err := a.Session.SwitchSession(target); err != nil {
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to resume session: " + err.Error()))
-		}
-		a.resetPlanState()
-
-		resumed := target
-		for _, s := range sessions {
-			if s.ID == target {
-				if s.Name != "" {
-					resumed = s.Name + " (" + s.ID + ")"
-				}
-				break
-			}
-		}
-
-		return func() tea.Msg {
-			return tui.CommandResultMsg{
-				Text:  tui.CommandStyle.Render(fmt.Sprintf("Resumed session: %s", resumed)),
-				Clear: true,
-			}
-		}
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Recent sessions:\n")
-	limit := min(len(sessions), 10)
-	for i := range limit {
-		s := sessions[i]
-		name := s.ID
-		if len(name) > 8 {
-			name = name[:8]
-		}
-		if s.Name != "" {
-			name = s.Name
-		}
-		line := fmt.Sprintf("  %d. %-16s (%d msgs)  %s  [id:%s]",
-			i+1, name, s.MessageCount, s.Updated.Format("01-02 15:04"), s.ID)
-		if s.FirstMessage != "" {
-			line += "  - " + s.FirstMessage
-		}
-		sb.WriteString(line + "\n")
-	}
-	sb.WriteString("\nUse /resume <index> or /resume <id>")
-	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
-}
 
 func (a *App) cmdSettings() tea.Cmd {
 	s := a.Session.Settings()

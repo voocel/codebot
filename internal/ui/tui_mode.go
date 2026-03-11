@@ -31,7 +31,9 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 	}
 
 	adapter.rebuildRegistry()
-	m := tui.New(sess, modelName, adapter.Config())
+	cfg := adapter.Config()
+	cfg.RestoredMessages = sess.Messages()
+	m := tui.New(sess, modelName, cfg)
 	p := tea.NewProgram(m)
 
 	// Wire AskUserQuestion tool to TUI (find from session's registered tools).

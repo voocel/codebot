@@ -41,11 +41,11 @@ func scanText(text string, now float64, speed float64, band, slope int) string {
 
 		var brightness float64
 		if dist <= halfBand {
-			brightness = 1.0 // fully bright inside band
+			brightness = 1.0
 		} else if slope > 0 {
 			fade := (dist - halfBand) / float64(slope)
 			if fade < 1.0 {
-				brightness = 1.0 - fade // linear falloff
+				brightness = 1.0 - fade
 			}
 		}
 
@@ -131,32 +131,31 @@ func (m *Model) renderWelcome() string {
 	return "\n" + box
 }
 
-// RenderStatusBar renders the status line above the input (running state + turn).
+// RenderStatusBar renders the status line above the input.
+// Only shown while the agent is running or in plan mode.
 func (m *Model) RenderStatusBar() string {
-	// Quit confirmation hint overrides normal status.
-	if m.QuitPending {
-		return lipgloss.NewStyle().Foreground(ColorTool).Bold(true).Render("Press Ctrl+C again to exit")
-	}
-
 	var plan *PlanBarInfo
 	if m.config.StatusPlan != nil {
 		plan = m.config.StatusPlan(m)
+	}
+
+	if !m.Running && (plan == nil || plan.Tag == "") {
+		return ""
 	}
 
 	var status string
 	if m.Running {
 		elapsed := time.Since(m.RunStats.StartedAt).Truncate(time.Second)
 		now := float64(time.Now().UnixMilli()) / 1000.0
-		status = m.Spinner.View() + " " + scanText("running", now, 20.0, 2, 2)
-		status += "  " + MutedStyle.Render(fmt.Sprintf("turn %d · %s", m.TurnCount, formatDuration(elapsed)))
-	} else {
-		status = lipgloss.NewStyle().Foreground(ColorSuccess).Render("● ready")
-		status += "  " + MutedStyle.Render(fmt.Sprintf("turn %d", m.TurnCount))
+		status = m.Spinner.View() + " " + scanText("Running...", now, 20.0, 2, 2)
+		status += "  " + MutedStyle.Render(formatDuration(elapsed))
 	}
 
-	// Append plan mode tag.
 	if plan != nil && plan.Tag != "" {
-		status += "  " + PlanTagStyle.Render("◇ "+plan.Tag)
+		if status != "" {
+			status += "  "
+		}
+		status += PlanTagStyle.Render("◇ " + plan.Tag)
 	}
 
 	if m.Width > 0 {
@@ -226,6 +225,9 @@ func (m *Model) RenderPlanBar() string {
 
 // RenderContextBar renders the context line below the input (env info).
 func (m *Model) RenderContextBar() string {
+	if m.QuitPending {
+		return lipgloss.NewStyle().Foreground(ColorTool).Bold(true).Render("Press Ctrl+C again to exit")
+	}
 	var parts []string
 	if m.Cwd != "" {
 		parts = append(parts, filepath.Base(m.Cwd))

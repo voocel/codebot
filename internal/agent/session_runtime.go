@@ -469,6 +469,11 @@ func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 	return
 }
 
+// Messages returns the current agent message history.
+func (s *Session) Messages() []agentcore.AgentMessage {
+	return s.agent.Messages()
+}
+
 func (s *Session) LastAssistantText() string {
 	msgs := s.agent.Messages()
 	for i := len(msgs) - 1; i >= 0; i-- {

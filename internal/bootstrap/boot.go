@@ -28,7 +28,6 @@ type Options struct {
 
 	Continue   bool
 	Resume     bool
-	Session    string
 	NonTTYMode bool
 
 	PolicyProfile string
@@ -98,10 +97,8 @@ func detectGitBranch(cwd string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func resolveSession(mgr *storage.Manager, cwd string, cont, resume bool, path string, nonTTY bool) (*storage.Store, error) {
+func resolveSession(mgr *storage.Manager, cwd string, cont, resume, nonTTY bool) (*storage.Store, error) {
 	switch {
-	case path != "":
-		return mgr.OpenPath(path)
 	case cont:
 		info, err := mgr.MostRecent()
 		if err != nil {

@@ -159,12 +159,13 @@ func TestHandleAgentEventToolExecStartAddsPending(t *testing.T) {
 		ToolLabel: "Read File",
 	}
 
-	next, cmd := m.HandleAgentEvent(ev)
+	next, _ := m.HandleAgentEvent(ev)
 	if _, ok := next.PendingTools["t1"]; !ok {
 		t.Fatal("expected PendingTools to contain t1")
 	}
-	if cmd == nil {
-		t.Fatal("expected non-nil cmd (tea.Println) for tool start header")
+	// Header is buffered in ToolHeaders (printed together with result at ToolExecEnd).
+	if _, ok := next.ToolHeaders["t1"]; !ok {
+		t.Fatal("expected ToolHeaders to contain t1")
 	}
 }
 

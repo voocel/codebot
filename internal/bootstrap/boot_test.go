@@ -56,7 +56,7 @@ func TestResolveSessionResumeRejectsNonTTY(t *testing.T) {
 		t.Fatalf("close session: %v", err)
 	}
 
-	_, err = resolveSession(mgr, t.TempDir(), false, true, "", true)
+	_, err = resolveSession(mgr, t.TempDir(), false, true, true)
 	if err == nil {
 		t.Fatalf("expected non-tty resume error")
 	}
@@ -94,7 +94,7 @@ func TestResolveSessionResumeByIDSupportsEOFInput(t *testing.T) {
 		_ = reader.Close()
 	})
 
-	opened, err := resolveSession(mgr, t.TempDir(), false, true, "", false)
+	opened, err := resolveSession(mgr, t.TempDir(), false, true, false)
 	if err != nil {
 		t.Fatalf("resolve session: %v", err)
 	}

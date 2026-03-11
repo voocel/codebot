@@ -24,6 +24,7 @@ var providerList = []struct {
 	{"openai", "OpenAI"},
 	{"anthropic", "Anthropic"},
 	{"gemini", "Google Gemini"},
+	{"openrouter", "OpenRouter"},
 }
 
 // RunSetup runs an interactive first-time configuration wizard.
