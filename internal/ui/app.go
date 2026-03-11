@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
@@ -31,6 +32,9 @@ type App struct {
 
 	// MCPManager manages MCP server connections.
 	MCPManager *mcpclient.Manager
+
+	// CronStore holds session-scoped cron jobs for /loop command.
+	CronStore *cron.Store
 
 	// PlanStore persists plans to ~/.codebot/plans/.
 	PlanStore *storage.PlanStore

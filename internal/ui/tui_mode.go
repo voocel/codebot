@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
@@ -62,6 +63,29 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 			if snap := ct.Store().Snapshot(); snap.Total > 0 {
 				p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
 			}
+		}
+	}
+
+	// Wire Cron tools to TUI — start scheduler that sends prompts.
+	if found := sess.ToolsByName("cron_create"); len(found) > 0 {
+		if ct, ok := found[0].(*tools.CronCreateTool); ok {
+			store := ct.Store()
+			store.SetConfigDir(filepath.Join(cwd, config.ConfigDir))
+			adapter.CronStore = store
+
+			var sessionID string
+			if info, err := sess.CurrentSessionInfo(); err == nil {
+				sessionID = info.ID
+			}
+
+			sched := cron.NewScheduler(cron.SchedulerConfig{
+				Store:     store,
+				SessionID: sessionID,
+				OnFire:    func(prompt string) { p.Send(tui.PromptMsg{Text: prompt}) },
+				IsBusy:    sess.IsRunning,
+			})
+			sched.Start()
+			defer sched.Stop()
 		}
 	}
 

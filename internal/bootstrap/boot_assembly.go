@@ -217,12 +217,14 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 	builtTools := buildTools(input.cwd, factories)
 	askTool := localtools.NewAskUser()
 	taskStore, taskTools := localtools.NewTaskTools()
+	_, cronTools := localtools.NewCronTools()
 	builtTools = append(builtTools,
 		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
 		askTool,
 	)
 	builtTools = append(builtTools, taskTools...)
+	builtTools = append(builtTools, cronTools...)
 	builtTools = localtools.WrapWithOutputLimit(builtTools)
 
 	taskDir := filepath.Join(config.TasksDir(), input.store.Header().SessionID)
