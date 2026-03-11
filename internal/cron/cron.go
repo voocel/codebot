@@ -64,6 +64,11 @@ type Store struct {
 	sessionJobs map[string]*Job // in-memory only
 	durableJobs map[string]*Job // loaded from file
 	configDir   string          // e.g. <cwd>/.codebot — empty disables durable
+
+	writeCh chan struct{} // capacity 1 — coalesces multiple write requests
+	closeCh chan struct{} // signals writer goroutine to stop
+	writeMu sync.Mutex   // serializes StartWriter/StopWriter calls
+	writing bool         // true while writer goroutine is running
 }
 
 // NewStore creates an empty Store. Call SetConfigDir to enable durable storage.
@@ -107,10 +112,17 @@ func (s *Store) Create(schedule, prompt string, recurring, durable bool) (*Job, 
 	now := time.Now()
 
 	var nextFire time.Time
-	if interval > 0 {
+	switch {
+	case interval > 0:
 		nextFire = now.Add(interval)
-	} else {
-		nf, ok := NextMatch(cronExpr, now)
+	case recurring:
+		nf, ok := JitteredNextFire(cronExpr, now, id)
+		if !ok {
+			return nil, fmt.Errorf("cron expression does not match any date in the next year")
+		}
+		nextFire = nf
+	default:
+		nf, ok := OneShotJitteredFireTime(cronExpr, now, id)
 		if !ok {
 			return nil, fmt.Errorf("cron expression does not match any date in the next year")
 		}
@@ -131,7 +143,7 @@ func (s *Store) Create(schedule, prompt string, recurring, durable bool) (*Job, 
 
 	if durable && s.configDir != "" {
 		s.durableJobs[id] = j
-		s.writeDurableFileUnlocked()
+		s.scheduleDurableWrite()
 	} else {
 		j.Durable = false
 		s.sessionJobs[id] = j
@@ -152,7 +164,7 @@ func (s *Store) Delete(id string) error {
 	}
 	if _, ok := s.durableJobs[id]; ok {
 		delete(s.durableJobs, id)
-		s.writeDurableFileUnlocked()
+		s.scheduleDurableWrite()
 		return nil
 	}
 	return fmt.Errorf("job %s not found", id)
@@ -166,7 +178,7 @@ func (s *Store) DeleteAll() int {
 	clear(s.sessionJobs)
 	if len(s.durableJobs) > 0 {
 		clear(s.durableJobs)
-		s.writeDurableFileUnlocked()
+		s.scheduleDurableWrite()
 	}
 	return n
 }
@@ -225,7 +237,7 @@ func (s *Store) TickDurableJobs(now time.Time) []string {
 	defer s.mu.Unlock()
 	prompts := tickMap(s.durableJobs, now)
 	if len(prompts) > 0 {
-		s.writeDurableFileUnlocked()
+		s.scheduleDurableWrite()
 	}
 	return prompts
 }
@@ -267,6 +279,106 @@ func tickMap(jobs map[string]*Job, now time.Time) []string {
 		delete(jobs, id)
 	}
 	return prompts
+}
+
+// ---------------------------------------------------------------------------
+// Async durable writer
+// ---------------------------------------------------------------------------
+
+// StartWriter launches the background goroutine that writes durable jobs to disk.
+func (s *Store) StartWriter() {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.writing {
+		return
+	}
+	s.writeCh = make(chan struct{}, 1)
+	s.closeCh = make(chan struct{})
+	s.writing = true
+	go s.writerLoop()
+}
+
+// StopWriter stops the writer goroutine and waits for the final flush.
+func (s *Store) StopWriter() {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if !s.writing {
+		return
+	}
+	close(s.closeCh)
+	// Drain remaining write to ensure final flush.
+	s.flushDurable()
+	s.writing = false
+}
+
+func (s *Store) writerLoop() {
+	for {
+		select {
+		case <-s.writeCh:
+			s.flushDurable()
+		case <-s.closeCh:
+			return
+		}
+	}
+}
+
+// scheduleDurableWrite signals the writer goroutine to persist durable jobs.
+// Non-blocking: if a write is already pending, the signal is coalesced.
+func (s *Store) scheduleDurableWrite() {
+	if s.writeCh == nil {
+		// Writer not started — fall back to synchronous write.
+		s.writeDurableSync()
+		return
+	}
+	select {
+	case s.writeCh <- struct{}{}:
+	default: // already pending — coalesced
+	}
+}
+
+// flushDurable serializes under RLock and writes outside the lock.
+func (s *Store) flushDurable() {
+	s.mu.RLock()
+	data := s.marshalDurableJobs()
+	dir := s.configDir
+	s.mu.RUnlock()
+
+	if dir == "" || data == nil {
+		return
+	}
+	_ = os.MkdirAll(dir, 0o755)
+	_ = os.WriteFile(filepath.Join(dir, scheduledTasksFile), data, 0o644)
+}
+
+// marshalDurableJobs serializes durable jobs to JSON. Must hold at least RLock.
+func (s *Store) marshalDurableJobs() []byte {
+	fd := durableFileData{Tasks: make([]durableTask, 0, len(s.durableJobs))}
+	for _, j := range s.durableJobs {
+		fd.Tasks = append(fd.Tasks, durableTask{
+			ID:        j.ID,
+			Cron:      j.Schedule,
+			Prompt:    j.Prompt,
+			CreatedAt: j.CreatedAt,
+			Recurring: j.Recurring,
+		})
+	}
+	data, err := json.MarshalIndent(fd, "", "  ")
+	if err != nil {
+		return nil
+	}
+	return append(data, '\n')
+}
+
+// writeDurableSync is the fallback synchronous write (used when writer is not started).
+func (s *Store) writeDurableSync() {
+	if s.configDir == "" {
+		return
+	}
+	_ = os.MkdirAll(s.configDir, 0o755)
+	data := s.marshalDurableJobs()
+	if data != nil {
+		_ = os.WriteFile(s.durableFilePath(), data, 0o644)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -338,10 +450,17 @@ func (s *Store) LoadDurableJobs() error {
 		}
 
 		var nextFire time.Time
-		if interval > 0 {
+		switch {
+		case interval > 0:
 			nextFire = now.Add(interval)
-		} else {
-			nf, ok := NextMatch(cronExpr, now)
+		case dt.Recurring:
+			nf, ok := JitteredNextFire(cronExpr, now, dt.ID)
+			if !ok {
+				continue
+			}
+			nextFire = nf
+		default:
+			nf, ok := OneShotJitteredFireTime(cronExpr, time.UnixMilli(dt.CreatedAt), dt.ID)
 			if !ok {
 				continue
 			}
@@ -363,31 +482,6 @@ func (s *Store) LoadDurableJobs() error {
 	return nil
 }
 
-// writeDurableFileUnlocked persists all durable jobs to disk. Must hold mu.
-func (s *Store) writeDurableFileUnlocked() {
-	if s.configDir == "" {
-		return
-	}
-	_ = os.MkdirAll(s.configDir, 0o755)
-
-	fd := durableFileData{Tasks: make([]durableTask, 0, len(s.durableJobs))}
-	for _, j := range s.durableJobs {
-		fd.Tasks = append(fd.Tasks, durableTask{
-			ID:        j.ID,
-			Cron:      j.Schedule,
-			Prompt:    j.Prompt,
-			CreatedAt: j.CreatedAt,
-			Recurring: j.Recurring,
-		})
-	}
-
-	data, err := json.MarshalIndent(fd, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(s.durableFilePath(), append(data, '\n'), 0o644)
-}
-
 // DeleteDurableByIDs removes durable jobs by ID and persists. Used by scheduler for cleanup.
 func (s *Store) DeleteDurableByIDs(ids []string) {
 	if len(ids) == 0 {
@@ -398,7 +492,7 @@ func (s *Store) DeleteDurableByIDs(ids []string) {
 	for _, id := range ids {
 		delete(s.durableJobs, id)
 	}
-	s.writeDurableFileUnlocked()
+	s.scheduleDurableWrite()
 }
 
 // MissedDurableJobs returns durable one-shot jobs whose first fire time is in the past.
@@ -528,8 +622,11 @@ func processAlive(pid int) bool {
 // ---------------------------------------------------------------------------
 
 const (
-	jitterRecurringFrac = 0.1          // up to 10% of interval
+	jitterRecurringFrac = 0.1 // up to 10% of interval
 	jitterRecurringCap  = 15 * time.Minute
+
+	oneShotMaxJitter = 90 * time.Second // one-shots on :00/:30 fire up to 90s early
+	oneShotMinuteMod = 30               // only jitter when minute % 30 == 0
 )
 
 // idToFraction returns a deterministic [0, 1) fraction from a hex ID.
@@ -547,6 +644,24 @@ func idToFraction(id string) float64 {
 		return 0
 	}
 	return f
+}
+
+// OneShotJitteredFireTime computes the fire time for a one-shot cron job.
+// If the fire minute lands on :00 or :30, it shifts up to 90s early to avoid thundering herd.
+func OneShotJitteredFireTime(expr *CronExpr, createdAt time.Time, id string) (time.Time, bool) {
+	nf, ok := NextMatch(expr, createdAt)
+	if !ok {
+		return time.Time{}, false
+	}
+	if nf.Minute()%oneShotMinuteMod != 0 {
+		return nf, true
+	}
+	earlyShift := time.Duration(idToFraction(id) * float64(oneShotMaxJitter))
+	result := nf.Add(-earlyShift)
+	if result.Before(createdAt) {
+		result = createdAt
+	}
+	return result, true
 }
 
 // JitteredNextFire computes the next fire time with jitter for a recurring cron job.

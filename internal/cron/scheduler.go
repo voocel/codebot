@@ -52,6 +52,8 @@ func (s *Scheduler) run() {
 	defer s.releaseLock()
 
 	store := s.cfg.Store
+	store.StartWriter()
+	defer store.StopWriter()
 
 	// Try to acquire lock for durable tasks.
 	if store.ConfigDir() != "" && s.cfg.SessionID != "" {

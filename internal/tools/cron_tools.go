@@ -31,27 +31,62 @@ type CronCreateTool struct{ store *cron.Store }
 func (t *CronCreateTool) Name() string  { return "cron_create" }
 func (t *CronCreateTool) Label() string { return "Create Cron Job" }
 func (t *CronCreateTool) Description() string {
-	return `Create a scheduled job that fires a prompt at the specified interval or cron schedule.
-Schedule can be a Go duration (e.g. "5m", "1h") or a 5-field cron expression (e.g. "*/10 * * * *").
-Jobs are session-only by default and destroyed when the session ends. Recurring jobs auto-expire after 3 days.`
+	return `Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.
+
+Uses standard 5-field cron in the user's local timezone: minute hour day-of-month month day-of-week.
+"0 9 * * *" means 9am local — no timezone conversion needed.
+Also accepts Go durations (e.g. "5m", "1h") for simple intervals.
+
+## One-shot tasks (recurring: false)
+For "remind me at X" or "at <time>, do Y" requests — fire once then auto-delete.
+Pin minute/hour/day-of-month/month to specific values:
+  "remind me at 2:30pm today to check the deploy" → cron: "30 14 <today_dom> <today_month> *", recurring: false
+  "tomorrow morning, run the smoke test" → cron: "57 8 <tomorrow_dom> <tomorrow_month> *", recurring: false
+
+## Recurring jobs (recurring: true, the default)
+For "every N minutes" / "every hour" / "weekdays at 9am" requests:
+  "*/5 * * * *" (every 5 min), "0 * * * *" (hourly), "0 9 * * 1-5" (weekdays at 9am local)
+
+## Avoid the :00 and :30 minute marks when the task allows it
+When the user's request is approximate, pick a minute that is NOT 0 or 30:
+  "every morning around 9" → "57 8 * * *" or "3 9 * * *" (not "0 9 * * *")
+  "hourly" → "7 * * * *" (not "0 * * * *")
+Only use minute 0 or 30 when the user names that exact time and clearly means it.
+
+## Session-only
+Jobs live only in this session — nothing is written to disk, and the job is gone when the session exits.
+
+## Runtime behavior
+Jobs only fire while the REPL is idle (not mid-query). The scheduler adds a small deterministic jitter:
+recurring tasks fire up to 10% of their period late (max 15 min).
+Picking an off-minute is still the bigger lever.
+Recurring tasks auto-expire after 3 days — they fire one final time, then are deleted.
+Tell the user about the 3-day limit when scheduling recurring jobs.
+Returns a job ID you can pass to cron_delete.`
 }
 
-// Schema exposes schedule, prompt, recurring to the LLM.
+// Schema exposes cron, prompt, recurring to the LLM.
 // The durable parameter is intentionally omitted from the LLM schema
 // but accepted internally (used by /loop command).
 func (t *CronCreateTool) Schema() map[string]any {
-	return schema.Object(
-		schema.Property("schedule", schema.String("Interval (e.g. '5m', '1h') or cron expression (e.g. '*/5 * * * *')")).Required(),
-		schema.Property("prompt", schema.String("The prompt text to send when the job fires")).Required(),
-		schema.Property("recurring", schema.Bool("Whether the job repeats (default: true)")),
+	obj := schema.Object(
+		schema.Property("cron", schema.String(
+			`Standard 5-field cron expression in local time: "M H DoM Mon DoW" (e.g. "*/5 * * * *" = every 5 minutes, "30 14 28 2 *" = Feb 28 at 2:30pm local once). Also accepts Go durations (e.g. "5m", "1h").`,
+		)).Required(),
+		schema.Property("prompt", schema.String("The prompt to enqueue at each fire time.")).Required(),
+		schema.Property("recurring", schema.Bool(
+			`true (default) = fire on every cron match until deleted or auto-expired after 3 days. false = fire once at the next match, then auto-delete. Use false for "remind me at X" one-shot requests with pinned minute/hour/dom/month.`,
+		)),
 	)
+	obj["additionalProperties"] = false
+	return obj
 }
 
 // Store returns the underlying cron.Store.
 func (t *CronCreateTool) Store() *cron.Store { return t.store }
 
 type cronCreateArgs struct {
-	Schedule  string `json:"schedule"`
+	Cron      string `json:"cron"`
 	Prompt    string `json:"prompt"`
 	Recurring *bool  `json:"recurring,omitempty"`
 	Durable   *bool  `json:"durable,omitempty"` // hidden from LLM, default false
@@ -62,8 +97,8 @@ func (t *CronCreateTool) Execute(_ context.Context, args json.RawMessage) (json.
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
 	}
-	if a.Schedule == "" {
-		return json.Marshal("Validation error: schedule is required")
+	if a.Cron == "" {
+		return json.Marshal("Validation error: cron is required")
 	}
 	if a.Prompt == "" {
 		return json.Marshal("Validation error: prompt is required")
@@ -78,12 +113,12 @@ func (t *CronCreateTool) Execute(_ context.Context, args json.RawMessage) (json.
 		durable = *a.Durable
 	}
 
-	job, err := t.store.Create(a.Schedule, a.Prompt, recurring, durable)
+	job, err := t.store.Create(a.Cron, a.Prompt, recurring, durable)
 	if err != nil {
 		return json.Marshal(fmt.Sprintf("Error: %s", err))
 	}
 
-	desc := cron.HumanSchedule(a.Schedule)
+	desc := cron.HumanSchedule(a.Cron)
 	persistence := "Session-only (not written to disk, destroyed when session ends)"
 	if durable {
 		persistence = "Persisted to .codebot/scheduled_tasks.json"
@@ -109,12 +144,14 @@ type CronDeleteTool struct{ store *cron.Store }
 func (t *CronDeleteTool) Name() string  { return "cron_delete" }
 func (t *CronDeleteTool) Label() string { return "Delete Cron Job" }
 func (t *CronDeleteTool) Description() string {
-	return `Delete a scheduled cron job by its ID.`
+	return `Cancel a cron job previously scheduled with cron_create. Removes it from the in-memory session store.`
 }
 func (t *CronDeleteTool) Schema() map[string]any {
-	return schema.Object(
-		schema.Property("id", schema.String("The cron job ID to delete")).Required(),
+	obj := schema.Object(
+		schema.Property("id", schema.String("Job ID returned by cron_create.")).Required(),
 	)
+	obj["additionalProperties"] = false
+	return obj
 }
 
 func (t *CronDeleteTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -144,10 +181,12 @@ type CronListTool struct{ store *cron.Store }
 func (t *CronListTool) Name() string  { return "cron_list" }
 func (t *CronListTool) Label() string { return "List Cron Jobs" }
 func (t *CronListTool) Description() string {
-	return `List all scheduled cron jobs with their ID, schedule, and prompt.`
+	return `List all cron jobs scheduled via cron_create in this session.`
 }
 func (t *CronListTool) Schema() map[string]any {
-	return schema.Object()
+	obj := schema.Object()
+	obj["additionalProperties"] = false
+	return obj
 }
 
 func (t *CronListTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
