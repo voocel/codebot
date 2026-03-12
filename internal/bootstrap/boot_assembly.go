@@ -29,6 +29,7 @@ type bootInput struct {
 	store       *storage.Store
 	snapshot    storage.ContextSnapshot
 	nonTTY      bool
+	envHint     string // non-empty when credentials come from environment variable
 }
 
 type bootSpec struct {
@@ -73,7 +74,7 @@ func resolveBootInput(opts Options) (*bootInput, error) {
 		createModel = provider.CreateModel
 	}
 
-	settings, err = ensureProviderSetup(cwd, settings, registry, opts.NonTTYMode)
+	settings, envHint, err := ensureProviderSetup(cwd, settings, opts.NonTTYMode)
 	if err != nil {
 		return nil, err
 	}
@@ -103,31 +104,47 @@ func resolveBootInput(opts Options) (*bootInput, error) {
 		store:       store,
 		snapshot:    snapshot,
 		nonTTY:      opts.NonTTYMode,
+		envHint:     envHint,
 	}, nil
 }
 
-func ensureProviderSetup(cwd string, settings config.Resolved, registry *provider.ModelRegistry, nonTTY bool) (config.Resolved, error) {
+func ensureProviderSetup(cwd string, settings config.Resolved, nonTTY bool) (config.Resolved, string, error) {
+	// Configured provider has credentials (config or env).
 	apiKey, _ := settings.ProviderCredentials(settings.Provider)
 	if apiKey != "" {
-		return settings, nil
+		hint := envHintFor(settings)
+		return settings, hint, nil
 	}
+
+	// Auto-detect: scan all known providers for env var credentials.
+	if prov, envKey := config.DetectEnvProvider(); prov != "" {
+		settings.Provider = prov
+		settings.Model = config.DefaultModelName(prov)
+		settings.SmallModel = settings.Model
+		hint := fmt.Sprintf("Using %s from environment", envKey)
+		return settings, hint, nil
+	}
+
+	// No credentials anywhere — run interactive setup.
 	if nonTTY {
-		return settings, fmt.Errorf("api key not set; set %s or configure providers in %s",
+		return settings, "", fmt.Errorf("api key not set; set %s or configure providers in %s",
 			config.ProviderEnvKey(settings.Provider), filepath.Join(config.UserConfigDir(), "settings.json"))
 	}
 
-	err := config.RunSetup(settings, func(prov string) []config.ModelOption {
-		entries := registry.FindByProvider(prov)
-		result := make([]config.ModelOption, len(entries))
-		for i, e := range entries {
-			result[i] = config.ModelOption{ID: e.ID, Name: e.Name}
-		}
-		return result
-	})
+	err := config.RunSetup(settings)
 	if err != nil {
-		return settings, fmt.Errorf("setup: %w", err)
+		return settings, "", fmt.Errorf("setup: %w", err)
 	}
-	return config.ResolveAll(cwd), nil
+	return config.ResolveAll(cwd), "", nil
+}
+
+// envHintFor returns a hint string if the active provider's API key comes from an environment variable.
+func envHintFor(settings config.Resolved) string {
+	if pc, ok := settings.Providers[settings.Provider]; ok && pc.APIKey != "" {
+		return "" // key from config file
+	}
+	envKey := config.ProviderEnvKey(settings.Provider)
+	return fmt.Sprintf("Using %s from environment", envKey)
 }
 
 func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, error) {
@@ -355,5 +372,6 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Settings:      spec.settings,
 		Session:       sess,
 		MCPManager:    spec.mcpManager,
+		EnvHint:       input.envHint,
 	}, nil
 }

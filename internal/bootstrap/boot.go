@@ -46,6 +46,7 @@ type Runtime struct {
 	Settings   config.Resolved
 	Session    *agent.Session
 	MCPManager *mcpclient.Manager
+	EnvHint    string // non-empty when credentials come from environment variable
 }
 
 // Close releases runtime resources.

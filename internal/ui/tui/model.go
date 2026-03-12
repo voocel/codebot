@@ -35,6 +35,7 @@ type Config struct {
 	Version     string
 	Cwd         string
 	GitBranch   string
+	EnvHint     string                                 // shown below welcome when using env var credentials
 	History     *storage.History                     // input history (Up/Down navigation)
 	RestoredMessages []agentcore.AgentMessage        // messages restored from a previous session (rendered on Init)
 	OnKey       func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
@@ -75,6 +76,10 @@ type runStats struct {
 	Output    int
 	StartedAt time.Time
 	Duration  time.Duration
+
+	// Animated display counters: smoothly count up toward Input/Output.
+	DisplayInput  int
+	DisplayOutput int
 }
 
 // Model is the bubbletea Model for the agent TUI.
@@ -109,6 +114,7 @@ type Model struct {
 	Cwd         string
 	GitBranch   string
 	ShowWelcome bool
+	EnvHint     string // env var hint shown below welcome
 	ShowSummary bool
 	RunStats    runStats
 	Images      []agentcore.ContentBlock // attached images (from Ctrl+V clipboard paste)
@@ -193,6 +199,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		Cwd:           c.Cwd,
 		GitBranch:     c.GitBranch,
 		ShowWelcome:   true,
+		EnvHint:       c.EnvHint,
 		ImageCursor:   -1,
 		config:        c,
 		history:       c.History,
@@ -266,6 +273,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd1, cmd2 tea.Cmd
 		m.Spinner, cmd1 = m.Spinner.Update(msg)
 		m.ToolSpinner, cmd2 = m.ToolSpinner.Update(msg)
+		// Animate token counters toward real values.
+		m.RunStats.DisplayInput = animateStep(m.RunStats.DisplayInput, m.RunStats.Input)
+		m.RunStats.DisplayOutput = animateStep(m.RunStats.DisplayOutput, m.RunStats.Output)
 		return m, tea.Batch(cmd1, cmd2)
 	}
 
@@ -618,7 +628,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if err := m.promptWithImages(text, images); err != nil {
 			output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+err.Error(), 2)), 2)
 		}
-		return m, tea.Println(output)
+		return m, printBlock(output)
 
 	case "up":
 		// Enter image selection when cursor is on the first line of input.
@@ -724,7 +734,7 @@ func (m Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 			m.ShowWelcome = false
 		}
 		output += indentBlock(msg.Text, 2)
-		return m, tea.Println(output)
+		return m, printBlock(output)
 	}
 	return m, nil
 }
@@ -744,7 +754,7 @@ func (m Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	} else if err := m.promptWithImages(text, nil); err != nil {
 		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+err.Error(), 2)), 2)
 	}
-	return m, tea.Println(output)
+	return m, printBlock(output)
 }
 
 // promptWithImages sends user text with optional clipboard image attachments.
@@ -836,6 +846,8 @@ func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 				var body string
 				if toolName == "edit" && !isError {
 					body = indentBlock(RenderEditResult(raw), 2)
+				} else if toolName == "write" && !isError {
+					body = indentBlock(RenderWriteResult(raw), 2)
 				} else {
 					text := FormatToolResult(raw, isError)
 					text = m.wrapTextForIndent(text, 4)
@@ -922,4 +934,14 @@ func (m Model) renderCompletions() string {
 		sb.WriteString("\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// animateStep moves current one step closer to target.
+// Uses ~8% of the remaining gap per tick (30fps), min step 1.
+func animateStep(current, target int) int {
+	if current >= target {
+		return target
+	}
+	step := max((target-current)/12, 1)
+	return min(current+step, target)
 }

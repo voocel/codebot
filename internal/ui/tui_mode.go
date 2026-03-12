@@ -17,7 +17,7 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager, envHint string) error {
 	adapter := &App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -33,6 +33,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, prof
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()
 	cfg.Version = version
+	cfg.EnvHint = envHint
 	cfg.RestoredMessages = sess.Messages()
 	m := tui.New(sess, modelName, cfg)
 	p := tea.NewProgram(m)

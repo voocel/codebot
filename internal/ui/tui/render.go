@@ -169,7 +169,11 @@ func (m *Model) renderWelcome() string {
 	// Bottom border
 	bottomBorder := accent.Render("╰" + strings.Repeat("─", totalInner+2) + "╯")
 
-	return "\n" + topBorder + "\n" + strings.Join(bodyLines, "\n") + "\n" + bottomBorder
+	result := "\n" + topBorder + "\n" + strings.Join(bodyLines, "\n") + "\n" + bottomBorder
+	if m.EnvHint != "" {
+		result += "\n" + MutedStyle.Render("  "+m.EnvHint)
+	}
+	return result
 }
 
 // RenderStatusBar renders the status line above the input.
@@ -189,7 +193,8 @@ func (m *Model) RenderStatusBar() string {
 		elapsed := time.Since(m.RunStats.StartedAt).Truncate(time.Second)
 		now := float64(time.Now().UnixMilli()) / 1000.0
 		status = m.Spinner.View() + " " + scanText("Running...", now, 20.0, 2, 2)
-		status += "  " + MutedStyle.Render(formatDuration(elapsed))
+		status += "  " + MutedStyle.Render(fmt.Sprintf("(%s · ↑ %s ↓ %s tokens)",
+			formatDuration(elapsed), FormatTokens(m.RunStats.DisplayInput), FormatTokens(m.RunStats.DisplayOutput)))
 	}
 
 	if plan != nil && plan.Tag != "" {
@@ -267,7 +272,7 @@ func (m *Model) RenderPlanBar() string {
 // RenderContextBar renders the context line below the input (env info).
 func (m *Model) RenderContextBar() string {
 	if m.QuitPending {
-		return lipgloss.NewStyle().Foreground(ColorTool).Bold(true).Render("Press Ctrl+C again to exit")
+		return lipgloss.NewStyle().Foreground(ColorMuted).Bold(true).Render("Press Ctrl+C again to exit")
 	}
 	var parts []string
 	if m.Cwd != "" {
@@ -763,6 +768,35 @@ func RenderEditResult(result json.RawMessage) string {
 			sb.WriteString(MutedStyle.Render(line) + "\n")
 		}
 		i++
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// RenderWriteResult renders the write tool result with a green preview of the written content.
+func RenderWriteResult(result json.RawMessage) string {
+	if len(result) == 0 {
+		return "(file written)"
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		return TruncateLines(string(result), 10)
+	}
+
+	msg, _ := parsed["message"].(string)
+	preview, _ := parsed["preview"].(string)
+	if preview == "" {
+		return msg
+	}
+
+	var sb strings.Builder
+	sb.WriteString(msg + "\n")
+	for _, line := range strings.Split(strings.TrimRight(preview, "\n"), "\n") {
+		if strings.HasPrefix(line, "+") {
+			sb.WriteString(DiffAddStyle.Render(line) + "\n")
+		} else {
+			sb.WriteString(MutedStyle.Render(line) + "\n")
+		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

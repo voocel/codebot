@@ -22,7 +22,7 @@ var KnownProviderTypes = map[string]string{
 
 // ProviderConfig holds credentials and model configuration for a single provider.
 type ProviderConfig struct {
-	Type       string   `json:"type,omitempty"`        // protocol: openai/anthropic/gemini; inferred from name if empty
+	Type       string   `json:"type,omitempty"` // protocol: openai/anthropic/gemini; inferred from name if empty
 	APIKey     string   `json:"api_key,omitempty"`
 	BaseURL    string   `json:"base_url,omitempty"`
 	Models     []string `json:"models,omitempty"`      // available model list for this provider
@@ -45,10 +45,10 @@ func (pc ProviderConfig) ProviderType(name string) string {
 // HookEntry describes a single hook command.
 type HookEntry struct {
 	Type     string `json:"type"`               // "command" (only type for now)
-	Command  string `json:"command"`             // shell command to execute
-	Matcher  string `json:"matcher,omitempty"`   // tool name filter: exact or /regex/
-	Blocking *bool  `json:"blocking,omitempty"`  // PreToolUse: can block execution
-	Timeout  *int   `json:"timeout,omitempty"`   // seconds (default 60)
+	Command  string `json:"command"`            // shell command to execute
+	Matcher  string `json:"matcher,omitempty"`  // tool name filter: exact or /regex/
+	Blocking *bool  `json:"blocking,omitempty"` // PreToolUse: can block execution
+	Timeout  *int   `json:"timeout,omitempty"`  // seconds (default 60)
 }
 
 // HooksConfig maps event names to their hook entries.
@@ -58,7 +58,7 @@ type HooksConfig map[string][]HookEntry
 // Fields use pointer types so unset fields fall back to defaults.
 type Settings struct {
 	Provider   *string                    `json:"provider,omitempty"`    // provider name (matches key in providers map)
-	Model      *string                    `json:"model,omitempty"`      // model name sent to API as-is
+	Model      *string                    `json:"model,omitempty"`       // model name sent to API as-is
 	SmallModel *string                    `json:"small_model,omitempty"` // sub-agent model; defaults to Model if empty
 	Providers  map[string]*ProviderConfig `json:"providers,omitempty"`
 
@@ -97,10 +97,10 @@ type Resolved struct {
 
 // providerEnvVars maps provider names to their standard environment variable names.
 var providerEnvVars = map[string]struct{ key, base string }{
-	"anthropic":  {"ANTHROPIC_API_KEY", ""},
+	"anthropic":  {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"},
 	"openai":     {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
 	"openrouter": {"OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"},
-	"gemini":     {"GEMINI_API_KEY", ""},
+	"gemini":     {"GEMINI_API_KEY", "GEMINI_BASE_URL"},
 }
 
 // ProviderCredentials returns API key and base URL for the given provider.
@@ -134,6 +134,18 @@ func EnvCredentials(prov string) (apiKey, baseURL string) {
 	return apiKey, baseURL
 }
 
+// DetectEnvProvider scans known providers for available environment variable credentials.
+// Returns the provider name and env var key of the first match, or empty if none found.
+func DetectEnvProvider() (provider, envKey string) {
+	order := []string{"anthropic", "openai", "gemini", "openrouter"}
+	for _, prov := range order {
+		if key, _ := EnvCredentials(prov); key != "" {
+			return prov, providerEnvVars[prov].key
+		}
+	}
+	return "", ""
+}
+
 // FormatModelID combines provider and model into "provider/model".
 // If model already contains "/", it is returned as-is.
 func FormatModelID(provider, model string) string {
@@ -150,7 +162,7 @@ func (s Settings) Resolve() Resolved {
 		Providers:      make(map[string]ProviderConfig),
 		AutoCompaction: true,
 		ThinkingLevel:  "low",
-		MaxTurns:       30,
+		MaxTurns:       200,
 	}
 	if s.Provider != nil && *s.Provider != "" {
 		r.Provider = *s.Provider
@@ -406,7 +418,7 @@ func loadSettingsFile(path string) Settings {
 func DefaultModelName(prov string) string {
 	switch prov {
 	case "anthropic":
-		return "claude-sonnet-4-5"
+		return "claude-sonnet-4-6"
 	case "gemini":
 		return "gemini-3.0-flash"
 	default:

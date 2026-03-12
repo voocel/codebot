@@ -11,6 +11,15 @@ import (
 	"github.com/voocel/agentcore"
 )
 
+// printBlock prints content to terminal scrollback with a leading blank line.
+// Every top-level output block (assistant reply, tool result, error) should
+// use this instead of raw tea.Println so blocks are visually separated by
+// exactly one blank line. Trailing newlines are stripped so that spacing
+// between blocks is always consistent regardless of content construction.
+func printBlock(content string) tea.Cmd {
+	return tea.Println("\n" + strings.TrimRight(content, "\n"))
+}
+
 // HandleAgentEvent processes agent events.
 // Completed content is printed to terminal scrollback via tea.Println.
 // In-progress content (streaming, tool output) is shown in the live View().
@@ -26,6 +35,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 	case agentcore.EventAgentEnd:
 		m.Running = false
 		m.RunStats.Duration = time.Since(m.RunStats.StartedAt)
+		m.RunStats.DisplayInput = m.RunStats.Input
+		m.RunStats.DisplayOutput = m.RunStats.Output
 		m.ShowSummary = true
 		m.QueuedMsgs = nil
 		clear(m.PendingTools)
@@ -81,9 +92,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 			content := strings.TrimSpace(ev.Message.TextContent())
 			thinkingText := strings.TrimSpace(ev.Message.ThinkingContent())
 
-			// Single tea.Println to guarantee display order in scrollback.
+			// Single printBlock to guarantee display order in scrollback.
 			var block strings.Builder
-			block.WriteByte('\n')
 			if thinkingText != "" {
 				indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2)
 				block.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
@@ -94,8 +104,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 				indented := indentBlock(m.wrapTextForIndent(rendered, 2), 2)
 				block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 			}
-			if block.Len() > 1 { // More than just the leading '\n'
-				cmds = append(cmds, tea.Println(block.String()))
+			if block.Len() > 0 {
+				cmds = append(cmds, printBlock(block.String()))
 			}
 		}
 
@@ -187,6 +197,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 			body = indentBlock(m.renderSubagentCard(content), 2)
 		} else if ev.Tool == "edit" && !ev.IsError {
 			body = indentBlock(RenderEditResult(ev.Result), 2)
+		} else if ev.Tool == "write" && !ev.IsError {
+			body = indentBlock(RenderWriteResult(ev.Result), 2)
 		} else {
 			text := FormatToolResult(ev.Result, ev.IsError)
 			text = m.wrapTextForIndent(text, 4)
@@ -199,11 +211,11 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 
 		var block string
 		if body != "" {
-			block = "\n" + header + "\n" + body
+			block = header + "\n" + body
 		} else {
-			block = "\n" + header
+			block = header
 		}
-		cmds = append(cmds, tea.Println(block))
+		cmds = append(cmds, printBlock(block))
 
 	case agentcore.EventError:
 		// Context cancellation is a normal operation (user Esc, plan submission stop).
@@ -215,7 +227,7 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 			errMsg = ev.Err.Error()
 		}
 		wrapped := indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+errMsg, 2)), 2)
-		cmds = append(cmds, tea.Println("\n"+wrapped))
+		cmds = append(cmds, printBlock(wrapped))
 	}
 
 	if m.config.OnEvent != nil {
