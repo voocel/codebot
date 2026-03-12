@@ -13,10 +13,11 @@ const (
 
 // SchedulerConfig configures the scheduler.
 type SchedulerConfig struct {
-	Store     *Store
-	SessionID string           // for lock ownership
-	OnFire    func(prompt string)
-	IsBusy    func() bool
+	Store          *Store
+	SessionID      string // for lock ownership
+	RestoreDurable bool   // load durable jobs from disk (only for resumed sessions)
+	OnFire         func(prompt string)
+	IsBusy         func() bool
 }
 
 // Scheduler ticks every second and fires ready jobs from both tracks.
@@ -55,24 +56,24 @@ func (s *Scheduler) run() {
 	store.StartWriter()
 	defer store.StopWriter()
 
-	// Try to acquire lock for durable tasks.
-	if store.ConfigDir() != "" && s.cfg.SessionID != "" {
-		s.hasLock = store.AcquireLock(s.cfg.SessionID)
-		if s.hasLock {
-			if err := store.LoadDurableJobs(); err != nil {
-				fmt.Fprintf(os.Stderr, "[cron] load durable jobs: %v\n", err)
-			}
-			// Check for missed one-shot tasks.
-			s.handleMissedTasks()
+	// Load durable tasks from disk only for resumed sessions.
+	if store.ConfigDir() != "" && s.cfg.RestoreDurable {
+		if err := store.LoadDurableJobs(); err != nil {
+			fmt.Fprintf(os.Stderr, "[cron] load durable jobs: %v\n", err)
 		}
+		// Try to acquire lock for multi-session coordination.
+		if s.cfg.SessionID != "" {
+			s.hasLock = store.AcquireLock(s.cfg.SessionID)
+		}
+		s.handleMissedTasks()
 	}
 
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
-	// Lock retry ticker (only if we don't have the lock).
+	// Lock retry ticker (only when restoring durable jobs and we don't have the lock yet).
 	var lockRetryTicker *time.Ticker
-	if !s.hasLock && store.ConfigDir() != "" && s.cfg.SessionID != "" {
+	if s.cfg.RestoreDurable && !s.hasLock && store.ConfigDir() != "" && s.cfg.SessionID != "" {
 		lockRetryTicker = time.NewTicker(lockRetryInterval)
 		defer lockRetryTicker.Stop()
 	}
@@ -114,11 +115,10 @@ func (s *Scheduler) tick(now time.Time) {
 		s.fire(prompt)
 	}
 
-	// Tick durable jobs only if we hold the lock.
-	if s.hasLock {
-		for _, prompt := range s.cfg.Store.TickDurableJobs(now) {
-			s.fire(prompt)
-		}
+	// Always tick durable jobs — the current session owns all jobs it created,
+	// and lock only guards loading external durable jobs from disk.
+	for _, prompt := range s.cfg.Store.TickDurableJobs(now) {
+		s.fire(prompt)
 	}
 }
 

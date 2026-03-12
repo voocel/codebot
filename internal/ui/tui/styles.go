@@ -8,6 +8,7 @@ import (
 // Color palette — dark terminal optimized.
 var (
 	ColorAccent    = lipgloss.Color("#7C6FE0") // soft purple, primary accent
+	ColorWelcome   = lipgloss.Color("#4EC9B0") // dark gold, welcome box
 	ColorUser      = lipgloss.Color("#5FAFFF") // bright blue
 	ColorAssistant = lipgloss.Color("#C792EA") // soft purple/magenta
 	ColorTool      = lipgloss.Color("#FFCB6B") // amber/yellow

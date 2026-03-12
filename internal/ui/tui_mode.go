@@ -17,7 +17,7 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager) error {
 	adapter := &App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -32,6 +32,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()
+	cfg.Version = version
 	cfg.RestoredMessages = sess.Messages()
 	m := tui.New(sess, modelName, cfg)
 	p := tea.NewProgram(m)
@@ -81,10 +82,11 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName string, profile polic
 			}
 
 			sched := cron.NewScheduler(cron.SchedulerConfig{
-				Store:     store,
-				SessionID: sessionID,
-				OnFire:    func(prompt string) { p.Send(tui.PromptMsg{Text: prompt}) },
-				IsBusy:    sess.IsRunning,
+				Store:          store,
+				SessionID:      sessionID,
+				RestoreDurable: len(sess.Messages()) > 0,
+				OnFire:         func(prompt string) { p.Send(tui.PromptMsg{Text: prompt}) },
+				IsBusy:         sess.IsRunning,
 			})
 			sched.Start()
 			defer sched.Stop()

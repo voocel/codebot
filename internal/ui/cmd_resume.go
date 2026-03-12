@@ -101,6 +101,10 @@ func (c *ResumeCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			return true, tui.SendCommandResult(tui.CommandStyle.Render("Already in this session."))
 		}
 
+		if c.app.Session.IsRunning() {
+			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Agent is running; press Esc to abort first."))
+		}
+
 		if err := c.app.Session.SwitchSession(selected.ID); err != nil {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch session: " + err.Error()))
 		}

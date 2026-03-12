@@ -12,7 +12,7 @@ import (
 
 // Set via ldflags by GoReleaser.
 var (
-	version = "dev"
+	version = "v0.0.1"
 	commit  = "none"
 	date    = "unknown"
 )
@@ -57,7 +57,7 @@ func main() {
 	if rt.Session != nil && rt.Session.ModelName() != "" {
 		modelName = rt.Session.ModelName()
 	}
-	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, rt.PolicyProfile, rt.PolicyEngine, rt.MCPManager); err != nil {
+	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, version, rt.PolicyProfile, rt.PolicyEngine, rt.MCPManager); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

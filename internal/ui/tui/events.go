@@ -199,9 +199,9 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 
 		var block string
 		if body != "" {
-			block = header + "\n" + body
+			block = "\n" + header + "\n" + body
 		} else {
-			block = header
+			block = "\n" + header
 		}
 		cmds = append(cmds, tea.Println(block))
 

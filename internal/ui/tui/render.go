@@ -61,74 +61,115 @@ func scanText(text string, now float64, speed float64, band, slope int) string {
 // ---------------------------------------------------------------------------
 
 func (m *Model) renderWelcome() string {
-	accent := lipgloss.NewStyle().Foreground(ColorAccent)
-	bold := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(ColorWelcome)
+	bold := lipgloss.NewStyle().Foreground(ColorWelcome).Bold(true)
 	dim := WelcomeDetailStyle
 
-	logo := accent.Render("   ╭───╮") + "\n" +
-		accent.Render("   │") + bold.Render("◉ ◉") + accent.Render("│") + "\n" +
-		accent.Render("   ╰─┬─╯") + "\n" +
-		accent.Render("  ╭──┴──╮") + "\n" +
-		accent.Render("  │ ") + bold.Render(">>>") + accent.Render(" │") + "\n" +
-		accent.Render("  ╰─────╯")
-
-	// Info lines
-	var infoLines []string
-	infoLines = append(infoLines, bold.Render("Codebot")+"  "+dim.Render("AI Coding Assistant"))
-	modelLine := dim.Render(m.ModelName)
-	if m.Cwd != "" {
-		modelLine += dim.Render(" · "+shortenPath(m.Cwd))
+	// ── Left column: centered robot logo ──
+	logo := []string{
+		"",
+		accent.Render("     ╭───╮"),
+		accent.Render("     │") + bold.Render("◉ ◉") + accent.Render("│"),
+		accent.Render("     ╰─┬─╯"),
+		accent.Render("    ╭──┴──╮"),
+		accent.Render("    │ ") + bold.Render(">>>") + accent.Render(" │"),
+		accent.Render("    ╰─────╯"),
+		"",
 	}
-	if m.GitBranch != "" {
-		modelLine += dim.Render(" ("+m.GitBranch+")")
-	}
-	infoLines = append(infoLines, modelLine)
+	const leftWidth = 18 // visible char width of left column (logo area)
 
-	// Side-by-side: logo left, info right
-	logoLines := strings.Split(logo, "\n")
-	padWidth := 12 // logo fixed width
-	totalLines := len(logoLines)
-	if len(infoLines) > totalLines {
-		totalLines = len(infoLines)
+	// ── Right column: Tips + separator + Recent activity ──
+	rightWidth := 40
+	if m.Width > 0 {
+		rightWidth = max(m.Width-leftWidth-10, 24) // 10 = border(2) + padding(2) + sep col(1) + gaps(5)
 	}
 
-	// Info starts vertically centered relative to logo
-	infoStart := (len(logoLines) - len(infoLines)) / 2
-	if infoStart < 0 {
-		infoStart = 0
+	rightLines := []string{
+		"",
+		bold.Render("Tips for getting started"),
+		dim.Render("  Run /help for available commands"),
+		dim.Render("  Enter send · Ctrl+J newline · Esc abort"),
+		accent.Render(strings.Repeat("─", rightWidth+2)),
+		bold.Render("Recent activity"),
+		dim.Render("  No recent activity"),
+		"",
 	}
 
+	// ── Merge left + right into rows ──
+	totalRows := max(len(logo), len(rightLines))
 	var rows []string
-	for i := 0; i < totalLines; i++ {
+	for i := range totalRows {
 		left := ""
-		if i < len(logoLines) {
-			left = logoLines[i]
+		if i < len(logo) {
+			left = logo[i]
 		}
-		// Pad left column to fixed width (accounting for ANSI escapes)
-		visible := lipgloss.Width(left)
-		if visible < padWidth {
-			left += strings.Repeat(" ", padWidth-visible)
+		vis := lipgloss.Width(left)
+		if vis < leftWidth {
+			left += strings.Repeat(" ", leftWidth-vis)
 		}
 
 		right := ""
-		ri := i - infoStart
-		if ri >= 0 && ri < len(infoLines) {
-			right = infoLines[ri]
+		if i < len(rightLines) {
+			right = rightLines[i]
 		}
-		rows = append(rows, left+"  "+right)
+		rows = append(rows, left+" "+accent.Render("│")+" "+right)
 	}
 
-	content := strings.Join(rows, "\n")
-	hints := MutedStyle.Render("Enter send · Ctrl+J newline · Esc abort · /help commands")
-	content += "\n\n" + hints
+	// ── Footer: model info (spans full width) ──
+	modelLine := dim.Render(m.ModelName)
+	if m.Cwd != "" {
+		modelLine += dim.Render(" · " + shortenPath(m.Cwd))
+	}
+	if m.GitBranch != "" {
+		modelLine += dim.Render(" (" + m.GitBranch + ")")
+	}
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ColorAccent).
-		Padding(0, 1).
-		Render(content)
+	// ── Custom border with version title ──
+	ver := m.Version
+	if ver == "" {
+		ver = "dev"
+	}
+	title := " Codebot " + ver + " "
 
-	return "\n" + box
+	// Inner width = leftWidth + 1(sep) + 2(gaps) + rightWidth
+	innerWidth := leftWidth + 1 + 2 + rightWidth
+	// Add 2 for padding (1 char each side)
+	totalInner := innerWidth + 2
+
+	// Top border: ╭── title ──...──╮
+	titleStyled := bold.Render(title)
+	titleVis := lipgloss.Width(titleStyled)
+	dashesAfter := totalInner - titleVis
+	if dashesAfter < 1 {
+		dashesAfter = 1
+	}
+	topBorder := accent.Render("╭──") + titleStyled + accent.Render(strings.Repeat("─", dashesAfter)+"╮")
+
+	// Body rows with side borders
+	var bodyLines []string
+	for _, row := range rows {
+		vis := lipgloss.Width(row)
+		pad := totalInner - vis
+		if pad < 0 {
+			pad = 0
+		}
+		bodyLines = append(bodyLines,
+			accent.Render("│")+" "+row+strings.Repeat(" ", pad)+" "+accent.Render("│"))
+	}
+
+	// Footer row (model info, spans full width)
+	footerVis := lipgloss.Width(modelLine)
+	footerPad := totalInner - footerVis
+	if footerPad < 0 {
+		footerPad = 0
+	}
+	bodyLines = append(bodyLines,
+		accent.Render("│")+" "+modelLine+strings.Repeat(" ", footerPad)+" "+accent.Render("│"))
+
+	// Bottom border
+	bottomBorder := accent.Render("╰" + strings.Repeat("─", totalInner+2) + "╯")
+
+	return "\n" + topBorder + "\n" + strings.Join(bodyLines, "\n") + "\n" + bottomBorder
 }
 
 // RenderStatusBar renders the status line above the input.

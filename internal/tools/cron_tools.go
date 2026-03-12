@@ -108,7 +108,7 @@ func (t *CronCreateTool) Execute(_ context.Context, args json.RawMessage) (json.
 	if a.Recurring != nil {
 		recurring = *a.Recurring
 	}
-	durable := false
+	durable := true
 	if a.Durable != nil {
 		durable = *a.Durable
 	}

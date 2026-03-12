@@ -417,7 +417,7 @@ func (a *App) cmdLoop(rawArgs string) tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Invalid syntax. Usage: /loop <interval|cron> <prompt>"))
 	}
 
-	job, err := a.CronStore.Create(schedule, prompt, true, false)
+	job, err := a.CronStore.Create(schedule, prompt, true, true)
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(fmt.Sprintf("Failed to create job: %s", err)))
 	}

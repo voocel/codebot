@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -31,6 +32,7 @@ type PlanBarInfo struct {
 // Config provides hooks for extending the base TUI behavior.
 type Config struct {
 	Placeholder string
+	Version     string
 	Cwd         string
 	GitBranch   string
 	History     *storage.History                     // input history (Up/Down navigation)
@@ -81,6 +83,7 @@ type runStats struct {
 type Model struct {
 	Driver    Driver
 	ModelName string
+	Version   string
 
 	Input   textarea.Model
 	Spinner spinner.Model
@@ -167,7 +170,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		return "  "
 	})
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("249"))
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(ColorMuted) // 243, medium gray
 	ta.Focus()
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
@@ -176,6 +179,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	return Model{
 		Driver:        driver,
 		ModelName:     modelName,
+		Version:       c.Version,
 		Spinner:       sp,
 		ToolSpinner:   tsp,
 		Input:         ta,
@@ -769,6 +773,7 @@ func (m Model) RenderPromptOutput(text string) string {
 
 // handleRestore replays restored session messages into terminal scrollback.
 // All history is rendered as a single tea.Println to guarantee display order.
+// Renders the same way as live events: user messages, thinking, tool calls/results, assistant text.
 func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 	m.ShowWelcome = false
 
@@ -777,6 +782,18 @@ func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 	sb.WriteString("\n\n")
 	sb.WriteString(MutedStyle.Render("  ── restored session ──"))
 
+	// Build a tool call ID → name index from assistant messages for pairing with tool results.
+	toolCallNames := make(map[string]string) // toolCallID → tool name
+	toolCallArgs := make(map[string]json.RawMessage)
+	for _, am := range msg.Msgs {
+		if concrete, ok := am.(agentcore.Message); ok && concrete.GetRole() == agentcore.RoleAssistant {
+			for _, tc := range concrete.ToolCalls() {
+				toolCallNames[tc.ID] = tc.Name
+				toolCallArgs[tc.ID] = tc.Args
+			}
+		}
+	}
+
 	for _, am := range msg.Msgs {
 		switch am.GetRole() {
 		case agentcore.RoleUser:
@@ -784,12 +801,54 @@ func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 				sb.WriteString("\n\n")
 				sb.WriteString(m.renderUserMessage(text))
 			}
+
 		case agentcore.RoleAssistant:
+			// Thinking
+			if thinkingText := strings.TrimSpace(am.ThinkingContent()); thinkingText != "" {
+				indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2)
+				sb.WriteString("\n\n")
+				sb.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+			}
+			// Text content
 			if content := strings.TrimSpace(am.TextContent()); content != "" {
 				rendered := m.RenderMarkdown(content)
 				indented := indentBlock(m.wrapTextForIndent(rendered, 2), 2)
 				sb.WriteString("\n\n")
 				sb.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+			}
+			// Tool calls (render headers)
+			if concrete, ok := am.(agentcore.Message); ok {
+				for _, tc := range concrete.ToolCalls() {
+					header := ToolIconStyle.Render("● ") + ToolNameStyle.Render(FormatToolHeader(tc.Name, tc.Args))
+					sb.WriteString("\n")
+					sb.WriteString(header)
+				}
+			}
+
+		case agentcore.RoleTool:
+			// Tool result — use the raw JSON content (same as live EventToolExecEnd).
+			if concrete, ok := am.(agentcore.Message); ok {
+				toolCallID, _ := concrete.Metadata["tool_call_id"].(string)
+				isError, _ := concrete.Metadata["is_error"].(bool)
+				raw := json.RawMessage(am.TextContent())
+				toolName := toolCallNames[toolCallID]
+
+				var body string
+				if toolName == "edit" && !isError {
+					body = indentBlock(RenderEditResult(raw), 2)
+				} else {
+					text := FormatToolResult(raw, isError)
+					text = m.wrapTextForIndent(text, 4)
+					if isError {
+						body = indentBlock(FormatToolOutput(text, 5, ErrorStyle), 2)
+					} else {
+						body = indentBlock(FormatToolOutput(text, 5), 2)
+					}
+				}
+				if body != "" {
+					sb.WriteString("\n")
+					sb.WriteString(body)
+				}
 			}
 		}
 	}
