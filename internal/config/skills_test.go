@@ -180,44 +180,6 @@ func TestLoadSkillsFromDir(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptWithSkills(t *testing.T) {
-	t.Parallel()
-
-	tools := []ToolInfo{
-		{Name: "read", Description: "Read files"},
-		{Name: "bash", Description: "Run commands"},
-	}
-	skills := []Skill{
-		{Name: "commit", Description: "Git commit", FilePath: "/skills/commit.md"},
-	}
-
-	prompt := BuildSystemPrompt("/tmp/ws", ContextFiles{}, tools, skills)
-
-	if !contains(prompt, "## Skills") {
-		t.Error("prompt should contain skills section")
-	}
-	if !contains(prompt, "<name>commit</name>") {
-		t.Error("prompt should contain commit skill")
-	}
-}
-
-func TestBuildSystemPromptSkillsNoReadTool(t *testing.T) {
-	t.Parallel()
-
-	tools := []ToolInfo{
-		{Name: "bash", Description: "Run commands"},
-	}
-	skills := []Skill{
-		{Name: "commit", Description: "Git commit", FilePath: "/skills/commit.md"},
-	}
-
-	prompt := BuildSystemPrompt("/tmp/ws", ContextFiles{}, tools, skills)
-
-	if contains(prompt, "## Skills") {
-		t.Error("prompt should not contain skills when read tool is absent")
-	}
-}
-
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }

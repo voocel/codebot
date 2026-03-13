@@ -40,7 +40,9 @@ type bootSpec struct {
 	chatModel      agentcore.ChatModel
 	tools          []agentcore.Tool
 	baseTools      []agentcore.Tool
-	systemPrompt   string
+	systemBlocks          []agentcore.SystemBlock
+	deferredToolsPreamble string
+	reminders             []string
 	contextFiles   config.ContextFiles
 	skills         []config.Skill
 	mcpManager     *mcpclient.Manager
@@ -201,7 +203,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		return nil, err
 	}
 
-	systemPrompt := buildSystemPrompt(input.cwd, tools, ctxFiles, skills, mcpManager)
+	parts := buildSystemParts(input.cwd, tools, ctxFiles, skills, mcpManager)
 
 	var hookMW agentcore.ToolMiddleware
 	var hookRunner *hooks.Runner
@@ -213,21 +215,23 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	}
 
 	return &bootSpec{
-		settings:       settings,
-		activeProvider: activeProvider,
-		activeModel:    activeModel,
-		chatModel:      chatModel,
-		tools:          tools,
-		baseTools:      baseTools,
-		systemPrompt:   systemPrompt,
-		contextFiles:   ctxFiles,
-		skills:         skills,
-		mcpManager:     mcpManager,
-		subagentTool:   subagentTool,
-		permission:     pol.Permission,
-		policyEngine:   pol,
-		hookMiddleware: hookMW,
-		hookRunner:     hookRunner,
+		settings:              settings,
+		activeProvider:        activeProvider,
+		activeModel:           activeModel,
+		chatModel:             chatModel,
+		tools:                 tools,
+		baseTools:             baseTools,
+		systemBlocks:          parts.blocks,
+		deferredToolsPreamble: parts.deferredMsg,
+		reminders:             parts.reminders,
+		contextFiles:          ctxFiles,
+		skills:                skills,
+		mcpManager:            mcpManager,
+		subagentTool:          subagentTool,
+		permission:            pol.Permission,
+		policyEngine:          pol,
+		hookMiddleware:        hookMW,
+		hookRunner:            hookRunner,
 	}, nil
 }
 
@@ -387,8 +391,14 @@ func applyToolSearch(allTools, baseTools []agentcore.Tool, provider, model strin
 	return result, newBase
 }
 
-func buildSystemPrompt(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []config.Skill, mcpManager *mcpclient.Manager) string {
-	// Separate visible tools from deferred tools for system prompt generation.
+type systemParts struct {
+	blocks      []agentcore.SystemBlock
+	deferredMsg string   // <available-deferred-tools> content for first user message
+	reminders   []string // <system-reminder> fragments for each user message
+}
+
+func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []config.Skill, mcpManager *mcpclient.Manager) systemParts {
+	// Separate visible tools from deferred tools.
 	var filter agentcore.DeferFilter
 	for _, t := range tools {
 		if f, ok := t.(agentcore.DeferFilter); ok {
@@ -407,32 +417,43 @@ func buildSystemPrompt(cwd string, tools []agentcore.Tool, ctxFiles config.Conte
 		}
 	}
 
-	systemPrompt := config.BuildSystemPrompt(cwd, ctxFiles, visibleInfos, skills)
+	// Two-block system prompt: identity + instructions (both cached).
+	identity, instructions := config.BuildSystemBlockTexts(cwd, ctxFiles, visibleInfos)
 
-	// Inject deferred tools list so LLM knows what it can search for.
-	if len(deferredNames) > 0 {
-		systemPrompt += "\n\n<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>"
-	}
-
-	if mcpManager == nil {
-		return systemPrompt
-	}
-	if instructions := mcpManager.Instructions(); len(instructions) > 0 {
-		var sb strings.Builder
-		sb.WriteString(systemPrompt)
-		for _, inst := range instructions {
-			sb.WriteString("\n\n")
-			sb.WriteString(inst)
+	// Append MCP instructions to the instructions block.
+	if mcpManager != nil {
+		if mcpInstructions := mcpManager.Instructions(); len(mcpInstructions) > 0 {
+			for _, inst := range mcpInstructions {
+				instructions += "\n\n" + inst
+			}
 		}
-		systemPrompt = sb.String()
 	}
-	return systemPrompt
+
+	blocks := []agentcore.SystemBlock{
+		{Text: identity, CacheControl: "ephemeral"},
+		{Text: instructions, CacheControl: "ephemeral"},
+	}
+
+	// Deferred tools preamble for first user message.
+	var deferredMsg string
+	if len(deferredNames) > 0 {
+		deferredMsg = "<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>"
+	}
+
+	// Reminders: skills + context files for user message injection.
+	reminders := config.BuildReminders(ctxFiles, skills)
+
+	return systemParts{
+		blocks:      blocks,
+		deferredMsg: deferredMsg,
+		reminders:   reminders,
+	}
 }
 
 func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 	opts := []agentcore.AgentOption{
 		agentcore.WithModel(spec.chatModel),
-		agentcore.WithSystemPrompt(spec.systemPrompt),
+		agentcore.WithSystemBlocks(spec.systemBlocks),
 		agentcore.WithTools(spec.tools...),
 		agentcore.WithMaxTurns(spec.settings.MaxTurns),
 		agentcore.WithMaxToolErrors(3),
@@ -468,18 +489,21 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 	}
 
 	sess := agent.NewSession(agent.SessionConfig{
-		Agent:        ag,
-		Store:        input.store,
-		Manager:      input.manager,
-		Registry:     input.registry,
-		Settings:     spec.settings,
-		Cwd:          input.cwd,
-		CreateModel:  input.createModel,
-		ChatModel:    spec.chatModel,
-		Tools:        spec.tools,
-		ContextFiles: spec.contextFiles,
-		Skills:       spec.skills,
-		HookRunner:   spec.hookRunner,
+		Agent:                 ag,
+		Store:                 input.store,
+		Manager:               input.manager,
+		Registry:              input.registry,
+		Settings:              spec.settings,
+		Cwd:                   input.cwd,
+		CreateModel:           input.createModel,
+		ChatModel:             spec.chatModel,
+		Tools:                 spec.tools,
+		ContextFiles:          spec.contextFiles,
+		Skills:                spec.skills,
+		HookRunner:            spec.hookRunner,
+		DeferredToolsPreamble: spec.deferredToolsPreamble,
+		Reminders:             spec.reminders,
+		PreambleInjected:      len(input.snapshot.Messages) > 0, // resume: preamble already in history
 	})
 
 	if spec.mcpManager != nil {

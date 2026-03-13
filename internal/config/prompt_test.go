@@ -5,92 +5,96 @@ import (
 	"testing"
 )
 
-func TestBuildGuidelinesFullToolSet(t *testing.T) {
-	t.Parallel()
-
-	tools := []ToolInfo{
-		{Name: "read"}, {Name: "write"}, {Name: "edit"},
-		{Name: "bash"}, {Name: "find"}, {Name: "grep"}, {Name: "ls"},
-	}
-	g := buildGuidelines(tools)
-
-	expect := []string{
-		"Read files before modifying them",
-		"Use find/grep to explore",
-		"Use edit for targeted changes",
-		"Don't over-engineer",
-		"prefer absolute paths",
-		"ask for clarification",
-	}
-	for _, s := range expect {
-		if !strings.Contains(g, s) {
-			t.Errorf("full tool set guidelines missing: %q", s)
-		}
-	}
-}
-
-func TestBuildGuidelinesReadOnlyToolSet(t *testing.T) {
-	t.Parallel()
-
-	tools := []ToolInfo{
-		{Name: "read"}, {Name: "find"}, {Name: "grep"}, {Name: "ls"},
-	}
-	g := buildGuidelines(tools)
-
-	if strings.Contains(g, "Read files before modifying them") {
-		t.Error("read-only set should not contain modification guideline")
-	}
-	if strings.Contains(g, "Use edit for targeted changes") {
-		t.Error("read-only set should not contain edit guideline")
-	}
-	if strings.Contains(g, "prefer absolute paths") {
-		t.Error("read-only set without bash should not contain bash guideline")
-	}
-	if !strings.Contains(g, "Use find/grep to explore") {
-		t.Error("read-only set should contain find/grep guideline")
-	}
-	if !strings.Contains(g, "Don't over-engineer") {
-		t.Error("read-only set should contain always-present guidelines")
-	}
-}
-
-func TestBuildSystemPromptDynamicTools(t *testing.T) {
+func TestBuildSystemBlockTexts(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolInfo{
 		{Name: "read", Description: "Read files"},
 		{Name: "bash", Description: "Run commands"},
 	}
-	prompt := BuildSystemPrompt("/tmp/ws", ContextFiles{}, tools, nil)
+	identity, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, tools)
 
-	if !strings.Contains(prompt, "**read**") {
-		t.Error("prompt should list read tool")
+	if !strings.Contains(identity, "/tmp/ws") {
+		t.Error("identity should contain working directory")
 	}
-	if !strings.Contains(prompt, "**bash**") {
-		t.Error("prompt should list bash tool")
+	if !strings.Contains(instructions, "**read**") {
+		t.Error("instructions should list read tool")
 	}
-	if strings.Contains(prompt, "**write**") {
-		t.Error("prompt should not list tools not in the input")
+	if !strings.Contains(instructions, "**bash**") {
+		t.Error("instructions should list bash tool")
 	}
-	// Dynamic guidelines: no write/edit means no "edit for targeted changes"
-	if strings.Contains(prompt, "Use edit for targeted changes") {
-		t.Error("prompt should not contain edit guideline without edit tool")
+	if strings.Contains(instructions, "**write**") {
+		t.Error("instructions should not list tools not in the input")
 	}
 }
 
-func TestBuildSystemPromptStaticFallback(t *testing.T) {
+func TestBuildSystemBlockTextsNoTools(t *testing.T) {
 	t.Parallel()
 
-	prompt := BuildSystemPrompt("/tmp/ws", ContextFiles{}, nil, nil)
+	identity, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, nil)
 
-	// Static fallback should contain all tools
-	for _, tool := range []string{"read", "write", "edit", "bash", "find", "grep", "ls"} {
-		if !strings.Contains(prompt, "**"+tool+"**") {
-			t.Errorf("static fallback should list %s tool", tool)
+	if !strings.Contains(identity, "/tmp/ws") {
+		t.Error("identity should contain working directory")
+	}
+	if strings.Contains(instructions, "## Tools") {
+		t.Error("instructions should not contain tools section when no tools provided")
+	}
+}
+
+func TestBuildSystemBlockTextsSystemOverride(t *testing.T) {
+	t.Parallel()
+
+	ctx := ContextFiles{SystemOverride: "custom system prompt"}
+	identity, instructions := BuildSystemBlockTexts("/tmp/ws", ctx, []ToolInfo{{Name: "read"}})
+
+	if identity != "" {
+		t.Error("identity should be empty when SystemOverride is set")
+	}
+	if instructions != "custom system prompt" {
+		t.Errorf("instructions should be the override, got %q", instructions)
+	}
+}
+
+func TestBuildReminders(t *testing.T) {
+	t.Parallel()
+
+	skills := []Skill{
+		{Name: "commit", Description: "Git commit", FilePath: "/skills/commit.md"},
+	}
+	ctx := ContextFiles{Agents: "project context here"}
+
+	reminders := BuildReminders(ctx, skills)
+
+	if len(reminders) < 2 {
+		t.Fatalf("expected at least 2 reminders, got %d", len(reminders))
+	}
+
+	hasSkill := false
+	hasContext := false
+	for _, r := range reminders {
+		if strings.Contains(r, "## Skills") {
+			hasSkill = true
+		}
+		if strings.Contains(r, "project context here") {
+			hasContext = true
+		}
+		if !strings.Contains(r, "<system-reminder>") {
+			t.Errorf("reminder missing <system-reminder> wrapper: %s", r[:50])
 		}
 	}
-	// Static guidelines
-	if !strings.Contains(prompt, "Use edit for targeted changes") {
-		t.Error("static fallback should contain all guidelines")
+	if !hasSkill {
+		t.Error("reminders should contain skills")
+	}
+	if !hasContext {
+		t.Error("reminders should contain project context")
+	}
+}
+
+func TestBuildRemindersEmpty(t *testing.T) {
+	t.Parallel()
+
+	reminders := BuildReminders(ContextFiles{}, nil)
+	if len(reminders) != 0 {
+		t.Errorf("expected no reminders, got %d", len(reminders))
 	}
 }

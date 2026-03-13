@@ -113,12 +113,26 @@ func (m *sessionPromptManager) rebuildPrompt() {
 		}
 	}
 
-	base := config.BuildSystemPrompt(m.session.cwd, m.session.contextFiles, visibleInfos, m.session.skills)
-	if len(deferredNames) > 0 {
-		base += "\n\n<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>"
-	}
+	// Build two-block system prompt (identity + instructions) for cache stability.
+	identity, instructions := config.BuildSystemBlockTexts(m.session.cwd, m.session.contextFiles, visibleInfos)
 	if m.session.suffix != "" {
-		base += "\n\n" + m.session.suffix
+		instructions += "\n\n" + m.session.suffix
 	}
-	m.session.agent.SetSystemPrompt(base)
+	blocks := []agentcore.SystemBlock{
+		{Text: identity, CacheControl: "ephemeral"},
+		{Text: instructions, CacheControl: "ephemeral"},
+	}
+	m.session.agent.SetSystemBlocks(blocks)
+
+	// Update deferred tools preamble (injected as first user message).
+	if len(deferredNames) > 0 {
+		m.session.deferredToolsPreamble = "<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>"
+	} else {
+		m.session.deferredToolsPreamble = ""
+	}
+
+	// Update reminders (skills + context files, injected per user message).
+	m.session.mu.Lock()
+	m.session.reminders = config.BuildReminders(m.session.contextFiles, m.session.skills)
+	m.session.mu.Unlock()
 }

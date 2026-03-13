@@ -41,6 +41,12 @@ type SessionConfig struct {
 	ContextFiles config.ContextFiles
 	// Skills holds loaded skills for system prompt injection and /skill: commands.
 	Skills []config.Skill
+	// DeferredToolsPreamble is injected as the first user message (once).
+	DeferredToolsPreamble string
+	// Reminders are <system-reminder> fragments prepended to each user message.
+	Reminders []string
+	// PreambleInjected indicates the preamble was already in conversation history (resume).
+	PreambleInjected bool
 }
 
 // Session is the business-logic core that wraps Agent + session persistence.
@@ -66,6 +72,10 @@ type Session struct {
 	suffix       string
 	beforePrompt func()
 	hookRunner   *hooks.Runner
+
+	deferredToolsPreamble string   // <available-deferred-tools> for first user message
+	reminders             []string // <system-reminder> fragments per turn
+	preambleInjected      bool     // true after first preamble injection
 
 	listeners []func(SessionEvent)
 	unsub     func()
@@ -114,6 +124,10 @@ func NewSession(cfg SessionConfig) *Session {
 		activeTools:  cfg.Tools,
 		contextFiles: cfg.ContextFiles,
 		skills:       cfg.Skills,
+
+		deferredToolsPreamble: cfg.DeferredToolsPreamble,
+		reminders:             cfg.Reminders,
+		preambleInjected:      cfg.PreambleInjected,
 	}
 
 	s.prompts = newSessionPromptManager(s)

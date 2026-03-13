@@ -17,7 +17,14 @@ func (s *Session) Prompt(text string) error {
 		s.beforePrompt()
 	}
 	s.context.microcompact()
-	return s.agent.Prompt(text)
+
+	var msgs []agentcore.AgentMessage
+	if !s.preambleInjected && s.deferredToolsPreamble != "" {
+		msgs = append(msgs, agentcore.UserMsg(s.deferredToolsPreamble))
+		s.preambleInjected = true
+	}
+	msgs = append(msgs, s.buildUserMessage(agentcore.TextBlock(text)))
+	return s.agent.PromptMessages(msgs...)
 }
 
 func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
@@ -25,12 +32,40 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 		s.beforePrompt()
 	}
 	s.context.microcompact()
-	msg := agentcore.Message{
+
+	var msgs []agentcore.AgentMessage
+	if !s.preambleInjected && s.deferredToolsPreamble != "" {
+		msgs = append(msgs, agentcore.UserMsg(s.deferredToolsPreamble))
+		s.preambleInjected = true
+	}
+	msgs = append(msgs, s.buildUserMessage(blocks...))
+	return s.agent.PromptMessages(msgs...)
+}
+
+// buildUserMessage creates a user message with reminders prepended as text blocks.
+func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentcore.Message {
+	s.mu.Lock()
+	reminders := s.reminders
+	s.mu.Unlock()
+
+	if len(reminders) == 0 {
+		return agentcore.Message{
+			Role:      agentcore.RoleUser,
+			Content:   userBlocks,
+			Timestamp: time.Now(),
+		}
+	}
+
+	blocks := make([]agentcore.ContentBlock, 0, len(reminders)+len(userBlocks))
+	for _, r := range reminders {
+		blocks = append(blocks, agentcore.TextBlock(r))
+	}
+	blocks = append(blocks, userBlocks...)
+	return agentcore.Message{
 		Role:      agentcore.RoleUser,
 		Content:   blocks,
 		Timestamp: time.Now(),
 	}
-	return s.agent.PromptMessages(msg)
 }
 
 func (s *Session) SetBeforePrompt(fn func()) {
