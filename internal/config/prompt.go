@@ -133,6 +133,13 @@ func buildGuidelines(tools []ToolInfo) string {
 			"- Set background=true for long-running tasks; you will receive a <task-notification> when it completes.",
 		)
 	}
+	if has["tool_search"] {
+		lines = append(lines,
+			"- Some tools are deferred and not loaded initially. Check <available-deferred-tools> for their names, then use tool_search to discover and activate them when needed.",
+			"- Use \"select:Name1,Name2\" for exact tool selection by name, or keywords to search by name/description.",
+			"- Once activated via tool_search, tools remain available for the rest of the conversation.",
+		)
+	}
 	if has["enter_plan_mode"] {
 		lines = append(lines,
 			"- For non-trivial tasks (new features, multi-file changes, architectural decisions), proactively use enter_plan_mode to explore and plan before coding.",

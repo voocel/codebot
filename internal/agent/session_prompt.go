@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"strings"
+
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
 )
@@ -92,11 +94,29 @@ func (m *sessionPromptManager) reload() {
 }
 
 func (m *sessionPromptManager) rebuildPrompt() {
-	infos := make([]config.ToolInfo, len(m.session.activeTools))
-	for i, t := range m.session.activeTools {
-		infos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
+	// Find DeferFilter (if tool_search is active) to exclude deferred tools from prompt.
+	var filter agentcore.DeferFilter
+	for _, t := range m.session.activeTools {
+		if f, ok := t.(agentcore.DeferFilter); ok {
+			filter = f
+			break
+		}
 	}
-	base := config.BuildSystemPrompt(m.session.cwd, m.session.contextFiles, infos, m.session.skills)
+
+	var visibleInfos []config.ToolInfo
+	var deferredNames []string
+	for _, t := range m.session.activeTools {
+		if filter != nil && filter.IsDeferred(t.Name()) {
+			deferredNames = append(deferredNames, t.Name())
+		} else {
+			visibleInfos = append(visibleInfos, config.ToolInfo{Name: t.Name(), Description: t.Description()})
+		}
+	}
+
+	base := config.BuildSystemPrompt(m.session.cwd, m.session.contextFiles, visibleInfos, m.session.skills)
+	if len(deferredNames) > 0 {
+		base += "\n\n<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>"
+	}
 	if m.session.suffix != "" {
 		base += "\n\n" + m.session.suffix
 	}

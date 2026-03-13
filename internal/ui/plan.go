@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/storage"
+	localtools "github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -78,7 +79,7 @@ func (a *App) cmdPlan(args []string) tea.Cmd {
 // enterPlanMode is the shared setup for both /plan command and enter_plan_mode tool.
 func (a *App) enterPlanMode(task string) tea.Cmd {
 	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash", "subagent")
-	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
+	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
 	a.planContent = ""
@@ -98,7 +99,7 @@ func (a *App) executePlan() tea.Cmd {
 
 	title, content := a.planTitle, a.planContent
 
-	a.Session.RestoreAllTools(newEnterPlanModeTool())
+	a.Session.RestoreAllTools(localtools.NewEnterPlanMode())
 	a.Session.SetSystemSuffix(buildPlanContextSuffix(title, content))
 
 	a.planState = planOff
@@ -117,7 +118,7 @@ func (a *App) cancelPlanMode() tea.Cmd {
 }
 
 func (a *App) resetPlanState() {
-	a.Session.RestoreAllTools(newEnterPlanModeTool())
+	a.Session.RestoreAllTools(localtools.NewEnterPlanMode())
 	a.Session.SetSystemSuffix("")
 	a.planState = planOff
 	a.planContent = ""
@@ -225,7 +226,7 @@ func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
 	}
 
 	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash", "subagent")
-	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
+	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
 	a.planContent = ""
@@ -268,7 +269,7 @@ func (a *App) onEnterPlanMode() tea.Cmd {
 		return nil
 	}
 	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash", "subagent")
-	a.Session.SetTools(append(readOnly, newExitPlanModeTool())...)
+	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
 	a.planContent = ""

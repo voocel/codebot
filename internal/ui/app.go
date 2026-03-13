@@ -59,8 +59,8 @@ type App struct {
 
 // Config returns a tui.Config with all hooks wired to this App.
 func (a *App) Config() tui.Config {
-	// Register enter_plan_mode so LLM can proactively enter plan mode.
-	a.Session.RestoreAllTools(newEnterPlanModeTool())
+	// Restore all tools (enter_plan_mode is already registered in buildToolset).
+	a.Session.RestoreAllTools()
 	return tui.Config{
 		Cwd:         a.Cwd,
 		GitBranch:   a.GitBranch,

@@ -1,4 +1,4 @@
-package ui
+package tools
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 
 type enterPlanModeTool struct{}
 
-func newEnterPlanModeTool() *enterPlanModeTool { return &enterPlanModeTool{} }
+func NewEnterPlanMode() *enterPlanModeTool { return &enterPlanModeTool{} }
 
 func (t *enterPlanModeTool) Name() string  { return "enter_plan_mode" }
 func (t *enterPlanModeTool) Label() string { return "Enter Plan Mode" }
@@ -59,7 +59,7 @@ func (t *enterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (js
 
 type exitPlanModeTool struct{}
 
-func newExitPlanModeTool() *exitPlanModeTool { return &exitPlanModeTool{} }
+func NewExitPlanMode() *exitPlanModeTool { return &exitPlanModeTool{} }
 
 func (t *exitPlanModeTool) Name() string  { return "exit_plan_mode" }
 func (t *exitPlanModeTool) Label() string { return "Exit Plan Mode" }

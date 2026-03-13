@@ -9,6 +9,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/memory"
+	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
@@ -239,6 +240,8 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
 		askTool,
+		localtools.NewEnterPlanMode(),
+		localtools.NewExitPlanMode(),
 	)
 	builtTools = append(builtTools, taskTools...)
 	builtTools = append(builtTools, cronTools...)
@@ -273,16 +276,144 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		builtTools = append(builtTools, mcpManager.Tools(context.Background())...)
 	}
 
+	builtTools, baseTools = applyToolSearch(builtTools, baseTools, activeProvider, settings.Model)
+
 	return builtTools, baseTools, mcpManager, subagentTool, nil
 }
 
-func buildSystemPrompt(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []config.Skill, mcpManager *mcpclient.Manager) string {
-	toolInfos := make([]config.ToolInfo, len(tools))
-	for i, t := range tools {
-		toolInfos[i] = config.ToolInfo{Name: t.Name(), Description: t.Description()}
+// coreToolNames are tools that remain always visible to the LLM.
+// When tool search is enabled, all tools except tool_search itself are deferred.
+// tool_search is added separately and never appears in the deferred set.
+var coreToolNames = map[string]bool{}
+
+// supportsToolSearch reports whether the given provider/model combination
+// supports deferred tool search. Currently only Claude models and GPT-5.4+
+// are known to handle tool search reliably.
+func supportsToolSearch(provider, model string) bool {
+	p := strings.ToLower(provider)
+	m := strings.ToLower(model)
+
+	// Strip provider prefix (e.g. "anthropic/claude-sonnet-4.6" → "claude-sonnet-4.6")
+	if idx := strings.LastIndex(m, "/"); idx >= 0 {
+		m = m[idx+1:]
 	}
 
-	systemPrompt := config.BuildSystemPrompt(cwd, ctxFiles, toolInfos, skills)
+	// Claude: Sonnet/Opus 4.5+, no Haiku.
+	if p == "anthropic" || strings.HasPrefix(m, "claude") {
+		if strings.Contains(m, "haiku") {
+			return false
+		}
+		return claudeVersionAtLeast(m, 4, 5)
+	}
+
+	// OpenAI: gpt-5.4 and above.
+	if p == "openai" || strings.HasPrefix(m, "gpt-") {
+		return modelVersionAtLeast(strings.TrimPrefix(m, "gpt-"), 5, 4)
+	}
+
+	return false
+}
+
+// claudeVersionAtLeast checks if a Claude model name contains a version >= major.minor.
+// Handles both new format (claude-sonnet-4-5, claude-opus-4.6)
+// and old format (claude-3-5-sonnet, claude-3-opus).
+func claudeVersionAtLeast(model string, minMajor, minMinor int) bool {
+	m := strings.TrimPrefix(model, "claude-")
+	// Strip family prefix for new format: "sonnet-4-5-..." → "4-5-..."
+	for _, family := range []string{"sonnet-", "opus-"} {
+		m = strings.TrimPrefix(m, family)
+	}
+	return modelVersionAtLeast(m, minMajor, minMinor)
+}
+
+// modelVersionAtLeast extracts a version from the start of s and checks >= major.minor.
+// Supports "4.6", "4-5-20250514", "3-5-sonnet", "3-opus", "6" formats.
+func modelVersionAtLeast(s string, minMajor, minMinor int) bool {
+	var major, minor int
+	if n, _ := fmt.Sscanf(s, "%d.%d", &major, &minor); n == 2 {
+		return major > minMajor || (major == minMajor && minor >= minMinor)
+	}
+	if n, _ := fmt.Sscanf(s, "%d-%d", &major, &minor); n == 2 {
+		return major > minMajor || (major == minMajor && minor >= minMinor)
+	}
+	if n, _ := fmt.Sscanf(s, "%d", &major); n == 1 {
+		return major > minMajor
+	}
+	return false
+}
+
+// applyToolSearch splits tools into visible and deferred when the model
+// supports deferred tool search. Non-core tools are deferred, reducing
+// context bloat and improving tool selection accuracy.
+// When the model is unsupported, both slices are returned unchanged.
+func applyToolSearch(allTools, baseTools []agentcore.Tool, provider, model string) ([]agentcore.Tool, []agentcore.Tool) {
+	if !supportsToolSearch(provider, model) {
+		return allTools, baseTools
+	}
+
+	var visible, deferred []agentcore.Tool
+	for _, t := range allTools {
+		if coreToolNames[t.Name()] {
+			visible = append(visible, t)
+		} else {
+			deferred = append(deferred, t)
+		}
+	}
+
+	if len(deferred) == 0 {
+		return allTools, baseTools
+	}
+
+	searchTool := agentcoretools.NewToolSearchTool(deferred...)
+
+	// allTools = visible + searchTool + deferred (all registered, deferred hidden from LLM)
+	result := make([]agentcore.Tool, 0, len(visible)+1+len(deferred))
+	result = append(result, visible...)
+	result = append(result, searchTool)
+	result = append(result, deferred...)
+
+	// Rebuild baseTools the same way (baseTools = allTools minus MCP tools).
+	baseSet := make(map[string]bool, len(baseTools))
+	for _, t := range baseTools {
+		baseSet[t.Name()] = true
+	}
+	var newBase []agentcore.Tool
+	for _, t := range result {
+		if baseSet[t.Name()] || t.Name() == "tool_search" {
+			newBase = append(newBase, t)
+		}
+	}
+
+	return result, newBase
+}
+
+func buildSystemPrompt(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []config.Skill, mcpManager *mcpclient.Manager) string {
+	// Separate visible tools from deferred tools for system prompt generation.
+	var filter agentcore.DeferFilter
+	for _, t := range tools {
+		if f, ok := t.(agentcore.DeferFilter); ok {
+			filter = f
+			break
+		}
+	}
+
+	var visibleInfos []config.ToolInfo
+	var deferredNames []string
+	for _, t := range tools {
+		if filter != nil && filter.IsDeferred(t.Name()) {
+			deferredNames = append(deferredNames, t.Name())
+		} else {
+			visibleInfos = append(visibleInfos, config.ToolInfo{Name: t.Name(), Description: t.Description()})
+		}
+	}
+
+	systemPrompt := config.BuildSystemPrompt(cwd, ctxFiles, visibleInfos, skills)
+
+	// Inject deferred tools list so LLM knows what it can search for.
+	if len(deferredNames) > 0 {
+		systemPrompt += "\n\n<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>"
+	}
+
 	if mcpManager == nil {
 		return systemPrompt
 	}
