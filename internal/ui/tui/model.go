@@ -475,7 +475,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			m.acceptCompletion()
-			return m, nil
+			// Fall through to normal enter handling to execute the command directly.
 		case "up":
 			if m.compIdx > 0 {
 				m.compIdx--

@@ -20,7 +20,7 @@ func (s *Session) Prompt(text string) error {
 
 	var msgs []agentcore.AgentMessage
 	if !s.preambleInjected && s.deferredToolsPreamble != "" {
-		msgs = append(msgs, agentcore.UserMsg(s.deferredToolsPreamble))
+		msgs = append(msgs, injectedUserMsg(s.deferredToolsPreamble))
 		s.preambleInjected = true
 	}
 	msgs = append(msgs, s.buildUserMessage(agentcore.TextBlock(text)))
@@ -35,7 +35,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 
 	var msgs []agentcore.AgentMessage
 	if !s.preambleInjected && s.deferredToolsPreamble != "" {
-		msgs = append(msgs, agentcore.UserMsg(s.deferredToolsPreamble))
+		msgs = append(msgs, injectedUserMsg(s.deferredToolsPreamble))
 		s.preambleInjected = true
 	}
 	msgs = append(msgs, s.buildUserMessage(blocks...))
@@ -426,6 +426,7 @@ func (s *Session) SwitchSession(id string) error {
 		if err := s.agent.SetMessages(snapshot.Messages); err != nil {
 			return fmt.Errorf("restore messages: %w", err)
 		}
+		agentcore.ReactivateDeferred(s.allTools, snapshot.Messages)
 	}
 	if snapshot.Thinking != "" {
 		thinkingLevel := agentcore.ThinkingLevel(snapshot.Thinking)
@@ -564,4 +565,12 @@ func (s *Session) Close() {
 	if store != nil {
 		store.Close()
 	}
+}
+
+// injectedUserMsg creates a user message marked as system-injected via metadata.
+// Auto-naming and session listing skip messages with this marker.
+func injectedUserMsg(text string) agentcore.Message {
+	msg := agentcore.UserMsg(text)
+	msg.Metadata = map[string]any{"injected": true}
+	return msg
 }

@@ -480,6 +480,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		if err := ag.SetMessages(input.snapshot.Messages); err != nil {
 			return nil, fmt.Errorf("restore agent messages: %w", err)
 		}
+		agentcore.ReactivateDeferred(spec.tools, input.snapshot.Messages)
 	}
 	if input.snapshot.Thinking != "" {
 		ag.SetThinkingLevel(agentcore.ThinkingLevel(input.snapshot.Thinking))

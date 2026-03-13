@@ -148,16 +148,18 @@ func readSessionInfo(path string) (SessionInfo, error) {
 			messageCount++
 			if firstMessage == "" {
 				var msg struct {
-					Role    string `json:"role"`
-					Content []struct {
+					Role     string `json:"role"`
+					Content  []struct {
 						Text string `json:"text"`
 					} `json:"content"`
+					Metadata map[string]any `json:"metadata,omitempty"`
 				}
-				if json.Unmarshal(e.Data, &msg) == nil && msg.Role == "user" {
+				if json.Unmarshal(e.Data, &msg) == nil && msg.Role == "user" && msg.Metadata["injected"] != true {
+					// Take the last text block: reminders are prepended,
+					// the user's actual input is always the final text block.
 					for _, c := range msg.Content {
 						if c.Text != "" {
 							firstMessage = c.Text
-							break
 						}
 					}
 					if len(firstMessage) > 80 {

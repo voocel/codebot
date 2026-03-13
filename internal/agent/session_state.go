@@ -174,7 +174,10 @@ func (p *sessionPersistence) tryAutoName() {
 		if !ok || msg.Role != agentcore.RoleUser {
 			continue
 		}
-		text := msg.TextContent()
+		if msg.Metadata["injected"] == true {
+			continue
+		}
+		text := lastTextBlock(msg)
 		if text == "" {
 			continue
 		}
@@ -571,6 +574,19 @@ func truncateMessageText(msg agentcore.Message) agentcore.Message {
 		Metadata:   msg.Metadata,
 		Timestamp:  msg.Timestamp,
 	}
+}
+
+// lastTextBlock returns the text of the last ContentText block in msg.
+// In buildUserMessage, reminder blocks are prepended and the user's actual
+// input is always the final text block, so this extracts the real user text.
+func lastTextBlock(msg agentcore.Message) string {
+	var last string
+	for _, b := range msg.Content {
+		if b.Type == agentcore.ContentText && b.Text != "" {
+			last = b.Text
+		}
+	}
+	return last
 }
 
 func truncateBytes(b []byte, n int) string {
