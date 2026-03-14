@@ -40,6 +40,12 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 	}
 
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {
+		if text, _, ok := formatAutoCompactionEvent(ev); ok {
+			if !jsonMode {
+				fmt.Fprintln(os.Stderr, text)
+			}
+			return
+		}
 		if ev.Type == agent.SEError && ev.Error != nil {
 			fmt.Fprintf(os.Stderr, "session error: %v\n", ev.Error)
 			setExitErr(ev.Error)

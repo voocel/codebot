@@ -2,8 +2,10 @@ package ui
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/policy"
 )
@@ -174,5 +176,39 @@ func TestCommandPaletteAutoExecuteDependsOnUsage(t *testing.T) {
 	}, "")
 	if withArgs.AutoExecute {
 		t.Fatal("expected arg command to only fill input")
+	}
+}
+
+func TestFormatAutoCompactionEventIgnoresManual(t *testing.T) {
+	t.Parallel()
+
+	if text, _, ok := formatAutoCompactionEvent(agent.SessionEvent{
+		Type:             agent.SEAutoCompactionStart,
+		CompactionReason: "manual",
+	}); ok || text != "" {
+		t.Fatalf("expected manual compaction event to be ignored, got ok=%v text=%q", ok, text)
+	}
+}
+
+func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
+	t.Parallel()
+
+	text, muted, ok := formatAutoCompactionEvent(agent.SessionEvent{
+		Type:              agent.SEAutoCompactionEnd,
+		CompactionReason:  "threshold",
+		CompactionChanged: true,
+		TokensBefore:      128000,
+		TokensAfter:       64000,
+	})
+	if !ok {
+		t.Fatal("expected auto compaction end event to be formatted")
+	}
+	if muted {
+		t.Fatal("expected changed compaction result to use emphasized tone")
+	}
+	for _, want := range []string{"Context compacted automatically", "128.0k", "64.0k"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
 	}
 }

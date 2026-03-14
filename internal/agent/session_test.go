@@ -226,6 +226,67 @@ func TestSessionAgentEndFiresNotificationHookWithoutUI(t *testing.T) {
 	t.Fatal("expected notification hook to fire on agent end without UI")
 }
 
+func TestHandleAgentEndDoesNotContinueWhenOverflowCompactionUnchanged(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	s.mu.Lock()
+	s.overflowDetected = true
+	s.maxTokensReduced = true
+	s.mu.Unlock()
+
+	if continued := s.context.handleAgentEnd(); continued {
+		t.Fatal("expected overflow handling to stop when compaction made no changes")
+	}
+}
+
+func TestCompactWithReasonDoesNotEmitEndEventOnFailure(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	if err := ag.SetMessages([]agentcore.AgentMessage{textMessage(agentcore.RoleUser, "need compaction")}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{Provider: "openai", Model: "gpt-test", MaxTurns: 30},
+		Cwd:      t.TempDir(),
+		CreateModel: func(_ string, _ string, _ string, _ string) (agentcore.ChatModel, error) {
+			return nil, errors.New("boom")
+		},
+	})
+	t.Cleanup(s.Close)
+
+	var starts, ends int
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		switch ev.Type {
+		case SEAutoCompactionStart:
+			starts++
+		case SEAutoCompactionEnd:
+			ends++
+		}
+	})
+	t.Cleanup(unsub)
+
+	if _, err := s.context.compactWithReason("threshold"); err == nil {
+		t.Fatal("expected compaction to fail")
+	}
+	if starts != 1 {
+		t.Fatalf("expected 1 start event, got %d", starts)
+	}
+	if ends != 0 {
+		t.Fatalf("expected no end event on failure, got %d", ends)
+	}
+}
+
 func textMessage(role agentcore.Role, text string) agentcore.Message {
 	return agentcore.Message{
 		Role:    role,
@@ -239,10 +300,12 @@ type stubTool struct {
 	desc string
 }
 
-func (t *stubTool) Name() string                                                    { return t.name }
-func (t *stubTool) Description() string                                             { return t.desc }
-func (t *stubTool) Schema() map[string]any                                          { return nil }
-func (t *stubTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) { return nil, nil }
+func (t *stubTool) Name() string           { return t.name }
+func (t *stubTool) Description() string    { return t.desc }
+func (t *stubTool) Schema() map[string]any { return nil }
+func (t *stubTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	return nil, nil
+}
 
 func TestSetToolsRebuildsPrompt(t *testing.T) {
 	t.Parallel()

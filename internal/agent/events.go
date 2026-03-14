@@ -44,5 +44,8 @@ type SessionEvent struct {
 	RetrySuccess bool
 
 	// Compaction reason: "overflow" or "threshold"
-	CompactionReason string
+	CompactionReason  string
+	CompactionChanged bool
+	TokensBefore      int
+	TokensAfter       int
 }

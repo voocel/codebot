@@ -47,7 +47,7 @@ func TestRenderCompletionsShowsCommandPalette(t *testing.T) {
 	m.updateCompletions()
 
 	view := m.renderCompletions()
-	for _, want := range []string{"Commands", "/model", "Usage: /model [name]", "Aliases: /m", "切换当前模型"} {
+	for _, want := range []string{"Commands", "/model", "Usage: /model [name]", "Aliases: /m", "Switch current model"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected command palette to contain %q, got: %q", want, view)
 		}

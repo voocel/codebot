@@ -23,8 +23,8 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, prof
 		Cwd:           cwd,
 		GitBranch:     gitBranch,
 		PolicyProfile: profile,
-		Commands: config.LoadFileCommands(cwd),
-		Skills:   sess.Skills(),
+		Commands:      config.LoadFileCommands(cwd),
+		Skills:        sess.Skills(),
 		PlanStore:     storage.NewPlanStore(config.PlansDir(cwd)),
 		MCPManager:    mcpMgr,
 		History:       newInputHistory(sess, cwd),
@@ -128,6 +128,14 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, prof
 			p.Send(tui.AgentEventMsg{Event: *ev.AgentEvent})
 			return
 		}
+		if text, muted, ok := formatAutoCompactionEvent(ev); ok {
+			if muted {
+				p.Send(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
+			} else {
+				p.Send(tui.CommandResultMsg{Text: tui.CommandStyle.Render(text)})
+			}
+			return
+		}
 		if ev.Type == agent.SEError && ev.Error != nil {
 			p.Send(tui.CommandResultMsg{
 				Text: tui.ErrorStyle.Render("Session error: " + ev.Error.Error()),
@@ -153,4 +161,40 @@ func newInputHistory(sess *agent.Session, cwd string) *storage.History {
 		cwd,
 		sessionID,
 	)
+}
+
+func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, ok bool) {
+	if ev.CompactionReason == "manual" {
+		return "", false, false
+	}
+
+	switch ev.Type {
+	case agent.SEAutoCompactionStart:
+		switch ev.CompactionReason {
+		case "overflow":
+			return "Context overflow detected; compacting automatically...", true, true
+		default:
+			return "Auto-compacting context...", true, true
+		}
+	case agent.SEAutoCompactionEnd:
+		if ev.CompactionChanged && ev.TokensBefore > 0 && ev.TokensAfter > 0 {
+			switch ev.CompactionReason {
+			case "overflow":
+				return fmt.Sprintf(
+					"Context compacted after overflow: %s -> %s.",
+					tui.FormatTokens(ev.TokensBefore),
+					tui.FormatTokens(ev.TokensAfter),
+				), false, true
+			default:
+				return fmt.Sprintf(
+					"Context compacted automatically: %s -> %s.",
+					tui.FormatTokens(ev.TokensBefore),
+					tui.FormatTokens(ev.TokensAfter),
+				), false, true
+			}
+		}
+		return "Auto compaction finished; context unchanged.", true, true
+	default:
+		return "", false, false
+	}
 }

@@ -288,10 +288,31 @@ func (a *App) cmdModel(args []string) tea.Cmd {
 }
 
 func (a *App) cmdCompact() tea.Cmd {
-	if err := a.Session.Compact(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Compaction failed: " + err.Error()))
+	run := func() tea.Msg {
+		result, err := a.Session.Compact()
+		if err != nil {
+			return tui.CommandResultMsg{
+				Text: tui.ErrorStyle.Render("Compaction failed: " + err.Error()),
+			}
+		}
+		if !result.Changed {
+			return tui.CommandResultMsg{
+				Text: tui.MutedStyle.Render("Context unchanged; nothing worth compacting yet."),
+			}
+		}
+		return tui.CommandResultMsg{
+			Text: tui.CommandStyle.Render(fmt.Sprintf(
+				"Context compacted: %s -> %s.",
+				tui.FormatTokens(result.TokensBefore),
+				tui.FormatTokens(result.TokensAfter),
+			)),
+		}
 	}
-	return tui.SendCommandResult(tui.CommandStyle.Render("Context compacted."))
+
+	return tea.Sequence(
+		tui.SendCommandResult(tui.MutedStyle.Render("Compacting context...")),
+		run,
+	)
 }
 
 func (a *App) cmdSession() tea.Cmd {
