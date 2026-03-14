@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -35,7 +34,7 @@ type Job struct {
 	Durable   bool   `json:"durable,omitempty"`
 
 	interval time.Duration // parsed interval (mutually exclusive with cronExpr)
-	cronExpr *CronExpr    // parsed cron expression
+	cronExpr *CronExpr     // parsed cron expression
 	nextFire time.Time
 }
 
@@ -67,8 +66,8 @@ type Store struct {
 
 	writeCh chan struct{} // capacity 1 — coalesces multiple write requests
 	closeCh chan struct{} // signals writer goroutine to stop
-	writeMu sync.Mutex   // serializes StartWriter/StopWriter calls
-	writing bool         // true while writer goroutine is running
+	writeMu sync.Mutex    // serializes StartWriter/StopWriter calls
+	writing bool          // true while writer goroutine is running
 }
 
 // NewStore creates an empty Store. Call SetConfigDir to enable durable storage.
@@ -607,14 +606,6 @@ func (s *Store) readLock(lockPath string) *lockData {
 		return nil
 	}
 	return &ld
-}
-
-// processAlive checks if a PID is alive by sending signal 0.
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	return syscall.Kill(pid, 0) == nil
 }
 
 // ---------------------------------------------------------------------------

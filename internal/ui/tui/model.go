@@ -257,7 +257,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Pasting--
 		return m, tea.Println(indentBlock(msg.Text, 2))
 	case AskUserMsg:
-		m.AskUser = initAskUser(msg)
+		m.AskUser = initAskUser(msg, m.Width, m.Height)
 		return m, nil
 	case PermissionMsg:
 		m.Permission = initPermission(msg)
@@ -395,10 +395,7 @@ func (m Model) View() string {
 		// Status bar below plan review card.
 		parts = append(parts, m.RenderStatusBar())
 	} else if m.AskUser != nil {
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, renderAskUser(m.AskUser))
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
-		parts = append(parts, m.RenderStatusBar())
 	} else if m.Permission != nil {
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, renderPermission(m.Permission))
@@ -419,8 +416,8 @@ func (m Model) View() string {
 		}
 	}
 
-	// Context bar (below input)
-	if !m.compActive && overlay == "" {
+	// Context bar (below input, hidden during ask-user)
+	if !m.compActive && overlay == "" && m.AskUser == nil {
 		parts = append(parts, m.RenderContextBar())
 		parts = append(parts, "")
 	}
@@ -701,6 +698,10 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.Input.SetWidth(m.Width - 2)
 	m.Glamour = NewGlamourRenderer(m.Width - 4)
 	m.adjustInputHeight()
+	if m.AskUser != nil {
+		m.AskUser.width = m.Width
+		m.AskUser.height = m.Height
+	}
 	return m, nil
 }
 

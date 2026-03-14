@@ -19,6 +19,8 @@ type AskUserMsg struct {
 type askUserState struct {
 	questions []tools.Question
 	respCh    chan<- *tools.AskUserResponse
+	width     int // terminal width for layout
+	height    int // terminal height for preview limit
 
 	current  int               // current question index
 	cursor   int               // selected option index (last = "Other")
@@ -29,6 +31,11 @@ type askUserState struct {
 
 	otherMode bool   // typing custom input
 	otherBuf  string // custom input buffer
+
+	notesMode bool   // typing notes for current option
+	notesBuf  string // notes input buffer
+
+	hasPreview bool // true if any option in current question has preview
 }
 
 // AskUser styles.
@@ -50,16 +57,46 @@ var (
 	askHintStyle = lipgloss.NewStyle().
 			Foreground(ColorMuted).
 			Italic(true)
+
+	askNotesLabelStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("252"))
+
+	askBorderColor = lipgloss.Color("245") // light gray
+
+	askBorderStyle = lipgloss.NewStyle().
+			Foreground(askBorderColor)
+
+	askCollapsedStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted).
+				Italic(true)
 )
 
 // initAskUser initializes the ask-user state from an AskUserMsg.
-func initAskUser(msg AskUserMsg) *askUserState {
-	return &askUserState{
+func initAskUser(msg AskUserMsg, width, height int) *askUserState {
+	s := &askUserState{
 		questions: msg.Questions,
-		respCh:   msg.RespCh,
-		answers:  make(map[string]string),
-		notes:    make(map[string]string),
-		selected: make(map[int]bool),
+		respCh:    msg.RespCh,
+		width:     width,
+		height:    height,
+		answers:   make(map[string]string),
+		notes:     make(map[string]string),
+		selected:  make(map[int]bool),
+	}
+	s.detectPreview()
+	return s
+}
+
+// detectPreview checks if any option in the current question has preview content.
+func (s *askUserState) detectPreview() {
+	s.hasPreview = false
+	if s.current < len(s.questions) {
+		for _, opt := range s.questions[s.current].Options {
+			if opt.Preview != "" {
+				s.hasPreview = true
+				return
+			}
+		}
 	}
 }
 
@@ -68,6 +105,14 @@ func initAskUser(msg AskUserMsg) *askUserState {
 func handleAskUserKey(s *askUserState, key tea.KeyMsg) (bool, tea.Cmd) {
 	q := s.questions[s.current]
 	optionCount := len(q.Options) + 1 // +1 for "Other"
+	if s.hasPreview && !q.MultiSelect {
+		optionCount = len(q.Options) // no "Other" in preview mode
+	}
+
+	// In notes-input mode, handle typing.
+	if s.notesMode {
+		return handleNotesInput(s, key)
+	}
 
 	// In other-input mode, handle typing.
 	if s.otherMode {
@@ -95,6 +140,14 @@ func handleAskUserKey(s *askUserState, key tea.KeyMsg) (bool, tea.Cmd) {
 	case " ":
 		if q.MultiSelect && s.cursor < len(q.Options) {
 			s.selected[s.cursor] = !s.selected[s.cursor]
+		}
+		return true, nil
+
+	case "n":
+		// Press 'n' to add notes (only in preview mode, non-multiSelect).
+		if s.hasPreview && !q.MultiSelect {
+			s.notesMode = true
+			return true, nil
 		}
 		return true, nil
 
@@ -149,6 +202,34 @@ func handleOtherInput(s *askUserState, key tea.KeyMsg) (bool, tea.Cmd) {
 	}
 }
 
+func handleNotesInput(s *askUserState, key tea.KeyMsg) (bool, tea.Cmd) {
+	switch key.String() {
+	case "esc":
+		s.notesMode = false
+		s.notesBuf = ""
+		return true, nil
+	case "enter":
+		text := strings.TrimSpace(s.notesBuf)
+		if text != "" {
+			q := s.questions[s.current]
+			s.notes[q.Question] = text
+		}
+		s.notesMode = false
+		return true, nil
+	case "backspace":
+		if len(s.notesBuf) > 0 {
+			runes := []rune(s.notesBuf)
+			s.notesBuf = string(runes[:len(runes)-1])
+		}
+		return true, nil
+	default:
+		if len(key.Runes) > 0 {
+			s.notesBuf += string(key.Runes)
+		}
+		return true, nil
+	}
+}
+
 func handleAskUserEnter(s *askUserState) (bool, tea.Cmd) {
 	q := s.questions[s.current]
 
@@ -191,7 +272,10 @@ func commitAnswer(s *askUserState, answer string, isCustom bool) (bool, tea.Cmd)
 		s.cursor = 0
 		s.otherBuf = ""
 		s.otherMode = false
+		s.notesMode = false
+		s.notesBuf = ""
 		s.selected = make(map[int]bool)
+		s.detectPreview()
 		return true, nil
 	}
 
@@ -211,17 +295,97 @@ func commitAnswer(s *askUserState, answer string, isCustom bool) (bool, tea.Cmd)
 	return true, nil
 }
 
-// renderAskUser renders the question UI (no border, minimal style).
+// renderAskUser renders the question UI. If any option has a preview,
+// it switches to a side-by-side layout (options left, preview right).
+// Output is padded to a fixed line count to prevent bubbletea ghost renders.
 func renderAskUser(s *askUserState) string {
 	q := s.questions[s.current]
 
+	// Header tag.
+	var header string
+	if q.Header != "" {
+		headerStyle := lipgloss.NewStyle().
+			Foreground(ColorAccent).
+			Bold(true).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorAccent).
+			Padding(0, 1)
+		header = headerStyle.Render(q.Header) + "\n"
+	}
+
+	// Question text.
+	questionLine := askQuestionStyle.Render(q.Question) + "\n\n"
+
+	// Build option list.
+	optionList := renderOptionList(s, q)
+
+	// Hint line.
+	hintLine := renderHintLine(s, q)
+
+	if !s.hasPreview {
+		var b strings.Builder
+		b.WriteString(header)
+		b.WriteString(questionLine)
+		b.WriteString(optionList)
+		b.WriteString("\n")
+		b.WriteString(hintLine)
+		return indentBlock(b.String(), 2)
+	}
+
+	// Notes line (only in preview mode).
+	var notesLine string
+	if s.notesMode {
+		notesLine = askNotesLabelStyle.Render("Notes: ") + s.notesBuf + "█"
+	} else if note, ok := s.notes[q.Question]; ok && note != "" {
+		notesLine = askNotesLabelStyle.Render("Notes: ") + askDescStyle.Render(note)
+	} else {
+		notesLine = askNotesLabelStyle.Render("Notes: ") + askHintStyle.Render("press n to add notes")
+	}
+
+	// Side-by-side layout with preview.
+	totalWidth := max(s.width-4, 40)
+	leftWidth := totalWidth * 2 / 5
+	rightWidth := totalWidth - leftWidth - 2
+
+	leftPanel := lipgloss.NewStyle().Width(leftWidth).Render(optionList)
+	rightPanel := renderPreviewBox(s, q, rightWidth)
+	combined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, "  ", rightPanel)
+
 	var b strings.Builder
-
-	// Question text (bold white).
-	b.WriteString(askQuestionStyle.Render(q.Question))
+	b.WriteString(header)
+	b.WriteString(questionLine)
+	b.WriteString(combined)
+	b.WriteString("\n")
+	b.WriteString(notesLine)
 	b.WriteString("\n\n")
+	b.WriteString(hintLine)
 
-	// Numbered options.
+	content := b.String()
+	// Pad to fixed height to prevent ghost renders on resize/cursor change.
+	content = padToHeight(content, s.height-2)
+
+	return indentBlock(content, 2)
+}
+
+// padToHeight ensures the string has exactly targetLines lines.
+// Truncates if too long, pads with empty lines if too short.
+func padToHeight(s string, targetLines int) string {
+	if targetLines <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > targetLines {
+		lines = lines[:targetLines]
+	}
+	for len(lines) < targetLines {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderOptionList builds the numbered option list (without hints).
+func renderOptionList(s *askUserState, q tools.Question) string {
+	var b strings.Builder
 	for i, opt := range q.Options {
 		num := fmt.Sprintf("%d. ", i+1)
 		if i == s.cursor {
@@ -246,41 +410,145 @@ func renderAskUser(s *askUserState) string {
 			b.WriteString(askOptionInactiveStyle.Render(prefix + opt.Label))
 		}
 		b.WriteByte('\n')
-		// Description indented under label.
-		indent := "     "
-		if q.MultiSelect {
-			indent = "         "
+
+		// Description (only in non-preview mode to save space).
+		if !s.hasPreview {
+			indent := "     "
+			if q.MultiSelect {
+				indent = "         "
+			}
+			b.WriteString(askDescStyle.Render(indent + opt.Description))
+			b.WriteByte('\n')
 		}
-		b.WriteString(askDescStyle.Render(indent + opt.Description))
+	}
+
+	// Separator + "Type something" (hidden in preview+singleSelect to save space).
+	if !s.hasPreview || q.MultiSelect {
+		b.WriteString(askDescStyle.Render("  ───"))
+		b.WriteByte('\n')
+		otherIdx := len(q.Options)
+		otherNum := fmt.Sprintf("%d. ", otherIdx+1)
+		if s.cursor == otherIdx {
+			if s.otherMode {
+				b.WriteString(askOptionActiveStyle.Render("> " + otherNum + s.otherBuf + "█"))
+			} else {
+				b.WriteString(askOptionActiveStyle.Render("> " + otherNum + "Type something."))
+			}
+		} else {
+			b.WriteString(askOptionInactiveStyle.Render("  " + otherNum + "Type something."))
+		}
 		b.WriteByte('\n')
 	}
 
-	// Separator before "Type something".
-	b.WriteString(askDescStyle.Render("  ───"))
+	return b.String()
+}
+
+const (
+	previewMinLines = 4  // minimum lines to show
+	previewOverhead = 10 // lines used by header, question, hints, notes, borders, separators
+)
+
+// previewMaxLines calculates the default collapsed line count based on terminal height.
+func (s *askUserState) previewMaxLines() int {
+	available := s.height - previewOverhead
+	// Clamp between min and a reasonable default.
+	return max(min(available, 12), previewMinLines)
+}
+
+// renderPreviewBox renders the preview content in a manually-drawn border box.
+// Manual border avoids lipgloss width miscalculation with emoji/CJK characters.
+func renderPreviewBox(s *askUserState, q tools.Question, width int) string {
+	innerWidth := max(width-4, 16) // 2 border + 2 padding
+
+	// Get preview for current cursor option.
+	var preview string
+	if s.cursor < len(q.Options) {
+		preview = q.Options[s.cursor].Preview
+	}
+	maxLines := s.previewMaxLines()
+
+	if preview == "" {
+		return drawBox([]string{askDescStyle.Render("No preview available")}, innerWidth, maxLines)
+	}
+
+	lines := strings.Split(preview, "\n")
+
+	var collapsedLine string
+	if len(lines) > maxLines {
+		hidden := len(lines) - maxLines
+		lines = lines[:maxLines]
+		collapsedLine = askCollapsedStyle.Render(fmt.Sprintf("── %d lines hidden ──", hidden))
+	}
+
+	box := drawBox(lines, innerWidth, maxLines)
+	if collapsedLine != "" {
+		box += "\n" + collapsedLine
+	}
+	return box
+}
+
+// drawBox manually draws a rounded border box with fixed height.
+// innerWidth is the content width; fixedRows is the exact number of content rows
+// (short content is padded with empty lines to keep view height stable).
+func drawBox(lines []string, innerWidth, fixedRows int) string {
+	bs := askBorderStyle
+	padWidth := innerWidth + 2 // 1 padding each side
+
+	emptyLine := bs.Render("│") + " " + strings.Repeat(" ", innerWidth) + " " + bs.Render("│")
+
+	var b strings.Builder
+	b.WriteString(bs.Render("╭" + strings.Repeat("─", padWidth) + "╮"))
 	b.WriteByte('\n')
 
-	// "Type something." option (like Claude Code's).
-	otherIdx := len(q.Options)
-	otherNum := fmt.Sprintf("%d. ", otherIdx+1)
-	if s.cursor == otherIdx {
-		if s.otherMode {
-			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + s.otherBuf + "█"))
+	for i := range fixedRows {
+		if i < len(lines) {
+			line := lines[i]
+			vis := lipgloss.Width(line)
+			if vis > innerWidth {
+				line = truncateToWidth(line, innerWidth)
+				vis = lipgloss.Width(line)
+			}
+			pad := max(innerWidth-vis, 0)
+			b.WriteString(bs.Render("│") + " " + line + strings.Repeat(" ", pad) + " " + bs.Render("│"))
 		} else {
-			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + "Type something."))
+			b.WriteString(emptyLine)
 		}
-	} else {
-		b.WriteString(askOptionInactiveStyle.Render("  " + otherNum + "Type something."))
+		b.WriteByte('\n')
 	}
-	b.WriteString("\n\n")
 
-	// Hint line.
+	b.WriteString(bs.Render("╰" + strings.Repeat("─", padWidth) + "╯"))
+	return b.String()
+}
+
+// truncateToWidth truncates a string to fit within maxWidth visual cells.
+func truncateToWidth(s string, maxWidth int) string {
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > maxWidth {
+			b.WriteString("…")
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String()
+}
+
+// renderHintLine builds the bottom hint text.
+func renderHintLine(s *askUserState, q tools.Question) string {
+	if s.notesMode {
+		return askHintStyle.Render("Enter to confirm · Esc to go back")
+	}
 	if s.otherMode {
-		b.WriteString(askHintStyle.Render("Enter to confirm · Esc to go back"))
-	} else if q.MultiSelect {
-		b.WriteString(askHintStyle.Render("Enter to confirm · Space to toggle · ↑↓ Navigate · Esc to cancel"))
-	} else {
-		b.WriteString(askHintStyle.Render("Enter to select · ↑↓ Navigate · Esc to cancel"))
+		return askHintStyle.Render("Enter to confirm · Esc to go back")
 	}
-
-	return indentBlock(b.String(), 2)
+	if q.MultiSelect {
+		return askHintStyle.Render("Enter to confirm · Space to toggle · ↑↓ to navigate · Esc to cancel")
+	}
+	if s.hasPreview {
+		return askHintStyle.Render("Enter to select · ↑↓ to navigate · n to add notes · Esc to cancel")
+	}
+	return askHintStyle.Render("Enter to select · ↑↓ to navigate · Esc to cancel")
 }

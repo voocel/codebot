@@ -11,10 +11,10 @@ import (
 	"github.com/voocel/agentcore/schema"
 )
 
-// AskUserResponse carries answers and optional user notes (from custom input).
+// AskUserResponse carries answers and optional user notes.
 type AskUserResponse struct {
 	Answers map[string]string // question text → answer
-	Notes   map[string]string // question text → custom note (only for "Type something")
+	Notes   map[string]string // question text → user note (from "Type something" or preview notes)
 }
 
 // AskUserHandler blocks until the user answers all questions.
@@ -33,6 +33,7 @@ type Question struct {
 type Option struct {
 	Label       string `json:"label"`
 	Description string `json:"description"`
+	Preview     string `json:"preview,omitempty"` // optional markdown preview content
 }
 
 // AskUserTool lets the LLM ask the user structured questions.
@@ -63,6 +64,7 @@ func (t *AskUserTool) Schema() map[string]any {
 	option := schema.Object(
 		schema.Property("label", schema.String("Display text (1-5 words)")).Required(),
 		schema.Property("description", schema.String("What this option means")).Required(),
+		schema.Property("preview", schema.String("Optional preview content (markdown) shown in a side panel when this option is focused")),
 	)
 	question := schema.Object(
 		schema.Property("question", schema.String("The complete question to ask")).Required(),
@@ -148,8 +150,15 @@ func formatAnswers(questions []Question, resp *AskUserResponse) string {
 			continue
 		}
 		entry := fmt.Sprintf("%q=%q", q.Question, answer)
-		if note, hasNote := resp.Notes[q.Question]; hasNote {
+		if note, hasNote := resp.Notes[q.Question]; hasNote && note != "" {
 			entry += " user notes: " + note
+		}
+		// Include preview content of the selected option for context.
+		for _, opt := range q.Options {
+			if opt.Label == answer && opt.Preview != "" {
+				entry += " preview: " + opt.Preview
+				break
+			}
 		}
 		parts = append(parts, entry)
 	}
