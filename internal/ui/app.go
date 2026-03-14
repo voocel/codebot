@@ -138,30 +138,6 @@ func (a *App) overlayState(m *tui.Model) *tui.OverlayState {
 	}
 }
 
-// completions returns matching slash command candidates for the given prefix.
-func (a *App) completions(prefix string) []tui.CompletionItem {
-	lower := strings.ToLower(prefix)
-	var items []tui.CompletionItem
-	seen := make(map[string]bool)
-	for _, cmd := range a.registry.All() {
-		spec := a.registry.EffectiveSpec(cmd)
-		if spec.Hidden {
-			continue
-		}
-		if strings.HasPrefix(spec.Name, lower) && !seen[spec.Name] {
-			items = append(items, tui.CompletionItem{Name: spec.Name, Description: spec.Description})
-			seen[spec.Name] = true
-		}
-		for _, alias := range spec.Aliases {
-			if strings.HasPrefix(alias, lower) && !seen[alias] {
-				items = append(items, tui.CompletionItem{Name: alias, Description: spec.Description})
-				seen[alias] = true
-			}
-		}
-	}
-	return items
-}
-
 // onPaste returns a tea.Cmd that asynchronously reads clipboard image data.
 func (a *App) onPaste(m *tui.Model) tea.Cmd {
 	return func() tea.Msg {

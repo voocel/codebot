@@ -127,3 +127,52 @@ func TestRegistryReassignsAliasAndHidesOldOwnerAlias(t *testing.T) {
 		t.Fatalf("expected new owner alias to remain active, got %v", aliases)
 	}
 }
+
+func TestCommandPaletteMatchesAliasAndDescription(t *testing.T) {
+	t.Parallel()
+
+	app := &App{
+		Commands: []config.FileCommand{
+			{
+				Name:        "deploy",
+				Aliases:     []string{"ship"},
+				Description: "Deploy project to staging",
+				Usage:       "/deploy [env]",
+			},
+		},
+	}
+	app.rebuildRegistry()
+
+	aliasItems := app.completions("ship")
+	if len(aliasItems) == 0 || aliasItems[0].Name != "deploy" {
+		t.Fatalf("expected alias query to resolve deploy, got %#v", aliasItems)
+	}
+	if aliasItems[0].Usage != "/deploy [env]" {
+		t.Fatalf("expected usage metadata to be preserved, got %q", aliasItems[0].Usage)
+	}
+
+	descItems := app.completions("staging")
+	if len(descItems) == 0 || descItems[0].Name != "deploy" {
+		t.Fatalf("expected description query to resolve deploy, got %#v", descItems)
+	}
+}
+
+func TestCommandPaletteAutoExecuteDependsOnUsage(t *testing.T) {
+	t.Parallel()
+
+	noArgs, _, _ := buildCommandPaletteItem(CommandSpec{
+		Name:  "help",
+		Usage: "/help",
+	}, "")
+	if !noArgs.AutoExecute {
+		t.Fatal("expected no-arg command to auto execute")
+	}
+
+	withArgs, _, _ := buildCommandPaletteItem(CommandSpec{
+		Name:  "model",
+		Usage: "/model [name]",
+	}, "")
+	if withArgs.AutoExecute {
+		t.Fatal("expected arg command to only fill input")
+	}
+}

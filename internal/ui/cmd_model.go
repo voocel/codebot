@@ -197,10 +197,10 @@ func (c *ModelCommand) View(width int) string {
 	sb.WriteString(hint)
 	sb.WriteString("\n")
 
-	selectedStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(tui.ColorPrimary).Bold(true)
 	currentMark := lipgloss.NewStyle().Foreground(tui.ColorSuccess)
 	dimStyle := tui.MutedStyle
-	headerStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent)
+	headerStyle := tui.MutedStyle
 
 	reg := c.app.Session.Registry()
 
@@ -209,7 +209,7 @@ func (c *ModelCommand) View(width int) string {
 		// Render group header when entering a new provider section.
 		if groupIdx < len(s.groups) && s.groups[groupIdx].startIdx == i {
 			g := s.groups[groupIdx]
-			header := fmt.Sprintf("─ %s ", g.name) + strings.Repeat("─", max(0, 30-len(g.name)))
+			header := "  " + g.name
 			sb.WriteString(headerStyle.Render(header))
 			sb.WriteString("\n")
 			groupIdx++
@@ -334,4 +334,3 @@ func buildModelList(providers map[string]config.ProviderConfig) ([]modelSelectEn
 	}
 	return entries, groups
 }
-

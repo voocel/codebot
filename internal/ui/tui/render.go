@@ -61,8 +61,8 @@ func scanText(text string, now float64, speed float64, band, slope int) string {
 // ---------------------------------------------------------------------------
 
 func (m *Model) renderWelcome() string {
-	accent := lipgloss.NewStyle().Foreground(ColorWelcome)
-	bold := lipgloss.NewStyle().Foreground(ColorWelcome).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(ColorPrimary)
+	bold := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
 	dim := WelcomeDetailStyle
 
 	// ── Left column: centered robot logo ──
@@ -87,7 +87,7 @@ func (m *Model) renderWelcome() string {
 	rightLines := []string{
 		"",
 		bold.Render("Tips for getting started"),
-		dim.Render("  Run /help for available commands"),
+		dim.Render("  Type / to browse commands"),
 		dim.Render("  Enter send · Ctrl+J newline · Esc abort"),
 		accent.Render(strings.Repeat("─", rightWidth+2)),
 		bold.Render("Recent activity"),
@@ -289,6 +289,112 @@ func (m *Model) RenderContextBar() string {
 		line = truncate.StringWithTail(line, uint(max(m.Width-2, 1)), "…")
 	}
 	return line
+}
+
+func (m Model) renderCommandPalette() string {
+	if len(m.compItems) == 0 {
+		return ""
+	}
+	selected := m.compItems[min(max(m.compIdx, 0), len(m.compItems)-1)]
+
+	width := 74
+	if m.Width > 0 {
+		width = min(max(m.Width-2, 34), 92)
+	}
+
+	list, remaining := m.renderCommandPaletteList(width)
+	var lines []string
+	lines = append(lines, CommandPaletteTitleStyle.Render("Commands")+"  "+CommandPaletteHintStyle.Render("/"+selected.Name))
+	lines = append(lines, list)
+	lines = append(lines, renderCommandPaletteFooter(selected, remaining, width))
+	lines = append(lines, "")
+
+	hint := "↑↓ move · Tab complete · Enter run/fill · Esc close"
+	content := strings.Join(append(lines, CommandPaletteHintStyle.Render(hint)), "\n")
+	return CommandPaletteStyle.Width(width).Render(content)
+}
+
+func (m Model) renderCommandPaletteList(width int) (string, int) {
+	start, end := commandPaletteWindow(len(m.compItems), m.compIdx, 8)
+	var lines []string
+	lastKind := ""
+
+	for i := start; i < end; i++ {
+		item := m.compItems[i]
+		if item.Kind != lastKind {
+			lines = append(lines, CommandPaletteSectionStyle.Render(commandPaletteSectionTitle(item.Kind)))
+			lastKind = item.Kind
+		}
+		lines = append(lines, renderCommandPaletteRow(item, width, i == m.compIdx))
+	}
+
+	return strings.Join(lines, "\n"), len(m.compItems) - end
+}
+
+func renderCommandPaletteRow(item CompletionItem, width int, selected bool) string {
+	marker := " "
+	if selected {
+		marker = "›"
+	}
+
+	nameWidth := min(max(width/3, 12), 18)
+	name := truncate.StringWithTail("/"+item.Name, uint(nameWidth), "…")
+	descWidth := max(width-lipgloss.Width(name)-4, 12)
+	desc := truncate.StringWithTail(item.Description, uint(descWidth), "…")
+	prefix := marker + " "
+	nameText := fmt.Sprintf("%-*s", nameWidth, name)
+	descText := desc
+	if selected {
+		return CommandPaletteSelectedStyle.Render(prefix) + CommandPaletteSelectedStyle.Render(nameText) + " " + CommandPaletteSelectedDescStyle.Render(descText)
+	}
+	return prefix + CommandPaletteItemStyle.Render(nameText) + " " + CommandPaletteDescStyle.Render(descText)
+}
+
+func renderCommandPaletteFooter(item CompletionItem, remaining, width int) string {
+	nameWidth := min(max(width/3, 12), 18)
+	descStart := 2 + nameWidth + 1
+
+	left := "  "
+	if remaining > 0 {
+		left = "  " + fmt.Sprintf("… %d more commands", remaining)
+	}
+	usage := "Usage: " + item.Usage
+	if len(item.Aliases) > 0 {
+		var aliases []string
+		for _, alias := range item.Aliases {
+			aliases = append(aliases, "/"+alias)
+		}
+		usage += " · Aliases: " + strings.Join(aliases, ", ")
+	}
+
+	if lipgloss.Width(left) >= descStart {
+		return CommandPaletteHintStyle.Render(left) + "  " + MutedStyle.Render(usage)
+	}
+	padding := strings.Repeat(" ", descStart-lipgloss.Width(left))
+	return CommandPaletteHintStyle.Render(left) + padding + MutedStyle.Render(usage)
+}
+
+func commandPaletteSectionTitle(kind string) string {
+	switch kind {
+	case "custom":
+		return "Custom"
+	case "skill":
+		return "Skills"
+	default:
+		return "Built-in"
+	}
+}
+
+func commandPaletteWindow(total, cursor, limit int) (start, end int) {
+	if total <= limit {
+		return 0, total
+	}
+	start = max(cursor-limit/2, 0)
+	end = min(start+limit, total)
+	if end-start < limit {
+		start = max(end-limit, 0)
+	}
+	return start, end
 }
 
 // ---------------------------------------------------------------------------

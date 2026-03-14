@@ -7,6 +7,7 @@ import (
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	"github.com/voocel/codebot/internal/policy"
@@ -22,7 +23,7 @@ func (a *App) handleCommand(input string) tea.Cmd {
 	cmd, ok := a.registry.Lookup(inv.Name)
 	if !ok {
 		return tui.SendCommandResult(tui.CommandStyle.Render(
-			fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", inv.Name)))
+			fmt.Sprintf("Unknown command: /%s. 输入 / 浏览命令，或用 /help 查看完整列表。", inv.Name)))
 	}
 
 	spec := cmd.Spec()
@@ -143,7 +144,7 @@ func (a *App) builtinCommands() []Command {
 		NewSimple(CommandSpec{
 			Name: "loop", Usage: "/loop <interval|cron> <prompt>",
 			Description: "Schedule recurring prompts",
-			Risk: policy.RiskLow, Kind: CommandKindBuiltin,
+			Risk:        policy.RiskLow, Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 			return ctx.App.cmdLoop(inv.RawArgs)
 		}),
@@ -171,21 +172,25 @@ func (a *App) helpText() string {
 		groups[spec.Kind] = append(groups[spec.Kind], cmd)
 	}
 
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	sectionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("249"))
 	var sb strings.Builder
-	sb.WriteString("Available commands:\n")
+	sb.WriteString(headerStyle.Render("Available commands (/ opens the command palette):"))
 	a.renderCommandGroup(&sb, "Built-in", groups[CommandKindBuiltin])
 	a.renderCommandGroup(&sb, "Custom commands", groups[CommandKindCustom])
 	a.renderCommandGroup(&sb, "Skills", groups[CommandKindSkill])
 
-	sb.WriteString(strings.TrimSpace(`
+	sb.WriteString("\n\n")
+	sb.WriteString(sectionStyle.Render("Keyboard shortcuts:"))
+	sb.WriteString("\n")
+	sb.WriteString(tui.MutedStyle.Render(strings.TrimSpace(`
 
-Keyboard shortcuts:
   Enter             Send message
   Esc               Abort running agent
   Ctrl+C            Quit
-`))
+`)))
 
-	return tui.CommandStyle.Render(sb.String())
+	return sb.String()
 }
 
 func (a *App) renderCommandGroup(sb *strings.Builder, title string, commands []Command) {
@@ -193,9 +198,14 @@ func (a *App) renderCommandGroup(sb *strings.Builder, title string, commands []C
 		return
 	}
 
+	sectionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("249"))
+	usageStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+
 	sb.WriteString("\n\n")
-	sb.WriteString(title)
-	sb.WriteString(":\n")
+	sb.WriteString(sectionStyle.Render(title + ":"))
+	sb.WriteString("\n")
 
 	for _, cmd := range commands {
 		spec := a.registry.EffectiveSpec(cmd)
@@ -224,7 +234,14 @@ func (a *App) renderCommandGroup(sb *strings.Builder, title string, commands []C
 		if len(spec.Aliases) > 0 {
 			tags = append(tags, "aliases: "+strings.Join(spec.Aliases, ","))
 		}
-		fmt.Fprintf(sb, "  %-24s %s [%s]\n", usage, desc, strings.Join(tags, ", "))
+
+		sb.WriteString("  ")
+		sb.WriteString(usageStyle.Render(fmt.Sprintf("%-24s", usage)))
+		sb.WriteString(" ")
+		sb.WriteString(descStyle.Render(desc))
+		sb.WriteString(" ")
+		sb.WriteString(metaStyle.Render("[" + strings.Join(tags, ", ") + "]"))
+		sb.WriteString("\n")
 	}
 }
 
@@ -312,7 +329,6 @@ func (a *App) cmdNew() tea.Cmd {
 	}
 }
 
-
 func (a *App) cmdSettings() tea.Cmd {
 	s := a.Session.Settings()
 	baseURL := a.Session.BaseURL()
@@ -325,10 +341,42 @@ func (a *App) cmdSettings() tea.Cmd {
 	}
 	apiKey := a.Session.APIKey()
 	masked := maskKey(apiKey)
-	info := fmt.Sprintf("Provider: %s\nModel: %s\nAPI Key: %s\nBase URL: %s\nThinking level: %s\nContext window: %d\nAuto compaction: %v\nMax turns: %d\nConfig: %s",
-		s.Provider, a.Session.ModelName(), masked, baseURL,
-		thinking, s.ContextWindow, s.AutoCompaction, s.MaxTurns, config.SettingsPath(a.Cwd))
-	return tui.SendCommandResult(tui.CommandStyle.Render(info))
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+
+	autoCompact := "off"
+	if s.AutoCompaction {
+		autoCompact = "on"
+	}
+
+	var sb strings.Builder
+	renderRow := func(label, value string) {
+		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-16s", label)))
+		sb.WriteString(" ")
+		sb.WriteString(valueStyle.Render(value))
+		sb.WriteString("\n")
+	}
+	renderMetaRow := func(label, value string) {
+		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-16s", label)))
+		sb.WriteString(" ")
+		sb.WriteString(metaStyle.Render(value))
+		sb.WriteString("\n")
+	}
+
+	renderRow("Provider", s.Provider)
+	renderRow("Model", a.Session.ModelName())
+	renderRow("API key", masked)
+	renderRow("Base URL", baseURL)
+	sb.WriteString("\n")
+	renderRow("Thinking", thinking)
+	renderRow("Context", tui.FormatTokens(s.ContextWindow))
+	renderRow("Auto compact", autoCompact)
+	renderRow("Max turns", fmt.Sprintf("%d", s.MaxTurns))
+	renderMetaRow("Config", config.SettingsPath(a.Cwd))
+
+	return tui.SendCommandResult(strings.TrimRight(sb.String(), "\n"))
 }
 
 func maskKey(key string) string {

@@ -9,19 +9,20 @@
   "providers": {
     "anthropic": {
       "api_key": "",
-      "models": ["claude-sonnet-4-6", "claude-haiku-4-5"],
+      "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
       "small_model": "claude-haiku-4-5"  // sub-agents model; omit to use main model
     },
     "openai": {
       "api_key": "",
       "base_url": "",
-      "models": ["gpt-5.4", "gpt-5-mini"],
-      "small_model": "gpt-4o-mini"
+      "models": ["gpt-5.4", "gpt-5.3-codex"],
+      "small_model": "gpt-5-mini"
     },
     "openrouter": {
       "api_key": "",
       "base_url": "https://openrouter.ai/api/v1",
-      "models": ["anthropic/claude-sonnet-4", "google/gemini-2.5-flash"]
+      "small_model": "stepfun/step-3.5-flash:free",
+      "models": ["stepfun/step-3.5-flash:free", "openrouter/hunter-alpha", "openrouter/healer-alpha"]
       // no small_model — sub-agents will use the main model
     },
     "gemini": {

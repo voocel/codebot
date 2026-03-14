@@ -7,19 +7,21 @@ import (
 
 // Color palette — dark terminal optimized.
 var (
-	ColorAccent    = lipgloss.Color("#7C6FE0") // soft purple, primary accent
-	ColorWelcome   = lipgloss.Color("#4EC9B0") // dark gold, welcome box
-	ColorUser      = lipgloss.Color("#5FAFFF") // bright blue
-	ColorAssistant = lipgloss.Color("#C792EA") // soft purple/magenta
-	ColorTool      = lipgloss.Color("#FFCB6B") // amber/yellow
-	ColorError     = lipgloss.Color("#FF5370") // soft red
-	ColorSuccess   = lipgloss.Color("#C3E88D") // green
-	ColorMuted     = lipgloss.Color("243")     // medium gray
-	ColorThinking  = lipgloss.Color("240")     // dim gray, distinctly muted vs assistant text
-	ColorToken     = lipgloss.Color("249")     // light gray
-	ColorCommand   = lipgloss.Color("#89DDFF") // cyan
-	ColorStatusBg  = lipgloss.Color("236")     // dark background
-	ColorSeparator = lipgloss.Color("243")     // medium gray
+	ColorAccent      = lipgloss.Color("#7C6FE0") // soft purple, secondary accent
+	ColorPrimary     = lipgloss.Color("#4EC9B0") // primary brand color
+	ColorPrimarySoft = lipgloss.Color("108")     // muted primary used for borders/section labels
+	ColorUser        = lipgloss.Color("#5FAFFF") // bright blue
+	ColorAssistant   = lipgloss.Color("#C792EA") // soft purple/magenta
+	ColorTool        = lipgloss.Color("#FFCB6B") // amber/yellow
+	ColorError       = lipgloss.Color("#FF5370") // soft red
+	ColorSuccess     = lipgloss.Color("#C3E88D") // green
+	ColorMuted       = lipgloss.Color("243")     // medium gray
+	ColorThinking    = lipgloss.Color("240")     // dim gray, distinctly muted vs assistant text
+	ColorToken       = lipgloss.Color("249")     // light gray
+	ColorCommand     = lipgloss.Color("#89DDFF") // cyan
+	ColorStatusBg    = lipgloss.Color("236")     // dark background
+	ColorSeparator   = lipgloss.Color("243")     // medium gray
+	ColorBorder      = lipgloss.Color("246")
 )
 
 // Tool blocks
@@ -77,6 +79,37 @@ var (
 	ChoiceInactiveStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 )
 
+// Command palette
+var (
+	CommandPaletteStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorPrimarySoft)
+
+	CommandPaletteTitleStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("250")).
+					Bold(true)
+
+	CommandPaletteSectionStyle = lipgloss.NewStyle().
+					Foreground(ColorPrimarySoft).
+					Bold(true)
+
+	CommandPaletteSelectedStyle = lipgloss.NewStyle().
+					Foreground(ColorPrimary).
+					Bold(true)
+
+	CommandPaletteItemStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252"))
+
+	CommandPaletteDescStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("249"))
+
+	CommandPaletteSelectedDescStyle = lipgloss.NewStyle().
+					Foreground(ColorPrimary)
+
+	CommandPaletteHintStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("246"))
+)
+
 // Plan box
 var PlanBoxStyle = lipgloss.NewStyle().
 	Border(lipgloss.RoundedBorder()).
@@ -110,6 +143,53 @@ var (
 
 	ReplyLabelStyle = lipgloss.NewStyle().Foreground(ColorAssistant)
 )
+
+func CommandPaletteKindBadge(kind string) string {
+	label := kind
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("232")).
+		Background(ColorSeparator).
+		Padding(0, 1)
+
+	switch kind {
+	case "builtin":
+		style = style.Background(ColorCommand)
+	case "custom":
+		style = style.Background(ColorTool)
+	case "skill":
+		style = style.Background(ColorSuccess)
+	}
+	return style.Render(label)
+}
+
+func CommandPaletteRiskBadge(risk string) string {
+	label := risk
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("232")).
+		Background(ColorSeparator).
+		Padding(0, 1)
+
+	switch risk {
+	case "medium":
+		style = style.Background(ColorTool)
+	case "high":
+		style = style.Background(ColorError)
+	default:
+		style = style.Background(ColorSeparator).Foreground(lipgloss.Color("255"))
+	}
+	return style.Render(label)
+}
+
+func CommandPaletteIdleBadge(needsIdle bool) string {
+	if !needsIdle {
+		return ""
+	}
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("255")).
+		Background(lipgloss.Color("240")).
+		Padding(0, 1).
+		Render("idle")
+}
 
 // NewGlamourRenderer creates a glamour markdown renderer with the given width.
 func NewGlamourRenderer(width int) *glamour.TermRenderer {

@@ -31,27 +31,34 @@ type PlanBarInfo struct {
 
 // Config provides hooks for extending the base TUI behavior.
 type Config struct {
-	Placeholder string
-	Version     string
-	Cwd         string
-	GitBranch   string
-	EnvHint     string                                 // shown below welcome when using env var credentials
-	History     *storage.History                     // input history (Up/Down navigation)
-	RestoredMessages []agentcore.AgentMessage        // messages restored from a previous session (rendered on Init)
-	OnKey       func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
-	OnEvent     func(m *Model, ev agentcore.Event) tea.Cmd
-	OnPaste     func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
-	OnDrop      func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
-	StatusRight func(m *Model) string
-	StatusPlan  func(m *Model) *PlanBarInfo
-	Overlay     func(m *Model) *OverlayState        // interactive command overlay
-	Completions func(prefix string) []CompletionItem // slash command completions
+	Placeholder      string
+	Version          string
+	Cwd              string
+	GitBranch        string
+	EnvHint          string                   // shown below welcome when using env var credentials
+	History          *storage.History         // input history (Up/Down navigation)
+	RestoredMessages []agentcore.AgentMessage // messages restored from a previous session (rendered on Init)
+	OnKey            func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
+	OnEvent          func(m *Model, ev agentcore.Event) tea.Cmd
+	OnPaste          func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
+	OnDrop           func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
+	StatusRight      func(m *Model) string
+	StatusPlan       func(m *Model) *PlanBarInfo
+	Overlay          func(m *Model) *OverlayState         // interactive command overlay
+	Completions      func(prefix string) []CompletionItem // slash command completions
 }
 
 // CompletionItem is a single command completion candidate.
 type CompletionItem struct {
 	Name        string // command name without "/" (e.g. "model")
 	Description string
+	Usage       string
+	Kind        string
+	Risk        string
+	NeedsIdle   bool
+	Source      string
+	Aliases     []string
+	AutoExecute bool
 }
 
 // OverlayState bridges an interactive command overlay to the TUI.
@@ -99,11 +106,11 @@ type Model struct {
 	Thinking  *strings.Builder
 	IsStream  bool
 
-	Running       bool
-	TurnCount     int
-	PendingTools  map[string]string           // toolID -> tool name
-	ToolHeaders   map[string]string           // toolID -> formatted header (printed at end)
-	ToolOutputBuf map[string]*strings.Builder // toolID -> streaming output
+	Running         bool
+	TurnCount       int
+	PendingTools    map[string]string           // toolID -> tool name
+	ToolHeaders     map[string]string           // toolID -> formatted header (printed at end)
+	ToolOutputBuf   map[string]*strings.Builder // toolID -> streaming output
 	ToolDeltaBuf    map[string]*strings.Builder // toolID -> accumulated subagent delta text
 	ToolThinkingBuf map[string]*strings.Builder // toolID -> accumulated subagent thinking text
 
@@ -183,27 +190,27 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	ta.CharLimit = 0
 
 	return Model{
-		Driver:        driver,
-		ModelName:     modelName,
-		Version:       c.Version,
-		Spinner:       sp,
-		ToolSpinner:   tsp,
-		Input:         ta,
-		Streaming:     &strings.Builder{},
-		Thinking:      &strings.Builder{},
-		PendingTools:  make(map[string]string),
-		ToolHeaders:   make(map[string]string),
-		ToolOutputBuf: make(map[string]*strings.Builder),
+		Driver:          driver,
+		ModelName:       modelName,
+		Version:         c.Version,
+		Spinner:         sp,
+		ToolSpinner:     tsp,
+		Input:           ta,
+		Streaming:       &strings.Builder{},
+		Thinking:        &strings.Builder{},
+		PendingTools:    make(map[string]string),
+		ToolHeaders:     make(map[string]string),
+		ToolOutputBuf:   make(map[string]*strings.Builder),
 		ToolDeltaBuf:    make(map[string]*strings.Builder),
 		ToolThinkingBuf: make(map[string]*strings.Builder),
-		Cwd:           c.Cwd,
-		GitBranch:     c.GitBranch,
-		ShowWelcome:   true,
-		EnvHint:       c.EnvHint,
-		ImageCursor:   -1,
-		config:        c,
-		history:       c.History,
-		histIdx:       -1,
+		Cwd:             c.Cwd,
+		GitBranch:       c.GitBranch,
+		ShowWelcome:     true,
+		EnvHint:         c.EnvHint,
+		ImageCursor:     -1,
+		config:          c,
+		history:         c.History,
+		histIdx:         -1,
 	}
 }
 
@@ -294,6 +301,30 @@ func (m Model) View() string {
 	}
 
 	var parts []string
+	overlay := m.overlayView()
+	appendInputArea := func() {
+		if len(m.Images) > 0 {
+			var tags []string
+			for i := range m.Images {
+				tag := fmt.Sprintf("[Image #%d]", i+1)
+				if m.ImageCursor == i {
+					tags = append(tags, ImageSelectedStyle.Render(tag))
+				} else {
+					tags = append(tags, CommandStyle.Render(tag))
+				}
+			}
+			line := strings.Join(tags, " ")
+			if m.ImageCursor >= 0 {
+				line += " " + MutedStyle.Render("Delete to remove · Esc to cancel")
+			} else {
+				line += " " + MutedStyle.Render("(↑ to select)")
+			}
+			parts = append(parts, line)
+		}
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, m.Input.View())
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+	}
 
 	// Welcome banner (before first message only)
 	if m.ShowWelcome {
@@ -349,15 +380,15 @@ func (m Model) View() string {
 		parts = append(parts, m.renderTaskList(), "")
 	}
 
-	// Interactive command overlay (e.g., /model selector) replaces input area.
-	if ov := m.overlayView(); ov != "" {
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
-		parts = append(parts, ov)
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
-		parts = append(parts, m.RenderStatusBar())
-	} else
-	// Plan review / AskUser replace status bar + input area.
-	if planBar := m.RenderPlanBar(); planBar != "" {
+	// Interactive command overlay (e.g., /model selector) sits below the input area.
+	if overlay != "" {
+		if statusBar := m.RenderStatusBar(); statusBar != "" {
+			parts = append(parts, statusBar, "")
+		}
+		appendInputArea()
+		parts = append(parts, overlay)
+	} else if planBar := m.RenderPlanBar(); planBar != "" {
+		// Plan review / AskUser replace status bar + input area.
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, planBar)
 		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
@@ -382,36 +413,17 @@ func (m Model) View() string {
 		if len(m.QueuedMsgs) > 0 {
 			parts = append(parts, m.renderQueuedMsgs())
 		}
-		// Normal: image attachments + input
-		if len(m.Images) > 0 {
-			var tags []string
-			for i := range m.Images {
-				tag := fmt.Sprintf("[Image #%d]", i+1)
-				if m.ImageCursor == i {
-					tags = append(tags, ImageSelectedStyle.Render(tag))
-				} else {
-					tags = append(tags, CommandStyle.Render(tag))
-				}
-			}
-			line := strings.Join(tags, " ")
-			if m.ImageCursor >= 0 {
-				line += " " + MutedStyle.Render("Delete to remove · Esc to cancel")
-			} else {
-				line += " " + MutedStyle.Render("(↑ to select)")
-			}
-			parts = append(parts, line)
-		}
+		appendInputArea()
 		if comp := m.renderCompletions(); comp != "" {
 			parts = append(parts, comp)
 		}
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
-		parts = append(parts, m.Input.View())
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 	}
 
 	// Context bar (below input)
-	parts = append(parts, m.RenderContextBar())
-	parts = append(parts, "")
+	if !m.compActive && overlay == "" {
+		parts = append(parts, m.RenderContextBar())
+		parts = append(parts, "")
+	}
 
 	return strings.Join(parts, "\n")
 }
@@ -474,8 +486,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.acceptCompletion()
 			return m, nil
 		case "enter":
-			m.acceptCompletion()
-			// Fall through to normal enter handling to execute the command directly.
+			item := m.acceptCompletion()
+			if !item.AutoExecute {
+				return m, nil
+			}
+			// Fall through to normal enter handling to execute no-arg commands directly.
 		case "up":
 			if m.compIdx > 0 {
 				m.compIdx--
@@ -907,15 +922,17 @@ func (m *Model) updateCompletions() {
 }
 
 // acceptCompletion fills the selected completion into the input.
-func (m *Model) acceptCompletion() {
+func (m *Model) acceptCompletion() CompletionItem {
 	if !m.compActive || m.compIdx < 0 || m.compIdx >= len(m.compItems) {
-		return
+		return CompletionItem{}
 	}
-	name := m.compItems[m.compIdx].Name
+	item := m.compItems[m.compIdx]
+	name := item.Name
 	m.Input.Reset()
 	m.Input.SetValue("/" + name + " ")
 	m.Input.CursorEnd()
 	m.compActive = false
+	return item
 }
 
 // renderCompletions renders the completion menu.
@@ -923,17 +940,7 @@ func (m Model) renderCompletions() string {
 	if !m.compActive || len(m.compItems) == 0 {
 		return ""
 	}
-	var sb strings.Builder
-	for i, item := range m.compItems {
-		name := "/" + item.Name
-		if i == m.compIdx {
-			sb.WriteString(ChoiceActiveStyle.Render(fmt.Sprintf("  %-16s %s", name, item.Description)))
-		} else {
-			sb.WriteString(ChoiceInactiveStyle.Render(fmt.Sprintf("  %-16s %s", name, item.Description)))
-		}
-		sb.WriteString("\n")
-	}
-	return strings.TrimRight(sb.String(), "\n")
+	return m.renderCommandPalette()
 }
 
 // animateStep moves current one step closer to target.
