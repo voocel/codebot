@@ -59,6 +59,10 @@ func (m *Manager) StartAll(ctx context.Context, servers map[string]ServerConfig)
 	return errs
 }
 
+// MarkDirty forces the dirty flag so that the next RefreshIfDirty call
+// triggers a tool reload. Used after initial async connection completes.
+func (m *Manager) MarkDirty() { m.dirty.Store(true) }
+
 // RefreshIfDirty re-fetches tools from all servers if any sent a list_changed
 // notification since the last call. Returns the new tool list and true,
 // or nil and false if nothing changed. Safe to call from the main loop.
@@ -117,22 +121,47 @@ type ServerStatus struct {
 	Name      string
 	ToolCount int
 	Error     string // non-empty if connection failed
+	ListError string // non-empty if connected but ListTools failed
 }
 
 // Status returns the status of all MCP servers, including failed ones.
+// ListTools calls run in parallel with per-server timeout; the mutex is not
+// held during network I/O.
 func (m *Manager) Status(ctx context.Context) []ServerStatus {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	out := make([]ServerStatus, 0, len(m.clients)+len(m.failures))
+	clients := make([]*Client, 0, len(m.clients))
 	for _, c := range m.clients {
-		n := 0
-		if tools, err := c.ListTools(ctx); err == nil {
-			n = len(tools)
-		}
-		out = append(out, ServerStatus{Name: c.Name(), ToolCount: n})
+		clients = append(clients, c)
 	}
-	for name, errMsg := range m.failures {
+	failures := make(map[string]string, len(m.failures))
+	for k, v := range m.failures {
+		failures[k] = v
+	}
+	m.mu.Unlock()
+
+	type result struct {
+		name  string
+		count int
+		err   error
+	}
+	ch := make(chan result, len(clients))
+	for _, c := range clients {
+		go func(c *Client) {
+			tools, err := c.ListTools(ctx)
+			ch <- result{name: c.Name(), count: len(tools), err: err}
+		}(c)
+	}
+
+	out := make([]ServerStatus, 0, len(clients)+len(failures))
+	for range clients {
+		r := <-ch
+		s := ServerStatus{Name: r.name, ToolCount: r.count}
+		if r.err != nil {
+			s.ListError = r.err.Error()
+		}
+		out = append(out, s)
+	}
+	for name, errMsg := range failures {
 		out = append(out, ServerStatus{Name: name, Error: errMsg})
 	}
 	return out

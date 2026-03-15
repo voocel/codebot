@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +48,7 @@ type bootSpec struct {
 	contextFiles   config.ContextFiles
 	skills         []config.Skill
 	mcpManager     *mcpclient.Manager
+	mcpServers     map[string]mcpclient.ServerConfig
 	subagentTool   *agentcore.SubAgentTool
 	bashTool       *agentcoretools.BashTool
 	permission     func(context.Context, agentcore.ToolCall) error
@@ -199,7 +202,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		return config.AddAllowedCommand(cwd, cmd)
 	})
 
-	tools, baseTools, mcpManager, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories)
+	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +231,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		contextFiles:          ctxFiles,
 		skills:                skills,
 		mcpManager:            mcpManager,
+		mcpServers:            mcpServers,
 		subagentTool:          subagentTool,
 		bashTool:              bashTool,
 		permission:            pol.Permission,
@@ -237,7 +241,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	}, nil
 }
 
-func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
+func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	// Find the BashTool from built tools for background shell wiring.
@@ -283,17 +287,11 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 	mcpServers := mcpclient.LoadAllMCPServers(input.cwd)
 	if len(mcpServers) > 0 {
 		mcpManager = mcpclient.NewManager()
-		if errs := mcpManager.StartAll(context.Background(), mcpServers); len(errs) > 0 {
-			for _, e := range errs {
-				fmt.Fprintf(os.Stderr, "mcp: %v\n", e)
-			}
-		}
-		builtTools = append(builtTools, mcpManager.Tools(context.Background())...)
 	}
 
 	builtTools, baseTools = applyToolSearch(builtTools, baseTools, activeProvider, settings.Model)
 
-	return builtTools, baseTools, mcpManager, subagentTool, bashTool, nil
+	return builtTools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, nil
 }
 
 // coreToolNames are tools that remain always visible to the LLM.
@@ -487,14 +485,31 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 
 	spec.subagentTool.SetNotifyFn(ag.FollowUp)
 
-	// Wire output directories: shared tasks dir in tmp, persistent subagents dir.
+	// Wire output factories: consumer provides file I/O, agentcore just writes.
 	sessionID := input.store.Header().SessionID
 	tasksDir := filepath.Join(os.TempDir(), "codebot-bg", sessionID, "tasks")
 	subagentsDir := filepath.Join(config.SessionsDir(input.cwd), sessionID, "subagents")
-	spec.subagentTool.SetDirs(tasksDir, subagentsDir)
+	spec.subagentTool.SetBgOutputFactory(func(taskID, agentName string) (io.WriteCloser, string, error) {
+		_ = os.MkdirAll(subagentsDir, 0o700)
+		path := filepath.Join(subagentsDir, "agent-"+taskID+".jsonl")
+		f, err := os.Create(path)
+		if err != nil {
+			return nil, "", err
+		}
+		meta, _ := json.Marshal(map[string]string{"agentType": agentName})
+		_ = os.WriteFile(filepath.Join(subagentsDir, "agent-"+taskID+".meta.json"), meta, 0o600)
+		_ = os.MkdirAll(tasksDir, 0o700)
+		_ = os.Symlink(path, filepath.Join(tasksDir, "agent-"+taskID+".output"))
+		return f, path, nil
+	})
 	if spec.bashTool != nil {
 		spec.bashTool.SetNotifyFn(ag.FollowUp)
-		spec.bashTool.SetOutputDir(tasksDir)
+		spec.bashTool.SetBgOutputFactory(func(shellID string) (io.WriteCloser, string, error) {
+			_ = os.MkdirAll(tasksDir, 0o700)
+			path := filepath.Join(tasksDir, shellID+".output")
+			f, err := os.Create(path)
+			return f, path, err
+		})
 	}
 
 	if len(input.snapshot.Messages) > 0 {
@@ -549,6 +564,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Settings:      spec.settings,
 		Session:       sess,
 		MCPManager:    spec.mcpManager,
+		MCPServers:    spec.mcpServers,
 		EnvHint:       input.envHint,
 	}, nil
 }

@@ -173,6 +173,9 @@ func (m *Model) renderWelcome() string {
 	if m.EnvHint != "" {
 		result += "\n" + MutedStyle.Render("  "+m.EnvHint)
 	}
+	if m.MCPLoading {
+		result += "\n" + MutedStyle.Render("  ") + m.ToolSpinner.View() + MutedStyle.Render(" MCP servers connecting...")
+	}
 	return result
 }
 

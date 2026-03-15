@@ -46,6 +46,7 @@ type Runtime struct {
 	Settings   config.Resolved
 	Session    *agent.Session
 	MCPManager *mcpclient.Manager
+	MCPServers map[string]mcpclient.ServerConfig // for async connection in TUI
 	EnvHint    string // non-empty when credentials come from environment variable
 }
 

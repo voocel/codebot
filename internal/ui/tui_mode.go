@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
@@ -19,7 +20,7 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager, envHint string) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, envHint string) error {
 	adapter := &App{
 		Session:       sess,
 		Cwd:           cwd,
@@ -37,8 +38,34 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, prof
 	cfg.Version = version
 	cfg.EnvHint = envHint
 	cfg.RestoredMessages = sess.Messages()
+	cfg.OnMCPReady = func(msg tui.MCPReadyMsg) {
+		if msg.Instructions != "" {
+			sess.SetSystemSuffix(msg.Instructions)
+		}
+	}
 	m := tui.New(sess, modelName, cfg)
+	m.MCPLoading = mcpMgr != nil && len(mcpServers) > 0
 	p := tea.NewProgram(m)
+
+	// Start MCP server connections in background.
+	if mcpMgr != nil && len(mcpServers) > 0 {
+		go func() {
+			errs := mcpMgr.StartAll(context.Background(), mcpServers)
+			// Fetch tools eagerly so the count is accurate and servers are warmed up.
+			tools := mcpMgr.Tools(context.Background())
+			mcpMgr.MarkDirty()
+
+			var instructions string
+			if insts := mcpMgr.Instructions(); len(insts) > 0 {
+				instructions = strings.Join(insts, "\n\n")
+			}
+			var errStrs []string
+			for _, e := range errs {
+				errStrs = append(errStrs, e.Error())
+			}
+			p.Send(tui.MCPReadyMsg{Tools: len(tools), Errors: errStrs, Instructions: instructions})
+		}()
+	}
 
 	// Wire AskUserQuestion tool to TUI (find from session's registered tools).
 	if found := sess.ToolsByName("ask_user"); len(found) > 0 {

@@ -71,7 +71,7 @@
     },
     "remote-api": {
       "type": "http",
-      "url": "https://mcp.example.com/mcp",
+      "url": "https://mcp.deepwiki.com/mcp",
       "headers": { "Authorization": "Bearer your-token-here" }
     }
   }

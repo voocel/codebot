@@ -51,3 +51,10 @@ type TaskListUpdateMsg struct {
 
 // TasksRefreshMsg is a periodic tick that triggers a re-render of the /tasks overlay.
 type TasksRefreshMsg struct{}
+
+// MCPReadyMsg notifies the TUI that background MCP server connection has completed.
+type MCPReadyMsg struct {
+	Tools        int      // total number of tools loaded across all servers
+	Errors       []string // connection errors (server: reason)
+	Instructions string   // MCP server instructions to set as system suffix
+}

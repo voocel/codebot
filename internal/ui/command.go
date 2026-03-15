@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
@@ -425,29 +426,39 @@ func (a *App) cmdMCP() tea.Cmd {
 		return tui.SendCommandResult(tui.CommandStyle.Render("No MCP servers configured."))
 	}
 
-	servers := a.MCPManager.Status(context.Background())
-	if len(servers) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render("No MCP servers found."))
-	}
+	mgr := a.MCPManager
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	var connected, failed int
-	totalTools := 0
-	var sb strings.Builder
-	sb.WriteString("\nMCP Servers:\n")
-	for _, s := range servers {
-		if s.Error != "" {
-			fmt.Fprintf(&sb, "%s %-20s %s\n",
-				tui.ErrorStyle.Render("●"), s.Name, tui.ErrorStyle.Render(s.Error))
-			failed++
-		} else {
-			fmt.Fprintf(&sb, "%s %-20s %d tools\n",
-				tui.DiffAddStyle.Render("●"), s.Name, s.ToolCount)
-			totalTools += s.ToolCount
-			connected++
+		servers := mgr.Status(ctx)
+		if len(servers) == 0 {
+			return tui.CommandResultMsg{Text: tui.CommandStyle.Render("No MCP servers found.")}
 		}
+
+		var connected, failed int
+		totalTools := 0
+		var sb strings.Builder
+		sb.WriteString("\nMCP Servers:\n")
+		for _, s := range servers {
+			if s.Error != "" {
+				fmt.Fprintf(&sb, "%s %-20s %s\n",
+					tui.ErrorStyle.Render("●"), s.Name, tui.ErrorStyle.Render(s.Error))
+				failed++
+			} else if s.ListError != "" {
+				fmt.Fprintf(&sb, "%s %-20s %s\n",
+					tui.ErrorStyle.Render("●"), s.Name, tui.ErrorStyle.Render("tools/list: "+s.ListError))
+				connected++
+			} else {
+				fmt.Fprintf(&sb, "%s %-20s %d tools\n",
+					tui.DiffAddStyle.Render("●"), s.Name, s.ToolCount)
+				totalTools += s.ToolCount
+				connected++
+			}
+		}
+		fmt.Fprintf(&sb, "\nTotal: %d connected, %d failed, %d tools", connected, failed, totalTools)
+		return tui.CommandResultMsg{Text: tui.CommandStyle.Render(sb.String())}
 	}
-	fmt.Fprintf(&sb, "\nTotal: %d connected, %d failed, %d tools", connected, failed, totalTools)
-	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 }
 
 func (a *App) cmdReload() tea.Cmd {

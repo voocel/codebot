@@ -6,18 +6,18 @@ import (
 	"fmt"
 	"strings"
 
-	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/voocel/mcp-sdk-go/protocol"
 )
 
 // MCPTool adapts an MCP server tool to the agentcore.Tool interface.
 type MCPTool struct {
 	client   *Client
-	tool     *sdkmcp.Tool
+	tool     protocol.Tool
 	fullName string // mcp__<server>__<tool>
 }
 
 // NewMCPTool creates an adapter from an MCP tool definition.
-func NewMCPTool(client *Client, tool *sdkmcp.Tool) *MCPTool {
+func NewMCPTool(client *Client, tool protocol.Tool) *MCPTool {
 	return &MCPTool{
 		client:   client,
 		tool:     tool,
@@ -39,23 +39,10 @@ func (t *MCPTool) Description() string { return t.tool.Description }
 // Schema converts the MCP tool's InputSchema to the map[string]any format
 // expected by agentcore.
 func (t *MCPTool) Schema() map[string]any {
-	if t.tool.InputSchema == nil {
+	if len(t.tool.InputSchema) == 0 {
 		return map[string]any{"type": "object"}
 	}
-	// InputSchema from the client is already a map[string]any (default JSON unmarshaling).
-	if m, ok := t.tool.InputSchema.(map[string]any); ok {
-		return m
-	}
-	// Fallback: marshal and re-unmarshal.
-	data, err := json.Marshal(t.tool.InputSchema)
-	if err != nil {
-		return map[string]any{"type": "object"}
-	}
-	var m map[string]any
-	if json.Unmarshal(data, &m) != nil {
-		return map[string]any{"type": "object"}
-	}
-	return m
+	return t.tool.InputSchema
 }
 
 // Execute calls the MCP tool and converts the result to JSON.
@@ -80,10 +67,10 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMe
 }
 
 // extractText concatenates all TextContent from a CallToolResult.
-func extractText(result *sdkmcp.CallToolResult) string {
+func extractText(result *protocol.CallToolResult) string {
 	var sb strings.Builder
 	for _, c := range result.Content {
-		if tc, ok := c.(*sdkmcp.TextContent); ok {
+		if tc, ok := c.(protocol.TextContent); ok {
 			if sb.Len() > 0 {
 				sb.WriteByte('\n')
 			}

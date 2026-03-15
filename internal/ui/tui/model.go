@@ -42,6 +42,7 @@ type Config struct {
 	OnEvent          func(m *Model, ev agentcore.Event) tea.Cmd
 	OnPaste          func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
 	OnDrop           func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
+	OnMCPReady       func(msg MCPReadyMsg)               // called when MCP servers finish connecting
 	StatusRight      func(m *Model) string
 	StatusPlan       func(m *Model) *PlanBarInfo
 	Overlay          func(m *Model) *OverlayState         // interactive command overlay
@@ -137,6 +138,8 @@ type Model struct {
 	Tasks *tools.TaskSnapshot // non-nil when tasks exist; displayed above input
 
 	QueuedMsgs []string // messages queued while agent is running (display only)
+
+	MCPLoading bool // true while MCP servers are connecting in background
 
 	compItems  []CompletionItem // current completion candidates
 	compIdx    int              // selected completion index
@@ -278,6 +281,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			snap := msg.Snapshot
 			m.Tasks = &snap
+		}
+		return m, nil
+	case MCPReadyMsg:
+		m.MCPLoading = false
+		if m.config.OnMCPReady != nil {
+			m.config.OnMCPReady(msg)
+		}
+		var parts []string
+		if msg.Tools > 0 {
+			parts = append(parts, fmt.Sprintf("%d tools connected", msg.Tools))
+		}
+		for _, e := range msg.Errors {
+			parts = append(parts, ErrorStyle.Render(e))
+		}
+		if len(parts) > 0 {
+			text := MutedStyle.Render("  mcp: ") + strings.Join(parts, MutedStyle.Render(", "))
+			return m, tea.Println(text)
 		}
 		return m, nil
 	case quitResetMsg:

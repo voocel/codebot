@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	sdkmcp "github.com/voocel/mcp-sdk-go/protocol"
 )
 
 func TestExpandEnv(t *testing.T) {
@@ -87,7 +87,7 @@ func TestMCPToolAdapter(t *testing.T) {
 			Name: "my-tool", Description: "A test tool",
 			InputSchema: map[string]any{"type": "object"},
 		}
-		tool := NewMCPTool(c, &mt)
+		tool := NewMCPTool(c, mt)
 
 		if tool.Name() != "mcp__srv__my-tool" {
 			t.Errorf("Name() = %q", tool.Name())
@@ -109,7 +109,7 @@ func TestMCPToolAdapter(t *testing.T) {
 			Name: "x", Title: "Display Name", Description: "d",
 			InputSchema: map[string]any{"type": "object"},
 		}
-		tool := NewMCPTool(c, &mt)
+		tool := NewMCPTool(c, mt)
 		if tool.Label() != "Display Name" {
 			t.Errorf("Label() = %q", tool.Label())
 		}
@@ -118,7 +118,7 @@ func TestMCPToolAdapter(t *testing.T) {
 	t.Run("nil_schema_fallback", func(t *testing.T) {
 		t.Parallel()
 		mt := sdkmcp.Tool{Name: "x", Description: "d"}
-		tool := NewMCPTool(c, &mt)
+		tool := NewMCPTool(c, mt)
 		if tool.Schema()["type"] != "object" {
 			t.Errorf("Schema() = %v", tool.Schema())
 		}
