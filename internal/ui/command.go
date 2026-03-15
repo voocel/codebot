@@ -111,6 +111,7 @@ func (a *App) builtinCommands() []Command {
 			return ctx.App.cmdNew()
 		}),
 		NewResumeCommand(a),
+		NewTasksCommand(a),
 		NewSimple(CommandSpec{
 			Name: "settings", Usage: "/settings", Description: "Show current settings",
 			Risk: policy.RiskLow, Kind: CommandKindBuiltin,

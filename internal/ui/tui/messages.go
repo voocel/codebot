@@ -48,3 +48,6 @@ type PasteErrorMsg struct {
 type TaskListUpdateMsg struct {
 	Snapshot tools.TaskSnapshot
 }
+
+// TasksRefreshMsg is a periodic tick that triggers a re-render of the /tasks overlay.
+type TasksRefreshMsg struct{}

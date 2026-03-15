@@ -62,11 +62,6 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("252"))
 
-	askBorderColor = lipgloss.Color("245") // light gray
-
-	askBorderStyle = lipgloss.NewStyle().
-			Foreground(askBorderColor)
-
 	askCollapsedStyle = lipgloss.NewStyle().
 				Foreground(ColorMuted).
 				Italic(true)
@@ -468,7 +463,7 @@ func renderPreviewBox(s *askUserState, q tools.Question, width int) string {
 	maxLines := s.previewMaxLines()
 
 	if preview == "" {
-		return drawBox([]string{askDescStyle.Render("No preview available")}, innerWidth, maxLines)
+		return DrawBox([]string{askDescStyle.Render("No preview available")}, innerWidth, maxLines)
 	}
 
 	lines := strings.Split(preview, "\n")
@@ -480,60 +475,11 @@ func renderPreviewBox(s *askUserState, q tools.Question, width int) string {
 		collapsedLine = askCollapsedStyle.Render(fmt.Sprintf("── %d lines hidden ──", hidden))
 	}
 
-	box := drawBox(lines, innerWidth, maxLines)
+	box := DrawBox(lines, innerWidth, maxLines)
 	if collapsedLine != "" {
 		box += "\n" + collapsedLine
 	}
 	return box
-}
-
-// drawBox manually draws a rounded border box with fixed height.
-// innerWidth is the content width; fixedRows is the exact number of content rows
-// (short content is padded with empty lines to keep view height stable).
-func drawBox(lines []string, innerWidth, fixedRows int) string {
-	bs := askBorderStyle
-	padWidth := innerWidth + 2 // 1 padding each side
-
-	emptyLine := bs.Render("│") + " " + strings.Repeat(" ", innerWidth) + " " + bs.Render("│")
-
-	var b strings.Builder
-	b.WriteString(bs.Render("╭" + strings.Repeat("─", padWidth) + "╮"))
-	b.WriteByte('\n')
-
-	for i := range fixedRows {
-		if i < len(lines) {
-			line := lines[i]
-			vis := lipgloss.Width(line)
-			if vis > innerWidth {
-				line = truncateToWidth(line, innerWidth)
-				vis = lipgloss.Width(line)
-			}
-			pad := max(innerWidth-vis, 0)
-			b.WriteString(bs.Render("│") + " " + line + strings.Repeat(" ", pad) + " " + bs.Render("│"))
-		} else {
-			b.WriteString(emptyLine)
-		}
-		b.WriteByte('\n')
-	}
-
-	b.WriteString(bs.Render("╰" + strings.Repeat("─", padWidth) + "╯"))
-	return b.String()
-}
-
-// truncateToWidth truncates a string to fit within maxWidth visual cells.
-func truncateToWidth(s string, maxWidth int) string {
-	var b strings.Builder
-	w := 0
-	for _, r := range s {
-		rw := lipgloss.Width(string(r))
-		if w+rw > maxWidth {
-			b.WriteString("…")
-			break
-		}
-		b.WriteRune(r)
-		w += rw
-	}
-	return b.String()
 }
 
 // renderHintLine builds the bottom hint text.

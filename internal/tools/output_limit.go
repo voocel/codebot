@@ -56,6 +56,9 @@ func WrapWithOutputLimit(tools []agentcore.Tool) []agentcore.Tool {
 	return out
 }
 
+// Unwrap returns the underlying tool, allowing type assertions through the wrapper.
+func (t *OutputLimitedTool) Unwrap() agentcore.Tool { return t.inner }
+
 func (t *OutputLimitedTool) Name() string           { return t.inner.Name() }
 func (t *OutputLimitedTool) Description() string     { return t.inner.Description() }
 func (t *OutputLimitedTool) Schema() map[string]any  { return t.inner.Schema() }

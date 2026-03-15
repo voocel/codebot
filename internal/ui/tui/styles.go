@@ -129,6 +129,8 @@ var PlanTagStyle = lipgloss.NewStyle().Foreground(ColorAccent)
 var (
 	MutedStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 
+	BoxBorderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
 	QueuedMsgStyle = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
 
 	TokenStyle = lipgloss.NewStyle().Foreground(ColorToken)

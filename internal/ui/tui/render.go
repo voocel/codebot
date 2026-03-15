@@ -635,8 +635,27 @@ func toolDisplayName(tool string) string {
 	if n, ok := names[tool]; ok {
 		return n
 	}
-	if len(tool) > 0 {
-		return strings.ToUpper(tool[:1]) + tool[1:]
+	if tool == "" {
+		return tool
+	}
+	parts := strings.FieldsFunc(tool, func(r rune) bool {
+		return r == '_' || r == '-'
+	})
+	if len(parts) == 0 {
+		return tool
+	}
+	var b strings.Builder
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(part[:1]))
+		if len(part) > 1 {
+			b.WriteString(part[1:])
+		}
+	}
+	if b.Len() > 0 {
+		return b.String()
 	}
 	return tool
 }
@@ -1145,4 +1164,53 @@ func FormatSubagentOutput(result json.RawMessage) string {
 		output += "\n\n" + MutedStyle.Render(stats)
 	}
 	return output
+}
+
+// DrawBox draws a rounded border box with fixed height and gray border.
+// innerWidth is the content width; fixedRows is the exact number of content rows
+// (short content is padded with empty lines to keep view height stable).
+func DrawBox(lines []string, innerWidth, fixedRows int) string {
+	bs := BoxBorderStyle
+	padWidth := innerWidth + 2 // 1 padding each side
+
+	emptyLine := bs.Render("│") + " " + strings.Repeat(" ", innerWidth) + " " + bs.Render("│")
+
+	var b strings.Builder
+	b.WriteString(bs.Render("╭" + strings.Repeat("─", padWidth) + "╮"))
+	b.WriteByte('\n')
+
+	for i := range fixedRows {
+		if i < len(lines) {
+			line := lines[i]
+			vis := lipgloss.Width(line)
+			if vis > innerWidth {
+				line = truncateToWidth(line, innerWidth)
+				vis = lipgloss.Width(line)
+			}
+			pad := max(innerWidth-vis, 0)
+			b.WriteString(bs.Render("│") + " " + line + strings.Repeat(" ", pad) + " " + bs.Render("│"))
+		} else {
+			b.WriteString(emptyLine)
+		}
+		b.WriteByte('\n')
+	}
+
+	b.WriteString(bs.Render("╰" + strings.Repeat("─", padWidth) + "╯"))
+	return b.String()
+}
+
+// truncateToWidth truncates a string to fit within maxWidth visual cells.
+func truncateToWidth(s string, maxWidth int) string {
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > maxWidth {
+			b.WriteString("…")
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String()
 }

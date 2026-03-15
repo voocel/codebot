@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/agentcore"
+	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
@@ -91,6 +93,23 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, prof
 			})
 			sched.Start()
 			defer sched.Stop()
+		}
+	}
+
+	// Wire SubAgentTool and BashTool for /tasks command.
+	if found := sess.ToolsByName("subagent"); len(found) > 0 {
+		if st, ok := found[0].(*agentcore.SubAgentTool); ok {
+			adapter.SubAgentTool = st
+		}
+	}
+	if found := sess.ToolsByName("bash"); len(found) > 0 {
+		tool := found[0]
+		// Unwrap OutputLimitedTool wrapper if present.
+		if w, ok := tool.(interface{ Unwrap() agentcore.Tool }); ok {
+			tool = w.Unwrap()
+		}
+		if bt, ok := tool.(*agentcoretools.BashTool); ok {
+			adapter.BashTool = bt
 		}
 	}
 

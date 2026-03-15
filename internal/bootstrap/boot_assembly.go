@@ -47,6 +47,7 @@ type bootSpec struct {
 	skills         []config.Skill
 	mcpManager     *mcpclient.Manager
 	subagentTool   *agentcore.SubAgentTool
+	bashTool       *agentcoretools.BashTool
 	permission     func(context.Context, agentcore.ToolCall) error
 	policyEngine   *policy.Engine
 	hookMiddleware agentcore.ToolMiddleware // nil = no hooks configured
@@ -198,7 +199,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		return config.AddAllowedCommand(cwd, cmd)
 	})
 
-	tools, baseTools, mcpManager, subagentTool, err := buildToolset(input, settings, activeProvider, chatModel, factories)
+	tools, baseTools, mcpManager, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +229,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		skills:                skills,
 		mcpManager:            mcpManager,
 		subagentTool:          subagentTool,
+		bashTool:              bashTool,
 		permission:            pol.Permission,
 		policyEngine:          pol,
 		hookMiddleware:        hookMW,
@@ -235,8 +237,17 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	}, nil
 }
 
-func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, *agentcore.SubAgentTool, error) {
+func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
 	builtTools := buildTools(input.cwd, factories)
+
+	// Find the BashTool from built tools for background shell wiring.
+	var bashTool *agentcoretools.BashTool
+	for _, tool := range builtTools {
+		if bt, ok := tool.(*agentcoretools.BashTool); ok {
+			bashTool = bt
+			break
+		}
+	}
 	askTool := localtools.NewAskUser()
 	taskStore, taskTools := localtools.NewTaskTools()
 	_, cronTools := localtools.NewCronTools()
@@ -282,7 +293,7 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 
 	builtTools, baseTools = applyToolSearch(builtTools, baseTools, activeProvider, settings.Model)
 
-	return builtTools, baseTools, mcpManager, subagentTool, nil
+	return builtTools, baseTools, mcpManager, subagentTool, bashTool, nil
 }
 
 // coreToolNames are tools that remain always visible to the LLM.
@@ -475,6 +486,16 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 	ag := agentcore.NewAgent(opts...)
 
 	spec.subagentTool.SetNotifyFn(ag.FollowUp)
+
+	// Wire output directories: shared tasks dir in tmp, persistent subagents dir.
+	sessionID := input.store.Header().SessionID
+	tasksDir := filepath.Join(os.TempDir(), "codebot-bg", sessionID, "tasks")
+	subagentsDir := filepath.Join(config.SessionsDir(input.cwd), sessionID, "subagents")
+	spec.subagentTool.SetDirs(tasksDir, subagentsDir)
+	if spec.bashTool != nil {
+		spec.bashTool.SetNotifyFn(ag.FollowUp)
+		spec.bashTool.SetOutputDir(tasksDir)
+	}
 
 	if len(input.snapshot.Messages) > 0 {
 		if err := ag.SetMessages(input.snapshot.Messages); err != nil {

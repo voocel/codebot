@@ -217,6 +217,13 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 // quitResetMsg resets QuitPending after timeout.
 type quitResetMsg struct{}
 
+// TasksTickCmd returns a tea.Cmd that fires TasksRefreshMsg after 500ms.
+func TasksTickCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return TasksRefreshMsg{}
+	})
+}
+
 // RestoreMsg is sent to replay restored session messages into scrollback.
 type RestoreMsg struct{ Msgs []agentcore.AgentMessage }
 
@@ -275,6 +282,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case quitResetMsg:
 		m.QuitPending = false
+		return m, nil
+	case TasksRefreshMsg:
+		// Overlay re-renders on every View() call; just schedule the next tick
+		// if an overlay is still active.
+		if m.config.Overlay != nil {
+			if ov := m.config.Overlay(&m); ov != nil {
+				return m, TasksTickCmd()
+			}
+		}
 		return m, nil
 	case spinner.TickMsg:
 		var cmd1, cmd2 tea.Cmd
