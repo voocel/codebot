@@ -4,14 +4,9 @@
 
 Terminal-native AI coding agent. Built on [agentcore](https://github.com/voocel/agentcore), a minimal agent execution kernel.
 
-```
-╭──────────────────────────────────────────────────────╮
-│ ◆ Codebot                                            │
-│ anthropic/claude-sonnet-4.6 · ~/project (main)       │
-│                                                      │
-│ Enter send · Ctrl+J newline · Esc abort · /help      │
-╰──────────────────────────────────────────────────────╯
-```
+<p align="center">
+  <img src="scripts/sample.gif" alt="Codebot Demo" width="800">
+</p>
 
 ## Why
 

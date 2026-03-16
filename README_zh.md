@@ -4,14 +4,9 @@
 
 终端原生 AI 编程助手。基于 [agentcore](https://github.com/voocel/agentcore) 构建，一个极简的 Agent 执行内核。
 
-```
-╭──────────────────────────────────────────────────────╮
-│ ◆ Codebot                                            │
-│ anthropic/claude-sonnet-4.6 · ~/project (main)       │
-│                                                      │
-│ Enter send · Ctrl+J newline · Esc abort · /help      │
-╰──────────────────────────────────────────────────────╯
-```
+<p align="center">
+  <img src="scripts/sample.gif" alt="Codebot Demo" width="800">
+</p>
 
 ## 为什么
 
