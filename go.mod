@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/muesli/reflow v0.3.0
-	github.com/voocel/agentcore v1.5.2
+	github.com/voocel/agentcore v1.5.3
 	github.com/voocel/mcp-sdk-go v1.2.7
 )
 

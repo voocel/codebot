@@ -67,9 +67,18 @@ func (m *sessionPromptManager) restoreAllTools(extra ...agentcore.Tool) {
 	if len(extra) == 0 {
 		m.session.activeTools = m.session.allTools
 	} else {
+		existing := make(map[string]struct{}, len(m.session.allTools))
+		for _, t := range m.session.allTools {
+			existing[t.Name()] = struct{}{}
+		}
 		combined := make([]agentcore.Tool, len(m.session.allTools), len(m.session.allTools)+len(extra))
 		copy(combined, m.session.allTools)
-		m.session.activeTools = append(combined, extra...)
+		for _, t := range extra {
+			if _, dup := existing[t.Name()]; !dup {
+				combined = append(combined, t)
+			}
+		}
+		m.session.activeTools = combined
 	}
 	m.session.agent.SetTools(m.session.activeTools...)
 	m.rebuildPrompt()
