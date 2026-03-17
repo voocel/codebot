@@ -36,25 +36,25 @@ type bootInput struct {
 }
 
 type bootSpec struct {
-	settings       config.Resolved
-	activeProvider string
-	activeModel    string
-	chatModel      agentcore.ChatModel
-	tools          []agentcore.Tool
-	baseTools      []agentcore.Tool
+	settings              config.Resolved
+	activeProvider        string
+	activeModel           string
+	chatModel             agentcore.ChatModel
+	tools                 []agentcore.Tool
+	baseTools             []agentcore.Tool
 	systemBlocks          []agentcore.SystemBlock
 	deferredToolsPreamble string
 	reminders             []string
-	contextFiles   config.ContextFiles
-	skills         []config.Skill
-	mcpManager     *mcpclient.Manager
-	mcpServers     map[string]mcpclient.ServerConfig
-	subagentTool   *agentcore.SubAgentTool
-	bashTool       *agentcoretools.BashTool
-	permission     func(context.Context, agentcore.ToolCall) error
-	policyEngine   *policy.Engine
-	hookMiddleware agentcore.ToolMiddleware // nil = no hooks configured
-	hookRunner     *hooks.Runner
+	contextFiles          config.ContextFiles
+	skills                []config.Skill
+	mcpManager            *mcpclient.Manager
+	mcpServers            map[string]mcpclient.ServerConfig
+	subagentTool          *agentcore.SubAgentTool
+	bashTool              *agentcoretools.BashTool
+	permission            func(context.Context, agentcore.ToolCall) error
+	policyEngine          *policy.Engine
+	hookMiddleware        agentcore.ToolMiddleware // nil = no hooks configured
+	hookRunner            *hooks.Runner
 }
 
 func resolveBootInput(opts Options) (*bootInput, error) {

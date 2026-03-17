@@ -131,8 +131,10 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 		}
 	}
 
+	repaired := agentcore.RepairMessageSequence(agentcore.CollectMessages(msgs))
+
 	return ContextSnapshot{
-		Messages: msgs,
+		Messages: agentcore.ToAgentMessages(repaired),
 		Provider: lastProvider,
 		Model:    lastModel,
 		Thinking: lastThinking,
