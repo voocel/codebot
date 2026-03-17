@@ -113,7 +113,7 @@ func resolveProviderType(providers map[string]config.ProviderConfig, prov string
 func readOnlyTools(cwd string) []agentcore.Tool {
 	return []agentcore.Tool{
 		tools.NewRead(cwd),
-		tools.NewFind(cwd),
+		tools.NewGlob(cwd),
 		tools.NewGrep(cwd),
 		tools.NewLs(cwd),
 	}

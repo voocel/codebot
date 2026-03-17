@@ -315,7 +315,7 @@ func TestSetToolsRebuildsPrompt(t *testing.T) {
 		&stubTool{name: "write", desc: "Write file contents"},
 		&stubTool{name: "edit", desc: "Edit file contents"},
 		&stubTool{name: "bash", desc: "Execute shell commands"},
-		&stubTool{name: "find", desc: "Find files by pattern"},
+		&stubTool{name: "glob", desc: "Match files by glob pattern"},
 		&stubTool{name: "grep", desc: "Search file contents"},
 		&stubTool{name: "ls", desc: "List directory contents"},
 	}
@@ -333,7 +333,7 @@ func TestSetToolsRebuildsPrompt(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	// Switch to read-only tools.
-	readOnly := s.ToolsByName("read", "find", "grep", "ls")
+	readOnly := s.ToolsByName("read", "glob", "grep", "ls")
 	s.SetTools(readOnly...)
 
 	prompt := ag.State().SystemPrompt

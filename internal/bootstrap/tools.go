@@ -14,7 +14,7 @@ func defaultToolFactories() []ToolFactory {
 		func(cwd string) agentcore.Tool { return tools.NewWrite(cwd) },
 		func(cwd string) agentcore.Tool { return tools.NewEdit(cwd) },
 		func(cwd string) agentcore.Tool { return tools.NewBash(cwd) },
-		func(cwd string) agentcore.Tool { return tools.NewFind(cwd) },
+		func(cwd string) agentcore.Tool { return tools.NewGlob(cwd) },
 		func(cwd string) agentcore.Tool { return tools.NewGrep(cwd) },
 		func(cwd string) agentcore.Tool { return tools.NewLs(cwd) },
 	}

@@ -161,7 +161,7 @@ func (e *Engine) check(ctx context.Context, call agentcore.ToolCall) error {
 		}
 		return e.allowPath(path)
 
-	case "find", "grep", "ls":
+	case "glob", "grep", "ls":
 		path := extractPath(call.Args, "path")
 		if path == "" {
 			return nil

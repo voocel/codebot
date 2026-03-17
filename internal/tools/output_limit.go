@@ -30,7 +30,7 @@ var limitableTools = map[string]struct{}{
 	"read":       {},
 	"bash":       {},
 	"grep":       {},
-	"find":       {},
+	"glob":       {},
 	"ls":         {},
 	"web_fetch":  {},
 	"web_search": {},
@@ -60,8 +60,8 @@ func WrapWithOutputLimit(tools []agentcore.Tool) []agentcore.Tool {
 func (t *OutputLimitedTool) Unwrap() agentcore.Tool { return t.inner }
 
 func (t *OutputLimitedTool) Name() string           { return t.inner.Name() }
-func (t *OutputLimitedTool) Description() string     { return t.inner.Description() }
-func (t *OutputLimitedTool) Schema() map[string]any  { return t.inner.Schema() }
+func (t *OutputLimitedTool) Description() string    { return t.inner.Description() }
+func (t *OutputLimitedTool) Schema() map[string]any { return t.inner.Schema() }
 
 // Label forwards the optional ToolLabeler interface.
 func (t *OutputLimitedTool) Label() string {
@@ -83,6 +83,18 @@ func (t *OutputLimitedTool) Execute(ctx context.Context, args json.RawMessage) (
 }
 
 func (t *OutputLimitedTool) truncateAndSave(result json.RawMessage) json.RawMessage {
+	var obj map[string]any
+	if err := json.Unmarshal(result, &obj); err == nil {
+		if text, ok := obj["output"].(string); ok {
+			path := t.saveToFile(text)
+			obj["output"] = truncatedOutputSummary(text, path)
+			data, merr := json.Marshal(obj)
+			if merr == nil {
+				return data
+			}
+		}
+	}
+
 	// Unwrap JSON string to get raw text; fall back to raw bytes.
 	var text string
 	if err := json.Unmarshal(result, &text); err != nil {
@@ -107,6 +119,11 @@ func (t *OutputLimitedTool) saveToFile(text string) string {
 }
 
 func buildTruncatedOutput(text, path string) json.RawMessage {
+	data, _ := json.Marshal(truncatedOutputSummary(text, path))
+	return data
+}
+
+func truncatedOutputSummary(text, path string) string {
 	runes := []rune(text)
 	headEnd := min(outputHead, len(runes))
 	head := string(runes[:headEnd])
@@ -123,8 +140,7 @@ func buildTruncatedOutput(text, path string) json.RawMessage {
 
 	summary := fmt.Sprintf("%s\n\n[Output saved to %s] [%d characters omitted]\n\n%s",
 		head, path, omitted, tail)
-	data, _ := json.Marshal(summary)
-	return data
+	return summary
 }
 
 // CleanOldOutputs removes tool output files older than 7 days.

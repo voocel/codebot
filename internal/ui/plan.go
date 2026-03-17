@@ -78,7 +78,7 @@ func (a *App) cmdPlan(args []string) tea.Cmd {
 
 // enterPlanMode is the shared setup for both /plan command and enter_plan_mode tool.
 func (a *App) enterPlanMode(task string) tea.Cmd {
-	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash", "subagent")
+	readOnly := a.Session.ToolsByName("read", "glob", "grep", "ls", "bash", "subagent")
 	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
@@ -225,7 +225,7 @@ func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan to edit."))
 	}
 
-	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash", "subagent")
+	readOnly := a.Session.ToolsByName("read", "glob", "grep", "ls", "bash", "subagent")
 	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning
@@ -268,7 +268,7 @@ func (a *App) onEnterPlanMode() tea.Cmd {
 	if a.planState != planOff {
 		return nil
 	}
-	readOnly := a.Session.ToolsByName("read", "find", "grep", "ls", "bash", "subagent")
+	readOnly := a.Session.ToolsByName("read", "glob", "grep", "ls", "bash", "subagent")
 	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	a.planState = planPlanning

@@ -633,7 +633,7 @@ func shortenPath(p string) string {
 func toolDisplayName(tool string) string {
 	names := map[string]string{
 		"bash": "Bash", "read": "Read", "edit": "Edit", "write": "Write",
-		"grep": "Grep", "find": "Find", "glob": "Glob", "ls": "Ls",
+		"grep": "Grep", "glob": "Glob", "ls": "Ls",
 	}
 	if n, ok := names[tool]; ok {
 		return n
@@ -685,7 +685,7 @@ func extractToolSummary(tool string, args json.RawMessage) string {
 		if v, ok := obj["pattern"].(string); ok && v != "" {
 			return v
 		}
-	case "find", "glob":
+	case "glob":
 		if v, ok := obj["pattern"].(string); ok && v != "" {
 			return v
 		}

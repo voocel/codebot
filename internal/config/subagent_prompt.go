@@ -12,7 +12,7 @@ func ExploreSubAgentPrompt(cwd string) string {
 - Return structured findings
 
 ## Principles
-- Use find for file pattern matching, grep for content search
+- Use glob for file pattern matching, grep for content search
 - Issue multiple search requests in parallel when possible
 - Include file paths and line numbers in results
 - You are read-only — do NOT modify any files
