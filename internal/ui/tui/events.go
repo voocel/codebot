@@ -141,9 +141,9 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 				// Flush buffered header with the first preview.
 				if header, ok := m.ToolHeaders[ev.ToolID]; ok {
 					delete(m.ToolHeaders, ev.ToolID)
-					cmds = append(cmds, tea.Println(header+"\n"+indentBlock(rendered, 2)))
+					cmds = append(cmds, printBlock(header+"\n"+indentBlock(rendered, 2)))
 				} else {
-					cmds = append(cmds, tea.Println(indentBlock(rendered, 2)))
+					cmds = append(cmds, printBlock(indentBlock(rendered, 2)))
 				}
 			}
 		case agentcore.ToolExecUpdateProgress:

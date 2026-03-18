@@ -62,7 +62,7 @@ type Store struct {
 	mu          sync.RWMutex
 	sessionJobs map[string]*Job // in-memory only
 	durableJobs map[string]*Job // loaded from file
-	configDir   string          // e.g. <cwd>/.codebot — empty disables durable
+	configDir   string          // e.g. ~/.codebot/projects/<projectID>/<sessionID> — empty disables durable
 
 	writeCh chan struct{} // capacity 1 — coalesces multiple write requests
 	closeCh chan struct{} // signals writer goroutine to stop
@@ -78,7 +78,7 @@ func NewStore() *Store {
 	}
 }
 
-// SetConfigDir enables durable storage (e.g. cwd/.codebot).
+// SetConfigDir enables durable storage (e.g. ~/.codebot/projects/<projectID>/<sessionID>).
 func (s *Store) SetConfigDir(dir string) {
 	s.mu.Lock()
 	s.configDir = dir
@@ -381,7 +381,7 @@ func (s *Store) writeDurableSync() {
 }
 
 // ---------------------------------------------------------------------------
-// Durable file I/O — .codebot/scheduled_tasks.json
+// Durable file I/O — <sessionDir>/scheduled_tasks.json
 // ---------------------------------------------------------------------------
 
 // durableFileData is the JSON structure persisted to disk.
@@ -415,7 +415,7 @@ func (s *Store) DurableFilePath() string {
 	return s.durableFilePath()
 }
 
-// LoadDurableJobs reads .codebot/scheduled_tasks.json and loads valid jobs.
+// LoadDurableJobs reads scheduled_tasks.json from the session directory and loads valid jobs.
 func (s *Store) LoadDurableJobs() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -519,7 +519,7 @@ func (s *Store) MissedDurableJobs() []Job {
 }
 
 // ---------------------------------------------------------------------------
-// File Lock — .codebot/scheduled_tasks.lock
+// File Lock — <sessionDir>/scheduled_tasks.lock
 // ---------------------------------------------------------------------------
 
 // lockData is the JSON written to the lock file.

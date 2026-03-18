@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
@@ -210,5 +211,40 @@ func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}
+	}
+}
+
+func TestFormatRetryEvent(t *testing.T) {
+	t.Parallel()
+
+	text, ok := formatRetryEvent(agent.SessionEvent{
+		Type:         agent.SEAutoRetryStart,
+		RetryAttempt: 2,
+		RetryMax:     3,
+		RetryDelay:   3500 * time.Millisecond,
+	})
+	if !ok {
+		t.Fatal("expected retry start event to be formatted")
+	}
+	for _, want := range []string{"retrying", "2/3", "3.5s"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+}
+
+func TestFormatRetryEventIgnoresOtherEvents(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := formatRetryEvent(agent.SessionEvent{
+		Type: agent.SEAutoRetryEnd,
+	}); ok {
+		t.Fatal("expected retry end event to be ignored")
+	}
+
+	if _, ok := formatRetryEvent(agent.SessionEvent{
+		Type: agent.SEAutoCompactionStart,
+	}); ok {
+		t.Fatal("expected compaction event to be ignored by retry formatter")
 	}
 }

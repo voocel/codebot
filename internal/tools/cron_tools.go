@@ -121,7 +121,7 @@ func (t *CronCreateTool) Execute(_ context.Context, args json.RawMessage) (json.
 	desc := cron.HumanSchedule(a.Cron)
 	persistence := "Session-only (not written to disk, destroyed when session ends)"
 	if durable {
-		persistence = "Persisted to .codebot/scheduled_tasks.json"
+		persistence = "Persisted to session directory"
 	}
 
 	if recurring {

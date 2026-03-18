@@ -677,10 +677,15 @@ func extractToolSummary(tool string, args json.RawMessage) string {
 		if v, ok := obj["command"].(string); ok && v != "" {
 			return v
 		}
-	case "read", "edit", "write", "ls":
+	case "read", "edit", "write":
 		if v, ok := obj["path"].(string); ok && v != "" {
 			return shortenPath(v)
 		}
+	case "ls":
+		if v, ok := obj["path"].(string); ok && v != "" {
+			return shortenPath(v)
+		}
+		return "."
 	case "grep":
 		if v, ok := obj["pattern"].(string); ok && v != "" {
 			return v

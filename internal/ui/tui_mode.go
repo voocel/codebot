@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
@@ -103,12 +104,14 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, prof
 	if found := sess.ToolsByName("cron_create"); len(found) > 0 {
 		if ct, ok := found[0].(*tools.CronCreateTool); ok {
 			store := ct.Store()
-			store.SetConfigDir(filepath.Join(cwd, config.ConfigDir))
 			adapter.CronStore = store
 
 			var sessionID string
 			if info, err := sess.CurrentSessionInfo(); err == nil {
 				sessionID = info.ID
+			}
+			if sessionID != "" {
+				store.SetConfigDir(filepath.Join(config.SessionsDir(cwd), sessionID))
 			}
 
 			sched := cron.NewScheduler(cron.SchedulerConfig{
@@ -182,6 +185,10 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, prof
 			}
 			return
 		}
+		if text, ok := formatRetryEvent(ev); ok {
+			p.Send(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
+			return
+		}
 		if ev.Type == agent.SEError && ev.Error != nil {
 			p.Send(tui.CommandResultMsg{
 				Text: tui.ErrorStyle.Render("Session error: " + ev.Error.Error()),
@@ -207,6 +214,20 @@ func newInputHistory(sess *agent.Session, cwd string) *storage.History {
 		cwd,
 		sessionID,
 	)
+}
+
+func formatRetryEvent(ev agent.SessionEvent) (text string, ok bool) {
+	switch ev.Type {
+	case agent.SEAutoRetryStart:
+		if ev.RetryMax > 0 {
+			return fmt.Sprintf("Request failed, retrying (%d/%d) in %s...",
+				ev.RetryAttempt, ev.RetryMax, ev.RetryDelay.Truncate(time.Millisecond)), true
+		}
+		return fmt.Sprintf("Request failed, retrying in %s...",
+			ev.RetryDelay.Truncate(time.Millisecond)), true
+	default:
+		return "", false
+	}
 }
 
 func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, ok bool) {
