@@ -180,32 +180,25 @@ func (m *Model) renderWelcome() string {
 }
 
 // RenderStatusBar renders the status line above the input.
-// Only shown while the agent is running or in plan mode.
+// Only shown while the agent is running.
 func (m *Model) RenderStatusBar() string {
-	var plan *PlanBarInfo
-	if m.config.StatusPlan != nil {
-		plan = m.config.StatusPlan(m)
+	if m.Permission != nil || m.AskUser != nil {
+		return ""
 	}
-
-	if !m.Running && (plan == nil || plan.Tag == "") {
+	if m.config.StatusPlan != nil {
+		if plan := m.config.StatusPlan(m); plan != nil && len(plan.Choices) > 0 {
+			return ""
+		}
+	}
+	if !m.Running {
 		return ""
 	}
 
-	var status string
-	if m.Running {
-		elapsed := time.Since(m.RunStats.StartedAt).Truncate(time.Second)
-		now := float64(time.Now().UnixMilli()) / 1000.0
-		status = m.Spinner.View() + " " + scanText("Running...", now, 20.0, 2, 2)
-		status += "  " + MutedStyle.Render(fmt.Sprintf("(%s · ↑ %s ↓ %s tokens)",
-			formatDuration(elapsed), FormatTokens(m.RunStats.DisplayInput), FormatTokens(m.RunStats.DisplayOutput)))
-	}
-
-	if plan != nil && plan.Tag != "" {
-		if status != "" {
-			status += "  "
-		}
-		status += PlanTagStyle.Render("◇ " + plan.Tag)
-	}
+	elapsed := time.Since(m.RunStats.StartedAt).Truncate(time.Second)
+	now := float64(time.Now().UnixMilli()) / 1000.0
+	status := m.Spinner.View() + " " + scanText("Running...", now, 20.0, 2, 2)
+	status += "  " + MutedStyle.Render(fmt.Sprintf("(%s · ↑ %s ↓ %s tokens)",
+		formatDuration(elapsed), FormatTokens(m.RunStats.DisplayInput), FormatTokens(m.RunStats.DisplayOutput)))
 
 	if m.Width > 0 {
 		status = truncate.StringWithTail(status, uint(max(m.Width-2, 1)), "…")
@@ -278,6 +271,11 @@ func (m *Model) RenderContextBar() string {
 		return lipgloss.NewStyle().Foreground(ColorMuted).Bold(true).Render("Press Ctrl+C again to exit")
 	}
 	var parts []string
+	if m.config.StatusMode != nil {
+		if mode := m.config.StatusMode(m); mode != "" {
+			parts = append(parts, lipgloss.NewStyle().Foreground(ColorPrimary).Render(mode))
+		}
+	}
 	if m.Cwd != "" {
 		parts = append(parts, filepath.Base(m.Cwd))
 	}

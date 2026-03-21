@@ -144,7 +144,7 @@ func TestPlanModeDeniesWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	engine.SetMode(ModePlan)
+	engine.SetPlanMode(true)
 
 	args, _ := json.Marshal(map[string]any{"path": "a.txt"})
 	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
@@ -155,6 +155,28 @@ func TestPlanModeDeniesWrite(t *testing.T) {
 	}
 	if result == nil || result.Approved {
 		t.Fatalf("plan mode should deny writes, got %#v", result)
+	}
+}
+
+func TestPlanModeStillDeniesWriteInTrustMode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetMode(ModeTrust)
+	engine.SetPlanMode(true)
+
+	args, _ := json.Marshal(map[string]any{"path": "a.txt"})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "write", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatalf("plan mode should stay read-only even in trust mode, got %#v", result)
 	}
 }
 
@@ -234,7 +256,7 @@ func TestApproveCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	engine.SetMode(ModePlan)
+	engine.SetPlanMode(true)
 
 	err = engine.ApproveCommand(context.Background(), CommandRequest{
 		Name:     "new",
@@ -252,7 +274,7 @@ func TestApproveCommandAllowsInfoCommandInPlanMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	engine.SetMode(ModePlan)
+	engine.SetPlanMode(true)
 
 	if err := engine.ApproveCommand(context.Background(), CommandRequest{
 		Name:     "help",

@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -42,6 +43,103 @@ func TestRenderStatusBarRespectsTerminalWidth(t *testing.T) {
 	bar := m.RenderStatusBar()
 	if got := lipgloss.Width(bar); got > 32 {
 		t.Fatalf("status bar width = %d, want <= 32", got)
+	}
+}
+
+func TestRenderStatusBarDoesNotIncludePlanModeTag(t *testing.T) {
+	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
+		StatusPlan: func(*Model) *PlanBarInfo {
+			return &PlanBarInfo{Tag: "plan mode"}
+		},
+	})
+	m.Ready = true
+	m.Width = 100
+	m.Running = true
+	m.RunStats.StartedAt = time.Now().Add(-2 * time.Second)
+	m.RunStats.DisplayInput = 1200
+	m.RunStats.DisplayOutput = 340
+
+	bar := m.RenderStatusBar()
+	if !strings.Contains(bar, "Running") {
+		t.Fatalf("expected running status in %q", bar)
+	}
+	if strings.Contains(bar, "plan mode") {
+		t.Fatalf("expected plan mode tag to stay out of status bar, got %q", bar)
+	}
+}
+
+func TestRenderContextBarShowsModeIndicator(t *testing.T) {
+	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
+		StatusMode: func(*Model) string { return "◇ plan mode" },
+	})
+	m.Ready = true
+	m.Width = 100
+	m.Cwd = "/tmp/project"
+
+	bar := m.RenderContextBar()
+	if !strings.Contains(bar, "◇ plan mode") {
+		t.Fatalf("expected mode indicator in context bar, got %q", bar)
+	}
+	if !strings.Contains(bar, "project") {
+		t.Fatalf("expected project name in context bar, got %q", bar)
+	}
+}
+
+func TestRenderPermissionKeepsBilingualOptionOnSingleLine(t *testing.T) {
+	s := initPermission(PermissionMsg{
+		Tool:    "bash",
+		Command: "echo hello",
+		Reason:  "shell execution requires approval",
+	})
+
+	view := renderPermission(s)
+	if !strings.Contains(view, "1. Allow once") {
+		t.Fatalf("expected first option in permission view, got %q", view)
+	}
+	if !strings.Contains(view, "仅本次允许") {
+		t.Fatalf("expected Chinese hint in permission view, got %q", view)
+	}
+	if !strings.Contains(view, "(仅本次允许)") {
+		t.Fatalf("expected Chinese hint to be wrapped in parentheses, got %q", view)
+	}
+	if strings.Contains(view, "1. Allow once\n") {
+		t.Fatalf("expected bilingual label to stay on one line, got %q", view)
+	}
+}
+
+func TestRenderStatusBarHiddenWhilePermissionPromptActive(t *testing.T) {
+	m := New(nil, "anthropic/claude-sonnet-4.6")
+	m.Ready = true
+	m.Width = 100
+	m.Running = true
+	m.RunStats.StartedAt = time.Now().Add(-2 * time.Second)
+	m.Permission = initPermission(PermissionMsg{
+		Tool:    "bash",
+		Command: "echo hello",
+		Reason:  "shell execution requires approval",
+	})
+
+	if bar := m.RenderStatusBar(); bar != "" {
+		t.Fatalf("expected status bar to hide while permission prompt is active, got %q", bar)
+	}
+}
+
+func TestRenderStatusBarHiddenWhilePlanReviewAwaitsChoice(t *testing.T) {
+	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
+		StatusPlan: func(*Model) *PlanBarInfo {
+			return &PlanBarInfo{
+				Prompt:  "Would you like to proceed?",
+				Choices: []string{"Execute plan", "Cancel"},
+			}
+		},
+	})
+	m.Ready = true
+	m.Width = 100
+	m.Running = true
+	m.RunStats.StartedAt = time.Now().Add(-2 * time.Second)
+
+	if bar := m.RenderStatusBar(); bar != "" {
+		t.Fatalf("expected status bar to hide while waiting for plan review choice, got %q", bar)
 	}
 }
 

@@ -167,6 +167,7 @@ func approvalAuditor(path string) func(approval.AuditEntry) {
 			"time":       e.Time.Format(time.RFC3339Nano),
 			"profile":    string(e.Profile),
 			"mode":       string(e.Mode),
+			"plan_mode":  e.PlanMode,
 			"tool":       e.Tool,
 			"capability": string(e.Capability),
 			"summary":    e.Summary,

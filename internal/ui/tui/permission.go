@@ -97,23 +97,25 @@ func handlePermissionKey(s *permissionState, msg tea.KeyMsg) (bool, tea.Cmd) {
 
 func renderPermission(s *permissionState) string {
 	var b strings.Builder
+	labelStyle := askDescStyle
+	valueStyle := askOptionInactiveStyle
 
 	b.WriteString(askQuestionStyle.Render("⚠ Permission Required"))
 	b.WriteString("\n\n")
 
-	b.WriteString(askDescStyle.Render("  Tool:    "))
-	b.WriteString(askOptionInactiveStyle.Render(s.tool))
+	b.WriteString(labelStyle.Render("  Tool:    "))
+	b.WriteString(valueStyle.Render(s.tool))
 	b.WriteByte('\n')
-	b.WriteString(askDescStyle.Render("  Command: "))
+	b.WriteString(labelStyle.Render("  Command: "))
 	cmd := s.command
 	if runes := []rune(cmd); len(runes) > 120 {
 		cmd = string(runes[:117]) + "..."
 	}
-	b.WriteString(askOptionInactiveStyle.Render(cmd))
+	b.WriteString(valueStyle.Render(cmd))
 	if s.reason != "" {
 		b.WriteByte('\n')
-		b.WriteString(askDescStyle.Render("  Reason:  "))
-		b.WriteString(askOptionInactiveStyle.Render(s.reason))
+		b.WriteString(labelStyle.Render("  Reason:  "))
+		b.WriteString(valueStyle.Render(s.reason))
 	}
 	if s.preview != "" {
 		preview := s.preview
@@ -121,21 +123,24 @@ func renderPermission(s *permissionState) string {
 			preview = string(runes[:240]) + "..."
 		}
 		b.WriteByte('\n')
-		b.WriteString(askDescStyle.Render("  Preview: "))
-		b.WriteString(askOptionInactiveStyle.Render(preview))
+		b.WriteString(labelStyle.Render("  Preview: "))
+		b.WriteString(valueStyle.Render(preview))
 	}
 	b.WriteString("\n\n")
 
 	for i, opt := range permissionOptions {
 		num := fmt.Sprintf("%d. ", i+1)
-		label := num + opt.label
+		prefix := "  "
+		style := askOptionInactiveStyle
 		if i == s.cursor {
-			b.WriteString(askOptionActiveStyle.Render("> " + label))
-		} else {
-			b.WriteString(askOptionInactiveStyle.Render("  " + label))
+			prefix = "> "
+			style = askOptionActiveStyle
 		}
-		b.WriteByte('\n')
-		b.WriteString(askDescStyle.Render("     " + opt.desc))
+		b.WriteString(style.Render(prefix + num + opt.label))
+		if opt.desc != "" {
+			b.WriteString(" ")
+			b.WriteString(askDescStyle.Render("(" + opt.desc + ")"))
+		}
 		b.WriteByte('\n')
 	}
 

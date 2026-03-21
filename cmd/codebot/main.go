@@ -26,7 +26,8 @@ func main() {
 	continueFlag := flag.Bool("c", false, "Continue most recent session")
 	resumeFlag := flag.Bool("r", false, "Select a session to resume")
 	approvalProfileFlag := flag.String("approval-profile", "balanced", "Approval profile: strict, balanced, off")
-	modeFlag := flag.String("mode", "normal", "Permission mode: normal, plan, accept-edits, trust")
+	modeFlag := flag.String("mode", "normal", "Permission mode: normal, accept-edits, trust")
+	trustFlag := flag.Bool("trust", false, "Start in trust mode (skip approval prompts, deny rules still enforced)")
 	flag.Parse()
 
 	if *versionFlag {
@@ -48,10 +49,14 @@ func main() {
 	}
 	defer rt.Close()
 
-	if *modeFlag != "normal" && rt.ApprovalEngine != nil {
-		// Normalize CLI flag value: "accept-edits" → "accept_edits".
-		m := strings.ReplaceAll(*modeFlag, "-", "_")
-		rt.ApprovalEngine.SetMode(approval.Mode(m))
+	if rt.ApprovalEngine != nil {
+		switch {
+		case *trustFlag:
+			rt.ApprovalEngine.SetMode(approval.ModeTrust)
+		case *modeFlag != "normal":
+			m := strings.ReplaceAll(*modeFlag, "-", "_")
+			rt.ApprovalEngine.SetMode(approval.Mode(m))
+		}
 	}
 
 	if printMode {

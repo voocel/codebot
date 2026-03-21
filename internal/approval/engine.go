@@ -15,9 +15,9 @@ type Mode string
 
 const (
 	ModeNormal      Mode = "normal"
-	ModePlan        Mode = "plan"
 	ModeAcceptEdits Mode = "accept_edits"
 	ModeTrust       Mode = "trust"
+	ModePlan        Mode = "plan" // 兼容旧调用；新代码应使用 SetPlanMode
 )
 
 type Capability string
@@ -83,6 +83,7 @@ type AuditEntry struct {
 	Time       time.Time
 	Profile    Profile
 	Mode       Mode
+	PlanMode   bool
 	Tool       string
 	Capability Capability
 	Summary    string
@@ -98,6 +99,7 @@ type Engine struct {
 
 	mu           sync.RWMutex
 	mode         Mode
+	planActive   bool
 	approver     ApproverFunc
 	sessionAllow map[string]storedEntry
 	store        *Store
@@ -125,6 +127,10 @@ func NewEngine(cwd string, profile Profile, rules *RuleSet, onAudit func(AuditEn
 func (e *Engine) SetMode(mode Mode) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if mode == ModePlan {
+		e.planActive = true
+		return
+	}
 	e.mode = mode
 }
 
@@ -132,6 +138,24 @@ func (e *Engine) Mode() Mode {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.mode
+}
+
+func (e *Engine) SetPlanMode(active bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.planActive = active
+}
+
+func (e *Engine) PlanMode() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.planActive
+}
+
+func (e *Engine) state() (Mode, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.mode, e.planActive
 }
 
 func (e *Engine) SetApprover(fn ApproverFunc) {
@@ -182,62 +206,62 @@ func (e *Engine) ApproveHook(ctx context.Context, req HookRequest) error {
 func (e *Engine) ApproveCommand(_ context.Context, req CommandRequest) error {
 	req.Category = normalizeCommandCategory(req.Category)
 	info := inspectCommand(req)
-	mode := e.Mode()
+	mode, planMode := e.state()
 
 	if req.NeedsIdle && req.IsRunning {
 		reason := "command requires idle agent; press Esc to abort current run"
-		e.audit(info, mode, "deny", false, reason)
+		e.audit(info, mode, planMode, "deny", false, reason)
 		return errors.New(reason)
 	}
 
-	if mode == ModePlan {
+	if planMode {
 		switch req.Category {
 		case CommandCategoryInfo, CommandCategoryPlan, CommandCategoryExit:
-			e.audit(info, mode, "allow", true, "")
+			e.audit(info, mode, planMode, "allow", true, "")
 			return nil
 		default:
 			reason := "command is unavailable in plan mode"
-			e.audit(info, mode, "deny", false, reason)
+			e.audit(info, mode, planMode, "deny", false, reason)
 			return errors.New(reason)
 		}
 	}
 
-	e.audit(info, mode, "allow", true, "")
+	e.audit(info, mode, planMode, "allow", true, "")
 	return nil
 }
 
 func (e *Engine) approveInfo(ctx context.Context, info toolInfo) (*agentcore.ToolApprovalResult, error) {
-	mode := e.Mode()
+	mode, planMode := e.state()
 	if info.hardDeny != "" {
-		e.audit(info, mode, "deny", false, info.hardDeny)
+		e.audit(info, mode, planMode, "deny", false, info.hardDeny)
 		return &agentcore.ToolApprovalResult{
 			Approved: false,
 			Decision: agentcore.ToolApprovalDeny,
 			Reason:   info.hardDeny,
 		}, nil
 	}
-	action, reason := e.decide(info, mode)
+	action, reason := e.decide(info, mode, planMode)
 	switch action {
 	case ruleAllow:
-		e.audit(info, mode, "allow", true, "")
+		e.audit(info, mode, planMode, "allow", true, "")
 		return nil, nil
 	case ruleDeny:
 		msg := reason
 		if msg == "" {
 			msg = "tool denied by current mode"
 		}
-		e.audit(info, mode, "deny", false, msg)
+		e.audit(info, mode, planMode, "deny", false, msg)
 		return &agentcore.ToolApprovalResult{
 			Approved: false,
 			Decision: agentcore.ToolApprovalDeny,
 			Reason:   msg,
 		}, nil
 	case ruleAsk:
-		choice, err := e.ask(ctx, info, mode)
+		choice, err := e.ask(ctx, info, mode, planMode)
 		if err != nil {
 			return nil, err
 		}
-		return e.resolveChoice(info, mode, choice), nil
+		return e.resolveChoice(info, mode, planMode, choice), nil
 	default:
 		return nil, nil
 	}
@@ -251,7 +275,7 @@ const (
 	ruleDeny  ruleAction = "deny"
 )
 
-func (e *Engine) decide(info toolInfo, mode Mode) (ruleAction, string) {
+func (e *Engine) decide(info toolInfo, mode Mode, planMode bool) (ruleAction, string) {
 	// Deny rules have highest priority — override even ProfileOff and cached approvals.
 	var ruleResult ruleAction
 	var ruleMatched bool
@@ -275,7 +299,7 @@ func (e *Engine) decide(info toolInfo, mode Mode) (ruleAction, string) {
 		return ruleAllow, "allowed by permission rule"
 	}
 
-	if mode == ModePlan {
+	if planMode {
 		switch info.capability {
 		case CapRead, CapInternal:
 			return ruleAllow, ""
@@ -312,7 +336,7 @@ func (e *Engine) decide(info toolInfo, mode Mode) (ruleAction, string) {
 	}
 }
 
-func (e *Engine) ask(ctx context.Context, info toolInfo, mode Mode) (Choice, error) {
+func (e *Engine) ask(ctx context.Context, info toolInfo, mode Mode, planMode bool) (Choice, error) {
 	e.mu.RLock()
 	fn := e.approver
 	e.mu.RUnlock()
@@ -321,7 +345,7 @@ func (e *Engine) ask(ctx context.Context, info toolInfo, mode Mode) (Choice, err
 		if msg == "" {
 			msg = "approval required but no approver is configured"
 		}
-		e.audit(info, mode, "deny", false, msg)
+		e.audit(info, mode, planMode, "deny", false, msg)
 		return ChoiceDeny, nil
 	}
 	return fn(ctx, Prompt{
@@ -333,7 +357,7 @@ func (e *Engine) ask(ctx context.Context, info toolInfo, mode Mode) (Choice, err
 	})
 }
 
-func (e *Engine) resolveChoice(info toolInfo, mode Mode, choice Choice) *agentcore.ToolApprovalResult {
+func (e *Engine) resolveChoice(info toolInfo, mode Mode, planMode bool, choice Choice) *agentcore.ToolApprovalResult {
 	switch choice {
 	case ChoiceAllowAlways:
 		entry := storedEntry{
@@ -350,7 +374,7 @@ func (e *Engine) resolveChoice(info toolInfo, mode Mode, choice Choice) *agentco
 		if store != nil {
 			_ = store.Add(entry)
 		}
-		e.audit(info, mode, string(choice), true, "")
+		e.audit(info, mode, planMode, string(choice), true, "")
 		return &agentcore.ToolApprovalResult{
 			Approved: true,
 			Decision: agentcore.ToolApprovalAllowAlways,
@@ -366,20 +390,20 @@ func (e *Engine) resolveChoice(info toolInfo, mode Mode, choice Choice) *agentco
 		e.mu.Lock()
 		e.sessionAllow[info.key] = entry
 		e.mu.Unlock()
-		e.audit(info, mode, string(choice), true, "")
+		e.audit(info, mode, planMode, string(choice), true, "")
 		return &agentcore.ToolApprovalResult{
 			Approved: true,
 			Decision: agentcore.ToolApprovalAllowSession,
 		}
 	case ChoiceDeny:
-		e.audit(info, mode, string(choice), false, info.reason)
+		e.audit(info, mode, planMode, string(choice), false, info.reason)
 		return &agentcore.ToolApprovalResult{
 			Approved: false,
 			Decision: agentcore.ToolApprovalDeny,
 			Reason:   firstNonEmpty(info.reason, "tool execution denied by user"),
 		}
 	default:
-		e.audit(info, mode, string(ChoiceAllowOnce), true, "")
+		e.audit(info, mode, planMode, string(ChoiceAllowOnce), true, "")
 		return &agentcore.ToolApprovalResult{
 			Approved: true,
 			Decision: agentcore.ToolApprovalAllowOnce,
@@ -401,7 +425,7 @@ func (e *Engine) allowed(key string) bool {
 	return store != nil && store.Has(key)
 }
 
-func (e *Engine) audit(info toolInfo, mode Mode, decision string, allow bool, reason string) {
+func (e *Engine) audit(info toolInfo, mode Mode, planMode bool, decision string, allow bool, reason string) {
 	if e.onAudit == nil {
 		return
 	}
@@ -409,6 +433,7 @@ func (e *Engine) audit(info toolInfo, mode Mode, decision string, allow bool, re
 		Time:       time.Now(),
 		Profile:    e.profile,
 		Mode:       mode,
+		PlanMode:   planMode,
 		Tool:       info.tool,
 		Capability: info.capability,
 		Summary:    info.summary,

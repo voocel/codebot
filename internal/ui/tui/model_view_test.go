@@ -156,3 +156,31 @@ func TestOverlayAppearsBelowInput(t *testing.T) {
 		t.Fatalf("expected context bar to stay hidden while overlay is active, got: %q", view)
 	}
 }
+
+func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
+	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
+		StatusMode: func(*Model) string { return "◇ plan mode" },
+		StatusPlan: func(*Model) *PlanBarInfo {
+			return &PlanBarInfo{
+				Prompt:  "Would you like to proceed?",
+				Choices: []string{"Execute plan", "Cancel"},
+			}
+		},
+	})
+	m.Ready = true
+	m.Width = 100
+	m.Cwd = "/tmp/project"
+
+	view := m.View()
+	promptIdx := strings.Index(view, "Would you like to proceed?")
+	modeIdx := strings.Index(view, "◇ plan mode")
+	if promptIdx < 0 || modeIdx < 0 {
+		t.Fatalf("expected plan review prompt and bottom mode indicator, got: %q", view)
+	}
+	if modeIdx < promptIdx {
+		t.Fatalf("expected mode indicator below plan review card, got: %q", view)
+	}
+	if strings.Contains(view, "❯ ") {
+		t.Fatalf("expected input area to stay hidden during plan review, got: %q", view)
+	}
+}

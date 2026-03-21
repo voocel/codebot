@@ -123,7 +123,7 @@ var SubagentCardStyle = lipgloss.NewStyle().
 	Padding(0, 1)
 
 // Plan mode tag
-var PlanTagStyle = lipgloss.NewStyle().Foreground(ColorAccent)
+var PlanTagStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 
 // General purpose
 var (

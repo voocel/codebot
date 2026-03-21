@@ -43,7 +43,7 @@ func TestValidateCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	engine.SetMode(approval.ModePlan)
+	engine.SetPlanMode(true)
 
 	spec := CommandSpec{
 		Name:      "new",

@@ -7,7 +7,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
@@ -83,7 +82,7 @@ func (a *App) enterPlanMode(task string) tea.Cmd {
 	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetMode(approval.ModePlan)
+		a.ApprovalEngine.SetPlanMode(true)
 	}
 	a.planState = planPlanning
 	a.planContent = ""
@@ -106,7 +105,7 @@ func (a *App) executePlan() tea.Cmd {
 	a.Session.RestoreAllTools(localtools.NewEnterPlanMode())
 	a.Session.SetSystemSuffix(buildPlanContextSuffix(title, content))
 	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetMode(approval.ModeNormal)
+		a.ApprovalEngine.SetPlanMode(false)
 	}
 
 	a.planState = planOff
@@ -128,7 +127,7 @@ func (a *App) resetPlanState() {
 	a.Session.RestoreAllTools(localtools.NewEnterPlanMode())
 	a.Session.SetSystemSuffix("")
 	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetMode(approval.ModeNormal)
+		a.ApprovalEngine.SetPlanMode(false)
 	}
 	a.planState = planOff
 	a.planContent = ""
@@ -239,7 +238,7 @@ func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
 	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetMode(approval.ModePlan)
+		a.ApprovalEngine.SetPlanMode(true)
 	}
 	a.planState = planPlanning
 	a.planContent = ""
@@ -285,7 +284,7 @@ func (a *App) onEnterPlanMode() tea.Cmd {
 	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
 	a.Session.SetSystemSuffix(planModePrompt)
 	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetMode(approval.ModePlan)
+		a.ApprovalEngine.SetPlanMode(true)
 	}
 	a.planState = planPlanning
 	a.planContent = ""
@@ -361,14 +360,11 @@ func extractTitle(content string) string {
 
 func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {
 	switch a.planState {
-	case planPlanning:
-		return &tui.PlanBarInfo{Tag: "plan mode"}
 	case planReview:
 		if m.Running {
-			return &tui.PlanBarInfo{Tag: "submitting plan..."}
+			return nil
 		}
 		return &tui.PlanBarInfo{
-			Tag:       "plan mode",
 			Prompt:    "Would you like to proceed?",
 			Choices:   []string{"Execute plan", "Cancel"},
 			Active:    a.planChoice,

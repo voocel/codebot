@@ -44,6 +44,7 @@ type Config struct {
 	OnDrop           func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
 	OnMCPReady       func(msg MCPReadyMsg)               // called when MCP servers finish connecting
 	StatusRight      func(m *Model) string
+	StatusMode       func(m *Model) string            // mode indicator for context bar (e.g. "⏵⏵ trust")
 	StatusPlan       func(m *Model) *PlanBarInfo
 	Overlay          func(m *Model) *OverlayState         // interactive command overlay
 	Completions      func(prefix string) []CompletionItem // slash command completions

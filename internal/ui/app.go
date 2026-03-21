@@ -77,6 +77,7 @@ func (a *App) Config() tui.Config {
 		OnDrop:      a.onDrop,
 		OnEvent:     a.planOnEvent,
 		StatusRight: a.statusRight,
+		StatusMode:  a.statusMode,
 		StatusPlan:  a.planStatus,
 		Overlay:     a.overlayState,
 		Completions: a.completions,
@@ -89,6 +90,11 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 		// Plan pending approval: AskUser-style interaction.
 		if a.planState == planReview && !m.Running {
 			return a.handlePlanReviewKey(msg)
+		}
+
+		// Shift+Tab: cycle permission mode (only when idle).
+		if msg.String() == "shift+tab" && !m.Running {
+			return true, a.cycleMode()
 		}
 
 		if msg.String() != "enter" {
@@ -131,6 +137,54 @@ func (a *App) statusRight(m *tui.Model) string {
 		return ""
 	}
 	return tui.TokenStyle.Render(strings.Join(parts, " · "))
+}
+
+// statusMode returns the mode indicator string for the context bar.
+func (a *App) statusMode(_ *tui.Model) string {
+	if a.ApprovalEngine == nil {
+		return ""
+	}
+	if a.ApprovalEngine.PlanMode() {
+		return "◇ plan mode"
+	}
+	switch a.ApprovalEngine.Mode() {
+	case approval.ModeAcceptEdits:
+		return "⏵⏵ accept edits"
+	case approval.ModeTrust:
+		return "⏵⏵ trust"
+	default:
+		return ""
+	}
+}
+
+// modeOrder defines the Shift+Tab cycle sequence.
+// Plan mode is excluded — it has its own lifecycle via /plan command.
+var modeOrder = []approval.Mode{
+	approval.ModeNormal,
+	approval.ModeAcceptEdits,
+	approval.ModeTrust,
+}
+
+// cycleMode advances to the next permission mode.
+func (a *App) cycleMode() tea.Cmd {
+	if a.ApprovalEngine == nil {
+		return nil
+	}
+	if a.ApprovalEngine.PlanMode() {
+		return nil
+	}
+
+	current := a.ApprovalEngine.Mode()
+	idx := 0
+	for i, m := range modeOrder {
+		if m == current {
+			idx = i
+			break
+		}
+	}
+	next := modeOrder[(idx+1)%len(modeOrder)]
+	a.ApprovalEngine.SetMode(next)
+	return nil
 }
 
 // overlayState bridges the registry's interactive command overlay to the TUI.
