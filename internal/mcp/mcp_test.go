@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/voocel/codebot/internal/approval"
 	sdkmcp "github.com/voocel/mcp-sdk-go/protocol"
 )
 
@@ -121,6 +122,33 @@ func TestMCPToolAdapter(t *testing.T) {
 		tool := NewMCPTool(c, mt)
 		if tool.Schema()["type"] != "object" {
 			t.Errorf("Schema() = %v", tool.Schema())
+		}
+	})
+
+	t.Run("approval_metadata_from_annotations", func(t *testing.T) {
+		t.Parallel()
+		mt := sdkmcp.Tool{
+			Name:        "lookup",
+			Description: "Read data from remote source",
+			Annotations: &sdkmcp.ToolAnnotation{ReadOnlyHint: true},
+		}
+		tool := NewMCPTool(c, mt)
+		meta := tool.ApprovalMetadata()
+		if meta.Capability != approval.CapRead {
+			t.Fatalf("capability = %q, want %q", meta.Capability, approval.CapRead)
+		}
+	})
+
+	t.Run("approval_metadata_heuristic_network", func(t *testing.T) {
+		t.Parallel()
+		mt := sdkmcp.Tool{
+			Name:        "web-search",
+			Description: "Search the web",
+		}
+		tool := NewMCPTool(c, mt)
+		meta := tool.ApprovalMetadata()
+		if meta.Capability != approval.CapNetwork {
+			t.Fatalf("capability = %q, want %q", meta.Capability, approval.CapNetwork)
 		}
 	})
 }

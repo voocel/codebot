@@ -55,7 +55,7 @@ type CompletionItem struct {
 	Description string
 	Usage       string
 	Kind        string
-	Risk        string
+	Category    string
 	NeedsIdle   bool
 	Source      string
 	Aliases     []string

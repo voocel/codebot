@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/voocel/codebot/internal/policy"
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/storage"
 )
 
@@ -14,20 +14,20 @@ func TestParseProfile(t *testing.T) {
 
 	cases := []struct {
 		in   string
-		want policy.Profile
+		want approval.Profile
 	}{
-		{in: "", want: policy.ProfileBalanced},
-		{in: "balanced", want: policy.ProfileBalanced},
-		{in: "strict", want: policy.ProfileStrict},
-		{in: "off", want: policy.ProfileOff},
-		{in: "  StRiCt  ", want: policy.ProfileStrict},
+		{in: "", want: approval.ProfileBalanced},
+		{in: "balanced", want: approval.ProfileBalanced},
+		{in: "strict", want: approval.ProfileStrict},
+		{in: "off", want: approval.ProfileOff},
+		{in: "  StRiCt  ", want: approval.ProfileStrict},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
-			got, err := parseProfile(tc.in)
+			got, err := approval.ParseProfile(tc.in)
 			if err != nil {
 				t.Fatalf("parseProfile(%q) error: %v", tc.in, err)
 			}
@@ -41,7 +41,7 @@ func TestParseProfile(t *testing.T) {
 func TestParseProfileInvalid(t *testing.T) {
 	t.Parallel()
 
-	if _, err := parseProfile("unknown"); err == nil {
+	if _, err := approval.ParseProfile("unknown"); err == nil {
 		t.Fatalf("expected invalid profile error")
 	}
 }

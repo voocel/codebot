@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -54,7 +53,7 @@ func (c *ModelCommand) Spec() CommandSpec {
 		Aliases:     []string{"m"},
 		Usage:       "/model [name]",
 		Description: "Show or switch model",
-		Risk:        policy.RiskLow,
+		Category:    "config",
 		NeedsIdle:   true,
 		Kind:        CommandKindBuiltin,
 	}

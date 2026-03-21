@@ -1,24 +1,25 @@
 package ui
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/policy"
 )
 
 func TestValidateCommandRequiresIdleWhenRunning(t *testing.T) {
 	t.Parallel()
 
 	spec := CommandSpec{
-		Risk:      policy.RiskLow,
+		Category:  "info",
 		NeedsIdle: true,
 	}
-	if err := validateCommand(policy.ProfileBalanced, spec, true); err == nil {
+	if err := validateCommand(context.Background(), nil, spec, true); err == nil {
 		t.Fatalf("expected running agent command to be denied")
 	}
 }
@@ -27,23 +28,30 @@ func TestValidateCommandAllowsInfoCommandWhenRunning(t *testing.T) {
 	t.Parallel()
 
 	spec := CommandSpec{
-		Risk:      policy.RiskLow,
+		Category:  "info",
 		NeedsIdle: false,
 	}
-	if err := validateCommand(policy.ProfileBalanced, spec, true); err != nil {
+	if err := validateCommand(context.Background(), nil, spec, true); err != nil {
 		t.Fatalf("expected info command to pass while running: %v", err)
 	}
 }
 
-func TestValidateCommandStillAppliesRiskPolicy(t *testing.T) {
+func TestValidateCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	t.Parallel()
 
+	engine, err := approval.NewEngine(t.TempDir(), "balanced", nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetMode(approval.ModePlan)
+
 	spec := CommandSpec{
-		Risk:      policy.RiskMedium,
+		Name:      "new",
+		Category:  "session",
 		NeedsIdle: false,
 	}
-	if err := validateCommand(policy.ProfileStrict, spec, false); err == nil {
-		t.Fatalf("expected strict profile to deny medium risk command")
+	if err := validateCommand(context.Background(), engine, spec, false); err == nil {
+		t.Fatalf("expected plan mode to deny session command")
 	}
 }
 

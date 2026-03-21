@@ -200,7 +200,7 @@ func TestSessionAgentEndFiresNotificationHookWithoutUI(t *testing.T) {
 		"Notification": {
 			{Type: "command", Command: "touch " + marker},
 		},
-	}, "sess-test")
+	}, "sess-test", nil)
 	if runner == nil {
 		t.Fatal("expected hook runner")
 	}

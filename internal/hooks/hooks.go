@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 )
 
@@ -51,11 +52,12 @@ type entry struct {
 type Runner struct {
 	hooks     map[EventType][]entry
 	sessionID string
+	approval  *approval.Engine
 }
 
 // New parses a HooksConfig and returns a Runner.
 // Returns nil if no valid hooks are found.
-func New(cfg config.HooksConfig, sessionID string) *Runner {
+func New(cfg config.HooksConfig, sessionID string, engine *approval.Engine) *Runner {
 	hooks := make(map[EventType][]entry)
 
 	for event, entries := range cfg {
@@ -91,7 +93,7 @@ func New(cfg config.HooksConfig, sessionID string) *Runner {
 	if len(hooks) == 0 {
 		return nil
 	}
-	return &Runner{hooks: hooks, sessionID: sessionID}
+	return &Runner{hooks: hooks, sessionID: sessionID, approval: engine}
 }
 
 // RunPreToolUse executes all matching PreToolUse hooks.
@@ -99,7 +101,7 @@ func New(cfg config.HooksConfig, sessionID string) *Runner {
 func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, args json.RawMessage) error {
 	payload := Payload{Event: PreToolUse, Tool: toolName, Args: args}
 	for _, e := range r.matching(PreToolUse, toolName) {
-		stdout, err := r.execCommand(ctx, e, payload)
+		stdout, err := r.run(ctx, e, payload)
 		if e.blocking {
 			if err != nil {
 				// Check if stdout contains a JSON block message.
@@ -123,6 +125,9 @@ func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, args json.R
 				return fmt.Errorf("hook: %s", reason)
 			}
 		}
+		if err != nil {
+			log.Printf("hooks: PreToolUse %q: %v", e.command, err)
+		}
 	}
 	return nil
 }
@@ -133,7 +138,9 @@ func (r *Runner) RunPostToolUse(_ context.Context, toolName string, args, output
 	payload := Payload{Event: PostToolUse, Tool: toolName, Args: args, Output: output, IsError: isError}
 	for _, e := range r.matching(PostToolUse, toolName) {
 		go func(e entry) {
-			if _, err := r.execCommand(context.Background(), e, payload); err != nil {
+			ctx, cancel := detachedHookContext(e.timeout)
+			defer cancel()
+			if _, err := r.run(ctx, e, payload); err != nil {
 				log.Printf("hooks: PostToolUse %q: %v", e.command, err)
 			}
 		}(e)
@@ -146,7 +153,9 @@ func (r *Runner) RunNotification(_ context.Context, message string) {
 	payload := Payload{Event: Notification, Message: message}
 	for _, e := range r.matching(Notification, "") {
 		go func(e entry) {
-			if _, err := r.execCommand(context.Background(), e, payload); err != nil {
+			ctx, cancel := detachedHookContext(e.timeout)
+			defer cancel()
+			if _, err := r.run(ctx, e, payload); err != nil {
 				log.Printf("hooks: Notification %q: %v", e.command, err)
 			}
 		}(e)
@@ -162,6 +171,27 @@ func (r *Runner) matching(event EventType, toolName string) []entry {
 		}
 	}
 	return result
+}
+
+func (r *Runner) run(ctx context.Context, e entry, payload Payload) ([]byte, error) {
+	if r.approval != nil {
+		if err := r.approval.ApproveHook(ctx, approval.HookRequest{
+			Event:    string(payload.Event),
+			Tool:     payload.Tool,
+			Command:  e.command,
+			Blocking: e.blocking,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return r.execCommand(ctx, e, payload)
+}
+
+func detachedHookContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 // execCommand runs a hook command with the payload on stdin.

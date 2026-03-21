@@ -11,27 +11,27 @@ import (
 	"github.com/voocel/agentcore"
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, profile policy.Profile, policyEngine *policy.Engine, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, envHint string) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, envHint string) error {
 	adapter := &App{
-		Session:       sess,
-		Cwd:           cwd,
-		GitBranch:     gitBranch,
-		PolicyProfile: profile,
-		Commands:      config.LoadFileCommands(cwd),
-		Skills:        sess.Skills(),
-		PlanStore:     storage.NewPlanStore(config.PlansDir(cwd)),
-		MCPManager:    mcpMgr,
-		History:       newInputHistory(sess, cwd),
+		Session:        sess,
+		Cwd:            cwd,
+		GitBranch:      gitBranch,
+		ApprovalEngine: approvalEngine,
+		Commands:       config.LoadFileCommands(cwd),
+		Skills:         sess.Skills(),
+		PlanStore:      storage.NewPlanStore(config.PlansDir(cwd)),
+		MCPManager:     mcpMgr,
+		History:        newInputHistory(sess, cwd),
 	}
 
 	adapter.rebuildRegistry()
@@ -143,31 +143,32 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, prof
 		}
 	}
 
-	// Wire policy permission confirmation to TUI.
-	if policyEngine != nil {
-		policyEngine.SetConfirmFn(func(ctx context.Context, req policy.PermitRequest) (policy.PermitDecision, error) {
+	// Wire runtime approval prompts to TUI.
+	if approvalEngine != nil {
+		approvalEngine.SetApprover(func(ctx context.Context, prompt approval.Prompt) (approval.Choice, error) {
 			respCh := make(chan tui.PermitChoice, 1)
 			p.Send(tui.PermissionMsg{
-				Tool:    req.Tool,
-				Command: req.Command,
-				Reason:  req.Reason,
+				Tool:    prompt.Tool,
+				Command: prompt.Summary,
+				Reason:  prompt.Reason,
+				Preview: prompt.Preview,
 				RespCh:  respCh,
 			})
 			select {
 			case choice := <-respCh:
 				switch choice {
 				case tui.PermitChoiceAllowOnce:
-					return policy.PermitAllowOnce, nil
+					return approval.ChoiceAllowOnce, nil
 				case tui.PermitChoiceAllowSession:
-					return policy.PermitAllowSession, nil
+					return approval.ChoiceAllowSession, nil
 				case tui.PermitChoiceAllowAlways:
-					return policy.PermitAllowAlways, nil
+					return approval.ChoiceAllowAlways, nil
 				default:
-					return policy.PermitDeny, nil
+					return approval.ChoiceDeny, nil
 				}
 			case <-ctx.Done():
 				p.Send(tui.PermissionDismissMsg{})
-				return policy.PermitDeny, ctx.Err()
+				return approval.ChoiceDeny, ctx.Err()
 			}
 		})
 	}

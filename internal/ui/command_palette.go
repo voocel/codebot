@@ -53,7 +53,7 @@ func buildCommandPaletteItem(spec CommandSpec, query string) (tui.CompletionItem
 		Description: spec.Description,
 		Usage:       spec.Usage,
 		Kind:        string(spec.Kind),
-		Risk:        string(spec.Risk),
+		Category:    spec.Category,
 		NeedsIdle:   spec.NeedsIdle,
 		Source:      spec.Source,
 		Aliases:     append([]string(nil), spec.Aliases...),
@@ -66,8 +66,8 @@ func buildCommandPaletteItem(spec CommandSpec, query string) (tui.CompletionItem
 	if item.Usage == "" {
 		item.Usage = "/" + item.Name
 	}
-	if item.Risk == "" {
-		item.Risk = "low"
+	if item.Category == "" {
+		item.Category = "prompt"
 	}
 
 	score, ok := scoreCommandPaletteItem(spec, query)

@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/voocel/codebot/internal/policy"
 )
 
 // FileCommand is a user-defined slash command loaded from a Markdown file.
@@ -18,7 +16,7 @@ type FileCommand struct {
 	Content     string
 	Source      string // "user" or "project"
 	FilePath    string
-	Risk        policy.CommandRisk
+	Category    string // prompt/info/session/config/plan/exit
 	NeedsIdle   bool
 	Hidden      bool
 }
@@ -78,7 +76,7 @@ func loadFileCommand(path, source string) (FileCommand, error) {
 	description := ""
 	usage := ""
 	var aliases []string
-	risk := policy.RiskLow
+	category := "prompt"
 	var needsIdle bool
 	var hidden bool
 
@@ -99,7 +97,7 @@ func loadFileCommand(path, source string) (FileCommand, error) {
 			usage = parseFrontmatterField(frontmatter, "usage")
 			aliases = append(aliases, parseFrontmatterList(frontmatter, "aliases")...)
 			aliases = append(aliases, parseFrontmatterList(frontmatter, "alias")...)
-			risk = parseFrontmatterRisk(frontmatter)
+			category = parseFrontmatterCategory(frontmatter)
 			needsIdle = parseFrontmatterBool(frontmatter, "needs-idle") ||
 				parseFrontmatterBool(frontmatter, "needs_idle")
 			hidden = parseFrontmatterBool(frontmatter, "hidden")
@@ -122,7 +120,7 @@ func loadFileCommand(path, source string) (FileCommand, error) {
 		Content:     strings.TrimSpace(content),
 		Source:      source,
 		FilePath:    path,
-		Risk:        risk,
+		Category:    category,
 		NeedsIdle:   needsIdle,
 		Hidden:      hidden,
 	}, nil
@@ -152,15 +150,12 @@ func parseFrontmatterBool(fm, field string) bool {
 	return strings.EqualFold(parseFrontmatterField(fm, field), "true")
 }
 
-func parseFrontmatterRisk(fm string) policy.CommandRisk {
-	switch strings.ToLower(parseFrontmatterField(fm, "risk")) {
-	case string(policy.RiskMedium):
-		return policy.RiskMedium
-	case string(policy.RiskHigh):
-		return policy.RiskHigh
-	default:
-		return policy.RiskLow
+func parseFrontmatterCategory(fm string) string {
+	category := strings.ToLower(strings.TrimSpace(parseFrontmatterField(fm, "category")))
+	if category == "" {
+		return "prompt"
 	}
+	return category
 }
 
 func normalizeAliases(aliases []string) []string {

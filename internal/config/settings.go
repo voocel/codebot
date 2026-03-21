@@ -71,8 +71,6 @@ type Settings struct {
 	SearchProvider *string `json:"search_provider,omitempty"`
 	SearchAPIKey   *string `json:"search_api_key,omitempty"`
 
-	AllowedCommands []string `json:"allowed_commands,omitempty"` // project-level always-allow list for dangerous commands
-
 	Hooks HooksConfig `json:"hooks,omitempty"` // lifecycle hooks
 }
 
@@ -89,8 +87,6 @@ type Resolved struct {
 	MaxTurns       int
 	SearchProvider string
 	SearchAPIKey   string
-
-	AllowedCommands []string // project-level always-allow list for dangerous commands
 
 	Hooks HooksConfig // lifecycle hooks
 }
@@ -193,9 +189,6 @@ func (s Settings) Resolve() Resolved {
 	if s.SearchAPIKey != nil {
 		r.SearchAPIKey = *s.SearchAPIKey
 	}
-	if len(s.AllowedCommands) > 0 {
-		r.AllowedCommands = s.AllowedCommands
-	}
 	if len(s.Hooks) > 0 {
 		r.Hooks = s.Hooks
 	}
@@ -227,6 +220,11 @@ func CommandsDir(cwd string) string {
 // PlansDir returns ~/.codebot/plans/<projectID>/.
 func PlansDir(cwd string) string {
 	return filepath.Join(UserConfigDir(), "plans", projectID(cwd))
+}
+
+// ApprovalsPath returns ~/.codebot/approvals/<projectID>.json.
+func ApprovalsPath(cwd string) string {
+	return filepath.Join(UserConfigDir(), "approvals", projectID(cwd)+".json")
 }
 
 // TasksDir returns ~/.codebot/tasks/.
@@ -334,9 +332,6 @@ func mergeSettings(base, override Settings) Settings {
 	if override.SearchAPIKey != nil {
 		base.SearchAPIKey = override.SearchAPIKey
 	}
-	if len(override.AllowedCommands) > 0 {
-		base.AllowedCommands = override.AllowedCommands
-	}
 	if len(override.Hooks) > 0 {
 		if base.Hooks == nil {
 			base.Hooks = make(HooksConfig)
@@ -388,18 +383,6 @@ func PatchProjectSettings(cwd string, patch Settings) error {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
 	return os.WriteFile(path, data, 0o600)
-}
-
-// AddAllowedCommand appends a command to the project-level allowed_commands list (deduplicated).
-func AddAllowedCommand(cwd, cmd string) error {
-	existing := loadSettingsFile(SettingsPath(cwd))
-	for _, c := range existing.AllowedCommands {
-		if c == cmd {
-			return nil // already present
-		}
-	}
-	existing.AllowedCommands = append(existing.AllowedCommands, cmd)
-	return PatchProjectSettings(cwd, Settings{AllowedCommands: existing.AllowedCommands})
 }
 
 func loadSettingsFile(path string) Settings {

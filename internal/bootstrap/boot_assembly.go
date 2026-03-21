@@ -13,10 +13,10 @@ import (
 	"github.com/voocel/agentcore/memory"
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
@@ -26,7 +26,7 @@ type bootInput struct {
 	cwd         string
 	settings    config.Resolved
 	registry    *provider.ModelRegistry
-	profile     policy.Profile
+	profile     approval.Profile
 	createModel agent.ModelFactory
 	manager     *storage.Manager
 	store       *storage.Store
@@ -51,8 +51,8 @@ type bootSpec struct {
 	mcpServers            map[string]mcpclient.ServerConfig
 	subagentTool          *agentcore.SubAgentTool
 	bashTool              *agentcoretools.BashTool
-	permission            func(context.Context, agentcore.ToolCall) error
-	policyEngine          *policy.Engine
+	toolApproval          agentcore.ToolApprovalFunc
+	approvalEngine        *approval.Engine
 	hookMiddleware        agentcore.ToolMiddleware // nil = no hooks configured
 	hookRunner            *hooks.Runner
 }
@@ -71,7 +71,7 @@ func resolveBootInput(opts Options) (*bootInput, error) {
 	registry := provider.NewModelRegistry()
 	provider.StartPricingRefresh(registry, config.UserConfigDir())
 
-	profile, err := parseProfile(opts.PolicyProfile)
+	profile, err := approval.ParseProfile(opts.ApprovalProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -190,29 +190,23 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	ctxFiles := config.LoadContextFiles(input.cwd)
 	skills := config.LoadSkills(input.cwd)
 
-	pol := policy.New(policy.Config{
-		Profile:         input.profile,
-		Workspace:       input.cwd,
-		Interactive:     !input.nonTTY,
-		OnAudit:         fileAuditor(config.AuditLogPath()),
-		AllowedCommands: settings.AllowedCommands,
-	})
-	cwd := input.cwd
-	pol.SetPersistFn(func(cmd string) error {
-		return config.AddAllowedCommand(cwd, cmd)
-	})
+	approvalEngine, err := approval.NewEngine(input.cwd, input.profile, approvalAuditor(config.AuditLogPath()))
+	if err != nil {
+		return nil, fmt.Errorf("approval engine: %w", err)
+	}
 
 	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories)
 	if err != nil {
 		return nil, err
 	}
+	approvalEngine.ReplaceToolMetadata(tools)
 
 	parts := buildSystemParts(input.cwd, tools, ctxFiles, skills, mcpManager)
 
 	var hookMW agentcore.ToolMiddleware
 	var hookRunner *hooks.Runner
 	if len(settings.Hooks) > 0 {
-		hookRunner = hooks.New(settings.Hooks, input.store.Header().SessionID)
+		hookRunner = hooks.New(settings.Hooks, input.store.Header().SessionID, approvalEngine)
 		if hookRunner != nil {
 			hookMW = hookRunner.Middleware()
 		}
@@ -234,8 +228,8 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		mcpServers:            mcpServers,
 		subagentTool:          subagentTool,
 		bashTool:              bashTool,
-		permission:            pol.Permission,
-		policyEngine:          pol,
+		toolApproval:          approvalEngine.ApproveTool,
+		approvalEngine:        approvalEngine,
 		hookMiddleware:        hookMW,
 		hookRunner:            hookRunner,
 	}, nil
@@ -476,7 +470,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		),
 		agentcore.WithContextWindow(spec.settings.ContextWindow),
 		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
-		agentcore.WithPermission(spec.permission),
+		agentcore.WithToolApproval(spec.toolApproval),
 	}
 	if spec.hookMiddleware != nil {
 		opts = append(opts, agentcore.WithMiddlewares(spec.hookMiddleware))
@@ -552,19 +546,19 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 			all := make([]agentcore.Tool, len(spec.baseTools), len(spec.baseTools)+len(mcpTools))
 			copy(all, spec.baseTools)
 			all = append(all, mcpTools...)
+			spec.approvalEngine.ReplaceToolMetadata(all)
 			sess.ReplaceAllTools(all)
 		})
 	}
 
 	return &Runtime{
-		Cwd:           input.cwd,
-		GitBranch:     detectGitBranch(input.cwd),
-		PolicyProfile: input.profile,
-		PolicyEngine:  spec.policyEngine,
-		Settings:      spec.settings,
-		Session:       sess,
-		MCPManager:    spec.mcpManager,
-		MCPServers:    spec.mcpServers,
-		EnvHint:       input.envHint,
+		Cwd:            input.cwd,
+		GitBranch:      detectGitBranch(input.cwd),
+		ApprovalEngine: spec.approvalEngine,
+		Settings:       spec.settings,
+		Session:        sess,
+		MCPManager:     spec.mcpManager,
+		MCPServers:     spec.mcpServers,
+		EnvHint:        input.envHint,
 	}, nil
 }

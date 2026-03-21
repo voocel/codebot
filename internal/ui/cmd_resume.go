@@ -6,7 +6,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
@@ -33,7 +32,7 @@ func (c *ResumeCommand) Spec() CommandSpec {
 		Name:        "resume",
 		Usage:       "/resume",
 		Description: "Switch to another session",
-		Risk:        policy.RiskMedium,
+		Category:    "session",
 		NeedsIdle:   true,
 		Kind:        CommandKindBuiltin,
 	}

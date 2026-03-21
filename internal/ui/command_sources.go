@@ -7,7 +7,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -66,7 +65,7 @@ func (c *FileCommandAdapter) Spec() CommandSpec {
 		Aliases:     c.command.Aliases,
 		Usage:       c.command.Usage,
 		Description: c.command.Description,
-		Risk:        c.command.Risk,
+		Category:    c.command.Category,
 		NeedsIdle:   c.command.NeedsIdle,
 		Hidden:      c.command.Hidden,
 		Kind:        CommandKindCustom,
@@ -88,7 +87,7 @@ func (c *SkillCommand) Spec() CommandSpec {
 		Name:        "skill:" + c.skill.Name,
 		Usage:       "/skill:" + c.skill.Name + " [args]",
 		Description: c.skill.Description,
-		Risk:        policy.RiskLow,
+		Category:    "prompt",
 		Kind:        CommandKindSkill,
 		Source:      c.skill.Source,
 	}

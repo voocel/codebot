@@ -33,7 +33,7 @@ func TestRenderCompletionsShowsCommandPalette(t *testing.T) {
 					Description: "Switch current model",
 					Usage:       "/model [name]",
 					Kind:        "builtin",
-					Risk:        "low",
+					Category:    "config",
 					NeedsIdle:   true,
 					Aliases:     []string{"m"},
 					AutoExecute: false,
@@ -114,7 +114,7 @@ func TestCommandPaletteReplacesBottomContextArea(t *testing.T) {
 		Description: "显示帮助",
 		Usage:       "/help",
 		Kind:        "builtin",
-		Risk:        "low",
+		Category:    "info",
 		AutoExecute: true,
 	}}
 	m.compActive = true

@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/voocel/codebot/internal/policy"
 )
 
 func TestLoadFileCommands_ProjectOverridesUser(t *testing.T) {
@@ -25,7 +23,7 @@ func TestLoadFileCommands_ProjectOverridesUser(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(userDir, "deploy.md"), []byte(`---
 description: 用户命令
 aliases: [ship]
-risk: high
+category: session
 ---
 用户版本
 `), 0o644); err != nil {
@@ -53,8 +51,8 @@ needs-idle: true
 	if cmd.Description != "项目命令" {
 		t.Fatalf("expected overridden description, got %q", cmd.Description)
 	}
-	if cmd.Risk != policy.RiskLow {
-		t.Fatalf("expected default low risk, got %q", cmd.Risk)
+	if cmd.Category != "prompt" {
+		t.Fatalf("expected default prompt category, got %q", cmd.Category)
 	}
 	if !cmd.NeedsIdle {
 		t.Fatal("expected project override to set needs idle")
@@ -74,7 +72,7 @@ name: commit-msg
 description: 生成提交信息
 usage: /commit-msg <scope>
 aliases: [cm, cmsg]
-risk: medium
+category: prompt
 needs_idle: true
 hidden: true
 ---
@@ -94,8 +92,8 @@ hidden: true
 	if cmd.Usage != "/commit-msg <scope>" {
 		t.Fatalf("unexpected usage: %q", cmd.Usage)
 	}
-	if cmd.Risk != policy.RiskMedium {
-		t.Fatalf("unexpected risk: %q", cmd.Risk)
+	if cmd.Category != "prompt" {
+		t.Fatalf("unexpected category: %q", cmd.Category)
 	}
 	if !cmd.NeedsIdle || !cmd.Hidden {
 		t.Fatalf("expected needs idle and hidden to be true: %+v", cmd)

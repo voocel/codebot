@@ -8,10 +8,10 @@ import (
 	"github.com/voocel/agentcore"
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/imageinput"
 	"github.com/voocel/codebot/internal/ui/tui"
@@ -23,8 +23,7 @@ type App struct {
 	Cwd       string
 	GitBranch string
 
-	// PolicyProfile controls slash-command risk gating.
-	PolicyProfile policy.Profile
+	ApprovalEngine *approval.Engine
 
 	// Commands are user-defined slash commands loaded from .md files.
 	Commands []config.FileCommand

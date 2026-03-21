@@ -9,9 +9,9 @@ import (
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -28,20 +28,26 @@ func (a *App) handleCommand(input string) tea.Cmd {
 	}
 
 	spec := cmd.Spec()
-	if err := validateCommand(a.PolicyProfile, spec, a.Session.IsRunning()); err != nil {
+	if err := validateCommand(context.Background(), a.ApprovalEngine, spec, a.Session.IsRunning()); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Command blocked: " + err.Error()))
 	}
 	return cmd.Run(&CommandContext{App: a}, inv)
 }
 
-func validateCommand(profile policy.Profile, spec CommandSpec, isRunning bool) error {
-	if err := policy.AllowCommand(profile, spec.Risk, true); err != nil {
-		return err
+func validateCommand(ctx context.Context, engine *approval.Engine, spec CommandSpec, isRunning bool) error {
+	if engine == nil {
+		if spec.NeedsIdle && isRunning {
+			return fmt.Errorf("command requires idle agent; press Esc to abort current run")
+		}
+		return nil
 	}
-	if spec.NeedsIdle && isRunning {
-		return fmt.Errorf("command requires idle agent; press Esc to abort current run")
-	}
-	return nil
+	return engine.ApproveCommand(ctx, approval.CommandRequest{
+		Name:      spec.Name,
+		Category:  approval.NormalizeCommandCategory(spec.Category),
+		NeedsIdle: spec.NeedsIdle,
+		IsRunning: isRunning,
+		Summary:   "/" + spec.Name,
+	})
 }
 
 func parseCommandInvocation(input string) (CommandInvocation, bool) {
@@ -75,13 +81,13 @@ func (a *App) builtinCommands() []Command {
 	return []Command{
 		NewSimple(CommandSpec{
 			Name: "help", Usage: "/help", Description: "Show this help",
-			Risk: policy.RiskLow, Kind: CommandKindBuiltin,
+			Category: "info", Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return tui.SendCommandResult(ctx.App.helpText())
 		}),
 		NewSimple(CommandSpec{
 			Name: "clear", Usage: "/clear", Description: "Clear current context (memory only)",
-			Risk: policy.RiskLow, NeedsIdle: true, Kind: CommandKindBuiltin,
+			Category: "session", NeedsIdle: true, Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			ctx.App.Session.ClearConversation()
 			ctx.App.resetPlanState()
@@ -95,19 +101,19 @@ func (a *App) builtinCommands() []Command {
 		NewModelCommand(a),
 		NewSimple(CommandSpec{
 			Name: "compact", Usage: "/compact", Description: "Compact conversation context",
-			Risk: policy.RiskMedium, NeedsIdle: true, Kind: CommandKindBuiltin,
+			Category: "session", NeedsIdle: true, Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdCompact()
 		}),
 		NewSimple(CommandSpec{
 			Name: "session", Usage: "/session", Description: "Show current session info",
-			Risk: policy.RiskLow, Kind: CommandKindBuiltin,
+			Category: "info", Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdSession()
 		}),
 		NewSimple(CommandSpec{
 			Name: "new", Usage: "/new", Description: "Start new session",
-			Risk: policy.RiskMedium, NeedsIdle: true, Kind: CommandKindBuiltin,
+			Category: "session", NeedsIdle: true, Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdNew()
 		}),
@@ -115,45 +121,45 @@ func (a *App) builtinCommands() []Command {
 		NewTasksCommand(a),
 		NewSimple(CommandSpec{
 			Name: "settings", Usage: "/settings", Description: "Show current settings",
-			Risk: policy.RiskLow, Kind: CommandKindBuiltin,
+			Category: "info", Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdSettings()
 		}),
 		NewSimple(CommandSpec{
 			Name: "mcp", Usage: "/mcp", Description: "Show MCP server status",
-			Risk: policy.RiskLow, Kind: CommandKindBuiltin,
+			Category: "info", Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdMCP()
 		}),
 		NewSimple(CommandSpec{
 			Name: "copy", Usage: "/copy", Description: "Copy last response to clipboard",
-			Risk: policy.RiskLow, Kind: CommandKindBuiltin,
+			Category: "info", Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdCopy()
 		}),
 		NewSimple(CommandSpec{
 			Name: "plan", Usage: "/plan [cancel|<task>]", Description: "Enter plan mode or manage plans",
-			Risk: policy.RiskLow, NeedsIdle: true, Kind: CommandKindBuiltin,
+			Category: "plan", NeedsIdle: true, Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 			return ctx.App.cmdPlan(inv.Args)
 		}),
 		NewSimple(CommandSpec{
 			Name: "reload", Usage: "/reload", Description: "Reload skills, prompts, and commands",
-			Risk: policy.RiskLow, NeedsIdle: true, Kind: CommandKindBuiltin,
+			Category: "session", NeedsIdle: true, Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdReload()
 		}),
 		NewSimple(CommandSpec{
 			Name: "loop", Usage: "/loop <interval|cron> <prompt>",
 			Description: "Schedule recurring prompts",
-			Risk:        policy.RiskLow, Kind: CommandKindBuiltin,
+			Category:    "session", Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 			return ctx.App.cmdLoop(inv.RawArgs)
 		}),
 		NewSimple(CommandSpec{
 			Name: "exit", Aliases: []string{"quit", "q"},
 			Usage: "/exit", Description: "Quit",
-			Risk: policy.RiskLow, Kind: CommandKindBuiltin,
+			Category: "exit", Kind: CommandKindBuiltin,
 		}, func(_ *CommandContext, _ CommandInvocation) tea.Cmd {
 			return func() tea.Msg { return tui.CommandResultMsg{Quit: true} }
 		}),
@@ -211,9 +217,9 @@ func (a *App) renderCommandGroup(sb *strings.Builder, title string, commands []C
 
 	for _, cmd := range commands {
 		spec := a.registry.EffectiveSpec(cmd)
-		risk := spec.Risk
-		if risk == "" {
-			risk = policy.RiskLow
+		category := strings.TrimSpace(spec.Category)
+		if category == "" {
+			category = "prompt"
 		}
 
 		usage := spec.Usage
@@ -229,7 +235,7 @@ func (a *App) renderCommandGroup(sb *strings.Builder, title string, commands []C
 			desc += " (" + spec.Source + ")"
 		}
 
-		tags := []string{string(risk)}
+		tags := []string{category}
 		if spec.NeedsIdle {
 			tags = append(tags, "idle")
 		}

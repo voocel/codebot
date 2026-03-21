@@ -23,7 +23,7 @@ func main() {
 	jsonFlag := flag.Bool("json", false, "JSON output mode (implies -p)")
 	continueFlag := flag.Bool("c", false, "Continue most recent session")
 	resumeFlag := flag.Bool("r", false, "Select a session to resume")
-	policyProfileFlag := flag.String("policy-profile", "balanced", "Policy profile: strict, balanced, off")
+	approvalProfileFlag := flag.String("approval-profile", "balanced", "Approval profile: strict, balanced, off")
 	flag.Parse()
 
 	if *versionFlag {
@@ -34,10 +34,10 @@ func main() {
 	printMode := *printFlag || *jsonFlag
 
 	rt, err := bootstrap.Boot(bootstrap.Options{
-		Continue:      *continueFlag,
-		Resume:        *resumeFlag,
-		NonTTYMode:    printMode,
-		PolicyProfile: *policyProfileFlag,
+		Continue:        *continueFlag,
+		Resume:          *resumeFlag,
+		NonTTYMode:      printMode,
+		ApprovalProfile: *approvalProfileFlag,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "boot error: %v\n", err)
@@ -57,7 +57,7 @@ func main() {
 	if rt.Session != nil && rt.Session.ModelName() != "" {
 		modelName = rt.Session.ModelName()
 	}
-	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, version, rt.PolicyProfile, rt.PolicyEngine, rt.MCPManager, rt.MCPServers, rt.EnvHint); err != nil {
+	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, version, rt.ApprovalEngine, rt.MCPManager, rt.MCPServers, rt.EnvHint); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

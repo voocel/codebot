@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
 	agentcoretools "github.com/voocel/agentcore/tools"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -57,7 +56,7 @@ func (c *TasksCommand) Spec() CommandSpec {
 		Name:        "tasks",
 		Usage:       "/tasks",
 		Description: "View and manage background tasks",
-		Risk:        policy.RiskLow,
+		Category:    "info",
 		Kind:        CommandKindBuiltin,
 	}
 }

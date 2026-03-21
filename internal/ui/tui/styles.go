@@ -164,17 +164,19 @@ func CommandPaletteKindBadge(kind string) string {
 	return style.Render(label)
 }
 
-func CommandPaletteRiskBadge(risk string) string {
-	label := risk
+func CommandPaletteCategoryBadge(category string) string {
+	label := category
 	style := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("232")).
 		Background(ColorSeparator).
 		Padding(0, 1)
 
-	switch risk {
-	case "medium":
+	switch category {
+	case "session", "config":
 		style = style.Background(ColorTool)
-	case "high":
+	case "plan":
+		style = style.Background(ColorAccent)
+	case "exit":
 		style = style.Background(ColorError)
 	default:
 		style = style.Background(ColorSeparator).Foreground(lipgloss.Color("255"))

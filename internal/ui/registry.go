@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/codebot/internal/policy"
 )
 
 type CommandKind string
@@ -58,7 +57,7 @@ type CommandSpec struct {
 	Aliases     []string
 	Usage       string
 	Description string
-	Risk        policy.CommandRisk
+	Category    string
 	NeedsIdle   bool
 	Hidden      bool
 	Kind        CommandKind

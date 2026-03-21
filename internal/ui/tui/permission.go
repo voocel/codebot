@@ -22,6 +22,7 @@ type PermissionMsg struct {
 	Tool    string
 	Command string
 	Reason  string
+	Preview string
 	RespCh  chan<- PermitChoice
 }
 
@@ -30,9 +31,10 @@ type PermissionDismissMsg struct{}
 
 type permissionState struct {
 	tool, command, reason string
-	respCh               chan<- PermitChoice
-	cursor               int // 0=AllowOnce, 1=AllowSession, 2=Deny
-	done                 bool
+	preview               string
+	respCh                chan<- PermitChoice
+	cursor                int // 0=AllowOnce, 1=AllowSession, 2=Deny
+	done                  bool
 }
 
 var permissionOptions = []struct {
@@ -51,6 +53,7 @@ func initPermission(msg PermissionMsg) *permissionState {
 		tool:    msg.Tool,
 		command: msg.Command,
 		reason:  msg.Reason,
+		preview: msg.Preview,
 		respCh:  msg.RespCh,
 	}
 }
@@ -111,6 +114,15 @@ func renderPermission(s *permissionState) string {
 		b.WriteByte('\n')
 		b.WriteString(askDescStyle.Render("  Reason:  "))
 		b.WriteString(askOptionInactiveStyle.Render(s.reason))
+	}
+	if s.preview != "" {
+		preview := s.preview
+		if runes := []rune(preview); len(runes) > 240 {
+			preview = string(runes[:240]) + "..."
+		}
+		b.WriteByte('\n')
+		b.WriteString(askDescStyle.Render("  Preview: "))
+		b.WriteString(askOptionInactiveStyle.Render(preview))
 	}
 	b.WriteString("\n\n")
 

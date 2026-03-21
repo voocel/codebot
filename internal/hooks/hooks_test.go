@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 )
 
@@ -74,12 +75,12 @@ func boolPtr(b bool) *bool { return &b }
 func intPtr(i int) *int    { return &i }
 
 func TestNew_NoHooks(t *testing.T) {
-	r := New(nil, "sess1")
+	r := New(nil, "sess1", nil)
 	if r != nil {
 		t.Error("nil config should return nil runner")
 	}
 
-	r = New(config.HooksConfig{}, "sess1")
+	r = New(config.HooksConfig{}, "sess1", nil)
 	if r != nil {
 		t.Error("empty config should return nil runner")
 	}
@@ -88,15 +89,15 @@ func TestNew_NoHooks(t *testing.T) {
 func TestNew_SkipsInvalid(t *testing.T) {
 	cfg := config.HooksConfig{
 		"PreToolUse": {
-			{Type: "url", Command: "echo test"},       // wrong type
-			{Type: "command", Command: ""},              // empty command
-			{Type: "command", Command: "echo ok"},       // valid
+			{Type: "url", Command: "echo test"},   // wrong type
+			{Type: "command", Command: ""},        // empty command
+			{Type: "command", Command: "echo ok"}, // valid
 		},
 		"BadEvent": {
-			{Type: "command", Command: "echo bad"},      // unknown event
+			{Type: "command", Command: "echo bad"}, // unknown event
 		},
 	}
-	r := New(cfg, "sess1")
+	r := New(cfg, "sess1", nil)
 	if r == nil {
 		t.Fatal("should have one valid hook")
 	}
@@ -111,7 +112,7 @@ func TestRunPreToolUse_Blocking_ExitError(t *testing.T) {
 			{Type: "command", Command: "exit 1", Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test")
+	r := New(cfg, "test", nil)
 	err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err == nil {
 		t.Error("blocking hook with exit 1 should return error")
@@ -124,7 +125,7 @@ func TestRunPreToolUse_Blocking_JSONBlocked(t *testing.T) {
 			{Type: "command", Command: `echo '{"blocked":true,"reason":"not allowed"}'`, Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test")
+	r := New(cfg, "test", nil)
 	err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("should block")
@@ -141,7 +142,7 @@ func TestRunPreToolUse_Blocking_JSONBlockedOnSuccess(t *testing.T) {
 			{Type: "command", Command: `echo '{"blocked":true}'`, Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test")
+	r := New(cfg, "test", nil)
 	err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err == nil {
 		t.Error("should block even on exit 0 when stdout says blocked")
@@ -154,7 +155,7 @@ func TestRunPreToolUse_NonBlocking(t *testing.T) {
 			{Type: "command", Command: "exit 1", Blocking: boolPtr(false)},
 		},
 	}
-	r := New(cfg, "test")
+	r := New(cfg, "test", nil)
 	err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err != nil {
 		t.Errorf("non-blocking hook error should not propagate: %v", err)
@@ -167,7 +168,7 @@ func TestRunPreToolUse_MatcherFilters(t *testing.T) {
 			{Type: "command", Command: "exit 1", Matcher: "write", Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test")
+	r := New(cfg, "test", nil)
 	// Should not match "bash".
 	if err := r.RunPreToolUse(context.Background(), "bash", nil); err != nil {
 		t.Errorf("should not run for non-matching tool: %v", err)
@@ -187,7 +188,7 @@ func TestRunPostToolUse_FireAndForget(t *testing.T) {
 			{Type: "command", Command: "touch " + marker},
 		},
 	}
-	r := New(cfg, "test")
+	r := New(cfg, "test", nil)
 	r.RunPostToolUse(context.Background(), "bash", nil, json.RawMessage(`"ok"`), false)
 
 	// Wait briefly for goroutine.
@@ -203,7 +204,7 @@ func TestExecCommand_Timeout(t *testing.T) {
 			{Type: "command", Command: "sleep 10", Blocking: boolPtr(true), Timeout: intPtr(1)},
 		},
 	}
-	r := New(cfg, "test")
+	r := New(cfg, "test", nil)
 	start := time.Now()
 	err := r.RunPreToolUse(context.Background(), "bash", nil)
 	elapsed := time.Since(start)
@@ -221,7 +222,7 @@ func TestExecCommand_EnvVars(t *testing.T) {
 			{Type: "command", Command: `echo "$HOOK_EVENT|$HOOK_TOOL_NAME|$HOOK_SESSION_ID"`, Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "sess-42")
+	r := New(cfg, "sess-42", nil)
 	// Won't block (exit 0, non-JSON stdout).
 	err := r.RunPreToolUse(context.Background(), "bash", nil)
 	if err != nil {
@@ -238,7 +239,7 @@ func TestExecCommand_StdinPayload(t *testing.T) {
 			{Type: "command", Command: "cat > " + outFile, Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test")
+	r := New(cfg, "test", nil)
 	args := json.RawMessage(`{"command":"ls"}`)
 	if err := r.RunPreToolUse(context.Background(), "bash", args); err != nil {
 		t.Fatal(err)
@@ -257,5 +258,89 @@ func TestExecCommand_StdinPayload(t *testing.T) {
 	}
 	if payload.Tool != "bash" {
 		t.Errorf("tool = %q, want bash", payload.Tool)
+	}
+}
+
+func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
+	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetApprover(func(context.Context, approval.Prompt) (approval.Choice, error) {
+		return approval.ChoiceDeny, nil
+	})
+
+	cfg := config.HooksConfig{
+		"PreToolUse": {
+			{Type: "command", Command: "echo ok", Blocking: boolPtr(true)},
+		},
+	}
+	r := New(cfg, "test", engine)
+	err = r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected approval denial to block hook")
+	}
+	if got := err.Error(); got != "hook: blocking hook command requires approval" {
+		t.Fatalf("unexpected error: %v", got)
+	}
+}
+
+func TestRunPreToolUse_AllowAlwaysSkipsFutureApproval(t *testing.T) {
+	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	calls := 0
+	engine.SetApprover(func(context.Context, approval.Prompt) (approval.Choice, error) {
+		calls++
+		return approval.ChoiceAllowAlways, nil
+	})
+
+	cfg := config.HooksConfig{
+		"PreToolUse": {
+			{Type: "command", Command: "echo ok", Blocking: boolPtr(true)},
+		},
+	}
+	r := New(cfg, "test", engine)
+	if err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	engine.SetApprover(func(context.Context, approval.Prompt) (approval.Choice, error) {
+		t.Fatal("approval should have been persisted")
+		return approval.ChoiceDeny, nil
+	})
+	if err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one approval prompt, got %d", calls)
+	}
+}
+
+func TestRunNotification_ApprovalContextTimesOut(t *testing.T) {
+	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetApprover(func(ctx context.Context, _ approval.Prompt) (approval.Choice, error) {
+		<-ctx.Done()
+		return approval.ChoiceDeny, ctx.Err()
+	})
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "notification.marker")
+	cfg := config.HooksConfig{
+		"Notification": {
+			{Type: "command", Command: "touch " + marker, Timeout: intPtr(1)},
+		},
+	}
+	r := New(cfg, "test", engine)
+	r.RunNotification(context.Background(), "done")
+
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expected notification hook to time out before execution, stat err=%v", err)
 	}
 }

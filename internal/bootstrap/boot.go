@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
-	"github.com/voocel/codebot/internal/policy"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
@@ -30,9 +30,9 @@ type Options struct {
 	Resume     bool
 	NonTTYMode bool
 
-	PolicyProfile string
-	ToolFactories []ToolFactory
-	ModelFactory  agent.ModelFactory
+	ApprovalProfile string
+	ToolFactories   []ToolFactory
+	ModelFactory    agent.ModelFactory
 }
 
 // Runtime is the bootstrapped app runtime state.
@@ -40,14 +40,13 @@ type Runtime struct {
 	Cwd       string
 	GitBranch string
 
-	PolicyProfile policy.Profile
-	PolicyEngine  *policy.Engine
+	ApprovalEngine *approval.Engine
 
 	Settings   config.Resolved
 	Session    *agent.Session
 	MCPManager *mcpclient.Manager
 	MCPServers map[string]mcpclient.ServerConfig // for async connection in TUI
-	EnvHint    string // non-empty when credentials come from environment variable
+	EnvHint    string                            // non-empty when credentials come from environment variable
 }
 
 // Close releases runtime resources.
@@ -161,30 +160,18 @@ func resolveSession(mgr *storage.Manager, cwd string, cont, resume, nonTTY bool)
 	}
 }
 
-func parseProfile(s string) (policy.Profile, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "":
-		return policy.ProfileBalanced, nil
-	case string(policy.ProfileOff):
-		return policy.ProfileOff, nil
-	case string(policy.ProfileStrict):
-		return policy.ProfileStrict, nil
-	case string(policy.ProfileBalanced):
-		return policy.ProfileBalanced, nil
-	default:
-		return "", fmt.Errorf("invalid policy profile %q (allowed: off, balanced, strict)", s)
-	}
-}
-
-func fileAuditor(path string) func(policy.AuditEntry) {
+func approvalAuditor(path string) func(approval.AuditEntry) {
 	var mu sync.Mutex
-	return func(e policy.AuditEntry) {
+	return func(e approval.AuditEntry) {
 		entry := map[string]any{
-			"time":    e.Time.Format(time.RFC3339Nano),
-			"profile": string(e.Profile),
-			"tool":    e.Tool,
-			"args":    e.Args,
-			"allow":   e.Allow,
+			"time":       e.Time.Format(time.RFC3339Nano),
+			"profile":    string(e.Profile),
+			"mode":       string(e.Mode),
+			"tool":       e.Tool,
+			"capability": string(e.Capability),
+			"summary":    e.Summary,
+			"decision":   e.Decision,
+			"allow":      e.Allow,
 		}
 		if e.Reason != "" {
 			entry["reason"] = e.Reason
