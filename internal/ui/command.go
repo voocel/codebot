@@ -163,7 +163,32 @@ func (a *App) builtinCommands() []Command {
 		}, func(_ *CommandContext, _ CommandInvocation) tea.Cmd {
 			return func() tea.Msg { return tui.CommandResultMsg{Quit: true} }
 		}),
+		NewSimple(CommandSpec{
+			Name: "trust", Usage: "/trust", Description: "Toggle trust mode (auto-approve all tools)",
+			Category: "config", Kind: CommandKindBuiltin,
+		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
+			return ctx.App.cmdToggleMode(approval.ModeTrust, "trust")
+		}),
+		NewSimple(CommandSpec{
+			Name: "accept-edits", Usage: "/accept-edits", Description: "Toggle accept-edits mode (auto-approve file writes)",
+			Category: "config", Kind: CommandKindBuiltin,
+		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
+			return ctx.App.cmdToggleMode(approval.ModeAcceptEdits, "accept-edits")
+		}),
 	}
+}
+
+func (a *App) cmdToggleMode(target approval.Mode, label string) tea.Cmd {
+	if a.ApprovalEngine == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("approval engine not available"))
+	}
+	current := a.ApprovalEngine.Mode()
+	if current == target {
+		a.ApprovalEngine.SetMode(approval.ModeNormal)
+		return tui.SendCommandResult(fmt.Sprintf("%s mode off", label))
+	}
+	a.ApprovalEngine.SetMode(target)
+	return tui.SendCommandResult(fmt.Sprintf("%s mode on", label))
 }
 
 func (a *App) helpText() string {

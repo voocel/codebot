@@ -190,7 +190,12 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	ctxFiles := config.LoadContextFiles(input.cwd)
 	skills := config.LoadSkills(input.cwd)
 
-	approvalEngine, err := approval.NewEngine(input.cwd, input.profile, approvalAuditor(config.AuditLogPath()))
+	rules, err := approval.ParseRuleSet(settings.Permissions.Allow, settings.Permissions.Deny)
+	if err != nil {
+		return nil, fmt.Errorf("parse permission rules: %w", err)
+	}
+
+	approvalEngine, err := approval.NewEngine(input.cwd, input.profile, rules, approvalAuditor(config.AuditLogPath()))
 	if err != nil {
 		return nil, fmt.Errorf("approval engine: %w", err)
 	}

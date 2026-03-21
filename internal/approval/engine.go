@@ -14,8 +14,10 @@ import (
 type Mode string
 
 const (
-	ModeNormal Mode = "normal"
-	ModePlan   Mode = "plan"
+	ModeNormal      Mode = "normal"
+	ModePlan        Mode = "plan"
+	ModeAcceptEdits Mode = "accept_edits"
+	ModeTrust       Mode = "trust"
 )
 
 type Capability string
@@ -92,6 +94,7 @@ type AuditEntry struct {
 type Engine struct {
 	workspace string
 	profile   Profile
+	rules     *RuleSet
 
 	mu           sync.RWMutex
 	mode         Mode
@@ -102,7 +105,7 @@ type Engine struct {
 	toolMeta     map[string]ToolMetadata
 }
 
-func NewEngine(cwd string, profile Profile, onAudit func(AuditEntry)) (*Engine, error) {
+func NewEngine(cwd string, profile Profile, rules *RuleSet, onAudit func(AuditEntry)) (*Engine, error) {
 	store, err := NewStore(config.ApprovalsPath(cwd))
 	if err != nil {
 		return nil, fmt.Errorf("load approvals: %w", err)
@@ -110,6 +113,7 @@ func NewEngine(cwd string, profile Profile, onAudit func(AuditEntry)) (*Engine, 
 	return &Engine{
 		workspace:    cwd,
 		profile:      profile,
+		rules:        rules,
 		mode:         ModeNormal,
 		sessionAllow: make(map[string]storedEntry),
 		store:        store,
@@ -204,6 +208,14 @@ func (e *Engine) ApproveCommand(_ context.Context, req CommandRequest) error {
 
 func (e *Engine) approveInfo(ctx context.Context, info toolInfo) (*agentcore.ToolApprovalResult, error) {
 	mode := e.Mode()
+	if info.hardDeny != "" {
+		e.audit(info, mode, "deny", false, info.hardDeny)
+		return &agentcore.ToolApprovalResult{
+			Approved: false,
+			Decision: agentcore.ToolApprovalDeny,
+			Reason:   info.hardDeny,
+		}, nil
+	}
 	action, reason := e.decide(info, mode)
 	switch action {
 	case ruleAllow:
@@ -240,12 +252,29 @@ const (
 )
 
 func (e *Engine) decide(info toolInfo, mode Mode) (ruleAction, string) {
+	// Deny rules have highest priority — override even ProfileOff and cached approvals.
+	var ruleResult ruleAction
+	var ruleMatched bool
+	if e.rules != nil {
+		ruleResult, ruleMatched = e.rules.Evaluate(info)
+		if ruleMatched && ruleResult == ruleDeny {
+			return ruleDeny, "denied by permission rule"
+		}
+	}
+
 	if e.profile == ProfileOff {
 		return ruleAllow, ""
 	}
+
 	if e.allowed(info.key) {
 		return ruleAllow, ""
 	}
+
+	// Allow rules take precedence over mode/profile defaults.
+	if ruleMatched && ruleResult == ruleAllow {
+		return ruleAllow, "allowed by permission rule"
+	}
+
 	if mode == ModePlan {
 		switch info.capability {
 		case CapRead, CapInternal:
@@ -253,6 +282,12 @@ func (e *Engine) decide(info toolInfo, mode Mode) (ruleAction, string) {
 		default:
 			return ruleDeny, "plan mode is read-only"
 		}
+	}
+	if mode == ModeTrust {
+		return ruleAllow, ""
+	}
+	if mode == ModeAcceptEdits && info.capability == CapWrite {
+		return ruleAllow, "auto-approved in accept-edits mode"
 	}
 
 	switch e.profile {

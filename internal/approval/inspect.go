@@ -2,7 +2,9 @@ package approval
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -24,6 +26,8 @@ type toolInfo struct {
 	key        string
 	reason     string
 	preview    string
+	hardDeny   string
+	workspace  string
 }
 
 func inspectCall(workspace string, req agentcore.ToolApprovalRequest) toolInfo {
@@ -31,6 +35,7 @@ func inspectCall(workspace string, req agentcore.ToolApprovalRequest) toolInfo {
 	payload := decodeArgs(call.Args)
 	info := toolInfo{
 		tool:       call.Name,
+		workspace:  workspace,
 		capability: CapUnknown,
 		summary:    strings.TrimSpace(req.Summary),
 		preview:    previewText(req.Preview),
@@ -43,15 +48,23 @@ func inspectCall(workspace string, req agentcore.ToolApprovalRequest) toolInfo {
 	case "read", "glob", "grep", "ls":
 		info.capability = CapRead
 		info.key = "read"
-		if path := pathArg(workspace, payload); path != "" {
+		path, deny := checkedPath(workspace, payload)
+		if path != "" {
 			info.summary = path
+		}
+		if deny != "" {
+			info.hardDeny = deny
 		}
 	case "write", "edit":
 		info.capability = CapWrite
-		path := pathArg(workspace, payload)
+		path, deny := checkedPath(workspace, payload)
 		info.summary = firstNonEmpty(path, info.summary)
 		info.key = "write:" + path
 		info.reason = "file modification requires approval"
+		if deny != "" {
+			info.hardDeny = deny
+			info.reason = deny
+		}
 	case "bash":
 		info.capability = CapExec
 		command := strings.TrimSpace(stringArg(payload, "command"))
@@ -199,6 +212,71 @@ func pathArg(workspace string, payload map[string]any) string {
 		return filepath.Clean(path)
 	}
 	return filepath.Clean(filepath.Join(workspace, path))
+}
+
+func checkedPath(workspace string, payload map[string]any) (string, string) {
+	path := pathArg(workspace, payload)
+	if path == "" || workspace == "" {
+		return path, ""
+	}
+
+	base := resolveSymlinks(filepath.Clean(workspace))
+	target := resolveSymlinks(path)
+	if isSubPath(base, target) {
+		return path, ""
+	}
+	return path, fmt.Sprintf("path outside workspace denied: %s", path)
+}
+
+func resolveSymlinks(path string) string {
+	if path == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+
+	current := cleaned
+	tail := ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			if tail == "" {
+				return resolved
+			}
+			return filepath.Join(resolved, tail)
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			if tail == "" {
+				return cleaned
+			}
+			return filepath.Join(current, tail)
+		}
+
+		base := filepath.Base(current)
+		if tail == "" {
+			tail = base
+		} else {
+			tail = filepath.Join(base, tail)
+		}
+		current = parent
+	}
+}
+
+func isSubPath(base, target string) bool {
+	if base == "" {
+		return true
+	}
+	base = filepath.Clean(base)
+	target = filepath.Clean(target)
+
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
 }
 
 func hostOf(raw string) string {

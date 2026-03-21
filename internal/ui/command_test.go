@@ -39,7 +39,7 @@ func TestValidateCommandAllowsInfoCommandWhenRunning(t *testing.T) {
 func TestValidateCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	t.Parallel()
 
-	engine, err := approval.NewEngine(t.TempDir(), "balanced", nil)
+	engine, err := approval.NewEngine(t.TempDir(), "balanced", nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}

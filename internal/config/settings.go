@@ -72,6 +72,14 @@ type Settings struct {
 	SearchAPIKey   *string `json:"search_api_key,omitempty"`
 
 	Hooks HooksConfig `json:"hooks,omitempty"` // lifecycle hooks
+
+	Permissions *PermissionsConfig `json:"permissions,omitempty"`
+}
+
+// PermissionsConfig holds user-defined permission rules.
+type PermissionsConfig struct {
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
 }
 
 // Resolved holds settings resolved to concrete values (no pointers).
@@ -89,6 +97,8 @@ type Resolved struct {
 	SearchAPIKey   string
 
 	Hooks HooksConfig // lifecycle hooks
+
+	Permissions PermissionsConfig // user-defined permission rules
 }
 
 // providerEnvVars maps provider names to their standard environment variable names.
@@ -191,6 +201,9 @@ func (s Settings) Resolve() Resolved {
 	}
 	if len(s.Hooks) > 0 {
 		r.Hooks = s.Hooks
+	}
+	if s.Permissions != nil {
+		r.Permissions = *s.Permissions
 	}
 	return r
 }
@@ -339,6 +352,13 @@ func mergeSettings(base, override Settings) Settings {
 		for event, entries := range override.Hooks {
 			base.Hooks[event] = append(base.Hooks[event], entries...)
 		}
+	}
+	if override.Permissions != nil {
+		if base.Permissions == nil {
+			base.Permissions = &PermissionsConfig{}
+		}
+		base.Permissions.Allow = append(base.Permissions.Allow, override.Permissions.Allow...)
+		base.Permissions.Deny = append(base.Permissions.Deny, override.Permissions.Deny...)
 	}
 	return base
 }

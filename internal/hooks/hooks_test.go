@@ -262,7 +262,7 @@ func TestExecCommand_StdinPayload(t *testing.T) {
 }
 
 func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
-	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil)
+	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
 }
 
 func TestRunPreToolUse_AllowAlwaysSkipsFutureApproval(t *testing.T) {
-	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil)
+	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestRunPreToolUse_AllowAlwaysSkipsFutureApproval(t *testing.T) {
 }
 
 func TestRunNotification_ApprovalContextTimesOut(t *testing.T) {
-	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil)
+	engine, err := approval.NewEngine(t.TempDir(), approval.ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}

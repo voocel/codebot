@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui"
@@ -24,6 +26,7 @@ func main() {
 	continueFlag := flag.Bool("c", false, "Continue most recent session")
 	resumeFlag := flag.Bool("r", false, "Select a session to resume")
 	approvalProfileFlag := flag.String("approval-profile", "balanced", "Approval profile: strict, balanced, off")
+	modeFlag := flag.String("mode", "normal", "Permission mode: normal, plan, accept-edits, trust")
 	flag.Parse()
 
 	if *versionFlag {
@@ -44,6 +47,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer rt.Close()
+
+	if *modeFlag != "normal" && rt.ApprovalEngine != nil {
+		// Normalize CLI flag value: "accept-edits" → "accept_edits".
+		m := strings.ReplaceAll(*modeFlag, "-", "_")
+		rt.ApprovalEngine.SetMode(approval.Mode(m))
+	}
 
 	if printMode {
 		if err := ui.RunPrint(rt.Session, flag.Args(), *jsonFlag); err != nil {

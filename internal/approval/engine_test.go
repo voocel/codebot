@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -25,7 +26,7 @@ func (t metadataTool) ApprovalMetadata() ToolMetadata { return t.meta }
 func TestBalancedReadDoesNotNeedApproval(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil)
+	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestBalancedReadDoesNotNeedApproval(t *testing.T) {
 func TestBalancedWriteNeedsApprovalWithoutApprover(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil)
+	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -62,10 +63,84 @@ func TestBalancedWriteNeedsApprovalWithoutApprover(t *testing.T) {
 	}
 }
 
+func TestBalancedWriteOutsideWorkspaceIsDenied(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{"path": outside})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "write", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatalf("write outside workspace should be denied, got %#v", result)
+	}
+}
+
+func TestBalancedReadOutsideWorkspaceIsDenied(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{"path": outside})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "read", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatalf("read outside workspace should be denied, got %#v", result)
+	}
+}
+
+func TestBalancedWriteViaSymlinkEscapeIsDenied(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	outsideDir := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll outside: %v", err)
+	}
+	link := filepath.Join(workspace, "link")
+	if err := os.Symlink(outsideDir, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{"path": "link/escape.txt"})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "write", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatalf("write through symlink escape should be denied, got %#v", result)
+	}
+}
+
 func TestPlanModeDeniesWrite(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil)
+	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -88,7 +163,7 @@ func TestAllowAlwaysSkipsFutureApproval(t *testing.T) {
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
 
-	engine, err := NewEngine(workspace, ProfileBalanced, nil)
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -137,7 +212,7 @@ func TestAllowAlwaysSkipsFutureApproval(t *testing.T) {
 func TestApproveHookNeedsApprovalWithoutApprover(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil)
+	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -155,7 +230,7 @@ func TestApproveHookNeedsApprovalWithoutApprover(t *testing.T) {
 func TestApproveCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil)
+	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -173,7 +248,7 @@ func TestApproveCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 func TestApproveCommandAllowsInfoCommandInPlanMode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil)
+	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -190,7 +265,7 @@ func TestApproveCommandAllowsInfoCommandInPlanMode(t *testing.T) {
 func TestReplaceToolMetadataClassifiesDynamicTool(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil)
+	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
