@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -101,6 +102,19 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 			return false, nil
 		}
 		text := strings.TrimSpace(m.Input.Value())
+
+		// Shell escape: "!command" runs directly in the shell.
+		if strings.HasPrefix(text, "!") {
+			shellCmd := strings.TrimSpace(text[1:])
+			if shellCmd == "" {
+				return false, nil
+			}
+			m.Input.Reset()
+			echo := tea.Println(m.RenderPromptOutput(text))
+			m.ShowWelcome = false
+			return true, tea.Sequence(echo, a.execShell(shellCmd))
+		}
+
 		if !strings.HasPrefix(text, "/") {
 			return false, nil
 		}
@@ -230,5 +244,21 @@ func (a *App) onDrop(m *tui.Model, text string) tea.Cmd {
 			return tui.PasteErrorMsg{Text: tui.ErrorStyle.Render(err.Error())}
 		}
 		return tui.ImageAttachedMsg{Block: block}
+	}
+}
+
+// execShell runs a shell command and displays the output in scrollback.
+func (a *App) execShell(cmd string) tea.Cmd {
+	return func() tea.Msg {
+		c := exec.Command("sh", "-c", cmd)
+		c.Dir = a.Cwd
+		out, err := c.CombinedOutput()
+		result := strings.TrimRight(string(out), "\n")
+		if err != nil && result != "" {
+			result += "\n" + err.Error()
+		} else if err != nil {
+			result = err.Error()
+		}
+		return tui.CommandResultMsg{Text: tui.CommandStyle.Render(result)}
 	}
 }

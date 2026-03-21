@@ -22,6 +22,7 @@ var (
 	ColorStatusBg    = lipgloss.Color("236")     // dark background
 	ColorSeparator   = lipgloss.Color("243")     // medium gray
 	ColorBorder      = lipgloss.Color("246")
+	ColorShell       = lipgloss.Color("#FF79C6") // pink/magenta for shell mode
 )
 
 // Tool blocks
@@ -59,6 +60,10 @@ var ImageSelectedStyle = lipgloss.NewStyle().Reverse(true)
 // Separator
 var SeparatorStyle = lipgloss.NewStyle().
 	Foreground(ColorSeparator)
+
+// Shell mode separator
+var ShellSeparatorStyle = lipgloss.NewStyle().
+	Foreground(ColorShell)
 
 // Welcome banner
 var (

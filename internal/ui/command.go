@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -148,6 +150,12 @@ func (a *App) builtinCommands() []Command {
 			Category: "session", NeedsIdle: true, Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdReload()
+		}),
+		NewSimple(CommandSpec{
+			Name: "memory", Usage: "/memory", Description: "Show or edit auto memory",
+			Category: "info", Kind: CommandKindBuiltin,
+		}, func(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
+			return ctx.App.cmdMemory(inv.Args)
 		}),
 		NewSimple(CommandSpec{
 			Name: "loop", Usage: "/loop <interval|cron> <prompt>",
@@ -474,6 +482,58 @@ func (a *App) cmdReload() tea.Cmd {
 	a.rebuildRegistry()
 	return tui.SendCommandResult(tui.CommandStyle.Render(
 		fmt.Sprintf("Reloaded: %d commands, %d skills.", len(a.Commands), len(a.Skills))))
+}
+
+func (a *App) cmdMemory(args []string) tea.Cmd {
+	memDir := config.MemoryDir(a.Cwd)
+	memPath := config.MemoryFilePath(a.Cwd)
+
+	if len(args) > 0 && args[0] == "edit" {
+		// Ensure file exists so editors that reject missing paths still work.
+		config.EnsureMemoryDir(a.Cwd)
+		if _, err := os.Stat(memPath); os.IsNotExist(err) {
+			_ = os.WriteFile(memPath, []byte("# Project Memory\n"), 0o644)
+		}
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = os.Getenv("VISUAL")
+		}
+		if editor == "" {
+			editor = "vi"
+		}
+		c := exec.Command(editor, memPath)
+		return tea.ExecProcess(c, func(err error) tea.Msg {
+			if err != nil {
+				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("editor: " + err.Error())}
+			}
+			a.Session.Reload()
+			return tui.CommandResultMsg{Text: tui.CommandStyle.Render("Memory reloaded.")}
+		})
+	}
+
+	// Show memory status.
+	var sb strings.Builder
+	sb.WriteString("Auto Memory\n\n")
+	fmt.Fprintf(&sb, "Directory:  %s\n", memDir)
+	fmt.Fprintf(&sb, "Index:      %s\n", memPath)
+
+	entries, _ := os.ReadDir(memDir)
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			files = append(files, e.Name())
+		}
+	}
+	if len(files) == 0 {
+		sb.WriteString("\nNo memory files yet. The LLM will create MEMORY.md as it learns.\n")
+	} else {
+		fmt.Fprintf(&sb, "\nFiles (%d):\n", len(files))
+		for _, f := range files {
+			sb.WriteString("  " + f + "\n")
+		}
+	}
+	sb.WriteString("\nUse /memory edit to open MEMORY.md in your editor.")
+	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 }
 
 func (a *App) cmdLoop(rawArgs string) tea.Cmd {

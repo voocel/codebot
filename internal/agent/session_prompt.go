@@ -97,7 +97,11 @@ func (m *sessionPromptManager) setSystemSuffix(suffix string) {
 }
 
 func (m *sessionPromptManager) reload() {
+	gitSnapshot := m.session.contextFiles.GitSnapshot
 	m.session.contextFiles = config.LoadContextFiles(m.session.cwd)
+	m.session.contextFiles.GitSnapshot = gitSnapshot
+	// Re-read memory from disk (LLM may have updated it during this session).
+	m.session.contextFiles.Memory, m.session.contextFiles.MemoryDir = config.LoadMemory(m.session.cwd)
 	m.session.skills = config.LoadSkills(m.session.cwd)
 	m.rebuildPrompt()
 }
@@ -130,6 +134,9 @@ func (m *sessionPromptManager) rebuildPrompt() {
 	blocks := []agentcore.SystemBlock{
 		{Text: identity, CacheControl: "ephemeral"},
 		{Text: instructions, CacheControl: "ephemeral"},
+	}
+	if m.session.contextFiles.GitSnapshot != "" {
+		blocks = append(blocks, agentcore.SystemBlock{Text: m.session.contextFiles.GitSnapshot})
 	}
 	m.session.agent.SetSystemBlocks(blocks)
 

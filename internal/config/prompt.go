@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -45,6 +46,9 @@ func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (iden
 			fmt.Fprintf(&inst, "- **%s**: %s\n", t.Name, t.Description)
 		}
 	}
+	if memInst := BuildAutoMemoryInstructions(ctx.MemoryDir); memInst != "" {
+		fmt.Fprintf(&inst, "\n%s\n", memInst)
+	}
 	instructions = inst.String()
 	return
 }
@@ -62,6 +66,10 @@ func BuildReminders(ctx ContextFiles, skills []Skill) []string {
 	}
 	if ctx.SystemAppend != "" {
 		reminders = append(reminders, "<system-reminder>\n"+ctx.SystemAppend+"\n</system-reminder>")
+	}
+	if ctx.Memory != "" {
+		memPath := filepath.Join(ctx.MemoryDir, "MEMORY.md")
+		reminders = append(reminders, "<system-reminder>\nContents of "+memPath+" (auto-memory, persists across conversations):\n\n"+ctx.Memory+"\n</system-reminder>")
 	}
 	return reminders
 }

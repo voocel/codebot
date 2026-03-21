@@ -358,9 +358,13 @@ func (m Model) View() string {
 			}
 			parts = append(parts, line)
 		}
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		sep := SeparatorStyle
+		if strings.HasPrefix(m.Input.Value(), "!") {
+			sep = ShellSeparatorStyle
+		}
+		parts = append(parts, sep.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, m.Input.View())
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, sep.Render(strings.Repeat("─", m.Width)))
 	}
 
 	// Welcome banner (before first message only)

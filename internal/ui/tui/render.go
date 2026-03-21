@@ -270,6 +270,9 @@ func (m *Model) RenderContextBar() string {
 	if m.QuitPending {
 		return lipgloss.NewStyle().Foreground(ColorMuted).Bold(true).Render("Press Ctrl+C again to exit")
 	}
+	if strings.HasPrefix(m.Input.Value(), "!") {
+		return ShellSeparatorStyle.Render("! for bash mode")
+	}
 	var parts []string
 	if m.config.StatusMode != nil {
 		if mode := m.config.StatusMode(m); mode != "" {

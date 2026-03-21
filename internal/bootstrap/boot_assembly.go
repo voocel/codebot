@@ -188,6 +188,9 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	settings.Model = activeModel
 
 	ctxFiles := config.LoadContextFiles(input.cwd)
+	ctxFiles.GitSnapshot = config.CollectGitSnapshot(input.cwd)
+	ctxFiles.Memory, ctxFiles.MemoryDir = config.LoadMemory(input.cwd)
+	config.EnsureMemoryDir(input.cwd)
 	skills := config.LoadSkills(input.cwd)
 
 	rules, err := approval.ParseRuleSet(settings.Permissions.Allow, settings.Permissions.Deny)
@@ -440,6 +443,11 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 	blocks := []agentcore.SystemBlock{
 		{Text: identity, CacheControl: "ephemeral"},
 		{Text: instructions, CacheControl: "ephemeral"},
+	}
+
+	// Git snapshot as a separate block — mirrors Claude Code's modular prompt assembly.
+	if ctxFiles.GitSnapshot != "" {
+		blocks = append(blocks, agentcore.SystemBlock{Text: ctxFiles.GitSnapshot})
 	}
 
 	// Deferred tools preamble for first user message.

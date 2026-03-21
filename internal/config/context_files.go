@@ -19,6 +19,17 @@ type ContextFiles struct {
 	// SystemAppend is the content of APPEND_SYSTEM.md if found in cwd.
 	// When non-empty, it is appended to the system prompt.
 	SystemAppend string
+
+	// GitSnapshot is the git status snapshot collected at session start.
+	// Injected as a separate system block so the LLM knows the repo state.
+	GitSnapshot string
+
+	// Memory is the auto memory content (first 200 lines of MEMORY.md).
+	Memory string
+
+	// MemoryDir is the absolute path to the memory directory.
+	// Used by auto memory instructions to tell the LLM where to write.
+	MemoryDir string
 }
 
 // LoadContextFiles searches for context files from cwd upward to the filesystem root.
