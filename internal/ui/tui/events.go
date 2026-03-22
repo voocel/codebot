@@ -100,7 +100,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 				block.WriteString("\n\n")
 			}
 			if content != "" {
-				block.WriteString(m.renderAssistantMarkdown(content, false))
+				indented := m.renderMarkdownBlock(content, 2)
+				block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 			}
 			if block.Len() > 0 {
 				cmds = append(cmds, printBlock(block.String()))
@@ -197,6 +198,8 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 			body = indentBlock(RenderEditResult(ev.Result), 2)
 		} else if ev.Tool == "write" && !ev.IsError {
 			body = indentBlock(RenderWriteResult(ev.Result), 2)
+		} else if (ev.Tool == "read" || ev.Tool == "glob") && !ev.IsError {
+			body = indentBlock(RenderReadResult(ev.Result), 2)
 		} else {
 			text := FormatToolResult(ev.Result, ev.IsError)
 			text = m.wrapTextForIndent(text, 4)

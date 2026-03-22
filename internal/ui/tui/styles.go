@@ -30,9 +30,9 @@ var (
 
 	ToolArgsStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 
-	ToolResultStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+	ToolResultStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 
-	ToolPathStyle = lipgloss.NewStyle().Foreground(ColorCommand)
+	ToolPathStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#82AAFF"))
 )
 
 // Thinking body

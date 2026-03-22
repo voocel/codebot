@@ -77,7 +77,7 @@ func TestHandleAgentEventMessageEndReturnsPrintCmd(t *testing.T) {
 		t.Fatal("expected IsStream = false after MessageEnd")
 	}
 	if cmd == nil {
-		t.Fatal("expected non-nil cmd (tea.Println) for assistant MessageEnd")
+		t.Fatal("expected non-nil cmd (printBlock) for assistant MessageEnd")
 	}
 }
 
@@ -99,9 +99,12 @@ func TestHandleAgentEventThinkingReturnsPrintCmd(t *testing.T) {
 		},
 	}
 
-	_, cmd := m.HandleAgentEvent(ev)
+	next, cmd := m.HandleAgentEvent(ev)
+	if next.IsStream {
+		t.Fatal("expected IsStream = false after MessageEnd with thinking")
+	}
 	if cmd == nil {
-		t.Fatal("expected non-nil cmd for thinking + response")
+		t.Fatal("expected non-nil cmd (printBlock) for thinking + response")
 	}
 }
 

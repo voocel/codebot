@@ -105,8 +105,8 @@ type Model struct {
 	ToolSpinner spinner.Model // breathing-dot spinner for tool execution
 
 	Streaming *strings.Builder
-	Thinking  *strings.Builder
-	IsStream  bool
+	Thinking *strings.Builder
+	IsStream bool
 
 	Running         bool
 	TurnCount       int
@@ -381,9 +381,8 @@ func (m Model) View() string {
 			indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
 			parts = append(parts, "", ThinkingBodyStyle.Render("● ")+strings.TrimPrefix(indented, "  "))
 		}
-		if block := m.renderAssistantMarkdown(m.Streaming.String(), true); block != "" {
-			parts = append(parts, "", block)
-		}
+		indented := m.renderMarkdownBlock(m.Streaming.String(), 2)
+		parts = append(parts, "", AssistantIconStyle.Render("● ")+strings.TrimPrefix(indented, "  ")+m.Spinner.View())
 	}
 
 	// Live: pending tool execution
@@ -883,8 +882,9 @@ func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 			}
 			// Text content
 			if content := strings.TrimSpace(am.TextContent()); content != "" {
+				indented := m.renderMarkdownBlock(content, 2)
 				sb.WriteString("\n\n")
-				sb.WriteString(m.renderAssistantMarkdown(content, false))
+				sb.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 			}
 			// Tool calls (render headers)
 			if concrete, ok := am.(agentcore.Message); ok {

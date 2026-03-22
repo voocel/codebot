@@ -36,11 +36,3 @@ func TestRenderFinalFencedCodeBlockDoesNotPanic(t *testing.T) {
 		t.Fatalf("expected code content to stay visible, got %q", stripANSI(out))
 	}
 }
-
-func TestRenderLiveStringReturnsRenderedOutput(t *testing.T) {
-	r := NewRenderer(96)
-	out := r.RenderLiveString("## Section\n\n- item")
-	if out == "" {
-		t.Fatal("expected rendered output")
-	}
-}

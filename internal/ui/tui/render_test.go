@@ -161,18 +161,15 @@ func TestRenderMarkdownBlockPreservesMarkdownStructure(t *testing.T) {
 	}
 }
 
-func TestRenderAssistantMarkdownStaysPlain(t *testing.T) {
+func TestRenderMarkdownBlockFormatsContent(t *testing.T) {
 	m := New(nil, "test-model")
 	m.Width = 100
 	m.Markdown = markdown.NewRenderer(96)
 
-	block := m.renderAssistantMarkdown("# Title\n\n- item", false)
-	if strings.Contains(block, "assistant") || strings.Contains(block, "●") {
-		t.Fatalf("expected assistant markdown without extra header, got %q", block)
-	}
+	block := m.renderMarkdownBlock("# Title\n\n- item", 2)
 	plain := stripANSI(block)
 	if !strings.Contains(plain, "Title") || !strings.Contains(plain, "item") {
-		t.Fatalf("expected assistant markdown content to stay visible, got %q", plain)
+		t.Fatalf("expected markdown content to stay visible, got %q", plain)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
 )
 
@@ -30,10 +31,57 @@ func (r *Renderer) SetWidth(width int) {
 	}
 	r.width = width
 	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStyles(styles.DarkStyleConfig),
+		glamour.WithStyles(customStyle()),
 		glamour.WithWordWrap(width),
 	)
 	r.final = renderer
+}
+
+// customStyle returns a NoTTY-based style with proper markdown rendering.
+// NoTTY avoids the ANSI padding bloat of DarkStyleConfig while keeping clean output.
+func customStyle() ansi.StyleConfig {
+	style := styles.NoTTYStyleConfig
+	bold := true
+	italic := true
+	codeColor := "#89DDFF"
+	headerColor := "#4EC9B0"
+	subHeaderColor := "#FFCB6B"
+
+	// Inline code: cyan, no backtick markers.
+	style.Code.StylePrimitive.Color = &codeColor
+	style.Code.StylePrimitive.BlockPrefix = ""
+	style.Code.StylePrimitive.BlockSuffix = ""
+
+	// Code block syntax highlighting.
+	style.CodeBlock.Theme = "monokai"
+
+	// Bold/italic: terminal styling, remove ** / * markers.
+	style.Strong.Bold = &bold
+	style.Strong.BlockPrefix = ""
+	style.Strong.BlockSuffix = ""
+	style.Emph.Italic = &italic
+	style.Emph.BlockPrefix = ""
+	style.Emph.BlockSuffix = ""
+
+	// Headers: bold + color, remove # prefix markers.
+	style.H1.StylePrimitive.Bold = &bold
+	style.H1.StylePrimitive.Color = &headerColor
+	style.H1.StylePrimitive.Prefix = ""
+	style.H2.StylePrimitive.Bold = &bold
+	style.H2.StylePrimitive.Color = &headerColor
+	style.H2.StylePrimitive.Prefix = ""
+	style.H3.StylePrimitive.Bold = &bold
+	style.H3.StylePrimitive.Color = &headerColor
+	style.H3.StylePrimitive.Prefix = ""
+	style.H4.StylePrimitive.Bold = &bold
+	style.H4.StylePrimitive.Color = &subHeaderColor
+	style.H4.StylePrimitive.Prefix = ""
+	style.H5.StylePrimitive.Bold = &bold
+	style.H5.StylePrimitive.Prefix = ""
+	style.H6.StylePrimitive.Bold = &bold
+	style.H6.StylePrimitive.Prefix = ""
+
+	return style
 }
 
 // RenderFinal renders final markdown to ANSI-formatted terminal output.
@@ -49,11 +97,6 @@ func (r *Renderer) RenderFinal(content string) string {
 		return strings.TrimSpace(content)
 	}
 	return strings.TrimSpace(dedent(rendered))
-}
-
-// RenderLiveString currently uses the same renderer as final output.
-func (r *Renderer) RenderLiveString(content string) string {
-	return r.RenderFinal(content)
 }
 
 // Width reports the current renderer width.
