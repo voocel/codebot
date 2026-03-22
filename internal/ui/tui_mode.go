@@ -176,6 +176,21 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {
 		if ev.Type == agent.SEAgentEvent && ev.AgentEvent != nil {
 			p.Send(tui.AgentEventMsg{Event: *ev.AgentEvent})
+
+			// Generate prompt suggestion after agent completes a turn.
+			if ev.AgentEvent.Type == agentcore.EventAgentEnd {
+				go func() {
+					defer func() { recover() }()
+					if approvalEngine != nil && approvalEngine.PlanMode() {
+						return
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if suggestion, err := sess.GenerateSuggestion(ctx); err == nil && suggestion != "" {
+						p.Send(tui.SuggestionMsg{Text: suggestion})
+					}
+				}()
+			}
 			return
 		}
 		if text, muted, ok := formatAutoCompactionEvent(ev); ok {

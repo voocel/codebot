@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -573,4 +574,84 @@ func injectedUserMsg(text string) agentcore.Message {
 	msg := agentcore.UserMsg(text)
 	msg.Metadata = map[string]any{"injected": true}
 	return msg
+}
+
+// GenerateSuggestion calls the current model with a condensed conversation
+// history plus a suggestion prompt to predict the user's next input.
+// Returns "" when no suggestion is available (first turn, no model, etc.).
+// Tool calls and tool results are stripped to avoid provider validation
+// errors and reduce token usage — only text context matters for suggestions.
+func (s *Session) GenerateSuggestion(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	model := s.chatModel
+	s.mu.Unlock()
+
+	if model == nil {
+		return "", nil
+	}
+
+	// BuildLLMMessages returns system blocks + conversation messages
+	// in the exact same format as the agent loop (cache-aligned).
+	raw := s.agent.BuildLLMMessages()
+	if len(raw) == 0 {
+		return "", nil
+	}
+
+	// Strip tool-related content: providers (e.g. Anthropic) reject tool
+	// references when no tool definitions are provided in the request.
+	// Keep system messages, user messages, and assistant text-only content.
+	msgs := make([]agentcore.Message, 0, len(raw))
+	for _, m := range raw {
+		switch m.Role {
+		case agentcore.RoleSystem, agentcore.RoleUser:
+			msgs = append(msgs, m)
+		case agentcore.RoleAssistant:
+			// Keep only text and thinking blocks, drop tool_use blocks.
+			var textBlocks []agentcore.ContentBlock
+			for _, b := range m.Content {
+				if b.Type == agentcore.ContentText || b.Type == agentcore.ContentThinking {
+					textBlocks = append(textBlocks, b)
+				}
+			}
+			if len(textBlocks) > 0 {
+				msgs = append(msgs, agentcore.Message{
+					Role:    agentcore.RoleAssistant,
+					Content: textBlocks,
+				})
+			}
+		// Skip RoleTool messages entirely.
+		}
+	}
+
+	// Append the suggestion generator instruction as the final user message.
+	msgs = append(msgs, agentcore.Message{
+		Role:    agentcore.RoleUser,
+		Content: []agentcore.ContentBlock{agentcore.TextBlock(config.SuggestionPrompt)},
+	})
+
+	resp, err := model.Generate(ctx, msgs, nil,
+		agentcore.WithMaxTokens(500),
+		agentcore.WithThinking(agentcore.ThinkingOff),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	text := strings.TrimSpace(resp.Message.TextContent())
+	// Strip wrapping quotes if the model added them.
+	text = strings.Trim(text, "\"'`")
+	text = strings.TrimSpace(text)
+
+	// Discard non-suggestions: empty, too long, or meta-responses.
+	words := strings.Fields(text)
+	if len(words) == 0 || len(words) > 12 {
+		return "", nil
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "no suggestion") || strings.Contains(lower, "silent") ||
+		strings.Contains(lower, "nothing") || strings.Contains(lower, "不建议") ||
+		strings.Contains(lower, "无建议") {
+		return "", nil
+	}
+	return text, nil
 }

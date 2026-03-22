@@ -142,6 +142,8 @@ type Model struct {
 
 	MCPLoading bool // true while MCP servers are connecting in background
 
+	Suggestion string // prompt suggestion shown as placeholder after agent completes
+
 	compItems  []CompletionItem // current completion candidates
 	compIdx    int              // selected completion index
 	compActive bool             // completion menu visible
@@ -175,7 +177,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	tsp.Style = lipgloss.NewStyle().Foreground(ColorTool)
 
 	ta := textarea.New()
-	placeholder := "Ask anything... (Enter send, Ctrl+J newline, Esc abort)"
+	placeholder := defaultPlaceholder
 	if c.Placeholder != "" {
 		placeholder = c.Placeholder
 	}
@@ -304,6 +306,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case quitResetMsg:
 		m.QuitPending = false
+		return m, nil
+	case SuggestionMsg:
+		if !m.Running && msg.Text != "" {
+			m.Suggestion = msg.Text
+			m.Input.Placeholder = msg.Text
+		}
 		return m, nil
 	case TasksRefreshMsg:
 		// Overlay re-renders on every View() call; just schedule the next tick
@@ -517,6 +525,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Prompt suggestion: Tab accepts into input when no completion menu is active.
+	if msg.String() == "tab" && m.Suggestion != "" && m.Input.Value() == "" && !m.compActive {
+		m.Input.SetValue(m.Suggestion)
+		m.Input.CursorEnd()
+		m.clearSuggestion()
+		return m, nil
+	}
+
 	// Slash command completion menu navigation.
 	if m.compActive {
 		switch msg.String() {
@@ -638,6 +654,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		text := strings.TrimSpace(m.Input.Value())
+		// Enter on empty input with suggestion: accept and submit the suggestion.
+		if text == "" && m.Suggestion != "" && len(m.Images) == 0 {
+			text = m.Suggestion
+			m.clearSuggestion()
+		}
 		if text == "" && len(m.Images) == 0 {
 			m.Input.Reset()
 			m.Input.SetHeight(1)
@@ -654,6 +675,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ImageCursor = -1
 		m.Input.Reset()
 		m.Input.SetHeight(1)
+		m.Input.Placeholder = "" // clear placeholder after first send
 		m.ShowSummary = false
 
 		displayText := text
@@ -728,6 +750,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.Input, cmd = m.Input.Update(msg)
 	m.adjustInputHeight()
 	m.updateCompletions()
+	// Clear suggestion when user starts typing.
+	if m.Suggestion != "" && m.Input.Value() != "" {
+		m.clearSuggestion()
+	}
 	return m, cmd
 }
 
@@ -751,6 +777,17 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 }
 
 const maxInputHeight = 8
+
+const defaultPlaceholder = "Ask anything... (Enter send, Ctrl+J newline, Esc abort)"
+
+// clearSuggestion removes the current prompt suggestion and clears the placeholder.
+func (m *Model) clearSuggestion() {
+	if m.Suggestion == "" {
+		return
+	}
+	m.Suggestion = ""
+	m.Input.Placeholder = ""
+}
 
 // adjustInputHeight grows/shrinks the textarea to fit the content,
 // accounting for both explicit newlines and soft-wrapping.
@@ -904,10 +941,15 @@ func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 				toolName := toolCallNames[toolCallID]
 
 				var body string
-				if toolName == "edit" && !isError {
+				if toolName == "subagent" && !isError {
+					content := FormatSubagentOutput(raw)
+					body = indentBlock(m.renderSubagentCard(content), 2)
+				} else if toolName == "edit" && !isError {
 					body = indentBlock(RenderEditResult(raw), 2)
 				} else if toolName == "write" && !isError {
 					body = indentBlock(RenderWriteResult(raw), 2)
+				} else if (toolName == "read" || toolName == "glob") && !isError {
+					body = indentBlock(RenderReadResult(raw), 2)
 				} else {
 					text := FormatToolResult(raw, isError)
 					text = m.wrapTextForIndent(text, 4)

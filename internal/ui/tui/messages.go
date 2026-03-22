@@ -58,3 +58,8 @@ type MCPReadyMsg struct {
 	Errors       []string // connection errors (server: reason)
 	Instructions string   // MCP server instructions to set as system suffix
 }
+
+// SuggestionMsg carries a prompt suggestion generated after agent completion.
+type SuggestionMsg struct {
+	Text string
+}

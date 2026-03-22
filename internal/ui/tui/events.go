@@ -31,6 +31,7 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 		m.Running = true
 		m.RunStats = runStats{StartedAt: time.Now()}
 		m.ShowSummary = false
+		m.clearSuggestion()
 
 	case agentcore.EventAgentEnd:
 		m.Running = false
