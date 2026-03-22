@@ -10,11 +10,11 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/storage" // input history
 	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
 // PlanBarInfo provides plan mode status for the status bar.
@@ -44,7 +44,7 @@ type Config struct {
 	OnDrop           func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
 	OnMCPReady       func(msg MCPReadyMsg)               // called when MCP servers finish connecting
 	StatusRight      func(m *Model) string
-	StatusMode       func(m *Model) string            // mode indicator for context bar (e.g. "⏵⏵ trust")
+	StatusMode       func(m *Model) string // mode indicator for context bar (e.g. "⏵⏵ trust")
 	StatusPlan       func(m *Model) *PlanBarInfo
 	Overlay          func(m *Model) *OverlayState         // interactive command overlay
 	Completions      func(prefix string) []CompletionItem // slash command completions
@@ -130,8 +130,8 @@ type Model struct {
 	ImageCursor int                      // -1 = not selecting; 0+ = selected image index
 	Pasting     int                      // number of async image reads in progress (clipboard paste or drag-drop)
 
-	Glamour *glamour.TermRenderer
-	config  Config
+	Markdown *markdown.Renderer
+	config   Config
 
 	AskUser    *askUserState    // non-nil when ask-user UI is active
 	Permission *permissionState // non-nil when permission prompt is active
@@ -212,6 +212,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		ShowWelcome:     true,
 		EnvHint:         c.EnvHint,
 		ImageCursor:     -1,
+		Markdown:        markdown.NewRenderer(80),
 		config:          c,
 		history:         c.History,
 		histIdx:         -1,
@@ -380,9 +381,9 @@ func (m Model) View() string {
 			indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
 			parts = append(parts, "", ThinkingBodyStyle.Render("● ")+strings.TrimPrefix(indented, "  "))
 		}
-		text := m.wrapTextForIndent(m.Streaming.String(), 2)
-		indented := indentBlock(text, 2)
-		parts = append(parts, "", AssistantIconStyle.Render("● ")+strings.TrimPrefix(indented, "  ")+m.Spinner.View())
+		if block := m.renderAssistantMarkdown(m.Streaming.String(), true); block != "" {
+			parts = append(parts, "", block)
+		}
 	}
 
 	// Live: pending tool execution
@@ -737,7 +738,11 @@ func (m Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.Height = msg.Height
 	m.Ready = true
 	m.Input.SetWidth(m.Width - 2)
-	m.Glamour = NewGlamourRenderer(m.Width - 4)
+	if m.Markdown == nil {
+		m.Markdown = markdown.NewRenderer(max(m.Width-6, 20))
+	} else {
+		m.Markdown.SetWidth(max(m.Width-6, 20))
+	}
 	m.adjustInputHeight()
 	if m.AskUser != nil {
 		m.AskUser.width = m.Width
@@ -878,10 +883,8 @@ func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 			}
 			// Text content
 			if content := strings.TrimSpace(am.TextContent()); content != "" {
-				rendered := m.RenderMarkdown(content)
-				indented := indentBlock(m.wrapTextForIndent(rendered, 2), 2)
 				sb.WriteString("\n\n")
-				sb.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+				sb.WriteString(m.renderAssistantMarkdown(content, false))
 			}
 			// Tool calls (render headers)
 			if concrete, ok := am.(agentcore.Message); ok {

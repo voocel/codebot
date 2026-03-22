@@ -100,9 +100,7 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 				block.WriteString("\n\n")
 			}
 			if content != "" {
-				rendered := m.RenderMarkdown(content)
-				indented := indentBlock(m.wrapTextForIndent(rendered, 2), 2)
-				block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+				block.WriteString(m.renderAssistantMarkdown(content, false))
 			}
 			if block.Len() > 0 {
 				cmds = append(cmds, printBlock(block.String()))

@@ -1,9 +1,6 @@
 package tui
 
-import (
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
-)
+import "github.com/charmbracelet/lipgloss"
 
 // Color palette — dark terminal optimized.
 var (
@@ -34,6 +31,8 @@ var (
 	ToolArgsStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 
 	ToolResultStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+
+	ToolPathStyle = lipgloss.NewStyle().Foreground(ColorCommand)
 )
 
 // Thinking body
@@ -43,7 +42,8 @@ var ThinkingBodyStyle = lipgloss.NewStyle().
 
 // Assistant icon
 var AssistantIconStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("252"))
+	Foreground(ColorAssistant).
+	Bold(true)
 
 // Error
 var ErrorStyle = lipgloss.NewStyle().
@@ -130,6 +130,13 @@ var SubagentCardStyle = lipgloss.NewStyle().
 // Plan mode tag
 var PlanTagStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 
+// Assistant markdown container
+var AssistantMarkdownBlockStyle = lipgloss.NewStyle().
+	BorderLeft(true).
+	BorderForeground(lipgloss.Color("99")).
+	Padding(0, 1).
+	MarginLeft(1)
+
 // General purpose
 var (
 	MutedStyle = lipgloss.NewStyle().Foreground(ColorMuted)
@@ -198,14 +205,4 @@ func CommandPaletteIdleBadge(needsIdle bool) string {
 		Background(lipgloss.Color("240")).
 		Padding(0, 1).
 		Render("idle")
-}
-
-// NewGlamourRenderer creates a glamour markdown renderer with the given width.
-func NewGlamourRenderer(width int) *glamour.TermRenderer {
-	r, _ := glamour.NewTermRenderer(
-		// Avoid terminal probing escape sequences leaking into input on some terminals.
-		glamour.WithStandardStyle("notty"),
-		glamour.WithWordWrap(width),
-	)
-	return r
 }

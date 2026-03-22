@@ -1,11 +1,18 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string {
+	return ansiPattern.ReplaceAllString(s, "")
+}
 
 func TestViewShowsLiveThinkingWhenStreaming(t *testing.T) {
 	m := New(nil, "test-model")
@@ -15,7 +22,7 @@ func TestViewShowsLiveThinkingWhenStreaming(t *testing.T) {
 	m.Streaming.WriteString("assistant reply")
 	m.Thinking.WriteString("thinking trace")
 
-	view := m.View()
+	view := stripANSI(m.View())
 	if !strings.Contains(view, "thinking trace") {
 		t.Fatalf("expected view to contain thinking text, got: %q", view)
 	}

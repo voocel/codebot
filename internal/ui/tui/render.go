@@ -407,18 +407,38 @@ func commandPaletteWindow(total, cursor, limit int) (start, end int) {
 
 // RenderMarkdown renders markdown content using glamour.
 func (m *Model) RenderMarkdown(content string) string {
-	if m.Glamour == nil || content == "" {
+	if m.Markdown == nil || content == "" {
 		return content
 	}
-	rendered, err := m.Glamour.Render(content)
-	if err != nil {
-		return content
+	return m.Markdown.RenderFinal(content)
+}
+
+// renderMarkdownBlock renders complete markdown and applies only outer
+// indentation. Markdown output is already wrapped by the renderer.
+func (m Model) renderMarkdownBlock(content string, indent int) string {
+	if content == "" {
+		return ""
 	}
-	// glamour "notty" adds a uniform left margin to every line.
-	// dedent must run FIRST to detect and strip the common indent;
-	// if TrimSpace runs first it strips only line 1's margin, making
-	// minIndent=0 and dedent a no-op — leaving lines 2+ over-indented.
-	return strings.TrimSpace(dedent(rendered))
+	if m.Markdown == nil {
+		return indentBlock(m.wrapTextForIndent(content, indent), indent)
+	}
+	return indentBlock(m.RenderMarkdown(content), indent)
+}
+
+func (m Model) renderAssistantMarkdown(content string, live bool) string {
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+
+	rendered := content
+	if m.Markdown != nil {
+		if live {
+			rendered = m.Markdown.RenderLiveString(content)
+		} else {
+			rendered = m.Markdown.RenderFinal(content)
+		}
+	}
+	return rendered
 }
 
 // ---------------------------------------------------------------------------
@@ -744,7 +764,7 @@ func FormatToolOutput(text string, maxVisible int, styles ...lipgloss.Style) str
 		} else {
 			sb.WriteString(padding)
 		}
-		sb.WriteString(lineStyle.Render(line))
+		sb.WriteString(renderToolOutputLine(line, lineStyle))
 		sb.WriteByte('\n')
 	}
 	if hidden > 0 {
@@ -752,6 +772,84 @@ func FormatToolOutput(text string, maxVisible int, styles ...lipgloss.Style) str
 		sb.WriteByte('\n')
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func renderToolOutputLine(line string, base lipgloss.Style) string {
+	if line == "" {
+		return ""
+	}
+	if styled, ok := renderDiffStatLine(line, base); ok {
+		return styled
+	}
+
+	parts := strings.FieldsFunc(line, func(r rune) bool {
+		return r == ' ' || r == '\t'
+	})
+	if len(parts) == 0 {
+		return base.Render(line)
+	}
+
+	var out strings.Builder
+	for i := 0; i < len(line); {
+		if line[i] == ' ' || line[i] == '\t' {
+			out.WriteByte(line[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(line) && line[j] != ' ' && line[j] != '\t' {
+			j++
+		}
+		token := line[i:j]
+		out.WriteString(renderToolOutputToken(token, base))
+		i = j
+	}
+	return out.String()
+}
+
+func renderDiffStatLine(line string, base lipgloss.Style) (string, bool) {
+	sep := strings.Index(line, " | ")
+	if sep <= 0 {
+		return "", false
+	}
+	left := strings.TrimRight(line[:sep], " \t")
+	right := line[sep:]
+	trimmedLeft := strings.TrimLeft(left, " \t")
+	if !looksLikePathToken(trimmedLeft) {
+		return "", false
+	}
+	prefix := left[:len(left)-len(trimmedLeft)]
+	return base.Render(prefix) + ToolPathStyle.Render(trimmedLeft) + base.Render(right), true
+}
+
+func renderToolOutputToken(token string, base lipgloss.Style) string {
+	trimmed := strings.Trim(token, "[](){}<>\",'\"")
+	if looksLikePathToken(trimmed) {
+		start := strings.Index(token, trimmed)
+		end := start + len(trimmed)
+		return base.Render(token[:start]) + ToolPathStyle.Render(trimmed) + base.Render(token[end:])
+	}
+	return base.Render(token)
+}
+
+func looksLikePathToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	if strings.HasPrefix(token, "/") || strings.HasPrefix(token, "./") || strings.HasPrefix(token, "../") || strings.HasPrefix(token, "~/") {
+		return true
+	}
+	if strings.HasSuffix(token, "/") && token != "/" {
+		return true
+	}
+	if strings.Contains(token, "/") {
+		return true
+	}
+	ext := filepath.Ext(token)
+	if ext != "" && len(ext) > 1 && !strings.Contains(token, ":") {
+		return true
+	}
+	return false
 }
 
 // FormatToolArgs formats tool arguments for display, truncating if needed.

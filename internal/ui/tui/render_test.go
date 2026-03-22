@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
 func TestWrapTextBreaksLongTokens(t *testing.T) {
@@ -104,6 +105,74 @@ func TestRenderPermissionKeepsBilingualOptionOnSingleLine(t *testing.T) {
 	}
 	if strings.Contains(view, "1. Allow once\n") {
 		t.Fatalf("expected bilingual label to stay on one line, got %q", view)
+	}
+}
+
+func TestFormatToolOutputHighlightsDiffStatPaths(t *testing.T) {
+	out := FormatToolOutput("internal/ui/tui/render.go | 38 +++++++++\ninternal/ui/tui/model.go | 25 +++++", 5)
+	if !strings.Contains(out, ToolPathStyle.Render("internal/ui/tui/render.go")) {
+		t.Fatalf("expected diff stat path highlight, got %q", out)
+	}
+	if !strings.Contains(out, ToolPathStyle.Render("internal/ui/tui/model.go")) {
+		t.Fatalf("expected second diff stat path highlight, got %q", out)
+	}
+}
+
+func TestFormatToolOutputHighlightsLsPathsAndFiles(t *testing.T) {
+	text := "/Users/voocel/project/me/codebot/internal/ui/tui/\nask_user.go 12.7KB\nmarkdown/"
+	out := FormatToolOutput(text, 5)
+	for _, want := range []string{
+		ToolPathStyle.Render("/Users/voocel/project/me/codebot/internal/ui/tui/"),
+		ToolPathStyle.Render("ask_user.go"),
+		ToolPathStyle.Render("markdown/"),
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected highlighted path token %q, got %q", want, out)
+		}
+	}
+}
+
+func TestRenderMarkdownAddsAnsiStyling(t *testing.T) {
+	m := New(nil, "test-model")
+	m.Width = 100
+	m.Markdown = markdown.NewRenderer(96)
+
+	rendered := m.RenderMarkdown("# Title\n\n- item\n\n`这种` *这种* **这种**")
+	if !strings.Contains(rendered, "\x1b[") {
+		t.Fatalf("expected markdown output to contain ANSI styling, got %q", rendered)
+	}
+	plain := stripANSI(rendered)
+	for _, want := range []string{"Title", "item", "这种"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected rendered markdown to preserve content %q, got %q", want, plain)
+		}
+	}
+}
+
+func TestRenderMarkdownBlockPreservesMarkdownStructure(t *testing.T) {
+	m := New(nil, "test-model")
+	m.Width = 100
+	m.Markdown = markdown.NewRenderer(96)
+
+	block := m.renderMarkdownBlock("# Title\n\n- first\n- second", 2)
+	lines := strings.Split(block, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected multiline markdown block, got %q", block)
+	}
+}
+
+func TestRenderAssistantMarkdownStaysPlain(t *testing.T) {
+	m := New(nil, "test-model")
+	m.Width = 100
+	m.Markdown = markdown.NewRenderer(96)
+
+	block := m.renderAssistantMarkdown("# Title\n\n- item", false)
+	if strings.Contains(block, "assistant") || strings.Contains(block, "●") {
+		t.Fatalf("expected assistant markdown without extra header, got %q", block)
+	}
+	plain := stripANSI(block)
+	if !strings.Contains(plain, "Title") || !strings.Contains(plain, "item") {
+		t.Fatalf("expected assistant markdown content to stay visible, got %q", plain)
 	}
 }
 
