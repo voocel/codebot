@@ -290,7 +290,7 @@ func (e *Engine) decide(info toolInfo, mode Mode, planMode bool) (ruleAction, st
 		return ruleAllow, ""
 	}
 
-	if e.allowed(info.key) {
+	if e.allowed(info.key) || e.allowedSession(info.capability) {
 		return ruleAllow, ""
 	}
 
@@ -380,15 +380,19 @@ func (e *Engine) resolveChoice(info toolInfo, mode Mode, planMode bool, choice C
 			Decision: agentcore.ToolApprovalAllowAlways,
 		}
 	case ChoiceAllowSession:
+		// Store capability-level key so "allow for session" covers all uses
+		// of the same capability (e.g. all file writes), matching the behavior
+		// of mainstream AI coding agents.
+		sKey := "session:" + string(info.capability)
 		entry := storedEntry{
-			Key:        info.key,
+			Key:        sKey,
 			Tool:       info.tool,
 			Capability: info.capability,
 			Summary:    info.summary,
 			AddedAt:    time.Now(),
 		}
 		e.mu.Lock()
-		e.sessionAllow[info.key] = entry
+		e.sessionAllow[sKey] = entry
 		e.mu.Unlock()
 		e.audit(info, mode, planMode, string(choice), true, "")
 		return &agentcore.ToolApprovalResult{
@@ -409,6 +413,11 @@ func (e *Engine) resolveChoice(info toolInfo, mode Mode, planMode bool, choice C
 			Decision: agentcore.ToolApprovalAllowOnce,
 		}
 	}
+}
+
+// allowedSession checks if the given capability has been approved for the session.
+func (e *Engine) allowedSession(cap Capability) bool {
+	return e.allowed("session:" + string(cap))
 }
 
 func (e *Engine) allowed(key string) bool {

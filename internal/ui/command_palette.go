@@ -80,8 +80,6 @@ func scoreCommandPaletteItem(spec CommandSpec, query string) (int, bool) {
 	}
 
 	name := strings.ToLower(spec.Name)
-	description := strings.ToLower(spec.Description)
-	usage := strings.ToLower(spec.Usage)
 
 	bestScore := 0
 	if score := scorePaletteField(name, query, 1200, 950, 700); score > bestScore {
@@ -91,12 +89,6 @@ func scoreCommandPaletteItem(spec CommandSpec, query string) (int, bool) {
 		if score := scorePaletteField(strings.ToLower(alias), query, 1100, 900, 650); score > bestScore {
 			bestScore = score
 		}
-	}
-	if score := scorePaletteField(description, query, 520, 420, 320); score > bestScore {
-		bestScore = score
-	}
-	if score := scorePaletteField(usage, query, 480, 380, 280); score > bestScore {
-		bestScore = score
 	}
 
 	return bestScore, bestScore > 0

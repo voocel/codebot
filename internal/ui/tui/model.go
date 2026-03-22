@@ -525,8 +525,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Prompt suggestion: Tab accepts into input when no completion menu is active.
-	if msg.String() == "tab" && m.Suggestion != "" && m.Input.Value() == "" && !m.compActive {
+	// Prompt suggestion: Tab or Right arrow accepts into input when no completion menu is active.
+	if (msg.String() == "tab" || msg.String() == "right") && m.Suggestion != "" && m.Input.Value() == "" && !m.compActive {
 		m.Input.SetValue(m.Suggestion)
 		m.Input.CursorEnd()
 		m.clearSuggestion()
@@ -950,6 +950,9 @@ func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 					body = indentBlock(RenderWriteResult(raw), 2)
 				} else if (toolName == "read" || toolName == "glob") && !isError {
 					body = indentBlock(RenderReadResult(raw), 2)
+				} else if toolName == "ls" && !isError {
+					_, lsBody := RenderLsResult(raw)
+					body = indentBlock(lsBody, 2)
 				} else {
 					text := FormatToolResult(raw, isError)
 					text = m.wrapTextForIndent(text, 4)

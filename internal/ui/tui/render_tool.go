@@ -401,6 +401,53 @@ func RenderWriteResult(result json.RawMessage) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
+// RenderLsResult renders ls tool results with tree structure.
+// Returns the directory path (for header update) and the formatted body.
+func RenderLsResult(result json.RawMessage) (dirPath string, body string) {
+	text := FormatToolResult(result, false)
+	if text == "" {
+		return "", "(no output)"
+	}
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) == 0 {
+		return "", "(no output)"
+	}
+
+	// First line is the directory path.
+	dirPath = strings.TrimSpace(lines[0])
+	remaining := lines[1:]
+	if len(remaining) == 0 {
+		return dirPath, ""
+	}
+
+	maxVisible := 5
+	hidden := 0
+	if len(remaining) > maxVisible {
+		hidden = len(remaining) - maxVisible
+		remaining = remaining[:maxVisible]
+	}
+
+	connector := MutedStyle.Render("└ ")
+	padding := "  "
+	contentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+
+	var sb strings.Builder
+	for i, line := range remaining {
+		if i == 0 {
+			sb.WriteString(connector)
+		} else {
+			sb.WriteString(padding)
+		}
+		sb.WriteString(renderToolOutputLine(line, contentStyle))
+		sb.WriteByte('\n')
+	}
+	if hidden > 0 {
+		sb.WriteString(MutedStyle.Render(fmt.Sprintf("  … +%d lines", hidden)))
+		sb.WriteByte('\n')
+	}
+	return dirPath, strings.TrimRight(sb.String(), "\n")
+}
+
 // RenderReadResult renders read/glob tool results with colored line numbers.
 // Handles both numbered lines ("  123\tcontent") and plain path lists.
 func RenderReadResult(result json.RawMessage) string {

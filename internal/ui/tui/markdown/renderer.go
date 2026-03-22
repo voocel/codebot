@@ -6,17 +6,19 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // Renderer renders markdown for the TUI using glamour.
 type Renderer struct {
 	width int
+	dark  bool
 	final *glamour.TermRenderer
 }
 
 // NewRenderer creates a markdown renderer at the given width.
 func NewRenderer(width int) *Renderer {
-	r := &Renderer{}
+	r := &Renderer{dark: lipgloss.HasDarkBackground()}
 	r.SetWidth(width)
 	return r
 }
@@ -31,7 +33,7 @@ func (r *Renderer) SetWidth(width int) {
 	}
 	r.width = width
 	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStyles(customStyle()),
+		glamour.WithStyles(customStyle(r.dark)),
 		glamour.WithWordWrap(width),
 	)
 	r.final = renderer
@@ -39,7 +41,8 @@ func (r *Renderer) SetWidth(width int) {
 
 // customStyle returns a NoTTY-based style with proper markdown rendering.
 // NoTTY avoids the ANSI padding bloat of DarkStyleConfig while keeping clean output.
-func customStyle() ansi.StyleConfig {
+// Code block theme adapts to terminal background (dark vs light).
+func customStyle(dark bool) ansi.StyleConfig {
 	style := styles.NoTTYStyleConfig
 	bold := true
 	italic := true
@@ -52,8 +55,12 @@ func customStyle() ansi.StyleConfig {
 	style.Code.StylePrimitive.BlockPrefix = ""
 	style.Code.StylePrimitive.BlockSuffix = ""
 
-	// Code block syntax highlighting.
-	style.CodeBlock.Theme = "monokai"
+	// Code block theme: adapt to terminal background.
+	if dark {
+		style.CodeBlock.Theme = "monokai"
+	} else {
+		style.CodeBlock.Theme = "github"
+	}
 
 	// Bold/italic: terminal styling, remove ** / * markers.
 	style.Strong.Bold = &bold

@@ -162,9 +162,10 @@ func TestCommandPaletteMatchesAliasAndDescription(t *testing.T) {
 		t.Fatalf("expected usage metadata to be preserved, got %q", aliasItems[0].Usage)
 	}
 
+	// Description is intentionally NOT matched — only command name and aliases.
 	descItems := app.completions("staging")
-	if len(descItems) == 0 || descItems[0].Name != "deploy" {
-		t.Fatalf("expected description query to resolve deploy, got %#v", descItems)
+	if len(descItems) != 0 {
+		t.Fatalf("expected description query to NOT match, got %#v", descItems)
 	}
 }
 

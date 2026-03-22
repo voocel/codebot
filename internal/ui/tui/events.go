@@ -201,6 +201,12 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 			body = indentBlock(RenderWriteResult(ev.Result), 2)
 		} else if (ev.Tool == "read" || ev.Tool == "glob") && !ev.IsError {
 			body = indentBlock(RenderReadResult(ev.Result), 2)
+		} else if ev.Tool == "ls" && !ev.IsError {
+			dirPath, lsBody := RenderLsResult(ev.Result)
+			if dirPath != "" {
+				header = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Ls("+shortenPath(dirPath)+")")
+			}
+			body = indentBlock(lsBody, 2)
 		} else {
 			text := FormatToolResult(ev.Result, ev.IsError)
 			text = m.wrapTextForIndent(text, 4)

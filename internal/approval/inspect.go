@@ -84,17 +84,7 @@ func inspectCall(workspace string, req agentcore.ToolApprovalRequest) toolInfo {
 		info.summary = firstNonEmpty(query, info.summary)
 		info.key = "network:search"
 		info.reason = "network access requires approval"
-	case "subagent":
-		info.capability = CapSubagent
-		kind := firstNonEmpty(
-			strings.TrimSpace(stringArg(payload, "agent_type")),
-			strings.TrimSpace(stringArg(payload, "subagent_type")),
-			"default",
-		)
-		info.summary = kind
-		info.key = "subagent:" + kind
-		info.reason = "delegating to a sub-agent requires approval"
-	case "ask_user", "enter_plan_mode", "exit_plan_mode", "task_create", "task_get", "task_update", "task_list", "cron_create", "cron_list", "cron_remove":
+	case "ask_user", "enter_plan_mode", "exit_plan_mode", "task_create", "task_get", "task_update", "task_list", "cron_create", "cron_list", "cron_remove", "tool_search", "subagent":
 		info.capability = CapInternal
 		info.key = "internal:" + call.Name
 	default:
