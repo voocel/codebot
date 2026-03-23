@@ -62,13 +62,13 @@ type CompletionItem struct {
 	Source      string
 	Aliases     []string
 	AutoExecute bool
-	Placeholder string // shown as input placeholder after accepting (e.g. "<question>")
 }
 
 // OverlayState bridges an interactive command overlay to the TUI.
 type OverlayState struct {
-	HandleKey func(msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
-	View      func(width int) string
+	HandleKey     func(msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
+	View          func(width int) string
+	ReplacesInput bool // when true, overlay replaces the input area instead of appearing below it
 }
 
 // Driver defines the minimal conversation operations required by the TUI.
@@ -146,10 +146,10 @@ type Model struct {
 
 	Suggestion string // prompt suggestion shown as placeholder after agent completes
 
-	compItems  []CompletionItem // current completion candidates
-	compIdx    int              // selected completion index
-	compActive bool             // completion menu visible
-	ghostText  string           // placeholder ghost text for "/cmd " pattern (e.g. "<question>")
+	compItems    []CompletionItem // current completion candidates
+	compIdx      int              // selected completion index
+	compActive   bool             // completion menu visible
+	cmdHighlight string           // recognized command to highlight (e.g. "/btw")
 
 	QuitPending bool // true after first Ctrl+C, waiting for second to quit
 
@@ -355,7 +355,7 @@ func (m Model) View() string {
 	}
 
 	var parts []string
-	overlay := m.overlayView()
+	overlay, overlayReplacesInput := m.overlayView()
 	appendInputArea := func() {
 		if len(m.Images) > 0 {
 			var tags []string
@@ -380,14 +380,7 @@ func (m Model) View() string {
 			sep = ShellSeparatorStyle
 		}
 		parts = append(parts, sep.Render(strings.Repeat("─", m.Width)))
-		inputView := m.Input.View()
-		if m.ghostText != "" {
-			ghostStyled := lipgloss.NewStyle().Foreground(ColorMuted).Render(m.ghostText)
-			lines := strings.Split(inputView, "\n")
-			lines[len(lines)-1] += ghostStyled
-			inputView = strings.Join(lines, "\n")
-		}
-		parts = append(parts, inputView)
+		parts = append(parts, m.styledInputView())
 		parts = append(parts, sep.Render(strings.Repeat("─", m.Width)))
 	}
 
@@ -444,8 +437,13 @@ func (m Model) View() string {
 		parts = append(parts, m.renderTaskList(), "")
 	}
 
-	// Interactive command overlay (e.g., /model selector) sits below the input area.
-	if overlay != "" {
+	// Interactive command overlay (e.g., /model selector, /btw side question).
+	if overlay != "" && overlayReplacesInput {
+		// Modal overlay replaces input area entirely (e.g., /btw).
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, overlay)
+		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
+	} else if overlay != "" {
 		if statusBar := m.RenderStatusBar(); statusBar != "" {
 			parts = append(parts, statusBar, "")
 		}
@@ -990,16 +988,16 @@ func (m Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Println(sb.String())
 }
 
-// overlayView returns the rendered overlay content, or "" if no overlay is active.
-func (m Model) overlayView() string {
+// overlayView returns the rendered overlay content and whether it replaces the input area.
+func (m Model) overlayView() (string, bool) {
 	if m.config.Overlay == nil {
-		return ""
+		return "", false
 	}
 	ov := m.config.Overlay(&m)
 	if ov == nil {
-		return ""
+		return "", false
 	}
-	return ov.View(m.Width)
+	return ov.View(m.Width), ov.ReplacesInput
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,7 +1006,7 @@ func (m Model) overlayView() string {
 
 // updateCompletions refreshes the completion menu based on current input.
 func (m *Model) updateCompletions() {
-	m.ghostText = ""
+	m.cmdHighlight = ""
 	if m.config.Completions == nil {
 		m.compActive = false
 		return
@@ -1019,29 +1017,36 @@ func (m *Model) updateCompletions() {
 		return
 	}
 
-	// "/cmd " with trailing space and nothing else → show ghost placeholder.
+	// "/cmd " or "/cmd args" → no completion menu, but highlight if command is valid.
 	if strings.ContainsAny(text, " \t") {
 		m.compActive = false
-		parts := strings.SplitN(text[1:], " ", 2)
-		if len(parts) == 2 && strings.TrimSpace(parts[1]) == "" {
-			cmd := strings.TrimSpace(parts[0])
-			items := m.config.Completions(cmd)
-			for _, item := range items {
-				if strings.EqualFold(item.Name, cmd) && item.Placeholder != "" {
-					m.ghostText = item.Placeholder
-					break
-				}
+		cmd := text[1:]
+		if idx := strings.IndexAny(cmd, " \t"); idx > 0 {
+			cmd = cmd[:idx]
+		}
+		items := m.config.Completions(cmd)
+		for _, item := range items {
+			if strings.EqualFold(item.Name, cmd) {
+				m.cmdHighlight = "/" + item.Name
+				break
 			}
 		}
 		return
 	}
 
+	// "/cmd" (no space yet) → show completions, highlight on exact match.
 	prefix := text[1:]
 	items := m.config.Completions(prefix)
 	m.compItems = items
 	m.compActive = len(items) > 0
 	if m.compIdx >= len(items) {
 		m.compIdx = max(len(items)-1, 0)
+	}
+	for _, item := range items {
+		if strings.EqualFold(item.Name, prefix) {
+			m.cmdHighlight = "/" + item.Name
+			break
+		}
 	}
 }
 
@@ -1056,6 +1061,7 @@ func (m *Model) acceptCompletion() CompletionItem {
 	m.Input.SetValue("/" + name + " ")
 	m.Input.CursorEnd()
 	m.compActive = false
+	m.cmdHighlight = "/" + name
 	return item
 }
 
@@ -1065,6 +1071,17 @@ func (m Model) renderCompletions() string {
 		return ""
 	}
 	return m.renderCommandPalette()
+}
+
+// styledInputView renders the textarea with optional command highlighting.
+// When cmdHighlight is set, the command text in the view is colorized.
+func (m Model) styledInputView() string {
+	view := m.Input.View()
+	if m.cmdHighlight == "" {
+		return view
+	}
+	colored := lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.cmdHighlight)
+	return strings.Replace(view, m.cmdHighlight, colored, 1)
 }
 
 // animateStep moves current one step closer to target.

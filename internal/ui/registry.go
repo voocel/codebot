@@ -62,7 +62,6 @@ type CommandSpec struct {
 	Hidden      bool
 	Kind        CommandKind
 	Source      string
-	Placeholder string // input placeholder after completion (e.g. "<question>")
 }
 
 // CommandContext provides runtime dependencies to commands.

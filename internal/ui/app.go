@@ -202,16 +202,25 @@ func (a *App) cycleMode() tea.Cmd {
 	return nil
 }
 
+// ModalOverlay is an optional interface for overlays that replace the input area.
+type ModalOverlay interface {
+	IsModal() bool
+}
+
 // overlayState bridges the registry's interactive command overlay to the TUI.
 func (a *App) overlayState(m *tui.Model) *tui.OverlayState {
 	ov := a.registry.Overlay()
 	if ov == nil || !ov.Active() {
 		return nil
 	}
-	return &tui.OverlayState{
+	state := &tui.OverlayState{
 		HandleKey: ov.HandleKey,
 		View:      ov.View,
 	}
+	if modal, ok := ov.(ModalOverlay); ok {
+		state.ReplacesInput = modal.IsModal()
+	}
+	return state
 }
 
 // onPaste returns a tea.Cmd that asynchronously reads clipboard image data.

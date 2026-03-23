@@ -34,7 +34,6 @@ func (c *BtwCommand) Spec() CommandSpec {
 		Description: "Ask a quick side question (ephemeral, no history)",
 		Category:    "info",
 		Kind:        CommandKindBuiltin,
-		Placeholder: "<question>",
 	}
 }
 
@@ -106,6 +105,8 @@ func (c *BtwCommand) View(width int) string {
 
 	return box
 }
+
+func (c *BtwCommand) IsModal() bool { return true }
 
 func (c *BtwCommand) Dismiss() {
 	c.active = false

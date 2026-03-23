@@ -317,21 +317,25 @@ func (m Model) renderCommandPalette() string {
 
 	hint := "↑↓ move · Tab complete · Enter run/fill · Esc close"
 	content := strings.Join(append(lines, CommandPaletteHintStyle.Render(hint)), "\n")
-	return CommandPaletteStyle.Width(width).Render(content)
+	box := CommandPaletteStyle.Width(width).Render(content)
+
+	// Pad below the box to keep total height stable (prevents input jumping).
+	visibleRows := min(len(m.compItems), commandPaletteMaxVisible)
+	padLines := commandPaletteMaxVisible - visibleRows
+	if padLines > 0 {
+		box += strings.Repeat("\n", padLines)
+	}
+	return box
 }
 
+const commandPaletteMaxVisible = 8
+
 func (m Model) renderCommandPaletteList(width int) (string, int) {
-	start, end := commandPaletteWindow(len(m.compItems), m.compIdx, 8)
-	var lines []string
-	lastKind := ""
+	start, end := commandPaletteWindow(len(m.compItems), m.compIdx, commandPaletteMaxVisible)
+	lines := make([]string, 0, commandPaletteMaxVisible)
 
 	for i := start; i < end; i++ {
-		item := m.compItems[i]
-		if item.Kind != lastKind {
-			lines = append(lines, CommandPaletteSectionStyle.Render(commandPaletteSectionTitle(item.Kind)))
-			lastKind = item.Kind
-		}
-		lines = append(lines, renderCommandPaletteRow(item, width, i == m.compIdx))
+		lines = append(lines, renderCommandPaletteRow(m.compItems[i], width, i == m.compIdx))
 	}
 
 	return strings.Join(lines, "\n"), len(m.compItems) - end
@@ -345,15 +349,37 @@ func renderCommandPaletteRow(item CompletionItem, width int, selected bool) stri
 
 	nameWidth := min(max(width/3, 12), 18)
 	name := truncate.StringWithTail("/"+item.Name, uint(nameWidth), "…")
-	descWidth := max(width-lipgloss.Width(name)-4, 12)
-	desc := truncate.StringWithTail(item.Description, uint(descWidth), "…")
+	// Pad name to fixed column width using display width.
+	nameText := name + strings.Repeat(" ", max(nameWidth-lipgloss.Width(name), 0))
+	// Truncate description by display width to prevent line wrapping.
+	descMaxWidth := max(width-nameWidth-4, 10) // 4 = marker(1) + space(1) + gap(1) + margin(1)
+	desc := truncateByWidth(item.Description, descMaxWidth)
 	prefix := marker + " "
-	nameText := fmt.Sprintf("%-*s", nameWidth, name)
-	descText := desc
 	if selected {
-		return CommandPaletteSelectedStyle.Render(prefix) + CommandPaletteSelectedStyle.Render(nameText) + " " + CommandPaletteSelectedDescStyle.Render(descText)
+		return CommandPaletteSelectedStyle.Render(prefix) + CommandPaletteSelectedStyle.Render(nameText) + " " + CommandPaletteSelectedDescStyle.Render(desc)
 	}
-	return prefix + CommandPaletteItemStyle.Render(nameText) + " " + CommandPaletteDescStyle.Render(descText)
+	return prefix + CommandPaletteItemStyle.Render(nameText) + " " + CommandPaletteDescStyle.Render(desc)
+}
+
+// truncateByWidth truncates s to fit within maxWidth display columns.
+func truncateByWidth(s string, maxWidth int) string {
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	tail := "…"
+	limit := maxWidth - lipgloss.Width(tail)
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > limit {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	b.WriteString(tail)
+	return b.String()
 }
 
 func renderCommandPaletteFooter(item CompletionItem, remaining, width int) string {
@@ -378,17 +404,6 @@ func renderCommandPaletteFooter(item CompletionItem, remaining, width int) strin
 	}
 	padding := strings.Repeat(" ", descStart-lipgloss.Width(left))
 	return CommandPaletteHintStyle.Render(left) + padding + MutedStyle.Render(usage)
-}
-
-func commandPaletteSectionTitle(kind string) string {
-	switch kind {
-	case "custom":
-		return "Custom"
-	case "skill":
-		return "Skills"
-	default:
-		return "Built-in"
-	}
 }
 
 func commandPaletteWindow(total, cursor, limit int) (start, end int) {
