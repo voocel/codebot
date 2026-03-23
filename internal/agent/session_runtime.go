@@ -578,6 +578,18 @@ func (s *Session) Close() {
 	}
 }
 
+// SideQuestion sends a one-shot question to the current model using the full
+// conversation context but without tool definitions or conversation history
+// mutation. The answer is ephemeral — it never enters the session store.
+// This powers the /btw side-chain Q&A feature.
+func (s *Session) SideQuestion(ctx context.Context, question string) (string, error) {
+	resp, err := s.ephemeralQuery(ctx, question)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Message.TextContent()), nil
+}
+
 // injectedUserMsg creates a user message marked as system-injected via metadata.
 // Auto-naming and session listing skip messages with this marker.
 func injectedUserMsg(text string) agentcore.Message {
@@ -586,37 +598,33 @@ func injectedUserMsg(text string) agentcore.Message {
 	return msg
 }
 
-// GenerateSuggestion calls the current model with a condensed conversation
-// history plus a suggestion prompt to predict the user's next input.
-// Returns "" when no suggestion is available (first turn, no model, etc.).
-// Tool calls and tool results are stripped to avoid provider validation
-// errors and reduce token usage — only text context matters for suggestions.
-func (s *Session) GenerateSuggestion(ctx context.Context) (string, error) {
+// ephemeralQuery sends a one-shot query to the current model using the full
+// conversation context. Tool definitions are omitted and tool-related messages
+// are stripped so the request reuses the parent conversation's prompt cache
+// without breaking cache alignment. The result is never persisted.
+// Both SideQuestion (/btw) and GenerateSuggestion share this path.
+func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	s.mu.Lock()
 	model := s.chatModel
 	s.mu.Unlock()
 
 	if model == nil {
-		return "", nil
+		return nil, fmt.Errorf("no model configured")
 	}
 
-	// BuildLLMMessages returns system blocks + conversation messages
-	// in the exact same format as the agent loop (cache-aligned).
 	raw := s.agent.BuildLLMMessages()
 	if len(raw) == 0 {
-		return "", nil
+		return nil, fmt.Errorf("no conversation context")
 	}
 
-	// Strip tool-related content: providers (e.g. Anthropic) reject tool
-	// references when no tool definitions are provided in the request.
-	// Keep system messages, user messages, and assistant text-only content.
+	// Strip tool-related content: providers reject tool references when no
+	// tool definitions are provided. Keep system, user, and text-only assistant.
 	msgs := make([]agentcore.Message, 0, len(raw))
 	for _, m := range raw {
 		switch m.Role {
 		case agentcore.RoleSystem, agentcore.RoleUser:
 			msgs = append(msgs, m)
 		case agentcore.RoleAssistant:
-			// Keep only text and thinking blocks, drop tool_use blocks.
 			var textBlocks []agentcore.ContentBlock
 			for _, b := range m.Content {
 				if b.Type == agentcore.ContentText || b.Type == agentcore.ContentThinking {
@@ -629,30 +637,33 @@ func (s *Session) GenerateSuggestion(ctx context.Context) (string, error) {
 					Content: textBlocks,
 				})
 			}
-		// Skip RoleTool messages entirely.
 		}
 	}
 
-	// Append the suggestion generator instruction as the final user message.
 	msgs = append(msgs, agentcore.Message{
 		Role:    agentcore.RoleUser,
-		Content: []agentcore.ContentBlock{agentcore.TextBlock(config.SuggestionPrompt)},
+		Content: []agentcore.ContentBlock{agentcore.TextBlock(userText)},
 	})
 
-	resp, err := model.Generate(ctx, msgs, nil,
+	defaults := []agentcore.CallOption{agentcore.WithThinking(agentcore.ThinkingOff)}
+	return model.Generate(ctx, msgs, nil, append(defaults, opts...)...)
+}
+
+// GenerateSuggestion calls the current model with a condensed conversation
+// history plus a suggestion prompt to predict the user's next input.
+// Returns "" when no suggestion is available (first turn, no model, etc.).
+func (s *Session) GenerateSuggestion(ctx context.Context) (string, error) {
+	resp, err := s.ephemeralQuery(ctx, config.SuggestionPrompt,
 		agentcore.WithMaxTokens(500),
-		agentcore.WithThinking(agentcore.ThinkingOff),
 	)
 	if err != nil {
 		return "", err
 	}
 
 	text := strings.TrimSpace(resp.Message.TextContent())
-	// Strip wrapping quotes if the model added them.
 	text = strings.Trim(text, "\"'`")
 	text = strings.TrimSpace(text)
 
-	// Discard non-suggestions: empty, too long, or meta-responses.
 	words := strings.Fields(text)
 	if len(words) == 0 || len(words) > 12 {
 		return "", nil

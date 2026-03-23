@@ -122,6 +122,7 @@ func (a *App) builtinCommands() []Command {
 		}),
 		NewResumeCommand(a),
 		NewTasksCommand(a),
+		NewBtwCommand(a),
 		NewSimple(CommandSpec{
 			Name: "settings", Usage: "/settings", Description: "Show current settings",
 			Category: "info", Kind: CommandKindBuiltin,

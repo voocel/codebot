@@ -82,6 +82,7 @@ func (a *App) Config() tui.Config {
 		StatusPlan:  a.planStatus,
 		Overlay:     a.overlayState,
 		Completions: a.completions,
+		OnBtwResult: a.onBtwResult,
 	}
 }
 
@@ -244,6 +245,14 @@ func (a *App) onDrop(m *tui.Model, text string) tea.Cmd {
 			return tui.PasteErrorMsg{Text: tui.ErrorStyle.Render(err.Error())}
 		}
 		return tui.ImageAttachedMsg{Block: block}
+	}
+}
+
+// onBtwResult forwards BtwResultMsg to the active BtwCommand overlay.
+func (a *App) onBtwResult(msg tui.BtwResultMsg) {
+	ov := a.registry.Overlay()
+	if btw, ok := ov.(*BtwCommand); ok {
+		btw.SetResult(msg)
 	}
 }
 

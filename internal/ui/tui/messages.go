@@ -63,3 +63,9 @@ type MCPReadyMsg struct {
 type SuggestionMsg struct {
 	Text string
 }
+
+// BtwResultMsg carries the result of a /btw side question back to the overlay.
+type BtwResultMsg struct {
+	Answer string
+	Err    error
+}

@@ -58,6 +58,7 @@ func buildCommandPaletteItem(spec CommandSpec, query string) (tui.CompletionItem
 		Source:      spec.Source,
 		Aliases:     append([]string(nil), spec.Aliases...),
 		AutoExecute: commandPaletteAutoExecute(spec),
+		Placeholder: spec.Placeholder,
 	}
 
 	if item.Description == "" {

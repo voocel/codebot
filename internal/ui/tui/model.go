@@ -48,6 +48,7 @@ type Config struct {
 	StatusPlan       func(m *Model) *PlanBarInfo
 	Overlay          func(m *Model) *OverlayState         // interactive command overlay
 	Completions      func(prefix string) []CompletionItem // slash command completions
+	OnBtwResult      func(msg BtwResultMsg)               // called when /btw side question completes
 }
 
 // CompletionItem is a single command completion candidate.
@@ -61,6 +62,7 @@ type CompletionItem struct {
 	Source      string
 	Aliases     []string
 	AutoExecute bool
+	Placeholder string // shown as input placeholder after accepting (e.g. "<question>")
 }
 
 // OverlayState bridges an interactive command overlay to the TUI.
@@ -147,6 +149,7 @@ type Model struct {
 	compItems  []CompletionItem // current completion candidates
 	compIdx    int              // selected completion index
 	compActive bool             // completion menu visible
+	ghostText  string           // placeholder ghost text for "/cmd " pattern (e.g. "<question>")
 
 	QuitPending bool // true after first Ctrl+C, waiting for second to quit
 
@@ -313,6 +316,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Input.Placeholder = msg.Text
 		}
 		return m, nil
+	case BtwResultMsg:
+		if m.config.OnBtwResult != nil {
+			m.config.OnBtwResult(msg)
+		}
+		return m, nil
 	case TasksRefreshMsg:
 		// Overlay re-renders on every View() call; just schedule the next tick
 		// if an overlay is still active.
@@ -372,7 +380,14 @@ func (m Model) View() string {
 			sep = ShellSeparatorStyle
 		}
 		parts = append(parts, sep.Render(strings.Repeat("─", m.Width)))
-		parts = append(parts, m.Input.View())
+		inputView := m.Input.View()
+		if m.ghostText != "" {
+			ghostStyled := lipgloss.NewStyle().Foreground(ColorMuted).Render(m.ghostText)
+			lines := strings.Split(inputView, "\n")
+			lines[len(lines)-1] += ghostStyled
+			inputView = strings.Join(lines, "\n")
+		}
+		parts = append(parts, inputView)
 		parts = append(parts, sep.Render(strings.Repeat("─", m.Width)))
 	}
 
@@ -993,15 +1008,34 @@ func (m Model) overlayView() string {
 
 // updateCompletions refreshes the completion menu based on current input.
 func (m *Model) updateCompletions() {
+	m.ghostText = ""
 	if m.config.Completions == nil {
 		m.compActive = false
 		return
 	}
 	text := m.Input.Value()
-	if !strings.HasPrefix(text, "/") || strings.ContainsAny(text, " \t") {
+	if !strings.HasPrefix(text, "/") {
 		m.compActive = false
 		return
 	}
+
+	// "/cmd " with trailing space and nothing else → show ghost placeholder.
+	if strings.ContainsAny(text, " \t") {
+		m.compActive = false
+		parts := strings.SplitN(text[1:], " ", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[1]) == "" {
+			cmd := strings.TrimSpace(parts[0])
+			items := m.config.Completions(cmd)
+			for _, item := range items {
+				if strings.EqualFold(item.Name, cmd) && item.Placeholder != "" {
+					m.ghostText = item.Placeholder
+					break
+				}
+			}
+		}
+		return
+	}
+
 	prefix := text[1:]
 	items := m.config.Completions(prefix)
 	m.compItems = items
