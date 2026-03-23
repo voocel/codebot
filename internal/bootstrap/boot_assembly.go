@@ -209,6 +209,14 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	}
 	approvalEngine.ReplaceToolMetadata(tools)
 
+	// Wire skill allowed-tools to the approval engine.
+	for _, tool := range tools {
+		if st, ok := tool.(*localtools.SkillTool); ok {
+			st.SetAllowToolsSetter(approvalEngine.SetSkillAllows)
+			break
+		}
+	}
+
 	parts := buildSystemParts(input.cwd, tools, ctxFiles, skills, mcpManager)
 
 	var hookMW agentcore.ToolMiddleware
@@ -284,7 +292,8 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 	})
 	builtTools = append(builtTools, subagentTool)
 
-	skillTool := localtools.NewSkillTool(skills)
+	skillTool := localtools.NewSkillTool(skills, input.store.Header().SessionID)
+	skillTool.SetForkExecutor(subagentTool.Execute)
 	builtTools = append(builtTools, skillTool)
 	baseTools := builtTools
 

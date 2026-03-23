@@ -10,13 +10,18 @@ import (
 
 // Skill represents a loadable skill file.
 type Skill struct {
-	Name                   string // validated skill name (stored lowercase)
-	Description            string // from frontmatter or first line
-	FilePath               string // absolute path to the .md file
-	BaseDir                string // parent directory (for relative path resolution)
-	Source                 string // "user" or "project"
-	DisableModelInvocation bool   // when true, excluded from system prompt and Skill tool
-	DisableUserInvocation  bool   // when true, hidden from slash commands; LLM can still invoke
+	Name                   string   // validated skill name (stored lowercase)
+	Description            string   // from frontmatter or first line
+	FilePath               string   // absolute path to the .md file
+	BaseDir                string   // parent directory (for relative path resolution)
+	Source                 string   // "user" or "project"
+	DisableModelInvocation bool     // when true, excluded from system prompt and Skill tool
+	DisableUserInvocation  bool     // when true, hidden from slash commands; LLM can still invoke
+	Context                string   // "fork" to run in isolated subagent context
+	Agent                  string   // subagent type for context: fork (e.g. "explore", "plan")
+	AllowedTools           []string // tools auto-approved during skill execution
+	Model                  string   // model override (used with context: fork)
+	ArgumentHint           string   // hint shown in autocomplete, e.g. "[issue-number]"
 }
 
 // LoadSkills discovers and loads skills from user and project directories.
@@ -118,6 +123,11 @@ func loadSkill(path, source string) (Skill, error) {
 	var description string
 	var disableModel bool
 	var disableUser bool
+	var contextMode string
+	var agentType string
+	var allowedTools []string
+	var model string
+	var argumentHint string
 
 	// Parse frontmatter.
 	if strings.HasPrefix(content, "---\n") || strings.HasPrefix(content, "---\r\n") {
@@ -126,6 +136,18 @@ func loadSkill(path, source string) (Skill, error) {
 			description = parseFrontmatterField(fm, "description")
 			disableModel = parseFrontmatterField(fm, "disable-model-invocation") == "true"
 			disableUser = parseFrontmatterField(fm, "user-invocable") == "false"
+			contextMode = parseFrontmatterField(fm, "context")
+			agentType = parseFrontmatterField(fm, "agent")
+			model = parseFrontmatterField(fm, "model")
+			argumentHint = parseFrontmatterField(fm, "argument-hint")
+			if raw := parseFrontmatterField(fm, "allowed-tools"); raw != "" {
+				for _, t := range strings.Split(raw, ",") {
+					t = strings.TrimSpace(t)
+					if t != "" {
+						allowedTools = append(allowedTools, t)
+					}
+				}
+			}
 			if fmName := parseFrontmatterField(fm, "name"); fmName != "" {
 				name = fmName
 			}
@@ -147,6 +169,11 @@ func loadSkill(path, source string) (Skill, error) {
 		Source:                 source,
 		DisableModelInvocation: disableModel,
 		DisableUserInvocation:  disableUser,
+		Context:                contextMode,
+		Agent:                  agentType,
+		AllowedTools:           allowedTools,
+		Model:                  model,
+		ArgumentHint:           argumentHint,
 	}, nil
 }
 

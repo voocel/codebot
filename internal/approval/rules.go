@@ -321,10 +321,10 @@ func matchHost(pattern, host string) bool {
 	return pattern == host
 }
 
-// matchToolName matches a tool name with optional trailing wildcard.
+// matchToolName matches a tool name with optional trailing wildcard (case-insensitive).
 func matchToolName(pattern, name string) bool {
-	pattern = strings.TrimSpace(pattern)
-	name = strings.TrimSpace(name)
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	name = strings.ToLower(strings.TrimSpace(name))
 	if pattern == "" || name == "" {
 		return false
 	}

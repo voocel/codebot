@@ -525,6 +525,16 @@ func (s *Session) LastAssistantText() string {
 	return ""
 }
 
+func (s *Session) SessionID() string {
+	s.mu.Lock()
+	store := s.store
+	s.mu.Unlock()
+	if store == nil {
+		return ""
+	}
+	return store.Header().SessionID
+}
+
 func (s *Session) CurrentSessionInfo() (storage.SessionInfo, error) {
 	s.mu.Lock()
 	store := s.store

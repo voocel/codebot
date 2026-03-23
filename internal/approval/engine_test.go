@@ -312,3 +312,76 @@ func TestReplaceToolMetadataClassifiesDynamicTool(t *testing.T) {
 		t.Fatalf("read-only dynamic tool should bypass approval, got %#v", result)
 	}
 }
+
+func TestSkillAllowsAutoApprovesTool(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ws := t.TempDir()
+	engine, err := NewEngine(ws, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	// Bash normally requires approval under balanced profile.
+	args, _ := json.Marshal(map[string]any{"command": "echo hello"})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "bash", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatal("bash should require approval before skill allows")
+	}
+
+	// Set skill allows for Bash.
+	engine.SetSkillAllows([]string{"Bash"})
+
+	result, err = engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "bash", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool after skill allows: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("bash should be auto-approved with skill allows, got %#v", result)
+	}
+
+	// Clear skill allows — should require approval again.
+	engine.SetSkillAllows(nil)
+
+	result, err = engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "bash", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool after clear: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatal("bash should require approval after clearing skill allows")
+	}
+}
+
+func TestSkillAllowsDenyRuleTakesPrecedence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ws := t.TempDir()
+	rules, _ := ParseRuleSet(nil, []string{"Bash"})
+	engine, err := NewEngine(ws, ProfileBalanced, rules, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	// Even with skill allows, deny rules win.
+	engine.SetSkillAllows([]string{"Bash"})
+
+	args, _ := json.Marshal(map[string]any{"command": "echo hello"})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "bash", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatal("deny rule should take precedence over skill allows")
+	}
+}

@@ -19,7 +19,7 @@ func TestSkillToolExecute(t *testing.T) {
 
 	tool := NewSkillTool([]config.Skill{
 		{Name: "greet", Description: "Say hello", FilePath: skillFile, BaseDir: dir},
-	})
+	}, "test-session")
 
 	args, _ := json.Marshal(skillArgs{Skill: "greet", Args: "World"})
 	result, err := tool.Execute(context.Background(), args)
@@ -39,10 +39,103 @@ func TestSkillToolExecute(t *testing.T) {
 	}
 }
 
+func TestSkillToolVarExpansion(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	skillFile := filepath.Join(dir, "logger.md")
+	os.WriteFile(skillFile, []byte("log to ${CODEBOT_SESSION_ID}.log\nscript at ${CODEBOT_SKILL_DIR}/run.sh"), 0o644)
+
+	tool := NewSkillTool([]config.Skill{
+		{Name: "logger", FilePath: skillFile, BaseDir: dir},
+	}, "sess-abc")
+
+	args, _ := json.Marshal(skillArgs{Skill: "logger"})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	var text string
+	json.Unmarshal(result, &text)
+	if !contains(text, "sess-abc.log") {
+		t.Errorf("expected SESSION_ID expanded, got: %s", text)
+	}
+	if !contains(text, dir+"/run.sh") {
+		t.Errorf("expected SKILL_DIR expanded to %s, got: %s", dir, text)
+	}
+}
+
+func TestSkillToolVarClaudeAlias(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "compat.md")
+	os.WriteFile(f, []byte("${CLAUDE_SESSION_ID} ${CLAUDE_SKILL_DIR}"), 0o644)
+
+	tool := NewSkillTool([]config.Skill{
+		{Name: "compat", FilePath: f, BaseDir: dir},
+	}, "s1")
+
+	args, _ := json.Marshal(skillArgs{Skill: "compat"})
+	result, _ := tool.Execute(context.Background(), args)
+	var text string
+	json.Unmarshal(result, &text)
+	if !contains(text, "s1") || !contains(text, dir) {
+		t.Errorf("CLAUDE_* aliases should work, got: %s", text)
+	}
+}
+
+func TestSkillToolShellInjection(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "info.md")
+	os.WriteFile(f, []byte("user: !`whoami`\ncount: !`echo 42`"), 0o644)
+
+	tool := NewSkillTool([]config.Skill{
+		{Name: "info", FilePath: f, BaseDir: dir},
+	}, "")
+
+	args, _ := json.Marshal(skillArgs{Skill: "info"})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	var text string
+	json.Unmarshal(result, &text)
+	if !contains(text, "count: 42") {
+		t.Errorf("expected shell injection expanded, got: %s", text)
+	}
+	// whoami should produce some non-empty output
+	if contains(text, "!`whoami`") {
+		t.Errorf("expected !`whoami` to be replaced, got: %s", text)
+	}
+}
+
+func TestSkillToolShellInjectionError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "fail.md")
+	os.WriteFile(f, []byte("result: !`false`"), 0o644)
+
+	tool := NewSkillTool([]config.Skill{
+		{Name: "fail", FilePath: f, BaseDir: dir},
+	}, "")
+
+	args, _ := json.Marshal(skillArgs{Skill: "fail"})
+	result, _ := tool.Execute(context.Background(), args)
+	var text string
+	json.Unmarshal(result, &text)
+	if !contains(text, "[error:") {
+		t.Errorf("expected error marker for failed command, got: %s", text)
+	}
+}
+
 func TestSkillToolNotFound(t *testing.T) {
 	t.Parallel()
 
-	tool := NewSkillTool(nil)
+	tool := NewSkillTool(nil, "")
 	args, _ := json.Marshal(skillArgs{Skill: "nonexistent"})
 	result, err := tool.Execute(context.Background(), args)
 	if err != nil {
@@ -65,7 +158,7 @@ func TestSkillToolDisableModelInvocation(t *testing.T) {
 
 	tool := NewSkillTool([]config.Skill{
 		{Name: "deploy", FilePath: f, BaseDir: dir, DisableModelInvocation: true},
-	})
+	}, "")
 
 	args, _ := json.Marshal(skillArgs{Skill: "deploy"})
 	result, err := tool.Execute(context.Background(), args)
@@ -80,10 +173,97 @@ func TestSkillToolDisableModelInvocation(t *testing.T) {
 	}
 }
 
+func TestSkillToolContextFork(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "research.md")
+	os.WriteFile(f, []byte("---\ncontext: fork\nagent: explore\n---\nResearch $ARGUMENTS"), 0o644)
+
+	var capturedArgs json.RawMessage
+	fakeExecutor := func(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+		capturedArgs = args
+		return json.Marshal(map[string]string{"output": "research results"})
+	}
+
+	tool := NewSkillTool([]config.Skill{
+		{Name: "research", FilePath: f, BaseDir: dir, Context: "fork", Agent: "explore"},
+	}, "")
+	tool.SetForkExecutor(fakeExecutor)
+
+	args, _ := json.Marshal(skillArgs{Skill: "research", Args: "auth module"})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// Verify fork executor was called with correct agent and expanded task.
+	var params map[string]string
+	json.Unmarshal(capturedArgs, &params)
+	if params["agent"] != "explore" {
+		t.Errorf("expected agent=explore, got %q", params["agent"])
+	}
+	if !contains(params["task"], "Research auth module") {
+		t.Errorf("expected expanded task, got %q", params["task"])
+	}
+
+	// Verify result is passed through from executor.
+	var output map[string]string
+	json.Unmarshal(result, &output)
+	if output["output"] != "research results" {
+		t.Errorf("expected executor result passthrough, got %s", string(result))
+	}
+}
+
+func TestSkillToolContextForkDefaultAgent(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "task.md")
+	os.WriteFile(f, []byte("---\ncontext: fork\n---\nDo stuff"), 0o644)
+
+	var capturedArgs json.RawMessage
+	tool := NewSkillTool([]config.Skill{
+		{Name: "task", FilePath: f, BaseDir: dir, Context: "fork"},
+	}, "")
+	tool.SetForkExecutor(func(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+		capturedArgs = args
+		return json.Marshal("ok")
+	})
+
+	args, _ := json.Marshal(skillArgs{Skill: "task"})
+	tool.Execute(context.Background(), args)
+
+	var params map[string]string
+	json.Unmarshal(capturedArgs, &params)
+	if params["agent"] != "coder" {
+		t.Errorf("expected default agent=coder, got %q", params["agent"])
+	}
+}
+
+func TestNormalizeAgentType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ in, want string }{
+		{"Explore", "explore"},
+		{"explore", "explore"},
+		{"Plan", "plan"},
+		{"general-purpose", "coder"},
+		{"coder", "coder"},
+		{"", "coder"},
+		{"custom-agent", "custom-agent"},
+	}
+	for _, tc := range tests {
+		if got := normalizeAgentType(tc.in); got != tc.want {
+			t.Errorf("normalizeAgentType(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestSkillToolSetSkills(t *testing.T) {
 	t.Parallel()
 
-	tool := NewSkillTool(nil)
+	tool := NewSkillTool(nil, "")
 
 	args, _ := json.Marshal(skillArgs{Skill: "x"})
 	result, _ := tool.Execute(context.Background(), args)

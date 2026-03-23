@@ -87,9 +87,13 @@ type SkillCommand struct {
 }
 
 func (c *SkillCommand) Spec() CommandSpec {
+	usage := "/" + c.skill.Name + " [args]"
+	if c.skill.ArgumentHint != "" {
+		usage = "/" + c.skill.Name + " " + c.skill.ArgumentHint
+	}
 	return CommandSpec{
 		Name:        c.skill.Name,
-		Usage:       "/" + c.skill.Name + " [args]",
+		Usage:       usage,
 		Description: c.skill.Description,
 		Category:    "prompt",
 		Kind:        CommandKindSkill,
@@ -98,6 +102,13 @@ func (c *SkillCommand) Spec() CommandSpec {
 }
 
 func (c *SkillCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
+	// context: fork — route through the Skill tool so fork/allowed-tools/model are handled.
+	// Inline skills with allowed-tools also route through the Skill tool for consistency.
+	if c.skill.Context == "fork" || len(c.skill.AllowedTools) > 0 {
+		return ctx.App.sendAsPrompt(fmt.Sprintf(
+			"Invoke the Skill tool: skill=%q args=%q", c.skill.Name, inv.RawArgs))
+	}
+
 	data, err := os.ReadFile(c.skill.FilePath)
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(
@@ -105,6 +116,8 @@ func (c *SkillCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 	}
 
 	body := strings.TrimSpace(config.StripFrontmatter(string(data)))
+	body = tools.ExpandSkillVars(body, c.skill.BaseDir, ctx.App.Session.SessionID())
+	body = tools.ExpandShellInjections(body)
 	body = tools.ExpandSkillArgs(body, inv.RawArgs)
 
 	var sb strings.Builder

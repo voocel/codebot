@@ -102,6 +102,7 @@ type Engine struct {
 	planActive   bool
 	approver     ApproverFunc
 	sessionAllow map[string]storedEntry
+	skillAllows  []Rule // temporary allow rules from active skill's allowed-tools
 	store        *Store
 	onAudit      func(AuditEntry)
 	toolMeta     map[string]ToolMetadata
@@ -150,6 +151,23 @@ func (e *Engine) PlanMode() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.planActive
+}
+
+// SetSkillAllows replaces the temporary allow rules from a skill's allowed-tools.
+// Pass nil or empty to clear. Each entry is parsed as a permission rule
+// (e.g. "Read", "Bash(npm test *)"). Invalid entries are silently ignored.
+func (e *Engine) SetSkillAllows(rawTools []string) {
+	var rules []Rule
+	for _, raw := range rawTools {
+		r, err := ParseRule(raw)
+		if err != nil {
+			continue
+		}
+		rules = append(rules, r)
+	}
+	e.mu.Lock()
+	e.skillAllows = rules
+	e.mu.Unlock()
 }
 
 func (e *Engine) state() (Mode, bool) {
@@ -283,6 +301,16 @@ func (e *Engine) decide(info toolInfo, mode Mode, planMode bool) (ruleAction, st
 		ruleResult, ruleMatched = e.rules.Evaluate(info)
 		if ruleMatched && ruleResult == ruleDeny {
 			return ruleDeny, "denied by permission rule"
+		}
+	}
+
+	// Skill allowed-tools: auto-approve tools granted by the active skill.
+	e.mu.RLock()
+	skillRules := e.skillAllows
+	e.mu.RUnlock()
+	for _, r := range skillRules {
+		if r.matches(info, false) {
+			return ruleAllow, "allowed by skill"
 		}
 	}
 
