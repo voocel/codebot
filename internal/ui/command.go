@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
+	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -479,6 +480,11 @@ func (a *App) cmdReload() tea.Cmd {
 	a.Session.Reload()
 	a.Commands = config.LoadFileCommands(a.Cwd)
 	a.Skills = a.Session.Skills()
+	if found := a.Session.ToolsByName("Skill"); len(found) > 0 {
+		if st, ok := found[0].(*tools.SkillTool); ok {
+			st.SetSkills(a.Skills)
+		}
+	}
 	a.rebuildRegistry()
 	return tui.SendCommandResult(tui.CommandStyle.Render(
 		fmt.Sprintf("Reloaded: %d commands, %d skills.", len(a.Commands), len(a.Skills))))

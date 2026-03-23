@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -31,6 +32,9 @@ type skillCommandLoader struct{}
 func (skillCommandLoader) Load(app *App) []Command {
 	commands := make([]Command, 0, len(app.Skills))
 	for _, skill := range app.Skills {
+		if skill.DisableUserInvocation {
+			continue
+		}
 		commands = append(commands, &SkillCommand{skill: skill})
 	}
 	return commands
@@ -84,8 +88,8 @@ type SkillCommand struct {
 
 func (c *SkillCommand) Spec() CommandSpec {
 	return CommandSpec{
-		Name:        "skill:" + c.skill.Name,
-		Usage:       "/skill:" + c.skill.Name + " [args]",
+		Name:        c.skill.Name,
+		Usage:       "/" + c.skill.Name + " [args]",
 		Description: c.skill.Description,
 		Category:    "prompt",
 		Kind:        CommandKindSkill,
@@ -101,17 +105,13 @@ func (c *SkillCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 	}
 
 	body := strings.TrimSpace(config.StripFrontmatter(string(data)))
+	body = tools.ExpandSkillArgs(body, inv.RawArgs)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "<skill name=%q location=%q>\n", c.skill.Name, c.skill.FilePath)
+	fmt.Fprintf(&sb, "<skill name=%q>\n", c.skill.Name)
 	fmt.Fprintf(&sb, "References are relative to %s.\n\n", c.skill.BaseDir)
 	sb.WriteString(body)
 	sb.WriteString("\n</skill>")
-
-	if inv.RawArgs != "" {
-		sb.WriteString("\n\n")
-		sb.WriteString(inv.RawArgs)
-	}
 
 	return ctx.App.sendAsPrompt(sb.String())
 }

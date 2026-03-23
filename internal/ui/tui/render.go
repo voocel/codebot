@@ -13,6 +13,15 @@ import (
 	reflowwrap "github.com/muesli/reflow/wrap"
 )
 
+// Precomputed grayscale styles for scanText (xterm-256 indices 240..255).
+var scanStyles [16]lipgloss.Style
+
+func init() {
+	for i := range scanStyles {
+		scanStyles[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("%d", 240+i)))
+	}
+}
+
 // scanText renders text with a scanning light effect.
 // speed: how fast the light moves (chars per second).
 // band:  number of fully bright characters at center.
@@ -27,15 +36,9 @@ func scanText(text string, now float64, speed float64, band, slope int) string {
 	total := float64(n + band + slope*2)
 	center := math.Mod(now*speed, total)
 
-	// Precompute 256-level grayscale styles (232..255 = grayscale in xterm-256).
-	// Map brightness 0.0→1.0 to color indices 240→255.
-	const dimLevel = 240
-	const brightLevel = 255
-
 	var b strings.Builder
 	for i, r := range runes {
-		fi := float64(i)
-		dist := math.Abs(fi - center)
+		dist := math.Abs(float64(i) - center)
 		halfBand := float64(band) / 2.0
 
 		var brightness float64
@@ -48,9 +51,8 @@ func scanText(text string, now float64, speed float64, band, slope int) string {
 			}
 		}
 
-		level := dimLevel + int(brightness*float64(brightLevel-dimLevel))
-		color := lipgloss.Color(fmt.Sprintf("%d", level))
-		b.WriteString(lipgloss.NewStyle().Foreground(color).Render(string(r)))
+		idx := int(brightness * 15)
+		b.WriteString(scanStyles[idx].Render(string(r)))
 	}
 	return b.String()
 }

@@ -88,7 +88,7 @@ func TestRebuildRegistryIncludesAllCommandSources(t *testing.T) {
 
 	app.rebuildRegistry()
 
-	for _, name := range []string{"help", "deploy", "skill:review"} {
+	for _, name := range []string{"help", "deploy", "review"} {
 		if _, ok := app.registry.Lookup(name); !ok {
 			t.Fatalf("expected command %q to be registered", name)
 		}

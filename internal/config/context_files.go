@@ -35,7 +35,7 @@ type ContextFiles struct {
 // LoadContextFiles searches for context files from cwd upward to the filesystem root.
 //
 // Loading order (lowest to highest specificity):
-//  1. ~/.codebot/AGENTS.md (global user-level)
+//  1. ~/.codebot/AGENTS.md (global user-level, auto-created if missing)
 //  2. AGENTS.md in each ancestor from root down to cwd
 //
 // CLAUDE.md is used as fallback when AGENTS.md is not found in a directory.
@@ -44,8 +44,9 @@ func LoadContextFiles(cwd string) ContextFiles {
 	var cf ContextFiles
 	var agentParts []string
 
-	// Global user-level AGENTS.md (lowest priority).
+	// Global user-level AGENTS.md (lowest priority, auto-created if missing).
 	if dir := UserConfigDir(); dir != "" {
+		ensureGlobalAgentsFile(dir)
 		if content := readAgentFile(dir); content != "" {
 			agentParts = append(agentParts, content)
 		}
@@ -97,4 +98,28 @@ func readFileOr(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// ensureGlobalAgentsFile creates ~/.codebot/AGENTS.md with default content if it doesn't exist.
+func ensureGlobalAgentsFile(dir string) {
+	path := filepath.Join(dir, "AGENTS.md")
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	// Also skip if CLAUDE.md already exists (user may prefer that name).
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err == nil {
+		return
+	}
+	_ = os.MkdirAll(dir, 0o755)
+	content := `# Codebot
+
+You are Codebot, a terminal-native AI coding agent.
+
+## Guidelines
+
+- Write clean, idiomatic code
+- Prefer simplicity over cleverness
+- Respond in the user's language
+`
+	_ = os.WriteFile(path, []byte(content), 0o644)
 }

@@ -15,7 +15,8 @@ type Skill struct {
 	FilePath               string // absolute path to the .md file
 	BaseDir                string // parent directory (for relative path resolution)
 	Source                 string // "user" or "project"
-	DisableModelInvocation bool   // when true, excluded from system prompt
+	DisableModelInvocation bool   // when true, excluded from system prompt and Skill tool
+	DisableUserInvocation  bool   // when true, hidden from slash commands; LLM can still invoke
 }
 
 // LoadSkills discovers and loads skills from user and project directories.
@@ -116,6 +117,7 @@ func loadSkill(path, source string) (Skill, error) {
 	content := string(data)
 	var description string
 	var disableModel bool
+	var disableUser bool
 
 	// Parse frontmatter.
 	if strings.HasPrefix(content, "---\n") || strings.HasPrefix(content, "---\r\n") {
@@ -123,6 +125,7 @@ func loadSkill(path, source string) (Skill, error) {
 		if fm, _, ok := strings.Cut(rest, "\n---"); ok {
 			description = parseFrontmatterField(fm, "description")
 			disableModel = parseFrontmatterField(fm, "disable-model-invocation") == "true"
+			disableUser = parseFrontmatterField(fm, "user-invocable") == "false"
 			if fmName := parseFrontmatterField(fm, "name"); fmName != "" {
 				name = fmName
 			}
@@ -143,6 +146,7 @@ func loadSkill(path, source string) (Skill, error) {
 		BaseDir:                filepath.Dir(path),
 		Source:                 source,
 		DisableModelInvocation: disableModel,
+		DisableUserInvocation:  disableUser,
 	}, nil
 }
 
@@ -200,7 +204,7 @@ func firstLine(s string, maxLen int) string {
 	return ""
 }
 
-// FormatSkillsForPrompt generates the XML block injected into the system prompt.
+// FormatSkillsForPrompt generates the skill listing injected into system reminders.
 // Skills with DisableModelInvocation=true are excluded.
 func FormatSkillsForPrompt(skills []Skill) string {
 	var promptable []Skill
@@ -214,25 +218,11 @@ func FormatSkillsForPrompt(skills []Skill) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("The following skills provide specialized instructions for specific tasks.\n")
-	sb.WriteString("Use the read tool to load a skill's file when the task matches its description.\n")
-	sb.WriteString("When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the .md file) and use that absolute path in tool commands.\n\n")
-	sb.WriteString("<available_skills>")
+	sb.WriteString("The following skills are available for use with the Skill tool:\n\n")
 	for _, s := range promptable {
-		fmt.Fprintf(&sb, "\n  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <location>%s</location>\n  </skill>",
-			escapeXML(s.Name), escapeXML(s.Description), escapeXML(s.FilePath))
+		fmt.Fprintf(&sb, "- %s: %s\n", s.Name, s.Description)
 	}
-	sb.WriteString("\n</available_skills>")
+	sb.WriteString("\nIMPORTANT: Only use Skill for skills listed above - do not guess or use built-in CLI commands.")
 	return sb.String()
 }
 
-func escapeXML(s string) string {
-	r := strings.NewReplacer(
-		"&", "&amp;",
-		"<", "&lt;",
-		">", "&gt;",
-		`"`, "&quot;",
-		"'", "&apos;",
-	)
-	return r.Replace(s)
-}

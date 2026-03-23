@@ -36,7 +36,7 @@ func TestValidSkillName(t *testing.T) {
 func TestParseFrontmatterField(t *testing.T) {
 	t.Parallel()
 
-	fm := "name: my-skill\ndescription: \"A test skill\"\ndisable-model-invocation: true"
+	fm := "name: my-skill\ndescription: \"A test skill\"\ndisable-model-invocation: true\nuser-invocable: false"
 	if got := parseFrontmatterField(fm, "name"); got != "my-skill" {
 		t.Errorf("name = %q, want %q", got, "my-skill")
 	}
@@ -48,6 +48,9 @@ func TestParseFrontmatterField(t *testing.T) {
 	}
 	if got := parseFrontmatterField(fm, "nonexistent"); got != "" {
 		t.Errorf("nonexistent = %q, want empty", got)
+	}
+	if got := parseFrontmatterField(fm, "user-invocable"); got != "false" {
+		t.Errorf("user-invocable = %q, want %q", got, "false")
 	}
 }
 
@@ -77,6 +80,7 @@ func TestFormatSkillsForPrompt(t *testing.T) {
 		{Name: "commit", Description: "Git commit helper", FilePath: "/skills/commit.md"},
 		{Name: "hidden", Description: "Hidden skill", FilePath: "/skills/hidden.md", DisableModelInvocation: true},
 		{Name: "review", Description: "Code reviewer", FilePath: "/skills/review.md"},
+		{Name: "conventions", Description: "API conventions", FilePath: "/skills/conventions.md", DisableUserInvocation: true},
 	}
 
 	result := FormatSkillsForPrompt(skills)
@@ -84,21 +88,20 @@ func TestFormatSkillsForPrompt(t *testing.T) {
 	if result == "" {
 		t.Fatal("expected non-empty result")
 	}
-	if !contains(result, "<name>commit</name>") {
-		t.Error("missing commit skill")
+	if !contains(result, "- commit: Git commit helper") {
+		t.Error("missing commit skill entry")
 	}
-	if !contains(result, "<name>review</name>") {
-		t.Error("missing review skill")
+	if !contains(result, "- review: Code reviewer") {
+		t.Error("missing review skill entry")
 	}
-	if contains(result, "<name>hidden</name>") {
+	if !contains(result, "- conventions: API conventions") {
+		t.Error("user-invocable=false skill should still appear in prompt for LLM")
+	}
+	if contains(result, "hidden") {
 		t.Error("disabled skill should be excluded")
 	}
-	if !contains(result, "<available_skills>") {
-		t.Error("missing XML wrapper")
-	}
-	// Verify the relative path guidance line is present.
-	if !contains(result, "resolve it against the skill directory") {
-		t.Error("missing relative path resolution guidance")
+	if !contains(result, "Skill tool") {
+		t.Error("should reference the Skill tool")
 	}
 }
 
@@ -109,11 +112,9 @@ func TestFormatSkillsXMLEscape(t *testing.T) {
 		{Name: "test", Description: "Uses <tags> & stuff", FilePath: "/path/to/test.md"},
 	}
 	result := FormatSkillsForPrompt(skills)
-	if !strings.Contains(result, "&lt;tags&gt;") {
-		t.Error("description should be XML-escaped")
-	}
-	if !strings.Contains(result, "&amp; stuff") {
-		t.Error("ampersand should be XML-escaped")
+	// New format is markdown list, special chars appear literally.
+	if !strings.Contains(result, "Uses <tags> & stuff") {
+		t.Error("description should appear in output")
 	}
 }
 

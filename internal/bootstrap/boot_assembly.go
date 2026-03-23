@@ -203,7 +203,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		return nil, fmt.Errorf("approval engine: %w", err)
 	}
 
-	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories)
+	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories, skills)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +243,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	}, nil
 }
 
-func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
+func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, skills []config.Skill) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	// Find the BashTool from built tools for background shell wiring.
@@ -283,6 +283,9 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		SmallModel:  settings.SmallModel, // already resolved: provider config > main model
 	})
 	builtTools = append(builtTools, subagentTool)
+
+	skillTool := localtools.NewSkillTool(skills)
+	builtTools = append(builtTools, skillTool)
 	baseTools := builtTools
 
 	var mcpManager *mcpclient.Manager
