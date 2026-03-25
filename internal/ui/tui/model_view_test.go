@@ -71,9 +71,9 @@ func TestCommandPaletteIdleBadgeStaysSingleLine(t *testing.T) {
 func TestEnterOnArgCommandOnlyFillsInput(t *testing.T) {
 	m := New(nil, "test-model")
 	m.compItems = []CompletionItem{{
-		Name:        "model",
-		Description: "切换当前模型",
-		Usage:       "/model [name]",
+		Name:        "plan",
+		Description: "进入计划模式",
+		Usage:       "/plan [cancel|<task>]",
 		AutoExecute: false,
 	}}
 	m.compActive = true
@@ -84,7 +84,7 @@ func TestEnterOnArgCommandOnlyFillsInput(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("expected arg command enter to only fill input")
 	}
-	if got.Input.Value() != "/model " {
+	if got.Input.Value() != "/plan " {
 		t.Fatalf("expected input to be filled, got %q", got.Input.Value())
 	}
 }

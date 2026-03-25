@@ -64,7 +64,7 @@ func TestDenyRuleBlocksBash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestAllowRuleSkipsApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestDenyRuleOverridesCachedApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestNoMatchFallsBackToCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestNoMatchFallsBackToCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApproveTool: %v", err)
 	}
-	// Without approver, balanced profile denies bash.
+	// Without approver, balanced mode denies bash.
 	if result == nil || result.Approved {
 		t.Fatalf("unmatched rule should fall back to capability (deny without approver), got %#v", result)
 	}
@@ -180,7 +180,7 @@ func TestDenyTakesPrecedenceOverAllow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestBashCompoundCommandNotAllowed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestBashDenyMatchesCompoundSubcommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestEditGlobMatch(t *testing.T) {
 	}
 
 	workspace := t.TempDir()
-	engine, err := NewEngine(workspace, ProfileBalanced, rs, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestEditGlobMatchAgainstExtraWriteRoot(t *testing.T) {
 
 	workspace := t.TempDir()
 	extraWriteRoot := t.TempDir()
-	engine, err := NewEngine(workspace, ProfileBalanced, rs, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestReadGlobMatchAgainstExtraReadRoot(t *testing.T) {
 
 	workspace := t.TempDir()
 	extraReadRoot := t.TempDir()
-	engine, err := NewEngine(workspace, ProfileBalanced, rs, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestWebFetchHostMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestToolNameWildcard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestMatchToolName(t *testing.T) {
 	}
 }
 
-func TestDenyRuleEnforcedEvenWithProfileOff(t *testing.T) {
+func TestDenyRuleEnforcedEvenWithModeTrust(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	rs, err := ParseRuleSet(nil, []string{"Bash(rm -rf *)"})
@@ -486,7 +486,7 @@ func TestDenyRuleEnforcedEvenWithProfileOff(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileOff, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeTrust, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +499,7 @@ func TestDenyRuleEnforcedEvenWithProfileOff(t *testing.T) {
 		t.Fatalf("ApproveTool: %v", err)
 	}
 	if result == nil || result.Approved {
-		t.Fatalf("deny rule should still block with ProfileOff, got %#v", result)
+		t.Fatalf("deny rule should still block with ModeTrust, got %#v", result)
 	}
 }
 
@@ -511,7 +511,7 @@ func TestTrustModeAllowsBashButDenyRuleStillBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, rs, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,7 +33,7 @@
 - 模型和思考级别按会话保存
 
 **安全**
-- 三种策略：`strict` / `balanced` / `off`
+- 四种权限模式：`strict` / `balanced` / `accept-edits` / `trust`
 - 危险命令拦截（rm -rf, sudo, dd, ...）
 - 工作区范围的文件访问控制
 - 每次工具决策的 JSON 审计日志
@@ -112,7 +112,7 @@ echo "explain main.go" | codebot -p
 codebot -c
 
 # 严格安全策略
-codebot -policy-profile strict
+codebot --mode strict
 ```
 
 ## 设计原则
@@ -120,7 +120,7 @@ codebot -policy-profile strict
 1. **复用优先** — agentcore 做 Agent 循环，codebot 不重复造轮子
 2. **拒绝过早抽象** — 每个接口至少有两个真实调用者
 3. **约定优于配置** — 合理默认值，显式覆盖
-4. **默认安全** — balanced 策略、审计追踪、工作区边界
+4. **默认安全** — balanced 模式、审计追踪、工作区边界
 
 ## 配置
 

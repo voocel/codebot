@@ -51,7 +51,7 @@ func (c *ModelCommand) Spec() CommandSpec {
 	return CommandSpec{
 		Name:        "model",
 		Aliases:     []string{"m"},
-		Usage:       "/model [name]",
+		Usage:       "/model",
 		Description: "Show or switch model",
 		Category:    "config",
 		NeedsIdle:   true,
@@ -172,7 +172,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, func() tea.Msg {
 			return tui.CommandResultMsg{
-				Text:     tui.CommandStyle.Render("Switched to model: " + display),
+				Text:     tui.SystemMsgStyle.Render("Switched to model: " + display),
 				NewModel: entry.model,
 			}
 		}

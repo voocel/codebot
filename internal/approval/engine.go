@@ -14,7 +14,8 @@ import (
 type Mode string
 
 const (
-	ModeNormal      Mode = "normal"
+	ModeStrict      Mode = "strict"
+	ModeBalanced    Mode = "balanced"
 	ModeAcceptEdits Mode = "accept_edits"
 	ModeTrust       Mode = "trust"
 	ModePlan        Mode = "plan" // 兼容旧调用；新代码应使用 SetPlanMode
@@ -82,7 +83,6 @@ type HookRequest struct {
 
 type AuditEntry struct {
 	Time       time.Time
-	Profile    Profile
 	Mode       Mode
 	PlanMode   bool
 	Tool       string
@@ -101,7 +101,6 @@ type FilesystemRoots struct {
 type Engine struct {
 	workspace string
 	fsRoots   FilesystemRoots
-	profile   Profile
 	rules     *RuleSet
 
 	mu           sync.RWMutex
@@ -115,7 +114,7 @@ type Engine struct {
 	toolMeta     map[string]ToolMetadata
 }
 
-func NewEngine(cwd string, profile Profile, rules *RuleSet, onAudit func(AuditEntry)) (*Engine, error) {
+func NewEngine(cwd string, mode Mode, rules *RuleSet, onAudit func(AuditEntry)) (*Engine, error) {
 	store, err := NewStore(config.ApprovalsPath(cwd))
 	if err != nil {
 		return nil, fmt.Errorf("load approvals: %w", err)
@@ -126,9 +125,8 @@ func NewEngine(cwd string, profile Profile, rules *RuleSet, onAudit func(AuditEn
 			ReadRoots:  []string{cwd},
 			WriteRoots: []string{cwd},
 		},
-		profile:      profile,
 		rules:        rules,
-		mode:         ModeNormal,
+		mode:         mode,
 		sessionAllow: make(map[string]storedEntry),
 		store:        store,
 		onAudit:      onAudit,
@@ -311,7 +309,7 @@ const (
 )
 
 func (e *Engine) decide(info toolInfo, mode Mode, planMode bool) (ruleAction, string) {
-	// Deny rules have highest priority — override even ProfileOff and cached approvals.
+	// Deny rules have highest priority — override everything.
 	var ruleResult ruleAction
 	var ruleMatched bool
 	if e.rules != nil {
@@ -321,8 +319,7 @@ func (e *Engine) decide(info toolInfo, mode Mode, planMode bool) (ruleAction, st
 		}
 	}
 
-	// Paths outside configured roots always require explicit approval,
-	// regardless of profile, skill allows, or cached approvals.
+	// Paths outside configured roots always require explicit approval.
 	if info.outsideRoots {
 		return ruleAsk, info.reason
 	}
@@ -337,19 +334,16 @@ func (e *Engine) decide(info toolInfo, mode Mode, planMode bool) (ruleAction, st
 		}
 	}
 
-	if e.profile == ProfileOff {
-		return ruleAllow, ""
-	}
-
 	if e.allowed(info.key) || e.allowedSession(info.capability) {
 		return ruleAllow, ""
 	}
 
-	// Allow rules take precedence over mode/profile defaults.
+	// Allow rules take precedence over mode defaults.
 	if ruleMatched && ruleResult == ruleAllow {
 		return ruleAllow, "allowed by permission rule"
 	}
 
+	// Plan mode enforces read-only regardless of mode.
 	if planMode {
 		switch info.capability {
 		case CapRead, CapInternal:
@@ -358,31 +352,33 @@ func (e *Engine) decide(info toolInfo, mode Mode, planMode bool) (ruleAction, st
 			return ruleDeny, "plan mode is read-only"
 		}
 	}
-	if mode == ModeTrust {
-		return ruleAllow, ""
-	}
-	if mode == ModeAcceptEdits && info.capability == CapWrite {
-		return ruleAllow, "auto-approved in accept-edits mode"
-	}
 
-	switch e.profile {
-	case ProfileStrict:
+	// Mode-based decisions (strict → balanced → accept-edits → trust).
+	switch mode {
+	case ModeTrust:
+		return ruleAllow, ""
+	case ModeAcceptEdits:
+		switch info.capability {
+		case CapRead, CapInternal, CapWrite:
+			return ruleAllow, ""
+		default:
+			return ruleAsk, "approval required for side effects"
+		}
+	case ModeStrict:
 		switch info.capability {
 		case CapRead, CapInternal:
 			return ruleAllow, ""
 		case CapWrite:
-			return ruleAsk, "strict profile requires approval for writes"
+			return ruleAsk, "strict mode requires approval for writes"
 		default:
-			return ruleDeny, "strict profile denies this capability"
+			return ruleDeny, "strict mode denies this capability"
 		}
-	default:
+	default: // ModeBalanced
 		switch info.capability {
 		case CapRead, CapInternal:
 			return ruleAllow, ""
-		case CapWrite, CapExec, CapHook, CapNetwork, CapSubagent, CapUnknown:
-			return ruleAsk, "approval required for side effects"
 		default:
-			return ruleAsk, "approval required"
+			return ruleAsk, "approval required for side effects"
 		}
 	}
 }
@@ -498,7 +494,6 @@ func (e *Engine) audit(info toolInfo, mode Mode, planMode bool, decision string,
 	}
 	e.onAudit(AuditEntry{
 		Time:       time.Now(),
-		Profile:    e.profile,
 		Mode:       mode,
 		PlanMode:   planMode,
 		Tool:       info.tool,

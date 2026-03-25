@@ -26,7 +26,7 @@ type bootInput struct {
 	cwd         string
 	settings    config.Resolved
 	registry    *provider.ModelRegistry
-	profile     approval.Profile
+	mode        approval.Mode
 	createModel agent.ModelFactory
 	manager     *storage.Manager
 	store       *storage.Store
@@ -71,7 +71,7 @@ func resolveBootInput(opts Options) (*bootInput, error) {
 	registry := provider.NewModelRegistry()
 	provider.StartPricingRefresh(registry, config.UserConfigDir())
 
-	profile, err := approval.ParseProfile(opts.ApprovalProfile)
+	approvalMode, err := approval.ParseMode(opts.ApprovalMode)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func resolveBootInput(opts Options) (*bootInput, error) {
 		cwd:         cwd,
 		settings:    settings,
 		registry:    registry,
-		profile:     profile,
+		mode:        approvalMode,
 		createModel: createModel,
 		manager:     manager,
 		store:       store,
@@ -198,7 +198,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		return nil, fmt.Errorf("parse permission rules: %w", err)
 	}
 
-	approvalEngine, err := approval.NewEngine(input.cwd, input.profile, rules, approvalAuditor(config.AuditLogPath()))
+	approvalEngine, err := approval.NewEngine(input.cwd, input.mode, rules, approvalAuditor(config.AuditLogPath()))
 	if err != nil {
 		return nil, fmt.Errorf("approval engine: %w", err)
 	}

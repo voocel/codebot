@@ -96,7 +96,7 @@ func (a *App) builtinCommands() []Command {
 			ctx.App.resetPlanState()
 			return func() tea.Msg {
 				return tui.CommandResultMsg{
-					Text:  tui.CommandStyle.Render("Current context cleared (session history is kept)."),
+					Text:  tui.SystemMsgStyle.Render("Current context cleared (session history is kept)."),
 					Clear: true,
 				}
 			}
@@ -299,7 +299,7 @@ func (a *App) cmdModel(args []string) tea.Cmd {
 
 	return func() tea.Msg {
 		return tui.CommandResultMsg{
-			Text:     tui.CommandStyle.Render(fmt.Sprintf("Switched to model: %s", resolved)),
+			Text:     tui.SystemMsgStyle.Render(fmt.Sprintf("Switched to model: %s", resolved)),
 			NewModel: resolved,
 		}
 	}
@@ -319,7 +319,7 @@ func (a *App) cmdCompact() tea.Cmd {
 			}
 		}
 		return tui.CommandResultMsg{
-			Text: tui.CommandStyle.Render(fmt.Sprintf(
+			Text: tui.SystemMsgStyle.Render(fmt.Sprintf(
 				"Context compacted: %s -> %s.",
 				tui.FormatTokens(result.TokensBefore),
 				tui.FormatTokens(result.TokensAfter),
@@ -362,7 +362,7 @@ func (a *App) cmdNew() tea.Cmd {
 	a.resetPlanState()
 	return func() tea.Msg {
 		return tui.CommandResultMsg{
-			Text:  tui.CommandStyle.Render("New session started."),
+			Text:  tui.SystemMsgStyle.Render("New session started."),
 			Clear: true,
 		}
 	}
@@ -434,7 +434,7 @@ func (a *App) cmdCopy() tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Clipboard write failed: " + err.Error()))
 	}
 	n := len([]rune(text))
-	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Copied %d characters to clipboard.", n)))
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render(fmt.Sprintf("Copied %d characters to clipboard.", n)))
 }
 
 func (a *App) cmdMCP() tea.Cmd {
@@ -487,7 +487,7 @@ func (a *App) cmdReload() tea.Cmd {
 		}
 	}
 	a.rebuildRegistry()
-	return tui.SendCommandResult(tui.CommandStyle.Render(
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render(
 		fmt.Sprintf("Reloaded: %d commands, %d skills.", len(a.Commands), len(a.Skills))))
 }
 
@@ -514,7 +514,7 @@ func (a *App) cmdMemory(args []string) tea.Cmd {
 				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("editor: " + err.Error())}
 			}
 			a.Session.Reload()
-			return tui.CommandResultMsg{Text: tui.CommandStyle.Render("Memory reloaded.")}
+			return tui.CommandResultMsg{Text: tui.SystemMsgStyle.Render("Memory reloaded.")}
 		})
 	}
 
@@ -577,7 +577,7 @@ func (a *App) cmdLoop(rawArgs string) tea.Cmd {
 	}
 
 	desc := cron.HumanSchedule(schedule)
-	return tui.SendCommandResult(tui.CommandStyle.Render(
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render(
 		fmt.Sprintf("Scheduled job %s (%s): %q\nNext fire: %s",
 			job.ID, desc, prompt, job.NextFire().Format("15:04:05"))))
 }
@@ -609,12 +609,12 @@ func (a *App) cmdLoopStop(target string) tea.Cmd {
 	}
 	if target == "all" {
 		n := a.CronStore.DeleteAll()
-		return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Stopped all %d jobs.", n)))
+		return tui.SendCommandResult(tui.SystemMsgStyle.Render(fmt.Sprintf("Stopped all %d jobs.", n)))
 	}
 	if err := a.CronStore.Delete(target); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(fmt.Sprintf("Job %s stopped.", target)))
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render(fmt.Sprintf("Job %s stopped.", target)))
 }
 
 // parseLoopArgs extracts schedule and prompt from /loop args.

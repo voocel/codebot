@@ -163,6 +163,8 @@ func (a *App) statusMode(_ *tui.Model) string {
 		return "◇ plan mode"
 	}
 	switch a.ApprovalEngine.Mode() {
+	case approval.ModeStrict:
+		return "◆ strict"
 	case approval.ModeAcceptEdits:
 		return "⏵⏵ accept edits"
 	case approval.ModeTrust:
@@ -175,7 +177,8 @@ func (a *App) statusMode(_ *tui.Model) string {
 // modeOrder defines the Shift+Tab cycle sequence.
 // Plan mode is excluded — it has its own lifecycle via /plan command.
 var modeOrder = []approval.Mode{
-	approval.ModeNormal,
+	approval.ModeStrict,
+	approval.ModeBalanced,
 	approval.ModeAcceptEdits,
 	approval.ModeTrust,
 }

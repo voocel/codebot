@@ -107,8 +107,8 @@ type Model struct {
 	ToolSpinner spinner.Model // breathing-dot spinner for tool execution
 
 	Streaming *strings.Builder
-	Thinking *strings.Builder
-	IsStream bool
+	Thinking  *strings.Builder
+	IsStream  bool
 
 	Running         bool
 	TurnCount       int
@@ -647,6 +647,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.Input.SetHeight(maxInputHeight)
 		m.Input.InsertString("\n")
 		m.adjustInputHeight()
+		return m, nil
+
+	case "ctrl+l":
 		return m, nil
 
 	case "ctrl+v":

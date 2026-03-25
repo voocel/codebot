@@ -54,6 +54,11 @@ var ErrorStyle = lipgloss.NewStyle().
 var CommandStyle = lipgloss.NewStyle().
 	Foreground(ColorCommand)
 
+// Short system notifications (e.g. "Switched to model", "Session cleared")
+var SystemMsgStyle = lipgloss.NewStyle().
+	Foreground(ColorMuted).
+	Italic(true)
+
 // Image tag selected (reverse video highlight)
 var ImageSelectedStyle = lipgloss.NewStyle().Reverse(true)
 

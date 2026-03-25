@@ -84,7 +84,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (json
 		if t.providerName != "" {
 			return json.Marshal(fmt.Sprintf("Web search provider %q is not configured. Supported providers: tavily, jina.", t.providerName))
 		}
-		return json.Marshal("Web search is not configured. Set search_provider to tavily/jina. For tavily, configure TAVILY_API_KEY or search_api_key.")
+		return json.Marshal("Web search is not configured. Set search_provider to tavily/jina and configure search_api_key, TAVILY_API_KEY, or JINA_API_KEY as appropriate.")
 	}
 
 	maxResults := a.MaxResults

@@ -26,7 +26,7 @@ func (t metadataTool) ApprovalMetadata() ToolMetadata { return t.meta }
 func TestBalancedReadDoesNotNeedApproval(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestBalancedReadDoesNotNeedApproval(t *testing.T) {
 func TestBalancedWriteNeedsApprovalWithoutApprover(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestBalancedWriteOutsideWorkspaceIsDenied(t *testing.T) {
 
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestBalancedReadOutsideWorkspaceIsDenied(t *testing.T) {
 
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestBalancedReadInExtraReadRootIsAllowed(t *testing.T) {
 
 	workspace := t.TempDir()
 	extraReadRoot := t.TempDir()
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestBalancedWriteInReadOnlyRootIsDenied(t *testing.T) {
 
 	workspace := t.TempDir()
 	extraReadRoot := t.TempDir()
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestBalancedWriteInExtraWriteRootUsesApprovalFlow(t *testing.T) {
 
 	workspace := t.TempDir()
 	extraWriteRoot := t.TempDir()
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestOutsideRootsAllowSessionDegradesToAllowOnce(t *testing.T) {
 
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestBalancedBashWorkdirOutsideRootsRequiresApproval(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	workspace := t.TempDir()
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestBalancedBashWorkdirInWriteRootIsAllowed(t *testing.T) {
 
 	workspace := t.TempDir()
 	extraDir := t.TempDir()
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestBalancedWriteViaSymlinkEscapeIsDenied(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestBalancedWriteViaSymlinkEscapeIsDenied(t *testing.T) {
 func TestPlanModeDeniesWrite(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestPlanModeDeniesWrite(t *testing.T) {
 func TestPlanModeStillDeniesWriteInTrustMode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestAllowAlwaysSkipsFutureApproval(t *testing.T) {
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
 
-	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestAllowAlwaysSkipsFutureApproval(t *testing.T) {
 func TestApproveHookNeedsApprovalWithoutApprover(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestApproveHookNeedsApprovalWithoutApprover(t *testing.T) {
 func TestApproveCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestApproveCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 func TestApproveCommandAllowsInfoCommandInPlanMode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestApproveCommandAllowsInfoCommandInPlanMode(t *testing.T) {
 func TestReplaceToolMetadataClassifiesDynamicTool(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	engine, err := NewEngine(t.TempDir(), ProfileBalanced, nil, nil)
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -508,12 +508,12 @@ func TestSkillAllowsAutoApprovesTool(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	ws := t.TempDir()
-	engine, err := NewEngine(ws, ProfileBalanced, nil, nil)
+	engine, err := NewEngine(ws, ModeBalanced, nil, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
 
-	// Bash normally requires approval under balanced profile.
+	// Bash normally requires approval under balanced mode.
 	args, _ := json.Marshal(map[string]any{"command": "echo hello"})
 	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
 		Call: agentcore.ToolCall{Name: "bash", Args: args},
@@ -557,7 +557,7 @@ func TestSkillAllowsDenyRuleTakesPrecedence(t *testing.T) {
 
 	ws := t.TempDir()
 	rules, _ := ParseRuleSet(nil, []string{"Bash"})
-	engine, err := NewEngine(ws, ProfileBalanced, rules, nil)
+	engine, err := NewEngine(ws, ModeBalanced, rules, nil)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}

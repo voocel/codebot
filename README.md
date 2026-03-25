@@ -33,7 +33,7 @@ Each layer has one job. No layer knows about the layers above it.
 - Model and thinking level restored per session
 
 **Security**
-- Three profiles: `strict` / `balanced` / `off`
+- Four permission modes: `strict` / `balanced` / `accept-edits` / `trust`
 - Dangerous command blocking (rm -rf, sudo, dd, ...)
 - Workspace-scoped file access
 - JSON audit log for every tool decision
@@ -112,7 +112,7 @@ echo "explain main.go" | codebot -p
 codebot -c
 
 # Strict security
-codebot -policy-profile strict
+codebot --mode strict
 ```
 
 ## Design Principles
@@ -120,7 +120,7 @@ codebot -policy-profile strict
 1. **Reuse before reinvent** — agentcore does the agent loop, codebot doesn't redo it
 2. **No premature abstraction** — every interface has at least two real callers
 3. **Convention over configuration** — sensible defaults, explicit overrides
-4. **Secure by default** — balanced policy, audit trail, workspace boundaries
+4. **Secure by default** — balanced mode, audit trail, workspace boundaries
 
 ## Configuration
 

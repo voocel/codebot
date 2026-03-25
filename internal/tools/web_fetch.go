@@ -91,7 +91,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (json.
 		if t.providerName != "" {
 			return json.Marshal(fmt.Sprintf("Web fetch provider %q is not configured. Supported providers: tavily, jina.", t.providerName))
 		}
-		return json.Marshal("Web fetch is not configured. Set search_provider to tavily/jina with corresponding API key.")
+		return json.Marshal("Web fetch is not configured. Set search_provider to tavily/jina and configure search_api_key, TAVILY_API_KEY, or JINA_API_KEY as appropriate.")
 	}
 
 	content, err := t.provider.Fetch(ctx, targetURL.String())

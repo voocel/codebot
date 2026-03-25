@@ -62,6 +62,8 @@ type Settings struct {
 	SmallModel *string                    `json:"small_model,omitempty"` // sub-agent model; defaults to Model if empty
 	Providers  map[string]*ProviderConfig `json:"providers,omitempty"`
 
+	ContextWindow *int `json:"context_window,omitempty"`
+
 	AutoCompaction *bool `json:"auto_compaction,omitempty"`
 
 	ThinkingLevel *string `json:"thinking_level,omitempty"`
@@ -181,6 +183,9 @@ func (s Settings) Resolve() Resolved {
 	if s.SmallModel != nil {
 		r.SmallModel = *s.SmallModel
 	}
+	if s.ContextWindow != nil {
+		r.ContextWindow = *s.ContextWindow
+	}
 	for k, v := range s.Providers {
 		if v != nil {
 			r.Providers[k] = *v
@@ -299,6 +304,9 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.SmallModel != nil {
 		base.SmallModel = override.SmallModel
+	}
+	if override.ContextWindow != nil {
+		base.ContextWindow = override.ContextWindow
 	}
 	if len(override.Providers) > 0 {
 		if base.Providers == nil {
@@ -459,10 +467,24 @@ func ResolveAll(cwd string) Resolved {
 	case "jina", "jina.ai", "jinaai":
 		settings.SearchProvider = "jina"
 	}
+	if settings.SearchAPIKey == "" {
+		settings.SearchAPIKey = searchAPIKeyFromEnv(settings.SearchProvider)
+	}
 
 	settings.Permissions = normalizePermissionRoots(cwd, settings.Permissions)
 
 	return settings
+}
+
+func searchAPIKeyFromEnv(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "tavily":
+		return os.Getenv("TAVILY_API_KEY")
+	case "jina", "jina.ai", "jinaai":
+		return os.Getenv("JINA_API_KEY")
+	default:
+		return os.Getenv("SEARCH_API_KEY")
+	}
 }
 
 func normalizePermissionRoots(cwd string, perms PermissionsConfig) PermissionsConfig {

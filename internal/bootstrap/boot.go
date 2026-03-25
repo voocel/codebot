@@ -30,7 +30,7 @@ type Options struct {
 	Resume     bool
 	NonTTYMode bool
 
-	ApprovalProfile string
+	ApprovalMode string
 	ToolFactories   []ToolFactory
 	ModelFactory    agent.ModelFactory
 }
@@ -165,7 +165,6 @@ func approvalAuditor(path string) func(approval.AuditEntry) {
 	return func(e approval.AuditEntry) {
 		entry := map[string]any{
 			"time":       e.Time.Format(time.RFC3339Nano),
-			"profile":    string(e.Profile),
 			"mode":       string(e.Mode),
 			"plan_mode":  e.PlanMode,
 			"tool":       e.Tool,

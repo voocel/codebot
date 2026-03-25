@@ -4,9 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
-	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui"
@@ -25,9 +23,7 @@ func main() {
 	jsonFlag := flag.Bool("json", false, "JSON output mode (implies -p)")
 	continueFlag := flag.Bool("c", false, "Continue most recent session")
 	resumeFlag := flag.Bool("r", false, "Select a session to resume")
-	approvalProfileFlag := flag.String("approval-profile", "balanced", "Approval profile: strict, balanced, off")
-	modeFlag := flag.String("mode", "normal", "Permission mode: normal, accept-edits, trust")
-	trustFlag := flag.Bool("trust", false, "Start in trust mode (skip approval prompts, deny rules still enforced)")
+	modeFlag := flag.String("mode", "balanced", "Permission mode: strict, balanced, accept-edits, trust")
 	flag.Parse()
 
 	if *versionFlag {
@@ -38,26 +34,16 @@ func main() {
 	printMode := *printFlag || *jsonFlag
 
 	rt, err := bootstrap.Boot(bootstrap.Options{
-		Continue:        *continueFlag,
-		Resume:          *resumeFlag,
-		NonTTYMode:      printMode,
-		ApprovalProfile: *approvalProfileFlag,
+		Continue:     *continueFlag,
+		Resume:       *resumeFlag,
+		NonTTYMode:   printMode,
+		ApprovalMode: *modeFlag,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "boot error: %v\n", err)
 		os.Exit(1)
 	}
 	defer rt.Close()
-
-	if rt.ApprovalEngine != nil {
-		switch {
-		case *trustFlag:
-			rt.ApprovalEngine.SetMode(approval.ModeTrust)
-		case *modeFlag != "normal":
-			m := strings.ReplaceAll(*modeFlag, "-", "_")
-			rt.ApprovalEngine.SetMode(approval.Mode(m))
-		}
-	}
 
 	if printMode {
 		if err := ui.RunPrint(rt.Session, flag.Args(), *jsonFlag); err != nil {
