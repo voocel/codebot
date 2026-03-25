@@ -202,6 +202,10 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	if err != nil {
 		return nil, fmt.Errorf("approval engine: %w", err)
 	}
+	approvalEngine.SetFilesystemRoots(approval.FilesystemRoots{
+		ReadRoots:  settings.Permissions.ReadRoots,
+		WriteRoots: settings.Permissions.WriteRoots,
+	})
 
 	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories, skills)
 	if err != nil {

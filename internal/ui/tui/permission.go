@@ -19,11 +19,12 @@ const (
 
 // PermissionMsg is sent to the TUI to show a permission confirmation prompt.
 type PermissionMsg struct {
-	Tool    string
-	Command string
-	Reason  string
-	Preview string
-	RespCh  chan<- PermitChoice
+	Tool         string
+	Command      string
+	Reason       string
+	Preview      string
+	OutsideRoots bool // when true, only AllowOnce and Deny are shown
+	RespCh       chan<- PermitChoice
 }
 
 // PermissionDismissMsg tells the TUI to close the permission prompt.
@@ -32,12 +33,18 @@ type PermissionDismissMsg struct{}
 type permissionState struct {
 	tool, command, reason string
 	preview               string
+	outsideRoots          bool
 	respCh                chan<- PermitChoice
-	cursor                int // 0=AllowOnce, 1=AllowSession, 2=Deny
-	done                  bool
+	options               []struct {
+		label  string
+		desc   string
+		choice PermitChoice
+	}
+	cursor int
+	done   bool
 }
 
-var permissionOptions = []struct {
+var permissionOptionsFull = []struct {
 	label  string
 	desc   string
 	choice PermitChoice
@@ -48,13 +55,28 @@ var permissionOptions = []struct {
 	{"Deny", "拒绝执行", PermitChoiceDeny},
 }
 
+var permissionOptionsRestricted = []struct {
+	label  string
+	desc   string
+	choice PermitChoice
+}{
+	{"Allow once", "仅本次允许（路径在授权范围外）", PermitChoiceAllowOnce},
+	{"Deny", "拒绝执行", PermitChoiceDeny},
+}
+
 func initPermission(msg PermissionMsg) *permissionState {
+	opts := permissionOptionsFull
+	if msg.OutsideRoots {
+		opts = permissionOptionsRestricted
+	}
 	return &permissionState{
-		tool:    msg.Tool,
-		command: msg.Command,
-		reason:  msg.Reason,
-		preview: msg.Preview,
-		respCh:  msg.RespCh,
+		tool:         msg.Tool,
+		command:      msg.Command,
+		reason:       msg.Reason,
+		preview:      msg.Preview,
+		outsideRoots: msg.OutsideRoots,
+		respCh:       msg.RespCh,
+		options:      opts,
 	}
 }
 
@@ -66,31 +88,23 @@ func handlePermissionKey(s *permissionState, msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "down", "j":
-		if s.cursor < len(permissionOptions)-1 {
+		if s.cursor < len(s.options)-1 {
 			s.cursor++
 		}
 		return true, nil
 	case "enter":
-		s.respCh <- permissionOptions[s.cursor].choice
-		s.done = true
-		return true, nil
-	case "1":
-		s.respCh <- PermitChoiceAllowOnce
-		s.done = true
-		return true, nil
-	case "2":
-		s.respCh <- PermitChoiceAllowSession
-		s.done = true
-		return true, nil
-	case "3":
-		s.respCh <- PermitChoiceAllowAlways
-		s.done = true
-		return true, nil
-	case "4":
-		s.respCh <- PermitChoiceDeny
+		s.respCh <- s.options[s.cursor].choice
 		s.done = true
 		return true, nil
 	default:
+		// Number keys: "1" .. "N" for quick select.
+		if len(msg.String()) == 1 && msg.String()[0] >= '1' {
+			idx := int(msg.String()[0]-'1')
+			if idx < len(s.options) {
+				s.respCh <- s.options[idx].choice
+				s.done = true
+			}
+		}
 		return true, nil // absorb all other keys
 	}
 }
@@ -128,7 +142,7 @@ func renderPermission(s *permissionState) string {
 	}
 	b.WriteString("\n\n")
 
-	for i, opt := range permissionOptions {
+	for i, opt := range s.options {
 		num := fmt.Sprintf("%d. ", i+1)
 		prefix := "  "
 		style := askOptionInactiveStyle

@@ -107,6 +107,197 @@ func TestBalancedReadOutsideWorkspaceIsDenied(t *testing.T) {
 	}
 }
 
+func TestBalancedReadInExtraReadRootIsAllowed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	extraReadRoot := t.TempDir()
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetFilesystemRoots(FilesystemRoots{
+		ReadRoots:  []string{workspace, extraReadRoot},
+		WriteRoots: []string{workspace},
+	})
+
+	args, _ := json.Marshal(map[string]any{"path": filepath.Join(extraReadRoot, "outside.txt")})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "read", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("read in extra read root should bypass approval, got %#v", result)
+	}
+}
+
+func TestBalancedWriteInReadOnlyRootIsDenied(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	extraReadRoot := t.TempDir()
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetFilesystemRoots(FilesystemRoots{
+		ReadRoots:  []string{workspace, extraReadRoot},
+		WriteRoots: []string{workspace},
+	})
+	engine.SetApprover(func(context.Context, Prompt) (Choice, error) {
+		t.Fatal("approver should not be called for read-only external root")
+		return ChoiceAllowOnce, nil
+	})
+
+	args, _ := json.Marshal(map[string]any{"path": filepath.Join(extraReadRoot, "blocked.txt")})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "write", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatalf("write in read-only external root should be denied, got %#v", result)
+	}
+}
+
+func TestBalancedWriteInExtraWriteRootUsesApprovalFlow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	extraWriteRoot := t.TempDir()
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetFilesystemRoots(FilesystemRoots{
+		ReadRoots:  []string{workspace, extraWriteRoot},
+		WriteRoots: []string{workspace, extraWriteRoot},
+	})
+
+	var prompts int
+	engine.SetApprover(func(context.Context, Prompt) (Choice, error) {
+		prompts++
+		return ChoiceAllowOnce, nil
+	})
+
+	args, _ := json.Marshal(map[string]any{"path": filepath.Join(extraWriteRoot, "allowed.txt")})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "write", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || !result.Approved {
+		t.Fatalf("write in extra write root should be approvable, got %#v", result)
+	}
+	if prompts != 1 {
+		t.Fatalf("expected one approval prompt, got %d", prompts)
+	}
+}
+
+func TestOutsideRootsAllowSessionDegradesToAllowOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	var prompts int
+	engine.SetApprover(func(_ context.Context, p Prompt) (Choice, error) {
+		prompts++
+		if !p.OutsideRoots {
+			t.Fatal("expected OutsideRoots=true in prompt")
+		}
+		// User tries to allow session — engine should degrade this.
+		return ChoiceAllowSession, nil
+	})
+
+	// First call: outside roots read, user says "allow session".
+	args, _ := json.Marshal(map[string]any{"path": outside})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "read", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || !result.Approved {
+		t.Fatalf("first outside read should be approved (once), got %#v", result)
+	}
+
+	// Second call: same outside path — must prompt again (not cached).
+	result, err = engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "read", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool second: %v", err)
+	}
+	if prompts != 2 {
+		t.Fatalf("expected 2 approval prompts (no caching), got %d", prompts)
+	}
+}
+
+func TestBalancedBashWorkdirOutsideRootsRequiresApproval(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]any{"command": "ls", "workdir": "/tmp/elsewhere"})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "bash", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || result.Approved {
+		t.Fatalf("bash with workdir outside roots should be denied, got %#v", result)
+	}
+}
+
+func TestBalancedBashWorkdirInWriteRootIsAllowed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	workspace := t.TempDir()
+	extraDir := t.TempDir()
+	engine, err := NewEngine(workspace, ProfileBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetFilesystemRoots(FilesystemRoots{
+		ReadRoots:  []string{workspace, extraDir},
+		WriteRoots: []string{workspace, extraDir},
+	})
+
+	var prompts int
+	engine.SetApprover(func(context.Context, Prompt) (Choice, error) {
+		prompts++
+		return ChoiceAllowOnce, nil
+	})
+
+	args, _ := json.Marshal(map[string]any{"command": "ls", "workdir": extraDir})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call: agentcore.ToolCall{Name: "bash", Args: args},
+	})
+	if err != nil {
+		t.Fatalf("ApproveTool: %v", err)
+	}
+	if result == nil || !result.Approved {
+		t.Fatalf("bash with workdir in write root should be approvable, got %#v", result)
+	}
+	if prompts != 1 {
+		t.Fatalf("expected one approval prompt, got %d", prompts)
+	}
+}
+
 func TestBalancedWriteViaSymlinkEscapeIsDenied(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

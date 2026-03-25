@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/voocel/agentcore"
@@ -291,6 +292,70 @@ func TestEditGlobMatch(t *testing.T) {
 	}
 }
 
+func TestEditGlobMatchAgainstExtraWriteRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	rs, err := ParseRuleSet([]string{"Edit(src/**)"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := t.TempDir()
+	extraWriteRoot := t.TempDir()
+	engine, err := NewEngine(workspace, ProfileBalanced, rs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.SetFilesystemRoots(FilesystemRoots{
+		ReadRoots:  []string{workspace, extraWriteRoot},
+		WriteRoots: []string{workspace, extraWriteRoot},
+	})
+
+	args, _ := json.Marshal(map[string]any{"path": filepath.Join(extraWriteRoot, "src/main.go")})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call:    agentcore.ToolCall{Name: "write", Args: args},
+		Summary: filepath.Join(extraWriteRoot, "src/main.go"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("Edit(src/**) should allow write under extra root, got %#v", result)
+	}
+}
+
+func TestReadGlobMatchAgainstExtraReadRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	rs, err := ParseRuleSet([]string{"Read(src/**)"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := t.TempDir()
+	extraReadRoot := t.TempDir()
+	engine, err := NewEngine(workspace, ProfileBalanced, rs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.SetFilesystemRoots(FilesystemRoots{
+		ReadRoots:  []string{workspace, extraReadRoot},
+		WriteRoots: []string{workspace},
+	})
+
+	args, _ := json.Marshal(map[string]any{"path": filepath.Join(extraReadRoot, "src/main.go")})
+	result, err := engine.ApproveTool(context.Background(), agentcore.ToolApprovalRequest{
+		Call:    agentcore.ToolCall{Name: "read", Args: args},
+		Summary: filepath.Join(extraReadRoot, "src/main.go"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil {
+		t.Fatalf("Read(src/**) should allow read under extra root, got %#v", result)
+	}
+}
+
 func TestWebFetchHostMatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -357,11 +422,11 @@ func TestMatchBashSimple(t *testing.T) {
 		{"*", "anything", false, true},
 		// Compound commands.
 		{"echo *", "echo ok && rm -rf /", false, false}, // allow: no match
-		{"rm *", "echo ok && rm -rf /", true, true},      // deny: match subcommand
+		{"rm *", "echo ok && rm -rf /", true, true},     // deny: match subcommand
 		// Quoted operators should not split.
-		{"python *", `python -c 'print("a|b")'`, false, true},     // allow: pipe inside quotes is not an operator
-		{"grep *", `grep "foo && bar" file.txt`, false, true},      // allow: && inside quotes is not an operator
-		{"echo *", `echo 'hello;world'`, false, true},              // allow: semicolon inside quotes
+		{"python *", `python -c 'print("a|b")'`, false, true}, // allow: pipe inside quotes is not an operator
+		{"grep *", `grep "foo && bar" file.txt`, false, true}, // allow: && inside quotes is not an operator
+		{"echo *", `echo 'hello;world'`, false, true},         // allow: semicolon inside quotes
 	}
 	for _, tc := range cases {
 		got := matchBash(tc.pattern, tc.command, tc.isDeny)

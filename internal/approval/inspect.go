@@ -20,17 +20,26 @@ type ToolMetadata struct {
 }
 
 type toolInfo struct {
-	tool       string
-	capability Capability
-	summary    string
-	key        string
-	reason     string
-	preview    string
-	hardDeny   string
-	workspace  string
+	tool         string
+	capability   Capability
+	summary      string
+	key          string
+	reason       string
+	preview      string
+	hardDeny     string
+	outsideRoots bool
+	workspace    string
+	roots        []string
 }
 
 func inspectCall(workspace string, req agentcore.ToolApprovalRequest) toolInfo {
+	return inspectCallWithRoots(workspace, FilesystemRoots{
+		ReadRoots:  []string{workspace},
+		WriteRoots: []string{workspace},
+	}, req)
+}
+
+func inspectCallWithRoots(workspace string, roots FilesystemRoots, req agentcore.ToolApprovalRequest) toolInfo {
 	call := req.Call
 	payload := decodeArgs(call.Args)
 	info := toolInfo{
@@ -48,22 +57,32 @@ func inspectCall(workspace string, req agentcore.ToolApprovalRequest) toolInfo {
 	case "read", "glob", "grep", "ls":
 		info.capability = CapRead
 		info.key = "read"
-		path, deny := checkedPath(workspace, payload)
+		info.roots = roots.ReadRoots
+		path, deny := checkedPath(workspace, roots.ReadRoots, payload, "readable")
 		if path != "" {
 			info.summary = path
 		}
 		if deny != "" {
-			info.hardDeny = deny
+			info.outsideRoots = true
+			info.reason = deny
 		}
 	case "write", "edit":
 		info.capability = CapWrite
-		path, deny := checkedPath(workspace, payload)
+		info.roots = roots.WriteRoots
+		path, deny := checkedPath(workspace, roots.WriteRoots, payload, "writable")
 		info.summary = firstNonEmpty(path, info.summary)
 		info.key = "write:" + path
 		info.reason = "file modification requires approval"
 		if deny != "" {
-			info.hardDeny = deny
-			info.reason = deny
+			// Distinguish: path is in a read-only root (hard deny) vs completely outside all roots (ask).
+			_, inReadRoots := checkedPath(workspace, roots.ReadRoots, payload, "readable")
+			if inReadRoots == "" {
+				// Path is in read roots but not write roots — user explicitly made it read-only.
+				info.hardDeny = fmt.Sprintf("path in read-only root, not writable: %s", path)
+			} else {
+				info.outsideRoots = true
+				info.reason = deny
+			}
 		}
 	case "bash":
 		info.capability = CapExec
@@ -71,6 +90,13 @@ func inspectCall(workspace string, req agentcore.ToolApprovalRequest) toolInfo {
 		info.summary = firstNonEmpty(command, info.summary)
 		info.key = "exec:" + shortHash(command)
 		info.reason = "shell execution requires approval"
+		if wd := strings.TrimSpace(stringArg(payload, "workdir")); wd != "" {
+			_, deny := checkedPath(workspace, roots.WriteRoots, map[string]any{"path": wd}, "writable")
+			if deny != "" {
+				info.outsideRoots = true
+				info.reason = fmt.Sprintf("bash workdir outside writable roots: %s", wd)
+			}
+		}
 	case "web_fetch":
 		info.capability = CapNetwork
 		targetURL := strings.TrimSpace(stringArg(payload, "url"))
@@ -97,7 +123,11 @@ func inspectCall(workspace string, req agentcore.ToolApprovalRequest) toolInfo {
 }
 
 func (e *Engine) inspectCall(req agentcore.ToolApprovalRequest) toolInfo {
-	info := inspectCall(e.workspace, req)
+	e.mu.RLock()
+	roots := e.fsRoots
+	e.mu.RUnlock()
+
+	info := inspectCallWithRoots(e.workspace, roots, req)
 
 	e.mu.RLock()
 	meta, ok := e.toolMeta[req.Call.Name]
@@ -204,18 +234,27 @@ func pathArg(workspace string, payload map[string]any) string {
 	return filepath.Clean(filepath.Join(workspace, path))
 }
 
-func checkedPath(workspace string, payload map[string]any) (string, string) {
+func checkedPath(workspace string, roots []string, payload map[string]any, rootLabel string) (string, string) {
 	path := pathArg(workspace, payload)
-	if path == "" || workspace == "" {
+	if path == "" {
 		return path, ""
 	}
 
-	base := resolveSymlinks(filepath.Clean(workspace))
-	target := resolveSymlinks(path)
-	if isSubPath(base, target) {
-		return path, ""
+	if len(roots) == 0 {
+		if workspace == "" {
+			return path, ""
+		}
+		roots = []string{workspace}
 	}
-	return path, fmt.Sprintf("path outside workspace denied: %s", path)
+
+	target := resolveSymlinks(path)
+	for _, root := range roots {
+		base := resolveSymlinks(filepath.Clean(root))
+		if isSubPath(base, target) {
+			return path, ""
+		}
+	}
+	return path, fmt.Sprintf("path outside %s roots denied: %s", rootLabel, path)
 }
 
 func resolveSymlinks(path string) string {
@@ -267,6 +306,40 @@ func isSubPath(base, target string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func normalizeFilesystemRoots(workspace string, roots FilesystemRoots) FilesystemRoots {
+	readRoots := dedup(roots.ReadRoots)
+	writeRoots := dedup(roots.WriteRoots)
+	if len(readRoots) == 0 && workspace != "" {
+		readRoots = []string{filepath.Clean(workspace)}
+	}
+	if len(writeRoots) == 0 && workspace != "" {
+		writeRoots = []string{filepath.Clean(workspace)}
+	}
+	return FilesystemRoots{
+		ReadRoots:  readRoots,
+		WriteRoots: writeRoots,
+	}
+}
+
+func dedup(roots []string) []string {
+	if len(roots) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		out = append(out, root)
+	}
+	return out
 }
 
 func hostOf(raw string) string {

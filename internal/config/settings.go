@@ -78,8 +78,10 @@ type Settings struct {
 
 // PermissionsConfig holds user-defined permission rules.
 type PermissionsConfig struct {
-	Allow []string `json:"allow,omitempty"`
-	Deny  []string `json:"deny,omitempty"`
+	Allow      []string `json:"allow,omitempty"`
+	Deny       []string `json:"deny,omitempty"`
+	ReadRoots  []string `json:"read_roots,omitempty"`
+	WriteRoots []string `json:"write_roots,omitempty"`
 }
 
 // Resolved holds settings resolved to concrete values (no pointers).
@@ -359,6 +361,8 @@ func mergeSettings(base, override Settings) Settings {
 		}
 		base.Permissions.Allow = append(base.Permissions.Allow, override.Permissions.Allow...)
 		base.Permissions.Deny = append(base.Permissions.Deny, override.Permissions.Deny...)
+		base.Permissions.ReadRoots = append(base.Permissions.ReadRoots, override.Permissions.ReadRoots...)
+		base.Permissions.WriteRoots = append(base.Permissions.WriteRoots, override.Permissions.WriteRoots...)
 	}
 	return base
 }
@@ -456,5 +460,98 @@ func ResolveAll(cwd string) Resolved {
 		settings.SearchProvider = "jina"
 	}
 
+	settings.Permissions = normalizePermissionRoots(cwd, settings.Permissions)
+
 	return settings
+}
+
+func normalizePermissionRoots(cwd string, perms PermissionsConfig) PermissionsConfig {
+	perms.ReadRoots = normalizeRootList(cwd, perms.ReadRoots, true)
+	perms.WriteRoots = normalizeRootList(cwd, perms.WriteRoots, true)
+	perms.ReadRoots = unionRoots(perms.ReadRoots, perms.WriteRoots)
+	return perms
+}
+
+func normalizeRootList(cwd string, roots []string, defaultToCWD bool) []string {
+	if len(roots) == 0 {
+		if !defaultToCWD {
+			return nil
+		}
+		roots = []string{"."}
+	}
+
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+
+		root = ExpandHome(root)
+		if !filepath.IsAbs(root) {
+			root = filepath.Join(cwd, root)
+		}
+		root = filepath.Clean(root)
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		out = append(out, root)
+	}
+
+	if len(out) == 0 && defaultToCWD {
+		return []string{filepath.Clean(cwd)}
+	}
+	return out
+}
+
+func ExpandHome(path string) string {
+	if path == "" {
+		return ""
+	}
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+func unionRoots(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, root := range base {
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		out = append(out, root)
+	}
+	for _, root := range extra {
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		out = append(out, root)
+	}
+	return out
 }

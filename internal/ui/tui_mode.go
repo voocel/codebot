@@ -148,11 +148,12 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 		approvalEngine.SetApprover(func(ctx context.Context, prompt approval.Prompt) (approval.Choice, error) {
 			respCh := make(chan tui.PermitChoice, 1)
 			p.Send(tui.PermissionMsg{
-				Tool:    prompt.Tool,
-				Command: prompt.Summary,
-				Reason:  prompt.Reason,
-				Preview: prompt.Preview,
-				RespCh:  respCh,
+				Tool:         prompt.Tool,
+				Command:      prompt.Summary,
+				Reason:       prompt.Reason,
+				Preview:      prompt.Preview,
+				OutsideRoots: prompt.OutsideRoots,
+				RespCh:       respCh,
 			})
 			select {
 			case choice := <-respCh:

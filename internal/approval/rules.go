@@ -101,14 +101,14 @@ func (r Rule) matches(info toolInfo, isDeny bool) bool {
 		if info.tool != "write" && info.tool != "edit" {
 			return false
 		}
-		return matchPath(r.Pattern, info.summary, info.workspace)
+		return matchPath(r.Pattern, info.summary, info.workspace, info.roots)
 	case "Read":
 		switch info.tool {
 		case "read", "glob", "grep", "ls":
 		default:
 			return false
 		}
-		return matchPath(r.Pattern, info.summary, info.workspace)
+		return matchPath(r.Pattern, info.summary, info.workspace, info.roots)
 	case "WebFetch":
 		if info.capability != CapNetwork {
 			return false
@@ -238,16 +238,24 @@ func splitShellSegments(cmd string) []string {
 }
 
 // matchPath matches a file path against a glob pattern.
-// Tries both the absolute path and the workspace-relative path.
-func matchPath(pattern, path, workspace string) bool {
+// Tries the absolute path plus the path relative to each configured root.
+func matchPath(pattern, path, workspace string, roots []string) bool {
 	if matchGlob(pattern, path) {
 		return true
 	}
-	// Try relative to workspace.
-	if workspace != "" && filepath.IsAbs(path) {
-		rel, err := filepath.Rel(workspace, path)
+
+	if len(roots) == 0 && workspace != "" {
+		roots = []string{workspace}
+	}
+	for _, root := range roots {
+		if root == "" || !filepath.IsAbs(path) {
+			continue
+		}
+		rel, err := filepath.Rel(root, path)
 		if err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
-			return matchGlob(pattern, rel)
+			if matchGlob(pattern, rel) {
+				return true
+			}
 		}
 	}
 	return false

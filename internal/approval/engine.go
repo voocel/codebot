@@ -54,11 +54,12 @@ const (
 )
 
 type Prompt struct {
-	Tool       string
-	Summary    string
-	Reason     string
-	Capability Capability
-	Preview    string
+	Tool         string
+	Summary      string
+	Reason       string
+	Capability   Capability
+	Preview      string
+	OutsideRoots bool // hint to UI: only allow_once and deny are safe choices
 }
 
 type ApproverFunc func(ctx context.Context, prompt Prompt) (Choice, error)
@@ -92,8 +93,14 @@ type AuditEntry struct {
 	Allow      bool
 }
 
+type FilesystemRoots struct {
+	ReadRoots  []string
+	WriteRoots []string
+}
+
 type Engine struct {
 	workspace string
+	fsRoots   FilesystemRoots
 	profile   Profile
 	rules     *RuleSet
 
@@ -114,7 +121,11 @@ func NewEngine(cwd string, profile Profile, rules *RuleSet, onAudit func(AuditEn
 		return nil, fmt.Errorf("load approvals: %w", err)
 	}
 	return &Engine{
-		workspace:    cwd,
+		workspace: cwd,
+		fsRoots: FilesystemRoots{
+			ReadRoots:  []string{cwd},
+			WriteRoots: []string{cwd},
+		},
 		profile:      profile,
 		rules:        rules,
 		mode:         ModeNormal,
@@ -123,6 +134,12 @@ func NewEngine(cwd string, profile Profile, rules *RuleSet, onAudit func(AuditEn
 		onAudit:      onAudit,
 		toolMeta:     make(map[string]ToolMetadata),
 	}, nil
+}
+
+func (e *Engine) SetFilesystemRoots(roots FilesystemRoots) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.fsRoots = normalizeFilesystemRoots(e.workspace, roots)
 }
 
 func (e *Engine) SetMode(mode Mode) {
@@ -304,6 +321,12 @@ func (e *Engine) decide(info toolInfo, mode Mode, planMode bool) (ruleAction, st
 		}
 	}
 
+	// Paths outside configured roots always require explicit approval,
+	// regardless of profile, skill allows, or cached approvals.
+	if info.outsideRoots {
+		return ruleAsk, info.reason
+	}
+
 	// Skill allowed-tools: auto-approve tools granted by the active skill.
 	e.mu.RLock()
 	skillRules := e.skillAllows
@@ -377,15 +400,22 @@ func (e *Engine) ask(ctx context.Context, info toolInfo, mode Mode, planMode boo
 		return ChoiceDeny, nil
 	}
 	return fn(ctx, Prompt{
-		Tool:       info.tool,
-		Summary:    info.summary,
-		Reason:     info.reason,
-		Capability: info.capability,
-		Preview:    info.preview,
+		Tool:         info.tool,
+		Summary:      info.summary,
+		Reason:       info.reason,
+		Capability:   info.capability,
+		Preview:      info.preview,
+		OutsideRoots: info.outsideRoots,
 	})
 }
 
 func (e *Engine) resolveChoice(info toolInfo, mode Mode, planMode bool, choice Choice) *agentcore.ToolApprovalResult {
+	// Outside-roots approvals must not be cached at session/always granularity,
+	// otherwise a single "allow session" would open the entire filesystem.
+	if info.outsideRoots && (choice == ChoiceAllowAlways || choice == ChoiceAllowSession) {
+		choice = ChoiceAllowOnce
+	}
+
 	switch choice {
 	case ChoiceAllowAlways:
 		entry := storedEntry{

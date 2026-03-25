@@ -63,6 +63,23 @@
     ]
   },
 
+  // 文件系统授权根目录。
+  // 默认 read_roots / write_roots 都只有当前工作目录 "."。
+  // 可以显式加入额外目录；写根目录通常应比读根目录更保守。
+  // 注意：roots 严格约束文件类工具（read/write/edit/glob/grep/ls），
+  // bash 仅约束启动目录（workdir），不保证命令实际访问范围，始终需要审批。
+  "permissions": {
+    "read_roots": [
+      ".",
+      "../shared"
+    ],
+    "write_roots": [
+      "."
+    ],
+    "allow": [],
+    "deny": []
+  },
+
   // MCP servers: stdio (local process) or http (remote endpoint)
   "mcp_servers": {
     "context7": {
