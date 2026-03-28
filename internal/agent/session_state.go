@@ -39,9 +39,21 @@ func (s *Session) Subscribe(fn func(SessionEvent)) func() {
 }
 
 func (s *Session) handleAgentEvent(ev agentcore.Event) {
+	if s.runtime != nil {
+		s.runtime.handleEvent(ev)
+	}
+
 	if ev.Type == agentcore.EventMessageEnd {
 		if msg, ok := ev.Message.(agentcore.Message); ok {
 			s.persistence.handleMessageEnd(msg)
+			if isRuntimeReminderMessage(msg) {
+				s.mu.Lock()
+				s.pendingReminderContinue = false
+				s.mu.Unlock()
+			}
+			if msg.Role == agentcore.RoleAssistant {
+				s.recordAssistantTurnMessage(msg)
+			}
 		}
 	}
 
@@ -50,9 +62,22 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 	}
 
 	if ev.Type == agentcore.EventAgentEnd {
+		if ev.Summary != nil {
+			s.mu.Lock()
+			summary := *ev.Summary
+			s.lastRunSummary = &summary
+			s.mu.Unlock()
+		}
 		s.persistence.flushPendingMessages()
 		if s.context.handleAgentEnd() {
 			return
+		}
+		s.finalizeTurnOutcome()
+		if s.runtime != nil && s.runtime.continuePendingReminder() {
+			return
+		}
+		if s.runtime != nil {
+			s.runtime.afterAgentEnd()
 		}
 		if s.hookRunner != nil {
 			s.hookRunner.RunNotification(context.Background(), "agent response complete")
@@ -378,4 +403,16 @@ func truncateBytes(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + "..."
+}
+
+func isRuntimeReminderMessage(msg agentcore.Message) bool {
+	if msg.Role != agentcore.RoleUser || msg.Metadata["injected"] != true {
+		return false
+	}
+	for _, block := range msg.Content {
+		if block.Type == agentcore.ContentText && strings.Contains(block.Text, "<system-reminder>") {
+			return true
+		}
+	}
+	return false
 }

@@ -206,6 +206,12 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 			p.Send(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
 			return
 		}
+		if ev.Type == agent.SERuntimeReminder && ev.Reminder != "" {
+			p.Send(tui.CommandResultMsg{
+				Text: tui.MutedStyle.Render("Runtime reminder triggered: " + formatRuntimeReminderKind(ev.ReminderKind) + "."),
+			})
+			return
+		}
 		if ev.Type == agent.SEError && ev.Error != nil {
 			p.Send(tui.CommandResultMsg{
 				Text: tui.ErrorStyle.Render("Session error: " + ev.Error.Error()),
@@ -262,16 +268,25 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 		}
 	case agent.SEAutoCompactionEnd:
 		if ev.CompactionChanged && ev.TokensBefore > 0 && ev.TokensAfter > 0 {
+			action := "compacted"
+			switch ev.CompactionKind {
+			case agent.CompactionKindTrim:
+				action = "trimmed"
+			case agent.CompactionKindPrune:
+				action = "pruned"
+			}
 			switch ev.CompactionReason {
 			case "overflow":
 				return fmt.Sprintf(
-					"Context compacted after overflow: %s -> %s.",
+					"Context %s after overflow: %s -> %s.",
+					action,
 					tui.FormatTokens(ev.TokensBefore),
 					tui.FormatTokens(ev.TokensAfter),
 				), false, true
 			default:
 				return fmt.Sprintf(
-					"Context compacted automatically: %s -> %s.",
+					"Context %s automatically: %s -> %s.",
+					action,
 					tui.FormatTokens(ev.TokensBefore),
 					tui.FormatTokens(ev.TokensAfter),
 				), false, true
@@ -280,5 +295,19 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 		return "Auto compaction finished; context unchanged.", true, true
 	default:
 		return "", false, false
+	}
+}
+
+func formatRuntimeReminderKind(kind agent.RuntimeReminderKind) string {
+	switch kind {
+	case agent.ReminderRepeatToolCall:
+		return "repeated tool call"
+	case agent.ReminderUnfinishedTasks:
+		return "unfinished tasks"
+	default:
+		if kind == "" {
+			return "unknown"
+		}
+		return string(kind)
 	}
 }

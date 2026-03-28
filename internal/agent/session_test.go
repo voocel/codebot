@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/storage"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 type stubChatModel struct{}
@@ -50,6 +52,113 @@ func (m *stubChatModel) GenerateStream(
 }
 
 func (m *stubChatModel) SupportsTools() bool { return true }
+
+type scriptedReminderModel struct {
+	mu                    sync.Mutex
+	callCount             int
+	secondCallSawReminder bool
+}
+
+func (m *scriptedReminderModel) Generate(
+	_ context.Context,
+	msgs []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sawInjectedReminder := false
+	for _, msg := range msgs {
+		if msg.Role == agentcore.RoleUser && strings.Contains(msg.TextContent(), "<system-reminder>") {
+			sawInjectedReminder = true
+		}
+		if msg.Role == agentcore.RoleUser && strings.Contains(msg.TextContent(), "重复调用同一个工具") {
+			m.secondCallSawReminder = true
+		}
+	}
+
+	m.callCount++
+	if m.callCount == 1 && !sawInjectedReminder {
+		return &agentcore.LLMResponse{
+			Message: toolCallMessage(
+				agentcore.ToolCall{ID: "tc1", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
+				agentcore.ToolCall{ID: "tc2", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
+				agentcore.ToolCall{ID: "tc3", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
+				agentcore.ToolCall{ID: "tc4", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
+			),
+		}, nil
+	}
+
+	return &agentcore.LLMResponse{
+		Message: assistantTextMessage("steered"),
+	}, nil
+}
+
+func (m *scriptedReminderModel) GenerateStream(
+	ctx context.Context,
+	msgs []agentcore.Message,
+	tools []agentcore.ToolSpec,
+	opts ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	resp, err := m.Generate(ctx, msgs, tools, opts...)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{
+		Type:       agentcore.StreamEventDone,
+		Message:    resp.Message,
+		StopReason: resp.Message.StopReason,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *scriptedReminderModel) SupportsTools() bool { return true }
+
+type stubExecTool struct {
+	name string
+}
+
+func (t *stubExecTool) Name() string           { return t.name }
+func (t *stubExecTool) Description() string    { return "stub exec tool" }
+func (t *stubExecTool) Schema() map[string]any { return nil }
+func (t *stubExecTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"ok":true}`), nil
+}
+
+func assistantTextMessage(text string) agentcore.Message {
+	return agentcore.Message{
+		Role:       agentcore.RoleAssistant,
+		Content:    []agentcore.ContentBlock{agentcore.TextBlock(text)},
+		StopReason: agentcore.StopReasonStop,
+	}
+}
+
+func toolCallMessage(calls ...agentcore.ToolCall) agentcore.Message {
+	blocks := make([]agentcore.ContentBlock, len(calls))
+	for i, call := range calls {
+		blocks[i] = agentcore.ToolCallBlock(call)
+	}
+	return agentcore.Message{
+		Role:       agentcore.RoleAssistant,
+		Content:    blocks,
+		StopReason: agentcore.StopReasonToolUse,
+	}
+}
+
+func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not satisfied before timeout")
+}
 
 func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	t.Parallel()
@@ -520,5 +629,625 @@ func TestSetSystemSuffixRebuildsPrompt(t *testing.T) {
 	prompt = ag.State().SystemPrompt
 	if strings.Contains(prompt, "[PLAN MODE]") {
 		t.Fatal("prompt should not contain suffix after clearing")
+	}
+}
+
+func TestBuildUserMessagePrependsRuntimeRemindersBeforeStaticReminders(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:     ag,
+		Settings:  config.Resolved{MaxTurns: 30},
+		Cwd:       t.TempDir(),
+		Reminders: []string{"<system-reminder>\n静态提醒\n</system-reminder>"},
+	})
+	t.Cleanup(s.Close)
+
+	s.queueRuntimeReminder("loop", ReminderRepeatToolCall, "<system-reminder>\n动态提醒\n</system-reminder>")
+
+	msg := s.buildUserMessage(agentcore.TextBlock("用户输入"))
+	if len(msg.Content) != 3 {
+		t.Fatalf("expected 3 content blocks, got %d", len(msg.Content))
+	}
+	if got := msg.Content[0].Text; !strings.Contains(got, "动态提醒") {
+		t.Fatalf("expected runtime reminder first, got %q", got)
+	}
+	if got := msg.Content[1].Text; !strings.Contains(got, "静态提醒") {
+		t.Fatalf("expected static reminder second, got %q", got)
+	}
+	if got := msg.Content[2].Text; got != "用户输入" {
+		t.Fatalf("expected user input last, got %q", got)
+	}
+
+	next := s.buildUserMessage(agentcore.TextBlock("第二次输入"))
+	if len(next.Content) != 2 {
+		t.Fatalf("expected runtime reminder to be one-shot, got %d blocks", len(next.Content))
+	}
+	if strings.Contains(next.Content[0].Text, "动态提醒") {
+		t.Fatal("runtime reminder should be drained after one injection")
+	}
+}
+
+func TestRepeatedToolCallQueuesRuntimeReminder(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	var reminders int
+	var kinds []RuntimeReminderKind
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SERuntimeReminder {
+			reminders++
+			kinds = append(kinds, ev.ReminderKind)
+		}
+	})
+	t.Cleanup(unsub)
+
+	args := json.RawMessage(`{"path":"main.go"}`)
+	for i := 0; i < repeatedToolCallThreshold; i++ {
+		toolID := "read-" + string(rune('a'+i))
+		s.handleAgentEvent(agentcore.Event{
+			Type:   agentcore.EventToolExecStart,
+			ToolID: toolID,
+			Tool:   "read",
+			Args:   args,
+		})
+		s.handleAgentEvent(agentcore.Event{
+			Type:   agentcore.EventToolExecEnd,
+			ToolID: toolID,
+			Tool:   "read",
+		})
+	}
+
+	if reminders != 1 {
+		t.Fatalf("expected one runtime reminder event, got %d", reminders)
+	}
+	if len(kinds) != 1 || kinds[0] != ReminderRepeatToolCall {
+		t.Fatalf("expected reminder kind %q, got %#v", ReminderRepeatToolCall, kinds)
+	}
+
+	msg := s.buildUserMessage(agentcore.TextBlock("继续"))
+	if len(msg.Content) == 0 || !strings.Contains(msg.Content[0].Text, "重复调用同一个工具") {
+		t.Fatalf("expected repeated-call reminder, got %#v", msg.Content)
+	}
+	metrics := s.RuntimeMetrics()
+	if metrics.ReminderTotal != 1 {
+		t.Fatalf("unexpected metrics after repeated-call reminder: %#v", metrics)
+	}
+	if metrics.ReminderByKind[ReminderRepeatToolCall] != 1 {
+		t.Fatalf("expected reminder-by-kind count for repeat_tool_call, got %#v", metrics.ReminderByKind)
+	}
+}
+
+func TestRepeatedToolCallDoesNotTriggerWhenInterleaved(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	var reminders int
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SERuntimeReminder {
+			reminders++
+		}
+	})
+	t.Cleanup(unsub)
+
+	args := json.RawMessage(`{"path":"main.go"}`)
+	sequence := []string{"read", "grep", "read", "ls", "read", "glob", "read", "bash"}
+	for i, toolName := range sequence {
+		toolID := "mixed-" + string(rune('a'+i))
+		callArgs := args
+		if toolName != "read" {
+			callArgs = json.RawMessage(`{"pattern":"main"}`)
+		}
+		s.handleAgentEvent(agentcore.Event{
+			Type:   agentcore.EventToolExecStart,
+			ToolID: toolID,
+			Tool:   toolName,
+			Args:   callArgs,
+		})
+		s.handleAgentEvent(agentcore.Event{
+			Type:   agentcore.EventToolExecEnd,
+			ToolID: toolID,
+			Tool:   toolName,
+		})
+	}
+
+	if reminders != 0 {
+		t.Fatalf("expected no repeated-call reminder for interleaved calls, got %d", reminders)
+	}
+}
+
+func TestStageForPercent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		percent float64
+		want    contextPressureStage
+	}{
+		{percent: 50, want: contextStageNormal},
+		{percent: 75, want: contextStageWarning},
+		{percent: 80, want: contextStageTrim},
+		{percent: 90, want: contextStagePrune},
+		{percent: 98, want: contextStageCompact},
+	}
+
+	for _, tc := range cases {
+		if got := stageForPercent(tc.percent); got != tc.want {
+			t.Fatalf("stageForPercent(%v) = %v, want %v", tc.percent, got, tc.want)
+		}
+	}
+}
+
+func TestApplyStageCompactionTrimRewritesOlderLargeMessages(t *testing.T) {
+	t.Parallel()
+
+	msgs := []agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, strings.Repeat("A", 8000)),
+		textMessage(agentcore.RoleAssistant, "older-1"),
+		textMessage(agentcore.RoleAssistant, "older-2"),
+		textMessage(agentcore.RoleAssistant, "older-3"),
+		textMessage(agentcore.RoleAssistant, "recent"),
+	}
+
+	compacted, changed := applyStageCompactionToMessages(msgs, contextStageTrim)
+	if !changed {
+		t.Fatal("expected trim stage to change messages")
+	}
+
+	first, ok := compacted[0].(agentcore.Message)
+	if !ok {
+		t.Fatal("expected compacted message")
+	}
+	if !strings.Contains(first.TextContent(), "characters trimmed") {
+		t.Fatalf("expected trimmed marker, got %q", first.TextContent())
+	}
+}
+
+func TestApplyStageCompactionPruneMasksOlderMessages(t *testing.T) {
+	t.Parallel()
+
+	msgs := []agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, strings.Repeat("B", 5000)),
+		textMessage(agentcore.RoleAssistant, strings.Repeat("C", 5000)),
+		textMessage(agentcore.RoleAssistant, "recent"),
+	}
+
+	compacted, changed := applyStageCompactionToMessages(msgs, contextStagePrune)
+	if !changed {
+		t.Fatal("expected prune stage to change messages")
+	}
+
+	first, ok := compacted[0].(agentcore.Message)
+	if !ok {
+		t.Fatal("expected compacted message")
+	}
+	if !strings.Contains(first.TextContent(), "Earlier long output omitted") {
+		t.Fatalf("expected prune placeholder, got %q", first.TextContent())
+	}
+}
+
+func TestAgentEndQueuesReminderWhenTasksRemain(t *testing.T) {
+	t.Parallel()
+
+	taskStore, taskTools := localtools.NewTaskTools()
+	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
+	inProgress := localtools.TaskInProgress
+	if _, err := taskStore.Update("1", localtools.UpdateOpts{Status: &inProgress}); err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+		Tools:    taskTools,
+	})
+	t.Cleanup(s.Close)
+	var reminders int
+	var kinds []RuntimeReminderKind
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SERuntimeReminder {
+			reminders++
+			kinds = append(kinds, ev.ReminderKind)
+		}
+	})
+	t.Cleanup(unsub)
+
+	s.beginTurn()
+	s.handleAgentEvent(agentcore.Event{
+		Type:    agentcore.EventMessageEnd,
+		Message: textMessage(agentcore.RoleAssistant, "任务已完成，我已经处理好了。"),
+	})
+	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	if reminders != 1 {
+		t.Fatalf("expected one runtime reminder for unfinished tasks, got %d", reminders)
+	}
+	if len(kinds) != 1 || kinds[0] != ReminderUnfinishedTasks {
+		t.Fatalf("expected reminder kind %q, got %#v", ReminderUnfinishedTasks, kinds)
+	}
+
+	msg := s.buildUserMessage(agentcore.TextBlock("继续"))
+	if len(msg.Content) == 0 || !strings.Contains(msg.Content[0].Text, "任务列表中还有未完成项") {
+		t.Fatalf("expected unfinished-task reminder, got %#v", msg.Content)
+	}
+	metrics := s.RuntimeMetrics()
+	if metrics.ReminderTotal != 1 || metrics.ReminderByKind[ReminderUnfinishedTasks] != 1 {
+		t.Fatalf("unexpected metrics after unfinished-task reminder: %#v", metrics)
+	}
+}
+
+func TestAgentEndDoesNotQueueReminderWithoutCompletionClaim(t *testing.T) {
+	t.Parallel()
+
+	taskStore, taskTools := localtools.NewTaskTools()
+	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
+	inProgress := localtools.TaskInProgress
+	if _, err := taskStore.Update("1", localtools.UpdateOpts{Status: &inProgress}); err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+		Tools:    taskTools,
+	})
+	t.Cleanup(s.Close)
+	var reminders int
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SERuntimeReminder {
+			reminders++
+		}
+	})
+	t.Cleanup(unsub)
+
+	s.beginTurn()
+	s.handleAgentEvent(agentcore.Event{
+		Type:    agentcore.EventMessageEnd,
+		Message: textMessage(agentcore.RoleAssistant, "我先总结一下当前进展，接下来继续处理剩余问题。"),
+	})
+	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	if reminders != 0 {
+		t.Fatalf("expected no unfinished-task reminder without completion claim, got %d", reminders)
+	}
+}
+
+func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testing.T) {
+	t.Parallel()
+
+	taskStore, taskTools := localtools.NewTaskTools()
+	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
+	inProgress := localtools.TaskInProgress
+	if _, err := taskStore.Update("1", localtools.UpdateOpts{Status: &inProgress}); err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "上一轮任务"),
+		textMessage(agentcore.RoleAssistant, "已经完成修复，相关改动已处理好。"),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+		Tools:    taskTools,
+	})
+	t.Cleanup(s.Close)
+
+	var reminders int
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SERuntimeReminder {
+			reminders++
+		}
+	})
+	t.Cleanup(unsub)
+
+	s.beginTurn()
+	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	if reminders != 0 {
+		t.Fatalf("expected no unfinished-task reminder without current-turn assistant reply, got %d", reminders)
+	}
+}
+
+func TestAgentEndDoesNotQueueReminderWhenNoTasksRemain(t *testing.T) {
+	t.Parallel()
+
+	taskStore, taskTools := localtools.NewTaskTools()
+	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
+	completed := localtools.TaskCompleted
+	if _, err := taskStore.Update("1", localtools.UpdateOpts{Status: &completed}); err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+		Tools:    taskTools,
+	})
+	t.Cleanup(s.Close)
+
+	var reminders int
+	var kinds []RuntimeReminderKind
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SERuntimeReminder {
+			reminders++
+			kinds = append(kinds, ev.ReminderKind)
+		}
+	})
+	t.Cleanup(unsub)
+
+	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	if reminders != 0 {
+		t.Fatalf("expected no runtime reminder when tasks are complete, got %d", reminders)
+	}
+}
+
+func TestFinalizeTurnOutcomeUsesAssistantMessageSignal(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	s.beginTurn()
+	s.handleAgentEvent(agentcore.Event{
+		Type:    agentcore.EventMessageEnd,
+		Message: textMessage(agentcore.RoleAssistant, "已经完成修复，相关改动已处理好。"),
+	})
+	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	if !s.lastTurnLooksComplete() {
+		t.Fatal("expected finalized turn outcome to carry completion claim")
+	}
+}
+
+func TestDeliverRuntimeReminderSteersCurrentRun(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedReminderModel{}
+	readTool := &stubExecTool{name: "read"}
+	ag := agentcore.NewAgent(
+		agentcore.WithModel(model),
+		agentcore.WithTools(readTool),
+		agentcore.WithMaxTurns(10),
+	)
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 10},
+		Cwd:      t.TempDir(),
+		Tools:    []agentcore.Tool{readTool},
+	})
+	t.Cleanup(s.Close)
+
+	if err := s.Prompt("开始"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	waitFor(t, time.Second, func() bool {
+		return model.secondCallSawReminder && s.LastAssistantText() == "steered"
+	})
+
+	if !model.secondCallSawReminder {
+		t.Fatal("expected second model call to see steered runtime reminder")
+	}
+	if got := s.LastAssistantText(); got != "steered" {
+		t.Fatalf("expected steered assistant response, got %q", got)
+	}
+	if len(s.runtimeReminders) != 0 {
+		t.Fatalf("expected no queued runtime reminders after in-run steer, got %d", len(s.runtimeReminders))
+	}
+}
+
+func TestContinueWithRuntimeReminderAutoContinuesWhenIdle(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedReminderModel{}
+	ag := agentcore.NewAgent(agentcore.WithModel(model), agentcore.WithMaxTurns(10))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "初始任务"),
+		textMessage(agentcore.RoleAssistant, "任务已完成。"),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 10},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	s.continueWithRuntimeReminder(
+		"unfinished_tasks:1:0",
+		ReminderUnfinishedTasks,
+		"<system-reminder>\n当前任务列表中还有未完成项。\n</system-reminder>",
+	)
+	waitFor(t, time.Second, func() bool {
+		return s.LastAssistantText() == "steered"
+	})
+
+	if got := s.LastAssistantText(); got != "steered" {
+		t.Fatalf("expected auto-continued assistant response, got %q", got)
+	}
+}
+
+func TestRuntimeMetricsTrackCompactionSavings(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	msgs := []agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, strings.Repeat("X", 9000)),
+		textMessage(agentcore.RoleAssistant, "older-1"),
+		textMessage(agentcore.RoleAssistant, "older-2"),
+		textMessage(agentcore.RoleAssistant, "older-3"),
+		textMessage(agentcore.RoleAssistant, "recent"),
+	}
+	if err := ag.SetMessages(msgs); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+
+	result, err := s.context.lightweightCompact("threshold", contextStageTrim)
+	if err != nil {
+		t.Fatalf("lightweight compact: %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("expected lightweight compaction to change context")
+	}
+
+	metrics := s.RuntimeMetrics()
+	if metrics.CompactionTotal != 1 {
+		t.Fatalf("expected one compaction attempt, got %#v", metrics)
+	}
+	if metrics.CompactionChanged != 1 {
+		t.Fatalf("expected one changed compaction, got %#v", metrics)
+	}
+	if metrics.CompactionSaved <= 0 {
+		t.Fatalf("expected positive compaction savings, got %#v", metrics)
+	}
+	if metrics.CompactionByKind[CompactionKindTrim] != 1 {
+		t.Fatalf("expected trim compaction count, got %#v", metrics.CompactionByKind)
+	}
+	if metrics.CompactionSavedByKind[CompactionKindTrim] <= 0 {
+		t.Fatalf("expected trim compaction savings, got %#v", metrics.CompactionSavedByKind)
+	}
+}
+
+func TestSwitchSessionResetsHarnessDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mgr := storage.NewManager(dir)
+	current, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create current session: %v", err)
+	}
+	t.Cleanup(func() { _ = current.Close() })
+
+	target, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create target session: %v", err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:   ag,
+		Store:   current,
+		Manager: mgr,
+		Settings: config.Resolved{
+			Provider: "openai",
+			Model:    "good-model",
+			Providers: map[string]config.ProviderConfig{
+				"openai": {APIKey: "k"},
+			},
+			ContextWindow:  128000,
+			AutoCompaction: false,
+			MaxTurns:       30,
+		},
+		Cwd: dir,
+	})
+	t.Cleanup(s.Close)
+
+	s.beginTurn()
+	s.handleAgentEvent(agentcore.Event{
+		Type:   agentcore.EventToolExecStart,
+		ToolID: "read-1",
+		Tool:   "read",
+	})
+	s.handleAgentEvent(agentcore.Event{
+		Type:   agentcore.EventToolExecEnd,
+		ToolID: "read-1",
+		Tool:   "read",
+	})
+	s.handleAgentEvent(agentcore.Event{
+		Type:    agentcore.EventMessageEnd,
+		Message: textMessage(agentcore.RoleAssistant, "已经完成修复。"),
+	})
+	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	s.queueRuntimeReminder("repeat_tool_call:test", ReminderRepeatToolCall, "<system-reminder>test</system-reminder>")
+
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, strings.Repeat("X", 9000)),
+		textMessage(agentcore.RoleAssistant, "older-1"),
+		textMessage(agentcore.RoleAssistant, "older-2"),
+		textMessage(agentcore.RoleAssistant, "older-3"),
+		textMessage(agentcore.RoleAssistant, "recent"),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	if _, err := s.context.lightweightCompact("threshold", contextStageTrim); err != nil {
+		t.Fatalf("lightweight compact: %v", err)
+	}
+
+	if got := len(s.RecentToolCalls(5)); got == 0 {
+		t.Fatal("expected recent tool calls before switch")
+	}
+	if _, ok := s.LastReminder(); !ok {
+		t.Fatal("expected last reminder before switch")
+	}
+	if _, ok := s.LastCompaction(); !ok {
+		t.Fatal("expected last compaction before switch")
+	}
+	if metrics := s.RuntimeMetrics(); metrics.ReminderTotal == 0 || metrics.CompactionTotal == 0 {
+		t.Fatalf("expected populated metrics before switch, got %#v", metrics)
+	}
+
+	if err := s.SwitchSession(target.Header().SessionID); err != nil {
+		t.Fatalf("switch session: %v", err)
+	}
+
+	if got := len(s.RecentToolCalls(5)); got != 0 {
+		t.Fatalf("expected recent tool calls reset after switch, got %d", got)
+	}
+	if _, ok := s.LastReminder(); ok {
+		t.Fatal("expected last reminder reset after switch")
+	}
+	if _, ok := s.LastCompaction(); ok {
+		t.Fatal("expected last compaction reset after switch")
+	}
+	if got := s.LastTurnOutcome(); got != (TurnOutcomeSnapshot{}) {
+		t.Fatalf("expected last turn reset after switch, got %#v", got)
+	}
+	metrics := s.RuntimeMetrics()
+	if metrics.ReminderTotal != 0 || metrics.CompactionTotal != 0 || metrics.CompactionChanged != 0 || metrics.CompactionSaved != 0 {
+		t.Fatalf("expected zeroed metrics after switch, got %#v", metrics)
+	}
+	if len(metrics.ReminderByKind) != 0 || len(metrics.CompactionByKind) != 0 || len(metrics.CompactionSavedByKind) != 0 {
+		t.Fatalf("expected empty metric breakdowns after switch, got %#v", metrics)
 	}
 }

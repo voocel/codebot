@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -147,36 +146,39 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 				}
 			}
 		case agentcore.ToolExecUpdateProgress:
-			// Detect subagent streaming events and accumulate.
-			var streaming struct {
-				Agent    string `json:"agent"`
-				Delta    string `json:"delta"`
-				Thinking string `json:"thinking"`
+			if ev.Progress == nil {
+				break
 			}
-			if json.Unmarshal(ev.Result, &streaming) == nil && (streaming.Delta != "" || streaming.Thinking != "") {
-				if streaming.Delta != "" {
-					buf := m.ToolDeltaBuf[ev.ToolID]
-					if buf == nil {
-						buf = &strings.Builder{}
-						m.ToolDeltaBuf[ev.ToolID] = buf
-					}
-					buf.WriteString(streaming.Delta)
+			switch ev.Progress.Kind {
+			case agentcore.ProgressToolDelta:
+				if ev.Progress.Delta == "" {
+					break
 				}
-				if streaming.Thinking != "" {
-					buf := m.ToolThinkingBuf[ev.ToolID]
-					if buf == nil {
-						buf = &strings.Builder{}
-						m.ToolThinkingBuf[ev.ToolID] = buf
-					}
-					buf.Reset()
-					buf.WriteString(streaming.Thinking)
+				buf := m.ToolDeltaBuf[ev.ToolID]
+				if buf == nil {
+					buf = &strings.Builder{}
+					m.ToolDeltaBuf[ev.ToolID] = buf
 				}
-			} else if line := FormatProgressLine(ev.Result); line != "" {
-				if buf, ok := m.ToolOutputBuf[ev.ToolID]; ok {
-					// Flush accumulated thinking/delta before the new tool/turn line.
-					m.flushSubagentStreaming(ev.ToolID, buf)
-					buf.WriteString(line)
-					buf.WriteByte('\n')
+				buf.WriteString(ev.Progress.Delta)
+			case agentcore.ProgressThinking:
+				if ev.Progress.Thinking == "" {
+					break
+				}
+				buf := m.ToolThinkingBuf[ev.ToolID]
+				if buf == nil {
+					buf = &strings.Builder{}
+					m.ToolThinkingBuf[ev.ToolID] = buf
+				}
+				buf.Reset()
+				buf.WriteString(ev.Progress.Thinking)
+			default:
+				if line := FormatProgressLine(ev.Progress); line != "" {
+					if buf, ok := m.ToolOutputBuf[ev.ToolID]; ok {
+						// Flush accumulated thinking/delta before the new tool/turn line.
+						m.flushSubagentStreaming(ev.ToolID, buf)
+						buf.WriteString(line)
+						buf.WriteByte('\n')
+					}
 				}
 			}
 		}

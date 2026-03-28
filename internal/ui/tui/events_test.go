@@ -191,6 +191,93 @@ func TestHandleAgentEventToolExecEndRemovesPending(t *testing.T) {
 	}
 }
 
+func TestHandleAgentEventProgressDeltaBuffersStreamingReply(t *testing.T) {
+	m := New(nil, "test-model")
+	m.Ready = true
+	m.Width = 80
+	m.ToolOutputBuf["t1"] = &strings.Builder{}
+
+	ev := agentcore.Event{
+		Type:       agentcore.EventToolExecUpdate,
+		ToolID:     "t1",
+		UpdateKind: agentcore.ToolExecUpdateProgress,
+		Progress: &agentcore.ProgressPayload{
+			Kind:  agentcore.ProgressToolDelta,
+			Agent: "worker",
+			Delta: "partial answer",
+		},
+	}
+
+	next, _ := m.HandleAgentEvent(ev)
+	if got := next.ToolDeltaBuf["t1"].String(); got != "partial answer" {
+		t.Fatalf("delta buffer = %q, want %q", got, "partial answer")
+	}
+}
+
+func TestHandleAgentEventProgressThinkingReplacesThinkingBuffer(t *testing.T) {
+	m := New(nil, "test-model")
+	m.Ready = true
+	m.Width = 80
+	m.ToolOutputBuf["t1"] = &strings.Builder{}
+
+	ev1 := agentcore.Event{
+		Type:       agentcore.EventToolExecUpdate,
+		ToolID:     "t1",
+		UpdateKind: agentcore.ToolExecUpdateProgress,
+		Progress: &agentcore.ProgressPayload{
+			Kind:     agentcore.ProgressThinking,
+			Agent:    "worker",
+			Thinking: "first thought",
+		},
+	}
+	next, _ := m.HandleAgentEvent(ev1)
+
+	ev2 := agentcore.Event{
+		Type:       agentcore.EventToolExecUpdate,
+		ToolID:     "t1",
+		UpdateKind: agentcore.ToolExecUpdateProgress,
+		Progress: &agentcore.ProgressPayload{
+			Kind:     agentcore.ProgressThinking,
+			Agent:    "worker",
+			Thinking: "second thought",
+		},
+	}
+	next, _ = next.HandleAgentEvent(ev2)
+
+	if got := next.ToolThinkingBuf["t1"].String(); got != "second thought" {
+		t.Fatalf("thinking buffer = %q, want %q", got, "second thought")
+	}
+}
+
+func TestHandleAgentEventProgressSummaryAppendsOutputLine(t *testing.T) {
+	m := New(nil, "test-model")
+	m.Ready = true
+	m.Width = 80
+	m.ToolOutputBuf["t1"] = &strings.Builder{}
+	m.ToolDeltaBuf["t1"] = &strings.Builder{}
+	m.ToolDeltaBuf["t1"].WriteString("reply text")
+	m.ToolThinkingBuf["t1"] = &strings.Builder{}
+	m.ToolThinkingBuf["t1"].WriteString("thinking text")
+
+	ev := agentcore.Event{
+		Type:       agentcore.EventToolExecUpdate,
+		ToolID:     "t1",
+		UpdateKind: agentcore.ToolExecUpdateProgress,
+		Progress: &agentcore.ProgressPayload{
+			Kind:    agentcore.ProgressSummary,
+			Summary: "bash line",
+		},
+	}
+
+	next, _ := m.HandleAgentEvent(ev)
+	out := next.ToolOutputBuf["t1"].String()
+	for _, want := range []string{"thinking thinking text", "reply reply text", "bash line"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected output buffer to contain %q, got %q", want, out)
+		}
+	}
+}
+
 func TestHandleAgentEventErrorReturnsPrintCmd(t *testing.T) {
 	m := New(nil, "test-model")
 	m.Ready = true

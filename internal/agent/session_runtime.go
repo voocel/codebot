@@ -14,10 +14,15 @@ import (
 )
 
 func (s *Session) Prompt(text string) error {
+	s.beginTurn()
 	if s.beforePrompt != nil {
 		s.beforePrompt()
 	}
-	s.context.microcompact()
+	if s.runtime != nil {
+		s.runtime.beforePrompt()
+	} else {
+		s.context.microcompact()
+	}
 
 	var msgs []agentcore.AgentMessage
 	if !s.preambleInjected && s.deferredToolsPreamble != "" {
@@ -29,10 +34,15 @@ func (s *Session) Prompt(text string) error {
 }
 
 func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
+	s.beginTurn()
 	if s.beforePrompt != nil {
 		s.beforePrompt()
 	}
-	s.context.microcompact()
+	if s.runtime != nil {
+		s.runtime.beforePrompt()
+	} else {
+		s.context.microcompact()
+	}
 
 	var msgs []agentcore.AgentMessage
 	if !s.preambleInjected && s.deferredToolsPreamble != "" {
@@ -46,10 +56,13 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 // buildUserMessage creates a user message with reminders prepended as text blocks.
 func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentcore.Message {
 	s.mu.Lock()
-	reminders := s.reminders
+	runtimeReminders := append([]string(nil), s.runtimeReminders...)
+	s.runtimeReminders = nil
+	s.runtimeReminderKeys = make(map[string]struct{})
+	staticReminders := append([]string(nil), s.staticReminders...)
 	s.mu.Unlock()
 
-	if len(reminders) == 0 {
+	if len(runtimeReminders) == 0 && len(staticReminders) == 0 {
 		return agentcore.Message{
 			Role:      agentcore.RoleUser,
 			Content:   userBlocks,
@@ -57,8 +70,11 @@ func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentco
 		}
 	}
 
-	blocks := make([]agentcore.ContentBlock, 0, len(reminders)+len(userBlocks))
-	for _, r := range reminders {
+	blocks := make([]agentcore.ContentBlock, 0, len(runtimeReminders)+len(staticReminders)+len(userBlocks))
+	for _, r := range runtimeReminders {
+		blocks = append(blocks, agentcore.TextBlock(r))
+	}
+	for _, r := range staticReminders {
 		blocks = append(blocks, agentcore.TextBlock(r))
 	}
 	blocks = append(blocks, userBlocks...)
@@ -69,6 +85,128 @@ func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentco
 	}
 }
 
+func (s *Session) queueRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) {
+	if reminder == "" {
+		return
+	}
+
+	s.mu.Lock()
+	if s.runtimeReminderKeys == nil {
+		s.runtimeReminderKeys = make(map[string]struct{})
+	}
+	if _, exists := s.runtimeReminderKeys[key]; exists {
+		s.mu.Unlock()
+		return
+	}
+	s.runtimeReminderKeys[key] = struct{}{}
+	s.runtimeReminders = append(s.runtimeReminders, reminder)
+	s.mu.Unlock()
+	s.recordReminderMetric(kind)
+	s.recordReminderSnapshot(kind, "next_prompt")
+
+	s.emit(SessionEvent{
+		Type:         SERuntimeReminder,
+		Reminder:     reminder,
+		ReminderKind: kind,
+	})
+}
+
+// deliverRuntimeReminder prefers in-run steering and otherwise defers to the
+// next explicit user prompt. It does not auto-resume idle runs.
+func (s *Session) deliverRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) {
+	if reminder == "" {
+		return
+	}
+	if s.trySteerRuntimeReminder(key, kind, reminder) {
+		return
+	}
+	s.queueRuntimeReminder(key, kind, reminder)
+}
+
+// continueWithRuntimeReminder prefers in-run steering, then idle auto-resume
+// via agent.Inject, and finally falls back to next-prompt injection.
+func (s *Session) continueWithRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) {
+	if reminder == "" {
+		return
+	}
+	if s.trySteerRuntimeReminder(key, kind, reminder) {
+		return
+	}
+	if s.tryAutoResumeRuntimeReminder(key, kind, reminder) {
+		return
+	}
+	s.queueRuntimeReminder(key, kind, reminder)
+}
+
+func (s *Session) trySteerRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) bool {
+	if !s.agent.State().IsRunning {
+		return false
+	}
+
+	s.mu.Lock()
+	if s.steeredReminderKeys == nil {
+		s.steeredReminderKeys = make(map[string]struct{})
+	}
+	if _, exists := s.steeredReminderKeys[key]; exists {
+		s.mu.Unlock()
+		return true
+	}
+	s.steeredReminderKeys[key] = struct{}{}
+	s.pendingReminderContinue = true
+	s.mu.Unlock()
+
+	s.recordReminderMetric(kind)
+	s.recordReminderSnapshot(kind, "steer")
+	s.agent.Steer(injectedUserMsg(reminder))
+	s.emit(SessionEvent{
+		Type:         SERuntimeReminder,
+		Reminder:     reminder,
+		ReminderKind: kind,
+	})
+	return true
+}
+
+func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) bool {
+	if s.agent.State().IsRunning {
+		return false
+	}
+
+	msgs := s.agent.Messages()
+	if len(msgs) == 0 || msgs[len(msgs)-1].GetRole() != agentcore.RoleAssistant {
+		return false
+	}
+
+	s.mu.Lock()
+	if s.autoResumeReminderKeys == nil {
+		s.autoResumeReminderKeys = make(map[string]struct{})
+	}
+	if _, exists := s.autoResumeReminderKeys[key]; exists {
+		s.mu.Unlock()
+		return false
+	}
+	s.mu.Unlock()
+
+	result, err := s.agent.Inject(injectedUserMsg(reminder))
+	if err != nil {
+		return false
+	}
+	if result.Disposition != agentcore.InjectResumedIdleRun {
+		return false
+	}
+
+	s.mu.Lock()
+	s.autoResumeReminderKeys[key] = struct{}{}
+	s.mu.Unlock()
+
+	s.recordReminderMetric(kind)
+	s.recordReminderSnapshot(kind, "auto_continue")
+	s.emit(SessionEvent{
+		Type:         SERuntimeReminder,
+		Reminder:     reminder,
+		ReminderKind: kind,
+	})
+	return true
+}
 func (s *Session) SetBeforePrompt(fn func()) {
 	s.beforePrompt = fn
 }
@@ -257,7 +395,6 @@ func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
 	s.mu.Unlock()
 }
 
-
 func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
 	if s.registry != nil {
 		s.mu.Lock()
@@ -365,6 +502,7 @@ func (s *Session) NewSession() error {
 	s.mu.Lock()
 	s.store = newStore
 	s.autoNamed = false
+	s.resetHarnessStateLocked()
 	s.mu.Unlock()
 	if oldStore != nil {
 		_ = oldStore.Close()
@@ -454,6 +592,7 @@ func (s *Session) SwitchSession(id string) error {
 		}
 		s.settings.ThinkingLevel = clamped
 	}
+	s.resetHarnessStateLocked()
 	s.mu.Unlock()
 
 	if oldStore != nil {
@@ -476,6 +615,56 @@ func (s *Session) Settings() config.Resolved {
 
 func (s *Session) ContextUsage() *agentcore.ContextUsage {
 	return s.agent.ContextUsage()
+}
+
+func (s *Session) RecentToolCalls(limit int) []ToolCallSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if limit <= 0 || limit > len(s.recentToolCalls) {
+		limit = len(s.recentToolCalls)
+	}
+	start := len(s.recentToolCalls) - limit
+	snapshots := make([]ToolCallSnapshot, 0, limit)
+	for _, call := range s.recentToolCalls[start:] {
+		snapshots = append(snapshots, ToolCallSnapshot{
+			Tool:      call.Tool,
+			ArgsHash:  call.ArgsHash,
+			Success:   call.Success,
+			Timestamp: call.Timestamp,
+		})
+	}
+	return snapshots
+}
+
+func (s *Session) LastReminder() (ReminderSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lastReminder == nil {
+		return ReminderSnapshot{}, false
+	}
+	return *s.lastReminder, true
+}
+
+func (s *Session) LastCompaction() (CompactionSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lastCompaction == nil {
+		return CompactionSnapshot{}, false
+	}
+	return *s.lastCompaction, true
+}
+
+func (s *Session) LastRunSummary() (agentcore.RunSummary, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lastRunSummary == nil {
+		return agentcore.RunSummary{}, false
+	}
+	return *s.lastRunSummary, true
 }
 
 func (s *Session) TotalTokens() int {

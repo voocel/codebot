@@ -29,27 +29,32 @@ func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (iden
 		return "", ctx.SystemOverride
 	}
 
-	var id strings.Builder
-	fmt.Fprintf(&id, `You are an expert coding assistant with direct access to the filesystem and shell.
+	var identityBody strings.Builder
+	fmt.Fprintf(&identityBody, `You are an expert coding assistant with direct access to the filesystem and shell.
 
 ## Environment
 - Working directory: %s
 - OS: %s/%s
 - Date: %s
 `, cwd, runtime.GOOS, runtime.GOARCH, time.Now().Format("2006-01-02"))
-	identity = id.String()
+	identity = identityBody.String()
 
-	var inst strings.Builder
+	var toolsBody strings.Builder
 	if len(tools) > 0 {
-		fmt.Fprintf(&inst, "## Tools\nYou have %d tools:\n", len(tools))
+		fmt.Fprintf(&toolsBody, "## Tools\nYou have %d tools:\n", len(tools))
 		for _, t := range tools {
-			fmt.Fprintf(&inst, "- **%s**: %s\n", t.Name, t.Description)
+			fmt.Fprintf(&toolsBody, "- **%s**: %s\n", t.Name, t.Description)
 		}
 	}
-	if memInst := BuildAutoMemoryInstructions(ctx.MemoryDir); memInst != "" {
-		fmt.Fprintf(&inst, "\n%s\n", memInst)
+	autoMemoryInstructions := BuildAutoMemoryInstructions(ctx.MemoryDir)
+	var instructionParts []string
+	if toolsBody.Len() > 0 {
+		instructionParts = append(instructionParts, toolsBody.String())
 	}
-	instructions = inst.String()
+	if autoMemoryInstructions != "" {
+		instructionParts = append(instructionParts, autoMemoryInstructions)
+	}
+	instructions = strings.Join(instructionParts, "\n\n")
 	return
 }
 
@@ -70,6 +75,9 @@ func BuildReminders(ctx ContextFiles, skills []Skill) []string {
 	if ctx.Memory != "" {
 		memPath := filepath.Join(ctx.MemoryDir, "MEMORY.md")
 		reminders = append(reminders, "<system-reminder>\nContents of "+memPath+" (auto-memory, persists across conversations):\n\n"+ctx.Memory+"\n</system-reminder>")
+	}
+	if len(reminders) == 0 {
+		return nil
 	}
 	return reminders
 }

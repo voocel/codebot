@@ -8,6 +8,7 @@ import (
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 // ModelFactory creates a chat model instance for a provider/model tuple.
@@ -72,10 +73,15 @@ type Session struct {
 	suffix       string
 	beforePrompt func()
 	hookRunner   *hooks.Runner
+	taskStore    *localtools.TaskStore
 
-	deferredToolsPreamble string   // <available-deferred-tools> for first user message
-	reminders             []string // <system-reminder> fragments per turn
-	preambleInjected      bool     // true after first preamble injection
+	deferredToolsPreamble  string   // <available-deferred-tools> for first user message
+	staticReminders        []string // 从上下文文件生成的稳定 reminders
+	runtimeReminders       []string // 运行时动态注入的一次性 reminders
+	runtimeReminderKeys    map[string]struct{}
+	steeredReminderKeys    map[string]struct{}
+	autoResumeReminderKeys map[string]struct{}
+	preambleInjected       bool // true after first preamble injection
 
 	listeners []func(SessionEvent)
 	unsub     func()
@@ -88,13 +94,23 @@ type Session struct {
 	maxTokensReduced  bool
 	originalMaxTokens int
 
-	lazyPersist    bool
-	pendingUserMsg []agentcore.Message
-	autoNamed      bool
+	lazyPersist             bool
+	pendingUserMsg          []agentcore.Message
+	autoNamed               bool
+	pendingToolCalls        map[string]pendingToolCall
+	recentToolCalls         []toolCallFingerprint
+	pendingReminderContinue bool
+	currentTurn             TurnOutcomeSnapshot
+	lastTurn                TurnOutcomeSnapshot
+	lastRunSummary          *agentcore.RunSummary
+	lastReminder            *ReminderSnapshot
+	lastCompaction          *CompactionSnapshot
 
 	prompts     *sessionPromptManager
 	persistence *sessionPersistence
 	context     *sessionContextController
+	runtime     *sessionRuntimePolicy
+	metrics     *runtimeMetrics
 
 	mu sync.Mutex
 }
@@ -117,23 +133,51 @@ func NewSession(cfg SessionConfig) *Session {
 		providers:    cfg.Settings.Providers,
 		cwd:          cfg.Cwd,
 		createModel:  modelFactory,
-		lazyPersist:    cfg.LazyPersist,
-		chatModel:      cfg.ChatModel,
+		lazyPersist:  cfg.LazyPersist,
+		chatModel:    cfg.ChatModel,
 		hookRunner:   cfg.HookRunner,
 		allTools:     cfg.Tools,
 		activeTools:  cfg.Tools,
 		contextFiles: cfg.ContextFiles,
 		skills:       cfg.Skills,
 
-		deferredToolsPreamble: cfg.DeferredToolsPreamble,
-		reminders:             cfg.Reminders,
-		preambleInjected:      cfg.PreambleInjected,
+		deferredToolsPreamble:  cfg.DeferredToolsPreamble,
+		staticReminders:        cfg.Reminders,
+		runtimeReminderKeys:    make(map[string]struct{}),
+		steeredReminderKeys:    make(map[string]struct{}),
+		autoResumeReminderKeys: make(map[string]struct{}),
+		pendingToolCalls:       make(map[string]pendingToolCall),
+		preambleInjected:       cfg.PreambleInjected,
 	}
 
 	s.prompts = newSessionPromptManager(s)
 	s.persistence = newSessionPersistence(s)
 	s.context = newSessionContextController(s)
+	s.runtime = newSessionRuntimePolicy(s)
+	s.metrics = newRuntimeMetrics()
+	for _, tool := range cfg.Tools {
+		if taskCreate, ok := tool.(*localtools.TaskCreateTool); ok {
+			s.taskStore = taskCreate.Store()
+			break
+		}
+	}
 
 	s.unsub = cfg.Agent.Subscribe(s.handleAgentEvent)
 	return s
+}
+
+func (s *Session) resetHarnessStateLocked() {
+	s.runtimeReminders = nil
+	s.runtimeReminderKeys = make(map[string]struct{})
+	s.steeredReminderKeys = make(map[string]struct{})
+	s.autoResumeReminderKeys = make(map[string]struct{})
+	s.pendingToolCalls = make(map[string]pendingToolCall)
+	s.recentToolCalls = nil
+	s.pendingReminderContinue = false
+	s.currentTurn = TurnOutcomeSnapshot{}
+	s.lastTurn = TurnOutcomeSnapshot{}
+	s.lastRunSummary = nil
+	s.lastReminder = nil
+	s.lastCompaction = nil
+	s.metrics = newRuntimeMetrics()
 }

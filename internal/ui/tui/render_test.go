@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
@@ -216,6 +217,28 @@ func TestIndentBlock(t *testing.T) {
 		if !strings.HasPrefix(line, "    ") {
 			t.Fatalf("line not indented: %q", line)
 		}
+	}
+}
+
+func TestFormatProgressLineUsesStructuredPayload(t *testing.T) {
+	line := FormatProgressLine(&agentcore.ProgressPayload{
+		Kind: agentcore.ProgressToolStart,
+		Tool: "read",
+		Args: []byte(`{"path":"internal/ui/tui/events.go"}`),
+	})
+	plain := stripANSI(line)
+	if !strings.Contains(plain, "read") || !strings.Contains(plain, "internal/ui/tui/events.go") {
+		t.Fatalf("expected tool progress line to include tool and hint, got %q", plain)
+	}
+}
+
+func TestFormatProgressLineSummary(t *testing.T) {
+	line := FormatProgressLine(&agentcore.ProgressPayload{
+		Kind:    agentcore.ProgressSummary,
+		Summary: "foreground output line",
+	})
+	if got := stripANSI(line); got != "foreground output line" {
+		t.Fatalf("summary line = %q, want %q", got, "foreground output line")
 	}
 }
 

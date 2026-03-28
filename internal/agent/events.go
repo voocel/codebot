@@ -6,6 +6,44 @@ import (
 	"github.com/voocel/agentcore"
 )
 
+type RuntimeReminderKind string
+
+const (
+	ReminderRepeatToolCall  RuntimeReminderKind = "repeat_tool_call"
+	ReminderUnfinishedTasks RuntimeReminderKind = "unfinished_tasks"
+)
+
+type CompactionKind string
+
+const (
+	CompactionKindMicro CompactionKind = "micro"
+	CompactionKindFull  CompactionKind = "full"
+	CompactionKindTrim  CompactionKind = "trim"
+	CompactionKindPrune CompactionKind = "prune"
+)
+
+type ToolCallSnapshot struct {
+	Tool      string
+	ArgsHash  string
+	Success   bool
+	Timestamp time.Time
+}
+
+type ReminderSnapshot struct {
+	Kind      RuntimeReminderKind
+	Mode      string
+	Timestamp time.Time
+}
+
+type CompactionSnapshot struct {
+	Kind         CompactionKind
+	Reason       string
+	Changed      bool
+	TokensBefore int
+	TokensAfter  int
+	Timestamp    time.Time
+}
+
 // SessionEventType identifies a session-level event.
 type SessionEventType string
 
@@ -21,6 +59,7 @@ const (
 	SEModelChanged        SessionEventType = "model_changed"
 	SEThinkingChanged     SessionEventType = "thinking_changed"
 	SESessionSwitched     SessionEventType = "session_switched"
+	SERuntimeReminder     SessionEventType = "runtime_reminder"
 	SEError               SessionEventType = "session_error"
 )
 
@@ -31,11 +70,13 @@ type SessionEvent struct {
 	AgentEvent *agentcore.Event
 
 	// Session-level fields (populated based on Type)
-	ModelName string
-	Provider  string
-	Level     agentcore.ThinkingLevel
-	SessionID string
-	Error     error
+	ModelName    string
+	Provider     string
+	Level        agentcore.ThinkingLevel
+	SessionID    string
+	Error        error
+	Reminder     string
+	ReminderKind RuntimeReminderKind
 
 	// Retry fields (populated for SEAutoRetryStart / SEAutoRetryEnd)
 	RetryAttempt int
@@ -45,6 +86,7 @@ type SessionEvent struct {
 
 	// Compaction reason: "overflow" or "threshold"
 	CompactionReason  string
+	CompactionKind    CompactionKind
 	CompactionChanged bool
 	TokensBefore      int
 	TokensAfter       int

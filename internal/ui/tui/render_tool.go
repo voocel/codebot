@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	reflowwrap "github.com/muesli/reflow/wrap"
+	"github.com/voocel/agentcore"
 )
 
 // ---------------------------------------------------------------------------
@@ -569,32 +570,40 @@ func expandTabs(s string) string {
 // Progress display
 // ---------------------------------------------------------------------------
 
-// FormatProgressLine formats a tool progress update for display.
-func FormatProgressLine(result json.RawMessage) string {
-	if len(result) == 0 {
+// FormatProgressLine formats a structured tool progress update for display.
+func FormatProgressLine(progress *agentcore.ProgressPayload) string {
+	if progress == nil {
 		return ""
 	}
-	// Try structured subagent progress.
-	var sp struct {
-		Agent string          `json:"agent"`
-		Tool  string          `json:"tool"`
-		Args  json.RawMessage `json:"args"`
-		Turn  int             `json:"turn"`
-		Error bool            `json:"error"`
+	switch progress.Kind {
+	case agentcore.ProgressToolStart, agentcore.ProgressTurnCounter, agentcore.ProgressToolError:
+		return formatSubagentProgress(progress.Tool, progress.Args, progress.Turn, progress.IsError)
+	case agentcore.ProgressRetry:
+		if progress.Attempt > 0 && progress.MaxRetries > 0 {
+			return MutedStyle.Render(fmt.Sprintf("retry %d/%d", progress.Attempt, progress.MaxRetries))
+		}
+		if progress.Message != "" {
+			return truncateRunes(progress.Message, 200)
+		}
+	case agentcore.ProgressSummary:
+		if progress.Summary != "" {
+			return truncateRunes(progress.Summary, 200)
+		}
 	}
-	if json.Unmarshal(result, &sp) == nil && sp.Agent != "" {
-		return formatSubagentProgress(sp.Agent, sp.Tool, sp.Args, sp.Turn, sp.Error)
+	if progress.Summary != "" {
+		return truncateRunes(progress.Summary, 200)
 	}
-	// Fallback: plain JSON string.
-	var s string
-	if json.Unmarshal(result, &s) == nil && s != "" {
-		return truncateRunes(s, 200)
+	if progress.Message != "" {
+		return truncateRunes(progress.Message, 200)
 	}
-	return truncateRunes(string(result), 200)
+	if progress.Tool != "" {
+		return formatSubagentProgress(progress.Tool, progress.Args, progress.Turn, progress.IsError)
+	}
+	return ""
 }
 
 // formatSubagentProgress renders a structured subagent progress line.
-func formatSubagentProgress(_, tool string, args json.RawMessage, turn int, isError bool) string {
+func formatSubagentProgress(tool string, args json.RawMessage, turn int, isError bool) string {
 	if turn > 0 {
 		return MutedStyle.Render(fmt.Sprintf("turn %d completed", turn))
 	}

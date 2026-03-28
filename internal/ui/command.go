@@ -11,6 +11,8 @@ import (
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
@@ -134,6 +136,12 @@ func (a *App) builtinCommands() []Command {
 			Category: "info", Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdMCP()
+		}),
+		NewSimple(CommandSpec{
+			Name: "debug-harness", Usage: "/debug-harness", Description: "Show harness runtime diagnostics",
+			Category: "info", Kind: CommandKindBuiltin,
+		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
+			return ctx.App.cmdDebugHarness()
 		}),
 		NewSimple(CommandSpec{
 			Name: "copy", Usage: "/copy", Description: "Copy last response to clipboard",
@@ -477,6 +485,97 @@ func (a *App) cmdMCP() tea.Cmd {
 	}
 }
 
+func (a *App) cmdDebugHarness() tea.Cmd {
+	metrics := a.Session.RuntimeMetrics()
+	lastTurn := a.Session.LastTurnOutcome()
+	lastRunSummary, hasRunSummary := a.Session.LastRunSummary()
+	recentTools := a.Session.RecentToolCalls(5)
+	lastReminder, hasReminder := a.Session.LastReminder()
+	lastCompaction, hasCompaction := a.Session.LastCompaction()
+	contextUsage := a.Session.ContextUsage()
+	toolCalls := 0
+	if hasRunSummary {
+		toolCalls = lastRunSummary.ToolCalls
+	}
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+
+	var sb strings.Builder
+	renderSection := func(title, meta string) {
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(title)
+		sb.WriteString("\n")
+		if meta != "" {
+			sb.WriteString(metaStyle.Render(meta))
+			sb.WriteString("\n")
+		}
+	}
+	renderRow := func(label, value string) {
+		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-22s", label)))
+		sb.WriteString(" ")
+		sb.WriteString(valueStyle.Render(value))
+		sb.WriteString("\n")
+	}
+	renderMetaRow := func(label, value string) {
+		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-22s", label)))
+		sb.WriteString(" ")
+		sb.WriteString(metaStyle.Render(value))
+		sb.WriteString("\n")
+	}
+	renderBlock := func(label string, lines []string) {
+		if len(lines) == 0 {
+			renderMetaRow(label, "(none)")
+			return
+		}
+		for i, line := range lines {
+			currentLabel := ""
+			if i == 0 {
+				currentLabel = label
+			}
+			sb.WriteString(labelStyle.Render(fmt.Sprintf("%-22s", currentLabel)))
+			sb.WriteString(" ")
+			sb.WriteString(valueStyle.Render(line))
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("Harness Debug\n")
+	renderSection("Last turn", "Only the most recent completed agent run. If the last run was just a final reply, tool calls can be 0.")
+	renderRow("Assistant responded", formatBool(lastTurn.AssistantResponded))
+	renderRow("Completion claim", formatBool(lastTurn.CompletionClaim))
+	renderRow("Tool calls", fmt.Sprintf("%d", toolCalls))
+	renderRow("Read-only tools", fmt.Sprintf("%d", lastTurn.ReadOnlyToolCalls))
+	renderRow("Write-like tools", fmt.Sprintf("%d", lastTurn.WriteLikeToolCalls))
+	renderRow("Task mutations", fmt.Sprintf("%d", lastTurn.TaskMutations))
+	renderMetaRow("Run summary", formatRunSummary(lastRunSummary, hasRunSummary))
+
+	renderSection("Recent activity", "Recent runtime events inside the current loaded session.")
+	renderBlock("Recent tool calls", formatRecentToolCalls(recentTools))
+	renderMetaRow("Last reminder", formatLastReminder(lastReminder, hasReminder))
+	renderMetaRow("Last compaction", formatLastCompaction(lastCompaction, hasCompaction))
+
+	renderSection("Session metrics", "Accumulates since this session was created or loaded in the current process.")
+	renderRow("Reminders total", fmt.Sprintf("%d", metrics.ReminderTotal))
+	renderMetaRow("Reminder kinds", formatReminderCounts(metrics.ReminderByKind))
+	renderRow("Compactions total", fmt.Sprintf("%d", metrics.CompactionTotal))
+	renderRow("Compactions changed", fmt.Sprintf("%d", metrics.CompactionChanged))
+	renderRow("Compaction saved", tui.FormatTokens(metrics.CompactionSaved))
+	renderMetaRow("Compaction kinds", formatCompactionCounts(metrics.CompactionByKind))
+	renderMetaRow("Saved by compaction", formatCompactionSavings(metrics.CompactionSavedByKind))
+
+	if contextUsage != nil {
+		renderSection("Current context", "Live context window usage for the current agent state.")
+		renderRow("Context used", fmt.Sprintf("%s (%.1f%%)", tui.FormatTokens(contextUsage.Tokens), contextUsage.Percent))
+		renderRow("Context window", tui.FormatTokens(contextUsage.ContextWindow))
+	}
+
+	return tui.SendCommandResult(tui.CommandStyle.Render(strings.TrimRight(sb.String(), "\n")))
+}
+
 func (a *App) cmdReload() tea.Cmd {
 	a.Session.Reload()
 	a.Commands = config.LoadFileCommands(a.Cwd)
@@ -655,6 +754,128 @@ func looksLikeCronFields(fields []string) bool {
 		}
 	}
 	return true
+}
+
+func formatBool(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
+}
+
+func formatReminderCounts(counts map[agent.RuntimeReminderKind]int) string {
+	order := []agent.RuntimeReminderKind{
+		agent.ReminderRepeatToolCall,
+		agent.ReminderUnfinishedTasks,
+	}
+	parts := make([]string, 0, len(counts))
+	for _, kind := range order {
+		if count := counts[kind]; count > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", kind, count))
+		}
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatCompactionCounts(counts map[agent.CompactionKind]int) string {
+	order := []agent.CompactionKind{
+		agent.CompactionKindMicro,
+		agent.CompactionKindTrim,
+		agent.CompactionKindPrune,
+		agent.CompactionKindFull,
+	}
+	parts := make([]string, 0, len(counts))
+	for _, kind := range order {
+		if count := counts[kind]; count > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", kind, count))
+		}
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatCompactionSavings(savings map[agent.CompactionKind]int) string {
+	order := []agent.CompactionKind{
+		agent.CompactionKindMicro,
+		agent.CompactionKindTrim,
+		agent.CompactionKindPrune,
+		agent.CompactionKindFull,
+	}
+	parts := make([]string, 0, len(savings))
+	for _, kind := range order {
+		if saved := savings[kind]; saved > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%s", kind, tui.FormatTokens(saved)))
+		}
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatRecentToolCalls(calls []agent.ToolCallSnapshot) []string {
+	if len(calls) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(calls))
+	for _, call := range calls {
+		status := "ok"
+		if !call.Success {
+			status = "error"
+		}
+		argsHash := call.ArgsHash
+		if argsHash == "" {
+			argsHash = "-"
+		}
+		lines = append(lines, fmt.Sprintf("%s  %-12s %-5s args:%s",
+			call.Timestamp.Format("15:04:05"),
+			call.Tool,
+			status,
+			argsHash,
+		))
+	}
+	return lines
+}
+
+func formatLastReminder(snapshot agent.ReminderSnapshot, ok bool) string {
+	if !ok {
+		return "(none)"
+	}
+	return fmt.Sprintf("%s via %s at %s", snapshot.Kind, snapshot.Mode, snapshot.Timestamp.Format("15:04:05"))
+}
+
+func formatLastCompaction(snapshot agent.CompactionSnapshot, ok bool) string {
+	if !ok {
+		return "(none)"
+	}
+	status := "no-op"
+	if snapshot.Changed {
+		status = fmt.Sprintf("changed, %s -> %s", tui.FormatTokens(snapshot.TokensBefore), tui.FormatTokens(snapshot.TokensAfter))
+	}
+	return fmt.Sprintf("%s / %s, %s, at %s",
+		snapshot.Kind,
+		snapshot.Reason,
+		status,
+		snapshot.Timestamp.Format("15:04:05"),
+	)
+}
+
+func formatRunSummary(summary agentcore.RunSummary, ok bool) string {
+	if !ok {
+		return "(none)"
+	}
+	return fmt.Sprintf("reason=%s, turns=%d, tool_calls=%d, tool_errors=%d",
+		summary.EndReason,
+		summary.TurnCount,
+		summary.ToolCalls,
+		summary.ToolErrors,
+	)
 }
 
 // sendAsPrompt sends expanded template text as a user message to the agent.

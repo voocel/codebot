@@ -16,6 +16,13 @@ The trick: **agentcore handles execution, codebot handles coordination.**
 
 Each layer has one job. No layer knows about the layers above it.
 
+In architecture terms, codebot now acts as a **terminal-native harness** on top of `agentcore`:
+
+- `agentcore` is the execution kernel: agent loop, tools, events, message state
+- `codebot` is the harness/runtime layer: prompt composition, session persistence, approval flow, context compaction, runtime reminders, and TUI orchestration
+
+This split matters. The agent loop stays small and reusable, while long-running terminal concerns live in the harness where they belong.
+
 ## Features
 
 **Agent**
@@ -121,6 +128,16 @@ codebot --mode strict
 2. **No premature abstraction** — every interface has at least two real callers
 3. **Convention over configuration** — sensible defaults, explicit overrides
 4. **Secure by default** — balanced mode, audit trail, workspace boundaries
+
+## Architecture
+
+Codebot follows a layered coding-agent architecture:
+
+- **Execution kernel (`agentcore`)**: model calls, tool execution, event stream, message lifecycle
+- **Harness layer (`codebot`)**: session control, runtime policy, approval routing, prompt assembly, context engineering, recovery, and UX
+- **Application surface**: TUI, print mode, slash commands, session resume/fork, configuration
+
+This means codebot is not just "an agent with tools". It is an agent plus a harness for long-running terminal workflows.
 
 ## Configuration
 

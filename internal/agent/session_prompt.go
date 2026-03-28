@@ -149,6 +149,6 @@ func (m *sessionPromptManager) rebuildPrompt() {
 
 	// Update reminders (skills + context files, injected per user message).
 	m.session.mu.Lock()
-	m.session.reminders = config.BuildReminders(m.session.contextFiles, m.session.skills)
+	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, m.session.skills)
 	m.session.mu.Unlock()
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
@@ -88,7 +89,7 @@ func TestRebuildRegistryIncludesAllCommandSources(t *testing.T) {
 
 	app.rebuildRegistry()
 
-	for _, name := range []string{"help", "deploy", "review"} {
+	for _, name := range []string{"help", "debug-harness", "deploy", "review"} {
 		if _, ok := app.registry.Lookup(name); !ok {
 			t.Fatalf("expected command %q to be registered", name)
 		}
@@ -206,6 +207,7 @@ func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
 	text, muted, ok := formatAutoCompactionEvent(agent.SessionEvent{
 		Type:              agent.SEAutoCompactionEnd,
 		CompactionReason:  "threshold",
+		CompactionKind:    agent.CompactionKindTrim,
 		CompactionChanged: true,
 		TokensBefore:      128000,
 		TokensAfter:       64000,
@@ -216,7 +218,7 @@ func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
 	if muted {
 		t.Fatal("expected changed compaction result to use emphasized tone")
 	}
-	for _, want := range []string{"Context compacted automatically", "128.0k", "64.0k"} {
+	for _, want := range []string{"Context trimmed automatically", "128.0k", "64.0k"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}
@@ -255,5 +257,138 @@ func TestFormatRetryEventIgnoresOtherEvents(t *testing.T) {
 		Type: agent.SEAutoCompactionStart,
 	}); ok {
 		t.Fatal("expected compaction event to be ignored by retry formatter")
+	}
+}
+
+func TestFormatRecentToolCalls(t *testing.T) {
+	t.Parallel()
+
+	lines := formatRecentToolCalls([]agent.ToolCallSnapshot{
+		{
+			Tool:      "read",
+			ArgsHash:  "abc12345",
+			Success:   true,
+			Timestamp: time.Date(2026, 3, 27, 15, 4, 5, 0, time.Local),
+		},
+		{
+			Tool:      "grep",
+			ArgsHash:  "def67890",
+			Success:   false,
+			Timestamp: time.Date(2026, 3, 27, 15, 4, 6, 0, time.Local),
+		},
+	})
+
+	if len(lines) != 2 {
+		t.Fatalf("expected two lines, got %d", len(lines))
+	}
+	for _, want := range []string{"15:04:05", "read", "ok", "abc12345"} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("expected %q in %q", want, lines[0])
+		}
+	}
+	for _, want := range []string{"15:04:06", "grep", "error", "def67890"} {
+		if !strings.Contains(lines[1], want) {
+			t.Fatalf("expected %q in %q", want, lines[1])
+		}
+	}
+}
+
+func TestFormatLastReminder(t *testing.T) {
+	t.Parallel()
+
+	text := formatLastReminder(agent.ReminderSnapshot{
+		Kind:      agent.ReminderRepeatToolCall,
+		Mode:      "steer",
+		Timestamp: time.Date(2026, 3, 27, 15, 4, 7, 0, time.Local),
+	}, true)
+
+	for _, want := range []string{"repeat_tool_call", "steer", "15:04:07"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+
+	if got := formatLastReminder(agent.ReminderSnapshot{}, false); got != "(none)" {
+		t.Fatalf("expected empty reminder placeholder, got %q", got)
+	}
+}
+
+func TestFormatLastCompaction(t *testing.T) {
+	t.Parallel()
+
+	changed := formatLastCompaction(agent.CompactionSnapshot{
+		Kind:         agent.CompactionKindTrim,
+		Reason:       "threshold",
+		Changed:      true,
+		TokensBefore: 128000,
+		TokensAfter:  64000,
+		Timestamp:    time.Date(2026, 3, 27, 15, 4, 8, 0, time.Local),
+	}, true)
+	for _, want := range []string{"trim", "threshold", "changed", "128.0k", "64.0k", "15:04:08"} {
+		if !strings.Contains(changed, want) {
+			t.Fatalf("expected %q in %q", want, changed)
+		}
+	}
+
+	noop := formatLastCompaction(agent.CompactionSnapshot{
+		Kind:      agent.CompactionKindMicro,
+		Reason:    "threshold",
+		Changed:   false,
+		Timestamp: time.Date(2026, 3, 27, 15, 4, 9, 0, time.Local),
+	}, true)
+	for _, want := range []string{"micro", "threshold", "no-op", "15:04:09"} {
+		if !strings.Contains(noop, want) {
+			t.Fatalf("expected %q in %q", want, noop)
+		}
+	}
+
+	if got := formatLastCompaction(agent.CompactionSnapshot{}, false); got != "(none)" {
+		t.Fatalf("expected empty compaction placeholder, got %q", got)
+	}
+}
+
+func TestFormatRunSummary(t *testing.T) {
+	t.Parallel()
+
+	text := formatRunSummary(agentcore.RunSummary{
+		TurnCount:  3,
+		ToolCalls:  5,
+		ToolErrors: 1,
+		EndReason:  agentcore.EndReasonMaxTurns,
+	}, true)
+	for _, want := range []string{"max_turns", "turns=3", "tool_calls=5", "tool_errors=1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+
+	if got := formatRunSummary(agentcore.RunSummary{}, false); got != "(none)" {
+		t.Fatalf("expected empty run summary placeholder, got %q", got)
+	}
+}
+
+func TestFormatReminderCounts(t *testing.T) {
+	t.Parallel()
+
+	got := formatReminderCounts(map[agent.RuntimeReminderKind]int{
+		agent.ReminderRepeatToolCall:  1,
+		agent.ReminderUnfinishedTasks: 2,
+	})
+	want := "repeat_tool_call=1, unfinished_tasks=2"
+	if got != want {
+		t.Fatalf("formatReminderCounts() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatCompactionSavings(t *testing.T) {
+	t.Parallel()
+
+	got := formatCompactionSavings(map[agent.CompactionKind]int{
+		agent.CompactionKindTrim: 1200,
+		agent.CompactionKindFull: 32000,
+	})
+	want := "trim=1.2k, full=32.0k"
+	if got != want {
+		t.Fatalf("formatCompactionSavings() = %q, want %q", got, want)
 	}
 }

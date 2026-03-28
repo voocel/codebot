@@ -57,6 +57,12 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 			setExitErr(ev.Error)
 			return
 		}
+		if ev.Type == agent.SERuntimeReminder && ev.Reminder != "" {
+			if !jsonMode {
+				fmt.Fprintf(os.Stderr, "runtime reminder triggered: %s\n", formatRuntimeReminderKind(ev.ReminderKind))
+			}
+			return
+		}
 		if ev.Type != agent.SEAgentEvent || ev.AgentEvent == nil {
 			return
 		}
