@@ -85,7 +85,7 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 
 			// Accumulate token usage via type assertion (AgentMessage has no Usage method).
 			if msg, ok := ev.Message.(agentcore.Message); ok && msg.Usage != nil {
-				m.RunStats.Input += msg.Usage.Input
+				m.RunStats.Input += msg.Usage.Input + msg.Usage.CacheRead + msg.Usage.CacheWrite
 				m.RunStats.Output += msg.Usage.Output
 			}
 

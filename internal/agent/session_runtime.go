@@ -677,7 +677,7 @@ func (s *Session) Registry() *provider.ModelRegistry {
 
 func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 	usage := s.agent.TotalUsage()
-	inputTokens = usage.Input
+	inputTokens = usage.Input + usage.CacheRead + usage.CacheWrite
 	outputTokens = usage.Output
 
 	s.mu.Lock()
@@ -687,7 +687,7 @@ func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 
 	if reg != nil {
 		inRate, outRate, crRate, cwRate := reg.CostRates(model)
-		cost = float64(inputTokens)*inRate/1e6 +
+		cost = float64(usage.Input)*inRate/1e6 +
 			float64(outputTokens)*outRate/1e6 +
 			float64(usage.CacheRead)*crRate/1e6 +
 			float64(usage.CacheWrite)*cwRate/1e6
