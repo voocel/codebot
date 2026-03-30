@@ -41,7 +41,7 @@ type askUserState struct {
 // AskUser styles.
 var (
 	askQuestionStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("252")).
+				Foreground(ColorTitle).
 				Bold(true)
 
 	askOptionActiveStyle = lipgloss.NewStyle().
@@ -49,7 +49,7 @@ var (
 				Bold(true)
 
 	askOptionInactiveStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("252"))
+				Foreground(ColorSoftText)
 
 	askDescStyle = lipgloss.NewStyle().
 			Foreground(ColorMuted)
@@ -60,7 +60,7 @@ var (
 
 	askNotesLabelStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("252"))
+				Foreground(ColorSoftText)
 
 	askCollapsedStyle = lipgloss.NewStyle().
 				Foreground(ColorMuted).
@@ -324,7 +324,7 @@ func renderAskUser(s *askUserState) string {
 		b.WriteString(optionList)
 		b.WriteString("\n")
 		b.WriteString(hintLine)
-		return indentBlock(b.String(), 2)
+		return AskCardStyle.Render(b.String())
 	}
 
 	// Notes line (only in preview mode).
@@ -359,7 +359,7 @@ func renderAskUser(s *askUserState) string {
 	// Pad to fixed height to prevent ghost renders on resize/cursor change.
 	content = padToHeight(content, s.height-2)
 
-	return indentBlock(content, 2)
+	return AskCardStyle.Render(content)
 }
 
 // padToHeight ensures the string has exactly targetLines lines.

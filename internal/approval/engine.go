@@ -18,7 +18,6 @@ const (
 	ModeBalanced    Mode = "balanced"
 	ModeAcceptEdits Mode = "accept_edits"
 	ModeTrust       Mode = "trust"
-	ModePlan        Mode = "plan" // 兼容旧调用；新代码应使用 SetPlanMode
 )
 
 type Capability string
@@ -143,10 +142,6 @@ func (e *Engine) SetFilesystemRoots(roots FilesystemRoots) {
 func (e *Engine) SetMode(mode Mode) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if mode == ModePlan {
-		e.planActive = true
-		return
-	}
 	e.mode = mode
 }
 

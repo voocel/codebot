@@ -46,9 +46,9 @@ func customStyle(dark bool) ansi.StyleConfig {
 	style := styles.NoTTYStyleConfig
 	bold := true
 	italic := true
-	codeColor := "#89DDFF"
-	headerColor := "#4EC9B0"
-	subHeaderColor := "#FFCB6B"
+	codeColor := "#78C6E7"
+	headerColor := "#3FA796"
+	subHeaderColor := "#D89B5B"
 
 	// Inline code: cyan, no backtick markers.
 	style.Code.StylePrimitive.Color = &codeColor
@@ -87,6 +87,12 @@ func customStyle(dark bool) ansi.StyleConfig {
 	style.H5.StylePrimitive.Prefix = ""
 	style.H6.StylePrimitive.Bold = &bold
 	style.H6.StylePrimitive.Prefix = ""
+
+	listColor := "#B8E1DD"
+	style.Item.Color = &listColor
+
+	blockQuoteColor := "#2F6F68"
+	style.BlockQuote.StylePrimitive.Color = &blockQuoteColor
 
 	return style
 }

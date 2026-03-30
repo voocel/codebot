@@ -90,10 +90,10 @@ github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 h1:KRzFb2m7YtdldCEkzs6KqmJw4nqEV
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.2/go.mod h1:JXeL+ps8p7/KNMjDQk3TCwPpBy0wYklyWTfbkIzdIFU=
 github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
-github.com/voocel/agentcore v1.5.7 h1:jBgG80cOgHQhWmplikCxTX0T0sGrw7GvsIdyZvqY+Gk=
-github.com/voocel/agentcore v1.5.7/go.mod h1:WnFNTZuDsvFOfxgdVJxEHwZ51K0eHoRxS1HYYwO3tQE=
-github.com/voocel/litellm v1.6.4 h1:0F9cJusOn73NZu3QLDOAvIrVqAUUVDNBxbppvQozoL4=
-github.com/voocel/litellm v1.6.4/go.mod h1:6MBUu3I4DHm7h72Vl+3nqLruSwYmgqMf/I9BGoordJ4=
+github.com/voocel/agentcore v1.5.8 h1:ZfVIJ+vFO+L5aiv9eIeVwagbVJmY35yDSL5d4d5DHzI=
+github.com/voocel/agentcore v1.5.8/go.mod h1:gG3cQIuoG5extUNWrmMmRov72yrqfBassNlU66SJSKc=
+github.com/voocel/litellm v1.6.5 h1:4UaZ0Br9P0+0cJvgrj/V0OBUWi8ILwfSFCDrd0GJbLk=
+github.com/voocel/litellm v1.6.5/go.mod h1:6MBUu3I4DHm7h72Vl+3nqLruSwYmgqMf/I9BGoordJ4=
 github.com/voocel/mcp-sdk-go v1.2.7 h1:R1AF8HSUjHmwWc17kjmzEJKQzYEeP3XMh3n7Kr6Yvro=
 github.com/voocel/mcp-sdk-go v1.2.7/go.mod h1:WWxi9LOXowHDF9UqO1WSs49iScWnr7lRZV+QxDkU1GM=
 github.com/wk8/go-ordered-map/v2 v2.1.8 h1:5h/BUHu93oj4gIdvHHHGsScSTMijfx5PeYkE/fJgbpc=
@@ -107,8 +107,8 @@ github.com/yuin/goldmark-emoji v1.0.5 h1:EMVWyCGPlXJfUXBXpuMu+ii3TIaxbVBnEX9uaDC
 github.com/yuin/goldmark-emoji v1.0.5/go.mod h1:tTkZEbwu5wkPmgTcitqddVxY9osFZiavD+r4AzQrh1U=
 golang.org/x/exp v0.0.0-20231006140011-7918f672742d h1:jtJma62tbqLibJ5sFQz8bKtEM8rJBtfilJ2qTU199MI=
 golang.org/x/exp v0.0.0-20231006140011-7918f672742d/go.mod h1:ldy0pHrwJyGW56pPQzzkH36rKxoZW1tw7ZJpeKx+hdo=
-golang.org/x/image v0.37.0 h1:ZiRjArKI8GwxZOoEtUfhrBtaCN+4b/7709dlT6SSnQA=
-golang.org/x/image v0.37.0/go.mod h1:/3f6vaXC+6CEanU4KJxbcUZyEePbyKbaLoDOe4ehFYY=
+golang.org/x/image v0.38.0 h1:5l+q+Y9JDC7mBOMjo4/aPhMDcxEptsX+Tt3GgRQRPuE=
+golang.org/x/image v0.38.0/go.mod h1:/3f6vaXC+6CEanU4KJxbcUZyEePbyKbaLoDOe4ehFYY=
 golang.org/x/net v0.47.0 h1:Mx+4dIFzqraBXUugkia1OOvlD6LemFo1ALMHjrXDOhY=
 golang.org/x/net v0.47.0/go.mod h1:/jNxtkgq5yWUGYkaZGqo27cfGZ1c5Nen03aYrrKpVRU=
 golang.org/x/sys v0.0.0-20210809222454-d867a43fc93e/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=

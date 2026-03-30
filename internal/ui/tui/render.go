@@ -62,123 +62,119 @@ func scanText(text string, now float64, speed float64, band, slope int) string {
 // ---------------------------------------------------------------------------
 
 func (m *Model) renderWelcome() string {
-	accent := lipgloss.NewStyle().Foreground(ColorPrimary)
-	bold := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
-	dim := WelcomeDetailStyle
-
-	// ── Left column: centered robot logo ──
-	logo := []string{
-		"",
-		accent.Render("     ╭───╮"),
-		accent.Render("     │") + bold.Render("◉ ◉") + accent.Render("│"),
-		accent.Render("     ╰─┬─╯"),
-		accent.Render("    ╭──┴──╮"),
-		accent.Render("    │ ") + bold.Render(">>>") + accent.Render(" │"),
-		accent.Render("    ╰─────╯"),
-		"",
-	}
-	const leftWidth = 18 // visible char width of left column (logo area)
-
-	// ── Right column: Tips + separator + Recent activity ──
-	rightWidth := 40
+	width := 84
 	if m.Width > 0 {
-		rightWidth = max(m.Width-leftWidth-10, 24) // 10 = border(2) + padding(2) + sep col(1) + gaps(5)
+		width = min(max(m.Width-4, 56), 96)
 	}
 
-	rightLines := []string{
-		"",
-		bold.Render("Tips for getting started"),
-		dim.Render("  Type / to browse commands"),
-		dim.Render("  Enter send · Ctrl+J newline · Esc abort"),
-		accent.Render(strings.Repeat("─", rightWidth+2)),
-		bold.Render("Recent activity"),
-		dim.Render("  No recent activity"),
-		"",
-	}
-
-	// ── Merge left + right into rows ──
-	totalRows := max(len(logo), len(rightLines))
-	var rows []string
-	for i := range totalRows {
-		left := ""
-		if i < len(logo) {
-			left = logo[i]
-		}
-		vis := lipgloss.Width(left)
-		if vis < leftWidth {
-			left += strings.Repeat(" ", leftWidth-vis)
-		}
-
-		right := ""
-		if i < len(rightLines) {
-			right = rightLines[i]
-		}
-		rows = append(rows, left+" "+accent.Render("│")+" "+right)
-	}
-
-	// ── Footer: model info (spans full width) ──
-	infoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	modelLine := infoStyle.Render(m.ModelName)
-	if m.Cwd != "" {
-		modelLine += dim.Render(" · ") + infoStyle.Render(shortenPath(m.Cwd))
-	}
-	if m.GitBranch != "" {
-		modelLine += dim.Render(" (") + accent.Render(m.GitBranch) + dim.Render(")")
-	}
-
-	// ── Custom border with version title ──
 	ver := m.Version
 	if ver == "" {
 		ver = "dev"
 	}
-	title := " Codebot " + ver + " "
 
-	// Inner width = leftWidth + 1(sep) + 2(gaps) + rightWidth
-	innerWidth := leftWidth + 1 + 2 + rightWidth
-	// Add 2 for padding (1 char each side)
-	totalInner := innerWidth + 2
-
-	// Top border: ╭── title ──...──╮
-	titleStyled := bold.Render(title)
-	titleVis := lipgloss.Width(titleStyled)
-	dashesAfter := totalInner - titleVis
-	if dashesAfter < 1 {
-		dashesAfter = 1
+	edge := WelcomeKickerStyle
+	face := WelcomeBodyStyle
+	title := WelcomeTitleStyle
+	muted := WelcomeMutedStyle
+	logoLines := []string{
+		"      " + edge.Render("╭──────────────╮"),
+		"     " + edge.Render("╱") + "  " + edge.Render("╭────────╮") + "  " + edge.Render("╱│"),
+		"    " + edge.Render("╱") + "   " + face.Render("│  ❯_    │") + " " + edge.Render("╱ │"),
+		"   " + edge.Render("╱____") + face.Render("│________│") + edge.Render("╱  │"),
+		"   " + face.Render("│   ") + title.Render("CODEBOT") + face.Render("   │  │"),
+		"   " + face.Render("│ ") + muted.Render("terminal harness") + face.Render(" │ ╱"),
+		"   " + face.Render("│______________│╱"),
 	}
-	topBorder := accent.Render("╭──") + titleStyled + accent.Render(strings.Repeat("─", dashesAfter)+"╮")
+	logo := lipgloss.NewStyle().Width(28).Render(strings.Join(logoLines, "\n"))
 
-	// Body rows with side borders
-	var bodyLines []string
-	for _, row := range rows {
-		vis := lipgloss.Width(row)
-		pad := totalInner - vis
-		if pad < 0 {
-			pad = 0
-		}
-		bodyLines = append(bodyLines,
-			accent.Render("│")+" "+row+strings.Repeat(" ", pad)+" "+accent.Render("│"))
+	rightWidth := max(width-30, 22)
+	var meta []string
+	meta = append(meta, TagStyle.Render("AI coding"))
+
+	rightLines := []string{
+		WelcomeKickerStyle.Render("CODEBOT"),
+		WelcomeTitleStyle.Render("Long-running coding agent for the terminal."),
+		"",
+		WelcomeBodyStyle.Render("Small execution kernel. Strong runtime harness."),
+		WelcomeMutedStyle.Render("  / to browse commands"),
+		WelcomeMutedStyle.Render("  Enter send · Ctrl+J newline"),
+		WelcomeMutedStyle.Render("  Esc abort"),
+		"",
+		CardSectionStyle.Render("Workspace"),
+		WelcomeBodyStyle.Render("  " + shortenPath(m.Cwd)),
+	}
+	right := lipgloss.NewStyle().Width(rightWidth).Render(strings.Join(rightLines, "\n"))
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top, logo, "  ", right)
+
+	footerBits := []string{
+		ContextChipAccentStyle.Render(ver),
+	}
+	if m.ModelName != "" {
+		footerBits = append(footerBits, ContextChipStyle.Render("· "+m.ModelName))
+	}
+	if m.Cwd != "" {
+		footerBits = append(footerBits, ContextChipStyle.Render("· "+shortenPath(m.Cwd)))
+	}
+	if m.GitBranch != "" {
+		footerBits = append(footerBits, ContextChipStyle.Render("· branch "+m.GitBranch))
 	}
 
-	// Footer row (model info, spans full width)
-	footerVis := lipgloss.Width(modelLine)
-	footerPad := totalInner - footerVis
-	if footerPad < 0 {
-		footerPad = 0
-	}
-	bodyLines = append(bodyLines,
-		accent.Render("│")+" "+modelLine+strings.Repeat(" ", footerPad)+" "+accent.Render("│"))
+	content := strings.Join([]string{
+		strings.Join(meta, " "),
+		"",
+		body,
+		"",
+		strings.Join(footerBits, " "),
+	}, "\n")
 
-	// Bottom border
-	bottomBorder := accent.Render("╰" + strings.Repeat("─", totalInner+2) + "╯")
-
-	result := "\n" + topBorder + "\n" + strings.Join(bodyLines, "\n") + "\n" + bottomBorder
+	result := "\n" + WelcomeFrameStyle.Width(width).Render(content)
 	if m.EnvHint != "" {
-		result += "\n" + MutedStyle.Render("  "+m.EnvHint)
+		result += "\n" + InputHintStyle.Render("  "+m.EnvHint)
 	}
 	if m.MCPLoading {
-		result += "\n" + MutedStyle.Render("  ") + m.ToolSpinner.View() + MutedStyle.Render(" MCP servers connecting...")
+		result += "\n" + InputHintStyle.Render("  ") + m.ToolSpinner.View() + InputHintStyle.Render(" MCP servers connecting...")
 	}
 	return result
+}
+
+func (m Model) renderInputPanel() string {
+	width := m.Width
+	if width <= 0 {
+		width = 80
+	}
+
+	var sections []string
+	if len(m.Images) > 0 {
+		var tags []string
+		for i := range m.Images {
+			tag := fmt.Sprintf("Image #%d", i+1)
+			if m.ImageCursor == i {
+				tags = append(tags, ImageSelectedStyle.Render("["+tag+"]"))
+			} else {
+				tags = append(tags, ImageTagStyle.Render(tag))
+			}
+		}
+		line := strings.Join(tags, " ")
+		if m.ImageCursor >= 0 {
+			line += " " + InputHintStyle.Render("Delete remove · Esc cancel")
+		} else {
+			line += " " + InputHintStyle.Render("↑ select")
+		}
+		sections = append(sections, line)
+	}
+
+	inputView := m.styledInputView()
+	sections = append(sections, inputView)
+
+	hints := []string{"Enter send", "Ctrl+J newline", "Esc abort"}
+	if strings.HasPrefix(m.Input.Value(), "!") {
+		hints = []string{"bash mode", "Enter execute", "Esc abort"}
+	}
+	sections = append(sections, InputHintStyle.Render(strings.Join(hints, " · ")))
+
+	content := strings.Join(sections, "\n\n")
+	return InputPanelStyle.Width(max(width-2, 20)).Render(content)
 }
 
 // RenderStatusBar renders the status line above the input.
@@ -264,33 +260,33 @@ func (m *Model) RenderPlanBar() string {
 		b.WriteString(askHintStyle.Render(fmt.Sprintf("Enter to select · ↑↓ Navigate · 1-%d Shortcut · Esc to cancel", optionCount)))
 	}
 
-	return indentBlock(b.String(), 2)
+	return AskCardStyle.Render(b.String())
 }
 
 // RenderContextBar renders the context line below the input (env info).
 func (m *Model) RenderContextBar() string {
 	if m.QuitPending {
-		return lipgloss.NewStyle().Foreground(ColorMuted).Bold(true).Render("Press Ctrl+C again to exit")
+		return ContextChipWarnStyle.Render("Press Ctrl+C again to exit")
 	}
 	if strings.HasPrefix(m.Input.Value(), "!") {
-		return ShellSeparatorStyle.Render("! for bash mode")
+		return ContextChipWarnStyle.Render("bash mode")
 	}
-	var parts []string
+	var chips []string
 	if m.config.StatusMode != nil {
 		if mode := m.config.StatusMode(m); mode != "" {
-			parts = append(parts, lipgloss.NewStyle().Foreground(ColorPrimary).Render(mode))
+			chips = append(chips, ContextChipAccentStyle.Render(mode))
 		}
 	}
 	if m.Cwd != "" {
-		parts = append(parts, filepath.Base(m.Cwd))
+		chips = append(chips, ContextChipStyle.Render(filepath.Base(m.Cwd)))
 	}
-	parts = append(parts, m.ModelName)
+	chips = append(chips, ContextChipStyle.Render("· "+m.ModelName))
 	if m.config.StatusRight != nil {
 		if extra := m.config.StatusRight(m); extra != "" {
-			parts = append(parts, extra)
+			chips = append(chips, ContextChipStyle.Render("· "+extra))
 		}
 	}
-	line := MutedStyle.Render(strings.Join(parts, " · "))
+	line := strings.Join(chips, " ")
 	if m.Width > 0 {
 		line = truncate.StringWithTail(line, uint(max(m.Width-2, 1)), "…")
 	}
@@ -310,7 +306,14 @@ func (m Model) renderCommandPalette() string {
 
 	list, remaining := m.renderCommandPaletteList(width)
 	var lines []string
-	lines = append(lines, CommandPaletteTitleStyle.Render("Commands")+"  "+CommandPaletteHintStyle.Render("/"+selected.Name))
+	header := CommandPaletteTitleStyle.Render("Commands") + "  " +
+		CommandPaletteKindBadge(selected.Kind) + " " +
+		CommandPaletteCategoryBadge(selected.Category)
+	if badge := CommandPaletteIdleBadge(selected.NeedsIdle); badge != "" {
+		header += " " + badge
+	}
+	lines = append(lines, header)
+	lines = append(lines, CommandPaletteHintStyle.Render("/"+selected.Name))
 	lines = append(lines, list)
 	lines = append(lines, renderCommandPaletteFooter(selected, remaining, width))
 	lines = append(lines, "")
@@ -449,8 +452,13 @@ func (m Model) renderMarkdownBlock(content string, indent int) string {
 // renderRunSummary renders per-run stats shown after agent completion.
 func (m *Model) renderRunSummary() string {
 	s := m.RunStats
-	return MutedStyle.Render(fmt.Sprintf("─ %d turns · %d tools · ↑%s ↓%s tokens · %s",
-		s.Turns, s.ToolCalls, FormatTokens(s.Input), FormatTokens(s.Output), formatDuration(s.Duration)))
+	return strings.Join([]string{
+		ContextChipStyle.Render(fmt.Sprintf("%d turns", s.Turns)),
+		ContextChipStyle.Render("· " + fmt.Sprintf("%d tools", s.ToolCalls)),
+		ContextChipStyle.Render("· ↑" + FormatTokens(s.Input)),
+		ContextChipStyle.Render("· ↓" + FormatTokens(s.Output)),
+		ContextChipAccentStyle.Render("· " + formatDuration(s.Duration)),
+	}, " ")
 }
 
 // renderQueuedMsgs renders queued messages sent while agent is running.
@@ -473,16 +481,17 @@ func (m *Model) renderTaskList() string {
 
 	var b strings.Builder
 
-	// Progress bar: [████░░░░] 2/5 completed
-	barWidth := min(snap.Total, 20)
+	barWidth := min(max(snap.Total, 10), 24)
 	filled := 0
 	if snap.Total > 0 {
 		filled = snap.Completed * barWidth / snap.Total
 	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-	b.WriteString(MutedStyle.Render(fmt.Sprintf("[%s] %d/%d completed", bar, snap.Completed, snap.Total)))
+	bar := lipgloss.NewStyle().Foreground(ColorPrimary).Render(strings.Repeat("█", filled)) +
+		MutedStyle.Render(strings.Repeat("░", barWidth-filled))
+	b.WriteString(CardTitleStyle.Render("Task Progress"))
+	b.WriteString("\n")
+	b.WriteString(TaskProgressStyle.Render(fmt.Sprintf("%s  %d/%d completed", bar, snap.Completed, snap.Total)))
 
-	// One line per task.
 	for _, t := range snap.Tasks {
 		b.WriteByte('\n')
 		var icon string
@@ -506,10 +515,14 @@ func (m *Model) renderTaskList() string {
 			text = t.ActiveForm
 		}
 		style := lipgloss.NewStyle().Foreground(color)
-		b.WriteString(style.Render(fmt.Sprintf("%s #%s %s", icon, t.ID, text)))
+		line := style.Render(fmt.Sprintf("%s #%s", icon, t.ID)) + " " + lipgloss.NewStyle().Foreground(ColorSoftText).Render(text)
+		if t.Owner != "" {
+			line += " " + TagSubtleStyle.Render("· "+t.Owner)
+		}
+		b.WriteString(line)
 	}
 
-	return indentBlock(b.String(), 2)
+	return TaskCardStyle.Width(max(min(m.Width-2, 96), 24)).Render(b.String())
 }
 
 // FormatTokens formats a token count with k/M suffix for readability.
@@ -537,32 +550,25 @@ func FormatTokens(n int) string {
 // Background. This way each segment is self-contained and resets between them
 // are invisible (zero characters wide).
 func (m *Model) renderUserMessage(text string) string {
-	bg := m.Input.FocusedStyle.CursorLine.GetBackground()
-	iconStyle := lipgloss.NewStyle().Foreground(ColorMuted).Background(bg)
-	textStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(bg)
-	padStyle := lipgloss.NewStyle().Background(bg)
-
 	wrapped := m.wrapTextForIndent(text, 2)
 	lines := strings.Split(wrapped, "\n")
-
-	var sb strings.Builder
+	bgStyle := lipgloss.NewStyle().Background(ColorStatusBg)
+	prefixStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(ColorStatusBg).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(ColorStatusBg)
+	padStyle := lipgloss.NewStyle().Background(ColorStatusBg)
+	var out []string
 	for i, line := range lines {
-		var rendered string
+		prefix := "  "
 		if i == 0 {
-			rendered = iconStyle.Render("❯ ") + textStyle.Render(line)
-		} else {
-			rendered = textStyle.Render("  " + line)
+			prefix = prefixStyle.Render("❯") + bgStyle.Render(" ")
 		}
-		// Pad remaining width so background fills the full terminal line.
+		rendered := prefix + textStyle.Render(line)
 		if pad := m.Width - lipgloss.Width(rendered); pad > 0 {
 			rendered += padStyle.Render(strings.Repeat(" ", pad))
 		}
-		sb.WriteString(rendered)
-		if i < len(lines)-1 {
-			sb.WriteByte('\n')
-		}
+		out = append(out, rendered)
 	}
-	return sb.String()
+	return strings.Join(out, "\n")
 }
 
 // ---------------------------------------------------------------------------

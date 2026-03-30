@@ -170,7 +170,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		Frames: []string{"·", "✢", "✶", "✽", "✶", "✢", "·"},
 		FPS:    time.Second / 30, // 30fps for smooth shimmer
 	}
-	sp.Style = lipgloss.NewStyle().Foreground(ColorAssistant)
+	sp.Style = lipgloss.NewStyle().Foreground(ColorRunning)
 
 	tsp := spinner.New()
 	tsp.Spinner = spinner.Spinner{
@@ -357,31 +357,7 @@ func (m Model) View() string {
 	var parts []string
 	overlay, overlayReplacesInput := m.overlayView()
 	appendInputArea := func() {
-		if len(m.Images) > 0 {
-			var tags []string
-			for i := range m.Images {
-				tag := fmt.Sprintf("[Image #%d]", i+1)
-				if m.ImageCursor == i {
-					tags = append(tags, ImageSelectedStyle.Render(tag))
-				} else {
-					tags = append(tags, CommandStyle.Render(tag))
-				}
-			}
-			line := strings.Join(tags, " ")
-			if m.ImageCursor >= 0 {
-				line += " " + MutedStyle.Render("Delete to remove · Esc to cancel")
-			} else {
-				line += " " + MutedStyle.Render("(↑ to select)")
-			}
-			parts = append(parts, line)
-		}
-		sep := SeparatorStyle
-		if strings.HasPrefix(m.Input.Value(), "!") {
-			sep = ShellSeparatorStyle
-		}
-		parts = append(parts, sep.Render(strings.Repeat("─", m.Width)))
-		parts = append(parts, m.styledInputView())
-		parts = append(parts, sep.Render(strings.Repeat("─", m.Width)))
+		parts = append(parts, m.renderInputPanel())
 	}
 
 	// Welcome banner (before first message only)
@@ -439,10 +415,7 @@ func (m Model) View() string {
 
 	// Interactive command overlay (e.g., /model selector, /btw side question).
 	if overlay != "" && overlayReplacesInput {
-		// Modal overlay replaces input area entirely (e.g., /btw).
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, overlay)
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 	} else if overlay != "" {
 		if statusBar := m.RenderStatusBar(); statusBar != "" {
 			parts = append(parts, statusBar, "")
@@ -451,17 +424,13 @@ func (m Model) View() string {
 		parts = append(parts, overlay)
 	} else if planBar := m.RenderPlanBar(); planBar != "" {
 		// Plan review / AskUser replace status bar + input area.
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, planBar)
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		// Status bar below plan review card.
 		parts = append(parts, m.RenderStatusBar())
 	} else if m.AskUser != nil {
 		parts = append(parts, renderAskUser(m.AskUser))
 	} else if m.Permission != nil {
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, renderPermission(m.Permission))
-		parts = append(parts, SeparatorStyle.Render(strings.Repeat("─", m.Width)))
 		parts = append(parts, m.RenderStatusBar())
 	} else {
 		// Status bar (only shown while running or in plan mode)

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // PermitChoice is the user's response to a permission prompt.
@@ -99,7 +100,7 @@ func handlePermissionKey(s *permissionState, msg tea.KeyMsg) (bool, tea.Cmd) {
 	default:
 		// Number keys: "1" .. "N" for quick select.
 		if len(msg.String()) == 1 && msg.String()[0] >= '1' {
-			idx := int(msg.String()[0]-'1')
+			idx := int(msg.String()[0] - '1')
 			if idx < len(s.options) {
 				s.respCh <- s.options[idx].choice
 				s.done = true
@@ -113,8 +114,10 @@ func renderPermission(s *permissionState) string {
 	var b strings.Builder
 	labelStyle := askDescStyle
 	valueStyle := askOptionInactiveStyle
+	activeOptionStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	inactiveOptionStyle := askOptionInactiveStyle
 
-	b.WriteString(askQuestionStyle.Render("⚠ Permission Required"))
+	b.WriteString(PermissionTitleStyle.Render("Permission Required"))
 	b.WriteString("\n\n")
 
 	b.WriteString(labelStyle.Render("  Tool:    "))
@@ -145,10 +148,10 @@ func renderPermission(s *permissionState) string {
 	for i, opt := range s.options {
 		num := fmt.Sprintf("%d. ", i+1)
 		prefix := "  "
-		style := askOptionInactiveStyle
+		style := inactiveOptionStyle
 		if i == s.cursor {
 			prefix = "> "
-			style = askOptionActiveStyle
+			style = activeOptionStyle
 		}
 		b.WriteString(style.Render(prefix + num + opt.label))
 		if opt.desc != "" {
@@ -159,7 +162,7 @@ func renderPermission(s *permissionState) string {
 	}
 
 	b.WriteByte('\n')
-	b.WriteString(askHintStyle.Render("Enter to select · ↑↓ Navigate · Esc to deny"))
+	b.WriteString(askHintStyle.Render("Enter to select · ↑↓ navigate · Esc to deny"))
 
-	return indentBlock(b.String(), 2)
+	return AskCardStyle.Render(b.String())
 }

@@ -2,24 +2,30 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Color palette — dark terminal optimized.
+// Color palette — terminal-friendly, restrained, and readable.
 var (
-	ColorAccent      = lipgloss.Color("#7C6FE0") // soft purple, secondary accent
-	ColorPrimary     = lipgloss.Color("#4EC9B0") // primary brand color
-	ColorPrimarySoft = lipgloss.Color("108")     // muted primary used for borders/section labels
-	ColorUser        = lipgloss.Color("#5FAFFF") // bright blue
-	ColorAssistant   = lipgloss.Color("#C792EA") // soft purple/magenta
-	ColorTool        = lipgloss.Color("#FFCB6B") // amber/yellow
-	ColorError       = lipgloss.Color("#FF5370") // soft red
-	ColorSuccess     = lipgloss.Color("#C3E88D") // green
+	ColorPrimary     = lipgloss.Color("#3FA796") // teal, core brand/action
+	ColorPrimarySoft = lipgloss.Color("#2F6F68") // muted teal for borders/labels
+	ColorAccent      = lipgloss.Color("#D89B5B") // warm amber accent
+	ColorUser        = lipgloss.Color("#8AB4F8") // calm blue
+	ColorAssistant   = lipgloss.Color("#B8E1DD") // pale teal
+	ColorTool        = lipgloss.Color("#E5B567") // amber/yellow
+	ColorError       = lipgloss.Color("#E06C75") // soft red
+	ColorSuccess     = lipgloss.Color("#98C379") // green
 	ColorMuted       = lipgloss.Color("243")     // medium gray
-	ColorThinking    = lipgloss.Color("240")     // dim gray, distinctly muted vs assistant text
+	ColorThinking    = lipgloss.Color("240")     // dim gray, secondary text
 	ColorToken       = lipgloss.Color("249")     // light gray
-	ColorCommand     = lipgloss.Color("#89DDFF") // cyan
-	ColorStatusBg    = lipgloss.Color("236")     // dark background
-	ColorSeparator   = lipgloss.Color("243")     // medium gray
-	ColorBorder      = lipgloss.Color("246")
-	ColorShell       = lipgloss.Color("#FF79C6") // pink/magenta for shell mode
+	ColorCommand     = lipgloss.Color("#78C6E7") // cool cyan
+	ColorRunning     = lipgloss.Color("#5FD7FF") // dedicated live-status cyan
+	ColorStatusBg    = lipgloss.Color("236")     // dark neutral background
+	ColorSeparator   = lipgloss.Color("241")     // neutral separator
+	ColorBorder      = lipgloss.Color("245")
+	ColorShell       = lipgloss.Color("#D16D9E") // shell hint
+	ColorPanelBg     = lipgloss.Color("235")
+	ColorPanelEdge   = lipgloss.Color("239")
+	ColorSubtleBg    = lipgloss.Color("237")
+	ColorTitle       = lipgloss.Color("#F0E6D2")
+	ColorSoftText    = lipgloss.Color("252")
 )
 
 // Tool blocks
@@ -72,7 +78,7 @@ var ShellSeparatorStyle = lipgloss.NewStyle().
 
 // Welcome banner
 var (
-	WelcomeTitleStyle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	WelcomeTitleStyle = lipgloss.NewStyle().Foreground(ColorTitle).Bold(true)
 
 	WelcomeDetailStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 )
@@ -93,10 +99,11 @@ var (
 var (
 	CommandPaletteStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(ColorPrimarySoft)
+				BorderForeground(ColorPrimarySoft).
+				Padding(0, 1)
 
 	CommandPaletteTitleStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("250")).
+					Foreground(ColorTitle).
 					Bold(true)
 
 	CommandPaletteSectionStyle = lipgloss.NewStyle().
@@ -108,13 +115,13 @@ var (
 					Bold(true)
 
 	CommandPaletteItemStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("252"))
+				Foreground(ColorSoftText)
 
 	CommandPaletteDescStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("249"))
 
 	CommandPaletteSelectedDescStyle = lipgloss.NewStyle().
-					Foreground(ColorPrimary)
+					Foreground(ColorAssistant)
 
 	CommandPaletteHintStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("246"))
@@ -129,7 +136,7 @@ var PlanBoxStyle = lipgloss.NewStyle().
 // Subagent result card
 var SubagentCardStyle = lipgloss.NewStyle().
 	Border(lipgloss.RoundedBorder()).
-	BorderForeground(ColorTool). // amber, matches tool header
+	BorderForeground(ColorTool).
 	Padding(0, 1)
 
 // Plan mode tag
@@ -138,7 +145,7 @@ var PlanTagStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 // Assistant markdown container
 var AssistantMarkdownBlockStyle = lipgloss.NewStyle().
 	BorderLeft(true).
-	BorderForeground(lipgloss.Color("99")).
+	BorderForeground(ColorPrimarySoft).
 	Padding(0, 1).
 	MarginLeft(1)
 
@@ -146,7 +153,7 @@ var AssistantMarkdownBlockStyle = lipgloss.NewStyle().
 var (
 	MutedStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 
-	BoxBorderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	BoxBorderStyle = lipgloss.NewStyle().Foreground(ColorBorder)
 
 	QueuedMsgStyle = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
 
@@ -163,40 +170,110 @@ var (
 	ReplyLabelStyle = lipgloss.NewStyle().Foreground(ColorAssistant)
 )
 
+var (
+	CardStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorPanelEdge).
+			Padding(0, 1)
+
+	CardTitleStyle = lipgloss.NewStyle().
+			Foreground(ColorTitle).
+			Bold(true)
+
+	CardSectionStyle = lipgloss.NewStyle().
+				Foreground(ColorPrimarySoft).
+				Bold(true)
+
+	InputPanelStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorPrimarySoft).
+			Padding(0, 1)
+
+	InputHintStyle = lipgloss.NewStyle().
+			Foreground(ColorMuted)
+
+	ContextChipStyle = lipgloss.NewStyle().
+				Foreground(ColorSoftText)
+
+	ContextChipAccentStyle = lipgloss.NewStyle().
+				Foreground(ColorPrimary).
+				Bold(true)
+
+	ContextChipWarnStyle = lipgloss.NewStyle().
+				Foreground(ColorAccent).
+				Bold(true)
+
+	WelcomeFrameStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorPrimarySoft).
+				Padding(0, 1)
+
+	WelcomeKickerStyle = lipgloss.NewStyle().
+				Foreground(ColorPrimary).
+				Bold(true)
+
+	WelcomeBodyStyle = lipgloss.NewStyle().
+				Foreground(ColorSoftText)
+
+	WelcomeMutedStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
+
+	TagStyle = lipgloss.NewStyle().
+			Foreground(ColorPrimary).
+			Bold(true)
+
+	TagSubtleStyle = lipgloss.NewStyle().
+			Foreground(ColorSoftText)
+
+	ImageTagStyle = lipgloss.NewStyle().
+			Foreground(ColorPrimary)
+
+	TaskCardStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorPanelEdge).
+			Padding(0, 1)
+
+	TaskProgressStyle = lipgloss.NewStyle().
+				Foreground(ColorTitle)
+
+	PermissionTitleStyle = lipgloss.NewStyle().
+				Foreground(ColorAccent).
+				Bold(true)
+
+	AskCardStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorPrimarySoft).
+			Padding(0, 1)
+)
+
 func CommandPaletteKindBadge(kind string) string {
-	label := kind
-	style := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("232")).
-		Background(ColorSeparator).
-		Padding(0, 1)
+	label := "[" + kind + "]"
+	style := lipgloss.NewStyle().Foreground(ColorMuted)
 
 	switch kind {
 	case "builtin":
-		style = style.Background(ColorCommand)
+		style = style.Foreground(ColorCommand)
 	case "custom":
-		style = style.Background(ColorTool)
+		style = style.Foreground(ColorTool)
 	case "skill":
-		style = style.Background(ColorSuccess)
+		style = style.Foreground(ColorSuccess)
 	}
 	return style.Render(label)
 }
 
 func CommandPaletteCategoryBadge(category string) string {
-	label := category
-	style := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("232")).
-		Background(ColorSeparator).
-		Padding(0, 1)
+	label := "[" + category + "]"
+	style := lipgloss.NewStyle().Foreground(ColorMuted)
 
 	switch category {
 	case "session", "config":
-		style = style.Background(ColorTool)
+		style = style.Foreground(ColorTool)
 	case "plan":
-		style = style.Background(ColorAccent)
+		style = style.Foreground(ColorAccent)
 	case "exit":
-		style = style.Background(ColorError)
+		style = style.Foreground(ColorError)
 	default:
-		style = style.Background(ColorSeparator).Foreground(lipgloss.Color("255"))
+		style = style.Foreground(ColorMuted)
 	}
 	return style.Render(label)
 }
@@ -206,8 +283,6 @@ func CommandPaletteIdleBadge(needsIdle bool) string {
 		return ""
 	}
 	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("255")).
-		Background(lipgloss.Color("240")).
-		Padding(0, 1).
-		Render("idle")
+		Foreground(ColorMuted).
+		Render("[idle]")
 }
