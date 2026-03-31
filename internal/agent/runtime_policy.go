@@ -2,11 +2,11 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -35,10 +35,10 @@ type pendingToolCall struct {
 
 type TurnOutcomeSnapshot struct {
 	AssistantResponded bool
-	CompletionClaim    bool
 	ReadOnlyToolCalls  int
 	WriteLikeToolCalls int
 	TaskMutations      int
+	CodeEditToolCalls  int
 }
 
 func newSessionRuntimePolicy(session *Session) *sessionRuntimePolicy {
@@ -59,31 +59,7 @@ func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {
 }
 
 func (p *sessionRuntimePolicy) afterAgentEnd() {
-	if p.session.taskStore == nil {
-		return
-	}
-
-	snapshot := p.session.taskStore.Snapshot()
-	if snapshot.Total == 0 {
-		return
-	}
-	if snapshot.Pending == 0 && snapshot.InProgress == 0 {
-		return
-	}
-	if !p.session.lastTurnLooksComplete() {
-		return
-	}
-
-	key := fmt.Sprintf("unfinished_tasks:%d:%d", snapshot.Pending, snapshot.InProgress)
-	p.session.continueWithRuntimeReminder(
-		key,
-		ReminderUnfinishedTasks,
-		fmt.Sprintf(
-			"<system-reminder>\n当前任务列表中还有未完成项：%d 个 pending，%d 个 in_progress。下一轮回复前，先检查这些任务是否真的完成；如果没有完成，请继续执行或明确说明阻塞原因，不要直接宣称任务结束。\n</system-reminder>",
-			snapshot.Pending,
-			snapshot.InProgress,
-		),
-	)
+	p.runPostStopValidation()
 }
 
 func (p *sessionRuntimePolicy) trackToolStart(ev agentcore.Event) {
@@ -125,6 +101,9 @@ func (p *sessionRuntimePolicy) trackToolEnd(ev agentcore.Event) {
 	}
 	recent := append([]toolCallFingerprint(nil), p.session.recentToolCalls...)
 	p.session.recordTurnTool(record.Tool)
+	if record.Success && isCodeEditTool(record.Tool) {
+		p.session.dirtySinceLastSuccessfulHook = true
+	}
 	p.session.mu.Unlock()
 
 	p.detectRepeatedCalls(record, recent)
@@ -194,13 +173,14 @@ func (s *Session) recordTurnTool(name string) {
 	if isTaskMutationTool(name) {
 		s.currentTurn.TaskMutations++
 	}
+	if isCodeEditTool(name) {
+		s.currentTurn.CodeEditToolCalls++
+	}
 }
 
-func (s *Session) recordAssistantTurnMessage(msg agentcore.Message) {
-	text := strings.TrimSpace(msg.TextContent())
+func (s *Session) recordAssistantTurnMessage(_ agentcore.Message) {
 	s.mu.Lock()
 	s.currentTurn.AssistantResponded = true
-	s.currentTurn.CompletionClaim = looksLikeCompletionClaim(text)
 	s.mu.Unlock()
 }
 
@@ -232,52 +212,16 @@ func (p *sessionRuntimePolicy) continuePendingReminder() bool {
 	return true
 }
 
-func (s *Session) lastTurnLooksComplete() bool {
-	s.mu.Lock()
-	outcome := s.lastTurn
-	s.mu.Unlock()
-	return outcome.AssistantResponded && outcome.CompletionClaim
-}
-
 func (s *Session) LastTurnOutcome() TurnOutcomeSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return TurnOutcomeSnapshot{
 		AssistantResponded: s.lastTurn.AssistantResponded,
-		CompletionClaim:    s.lastTurn.CompletionClaim,
 		ReadOnlyToolCalls:  s.lastTurn.ReadOnlyToolCalls,
 		WriteLikeToolCalls: s.lastTurn.WriteLikeToolCalls,
 		TaskMutations:      s.lastTurn.TaskMutations,
+		CodeEditToolCalls:  s.lastTurn.CodeEditToolCalls,
 	}
-}
-
-func looksLikeCompletionClaim(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return false
-	}
-
-	negativeMarkers := []string{
-		"未完成", "还没完成", "尚未完成", "没有完成", "需要继续", "仍需", "阻塞", "卡住",
-		"无法完成", "不能完成", "需要更多信息", "需要进一步", "还在进行", "进行中",
-		"not done", "not complete", "need more", "blocked", "in progress", "still need",
-	}
-	for _, marker := range negativeMarkers {
-		if strings.Contains(lower, marker) {
-			return false
-		}
-	}
-
-	positiveMarkers := []string{
-		"已完成", "已经完成", "完成了", "任务完成", "处理好了", "修复完成", "实现完成",
-		"全部完成", "搞定了", "done", "completed", "fixed", "implemented", "all set", "resolved",
-	}
-	for _, marker := range positiveMarkers {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 func isTaskMutationTool(name string) bool {
@@ -296,4 +240,59 @@ func isWriteLikeTool(name string) bool {
 	default:
 		return false
 	}
+}
+
+// isCodeEditTool returns true for tools that modify repository files.
+func isCodeEditTool(name string) bool {
+	switch name {
+	case "write", "edit", "replace", "apply_patch", "delete":
+		return true
+	default:
+		return false
+	}
+}
+
+// runPostStopValidation fires PostStopValidation hooks when the agent
+// stops naturally and there are unverified code edits since the last
+// successful hook run. Runs asynchronously to avoid blocking the agent-end path.
+func (p *sessionRuntimePolicy) runPostStopValidation() {
+	s := p.session
+	if s.hookRunner == nil {
+		return
+	}
+	s.mu.Lock()
+	summary := s.lastRunSummary
+	dirty := s.dirtySinceLastSuccessfulHook
+	s.mu.Unlock()
+
+	if summary == nil || summary.EndReason != agentcore.EndReasonStop {
+		return
+	}
+	if !dirty {
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		failOutput := s.hookRunner.RunPostStopValidation(ctx)
+
+		s.mu.Lock()
+		if failOutput == "" {
+			s.dirtySinceLastSuccessfulHook = false
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+
+		s.continueWithRuntimeReminder(
+			"post_stop_validation",
+			ReminderPostStopValidation,
+			fmt.Sprintf(
+				"<system-reminder>\nPostStopValidation hook 检查失败，请根据以下输出修复问题：\n%s\n</system-reminder>",
+				failOutput,
+			),
+		)
+	}()
 }

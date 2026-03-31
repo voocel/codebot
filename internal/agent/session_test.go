@@ -348,7 +348,6 @@ func TestHandleAgentEndDoesNotContinueWhenOverflowCompactionUnchanged(t *testing
 
 	s.mu.Lock()
 	s.overflowDetected = true
-	s.maxTokensReduced = true
 	s.mu.Unlock()
 
 	if continued := s.context.handleAgentEnd(); continued {
@@ -840,96 +839,6 @@ func TestApplyStageCompactionPruneMasksOlderMessages(t *testing.T) {
 	}
 }
 
-func TestAgentEndQueuesReminderWhenTasksRemain(t *testing.T) {
-	t.Parallel()
-
-	taskStore, taskTools := localtools.NewTaskTools()
-	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
-	inProgress := localtools.TaskInProgress
-	if _, err := taskStore.Update("1", localtools.UpdateOpts{Status: &inProgress}); err != nil {
-		t.Fatalf("update task: %v", err)
-	}
-
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
-	s := NewSession(SessionConfig{
-		Agent:    ag,
-		Settings: config.Resolved{MaxTurns: 30},
-		Cwd:      t.TempDir(),
-		Tools:    taskTools,
-	})
-	t.Cleanup(s.Close)
-	var reminders int
-	var kinds []RuntimeReminderKind
-	unsub := s.Subscribe(func(ev SessionEvent) {
-		if ev.Type == SERuntimeReminder {
-			reminders++
-			kinds = append(kinds, ev.ReminderKind)
-		}
-	})
-	t.Cleanup(unsub)
-
-	s.beginTurn()
-	s.handleAgentEvent(agentcore.Event{
-		Type:    agentcore.EventMessageEnd,
-		Message: textMessage(agentcore.RoleAssistant, "任务已完成，我已经处理好了。"),
-	})
-	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
-
-	if reminders != 1 {
-		t.Fatalf("expected one runtime reminder for unfinished tasks, got %d", reminders)
-	}
-	if len(kinds) != 1 || kinds[0] != ReminderUnfinishedTasks {
-		t.Fatalf("expected reminder kind %q, got %#v", ReminderUnfinishedTasks, kinds)
-	}
-
-	msg := s.buildUserMessage(agentcore.TextBlock("继续"))
-	if len(msg.Content) == 0 || !strings.Contains(msg.Content[0].Text, "任务列表中还有未完成项") {
-		t.Fatalf("expected unfinished-task reminder, got %#v", msg.Content)
-	}
-	metrics := s.RuntimeMetrics()
-	if metrics.ReminderTotal != 1 || metrics.ReminderByKind[ReminderUnfinishedTasks] != 1 {
-		t.Fatalf("unexpected metrics after unfinished-task reminder: %#v", metrics)
-	}
-}
-
-func TestAgentEndDoesNotQueueReminderWithoutCompletionClaim(t *testing.T) {
-	t.Parallel()
-
-	taskStore, taskTools := localtools.NewTaskTools()
-	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
-	inProgress := localtools.TaskInProgress
-	if _, err := taskStore.Update("1", localtools.UpdateOpts{Status: &inProgress}); err != nil {
-		t.Fatalf("update task: %v", err)
-	}
-
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
-	s := NewSession(SessionConfig{
-		Agent:    ag,
-		Settings: config.Resolved{MaxTurns: 30},
-		Cwd:      t.TempDir(),
-		Tools:    taskTools,
-	})
-	t.Cleanup(s.Close)
-	var reminders int
-	unsub := s.Subscribe(func(ev SessionEvent) {
-		if ev.Type == SERuntimeReminder {
-			reminders++
-		}
-	})
-	t.Cleanup(unsub)
-
-	s.beginTurn()
-	s.handleAgentEvent(agentcore.Event{
-		Type:    agentcore.EventMessageEnd,
-		Message: textMessage(agentcore.RoleAssistant, "我先总结一下当前进展，接下来继续处理剩余问题。"),
-	})
-	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
-
-	if reminders != 0 {
-		t.Fatalf("expected no unfinished-task reminder without completion claim, got %d", reminders)
-	}
-}
-
 func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testing.T) {
 	t.Parallel()
 
@@ -1007,29 +916,6 @@ func TestAgentEndDoesNotQueueReminderWhenNoTasksRemain(t *testing.T) {
 	}
 }
 
-func TestFinalizeTurnOutcomeUsesAssistantMessageSignal(t *testing.T) {
-	t.Parallel()
-
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
-	s := NewSession(SessionConfig{
-		Agent:    ag,
-		Settings: config.Resolved{MaxTurns: 30},
-		Cwd:      t.TempDir(),
-	})
-	t.Cleanup(s.Close)
-
-	s.beginTurn()
-	s.handleAgentEvent(agentcore.Event{
-		Type:    agentcore.EventMessageEnd,
-		Message: textMessage(agentcore.RoleAssistant, "已经完成修复，相关改动已处理好。"),
-	})
-	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
-
-	if !s.lastTurnLooksComplete() {
-		t.Fatal("expected finalized turn outcome to carry completion claim")
-	}
-}
-
 func TestDeliverRuntimeReminderSteersCurrentRun(t *testing.T) {
 	t.Parallel()
 
@@ -1085,9 +971,9 @@ func TestContinueWithRuntimeReminderAutoContinuesWhenIdle(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	s.continueWithRuntimeReminder(
-		"unfinished_tasks:1:0",
-		ReminderUnfinishedTasks,
-		"<system-reminder>\n当前任务列表中还有未完成项。\n</system-reminder>",
+		"test_reminder:1:0",
+		ReminderRepeatToolCall,
+		"<system-reminder>\n测试运行时提醒。\n</system-reminder>",
 	)
 	waitFor(t, time.Second, func() bool {
 		return s.LastAssistantText() == "steered"

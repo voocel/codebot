@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/llm"
 )
 
 type sessionPersistence struct {
@@ -211,7 +210,6 @@ func (c *sessionContextController) handleRetry(info *agentcore.RetryInfo) {
 	if agentcore.IsContextOverflow(info.Err) {
 		c.session.mu.Lock()
 		c.session.overflowDetected = true
-		c.session.overflowErr = info.Err
 		c.session.mu.Unlock()
 		return
 	}
@@ -231,11 +229,8 @@ func (c *sessionContextController) handleAgentEnd() bool {
 	c.session.mu.Lock()
 	retryAttempt := c.session.retryAttempt
 	overflow := c.session.overflowDetected
-	overflowErr := c.session.overflowErr
-	alreadyReduced := c.session.maxTokensReduced
 	c.session.retryAttempt = 0
 	c.session.overflowDetected = false
-	c.session.overflowErr = nil
 	c.session.mu.Unlock()
 
 	if retryAttempt > 0 {
@@ -247,15 +242,6 @@ func (c *sessionContextController) handleAgentEnd() bool {
 	}
 
 	if overflow {
-		if !alreadyReduced && c.tryReduceMaxTokens(overflowErr) {
-			go func() {
-				if err := c.session.agent.Continue(); err != nil {
-					c.session.emitContinueError(err)
-				}
-			}()
-			return true
-		}
-		c.restoreMaxTokens()
 		if result, err := c.compactWithReason("overflow"); err == nil && result.Changed {
 			go func() {
 				if err := c.session.agent.Continue(); err != nil {
@@ -265,124 +251,10 @@ func (c *sessionContextController) handleAgentEnd() bool {
 			return true
 		}
 	} else {
-		c.restoreMaxTokens()
 		c.checkAutoCompaction()
 	}
 
 	return false
-}
-
-func (c *sessionContextController) tryReduceMaxTokens(overflowErr error) bool {
-	c.session.mu.Lock()
-	chatModel := c.session.chatModel
-	c.session.mu.Unlock()
-
-	if overflowErr == nil || chatModel == nil {
-		return false
-	}
-
-	inputTokens, contextLimit, ok := parseOverflowError(overflowErr)
-	if !ok {
-		return false
-	}
-
-	const minOutput = 3000
-	const buffer = 1000
-	available := contextLimit - inputTokens - buffer
-	if available < minOutput {
-		return false
-	}
-
-	type configGetter interface {
-		GetConfig() *llm.GenerationConfig
-	}
-	cg, ok := chatModel.(configGetter)
-	if !ok {
-		return false
-	}
-	cfg := cg.GetConfig()
-	if cfg == nil {
-		return false
-	}
-
-	c.session.mu.Lock()
-	if !c.session.maxTokensReduced {
-		c.session.originalMaxTokens = cfg.MaxTokens
-	}
-	c.session.maxTokensReduced = true
-	c.session.mu.Unlock()
-
-	cfg.MaxTokens = available
-	return true
-}
-
-func (c *sessionContextController) restoreMaxTokens() {
-	c.session.mu.Lock()
-	reduced := c.session.maxTokensReduced
-	original := c.session.originalMaxTokens
-	chatModel := c.session.chatModel
-	c.session.maxTokensReduced = false
-	c.session.mu.Unlock()
-
-	if !reduced || chatModel == nil {
-		return
-	}
-
-	type configGetter interface {
-		GetConfig() *llm.GenerationConfig
-	}
-	if cg, ok := chatModel.(configGetter); ok {
-		if cfg := cg.GetConfig(); cfg != nil {
-			cfg.MaxTokens = original
-		}
-	}
-}
-
-func parseOverflowError(err error) (inputTokens, contextLimit int, ok bool) {
-	if err == nil {
-		return 0, 0, false
-	}
-	msg := err.Error()
-
-	var nums []int
-	i := 0
-	for i < len(msg) {
-		if msg[i] >= '0' && msg[i] <= '9' {
-			j := i
-			for j < len(msg) && msg[j] >= '0' && msg[j] <= '9' {
-				j++
-			}
-			n := 0
-			for _, c := range msg[i:j] {
-				n = n*10 + int(c-'0')
-			}
-			if n >= 1000 && n <= 10_000_000 {
-				nums = append(nums, n)
-			}
-			i = j
-		} else {
-			i++
-		}
-	}
-
-	if len(nums) < 2 {
-		return 0, 0, false
-	}
-
-	max1, max2 := 0, 0
-	for _, n := range nums {
-		if n > max1 {
-			max2 = max1
-			max1 = n
-		} else if n > max2 {
-			max2 = n
-		}
-	}
-	if max1 <= 0 || max2 <= 0 || max1 == max2 {
-		return 0, 0, false
-	}
-
-	return max1, max2, max1 > max2
 }
 
 // lastTextBlock returns the text of the last ContentText block in msg.

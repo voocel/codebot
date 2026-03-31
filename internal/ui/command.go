@@ -546,7 +546,6 @@ func (a *App) cmdDebugHarness() tea.Cmd {
 	sb.WriteString("Harness Debug\n")
 	renderSection("Last turn", "Only the most recent completed agent run. If the last run was just a final reply, tool calls can be 0.")
 	renderRow("Assistant responded", formatBool(lastTurn.AssistantResponded))
-	renderRow("Completion claim", formatBool(lastTurn.CompletionClaim))
 	renderRow("Tool calls", fmt.Sprintf("%d", toolCalls))
 	renderRow("Read-only tools", fmt.Sprintf("%d", lastTurn.ReadOnlyToolCalls))
 	renderRow("Write-like tools", fmt.Sprintf("%d", lastTurn.WriteLikeToolCalls))
@@ -766,7 +765,7 @@ func formatBool(v bool) string {
 func formatReminderCounts(counts map[agent.RuntimeReminderKind]int) string {
 	order := []agent.RuntimeReminderKind{
 		agent.ReminderRepeatToolCall,
-		agent.ReminderUnfinishedTasks,
+		agent.ReminderPostStopValidation,
 	}
 	parts := make([]string, 0, len(counts))
 	for _, kind := range order {

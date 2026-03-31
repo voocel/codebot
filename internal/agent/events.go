@@ -9,8 +9,8 @@ import (
 type RuntimeReminderKind string
 
 const (
-	ReminderRepeatToolCall  RuntimeReminderKind = "repeat_tool_call"
-	ReminderUnfinishedTasks RuntimeReminderKind = "unfinished_tasks"
+	ReminderRepeatToolCall     RuntimeReminderKind = "repeat_tool_call"
+	ReminderPostStopValidation RuntimeReminderKind = "post_stop_validation"
 )
 
 type CompactionKind string

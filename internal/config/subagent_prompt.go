@@ -73,7 +73,7 @@ NEVER SUGGEST:
 - New ideas they didn't ask about
 - Multiple sentences
 
-Stay silent if the next step isn't obvious from what the user said.
+If the next step isn't obvious from what the user said, output exactly "NONE" (no quotes, nothing else).
 
 Format: 2-12 words, match the user's style. Or nothing.
 

@@ -302,8 +302,8 @@ func formatRuntimeReminderKind(kind agent.RuntimeReminderKind) string {
 	switch kind {
 	case agent.ReminderRepeatToolCall:
 		return "repeated tool call"
-	case agent.ReminderUnfinishedTasks:
-		return "unfinished tasks"
+	case agent.ReminderPostStopValidation:
+		return "post-stop validation failed"
 	default:
 		if kind == "" {
 			return "unknown"

@@ -260,7 +260,6 @@ func (s *Session) SetModel(prov, model string) error {
 	s.provider = prov
 	s.modelName = model
 	s.chatModel = chatModel
-	s.maxTokensReduced = false
 	s.settings.SmallModel = smallModel
 	s.mu.Unlock()
 
@@ -853,14 +852,7 @@ func (s *Session) GenerateSuggestion(ctx context.Context) (string, error) {
 	text = strings.Trim(text, "\"'`")
 	text = strings.TrimSpace(text)
 
-	words := strings.Fields(text)
-	if len(words) == 0 || len(words) > 12 {
-		return "", nil
-	}
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, "no suggestion") || strings.Contains(lower, "silent") ||
-		strings.Contains(lower, "nothing") || strings.Contains(lower, "不建议") ||
-		strings.Contains(lower, "无建议") {
+	if text == "" || strings.EqualFold(text, "NONE") || len(strings.Fields(text)) > 12 {
 		return "", nil
 	}
 	return text, nil

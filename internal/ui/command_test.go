@@ -371,10 +371,10 @@ func TestFormatReminderCounts(t *testing.T) {
 	t.Parallel()
 
 	got := formatReminderCounts(map[agent.RuntimeReminderKind]int{
-		agent.ReminderRepeatToolCall:  1,
-		agent.ReminderUnfinishedTasks: 2,
+		agent.ReminderRepeatToolCall:     1,
+		agent.ReminderPostStopValidation: 2,
 	})
-	want := "repeat_tool_call=1, unfinished_tasks=2"
+	want := "repeat_tool_call=1, post_stop_validation=2"
 	if got != want {
 		t.Fatalf("formatReminderCounts() = %q, want %q", got, want)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/voocel/codebot/internal/approval"
@@ -17,9 +18,10 @@ import (
 type EventType string
 
 const (
-	PreToolUse   EventType = "PreToolUse"
-	PostToolUse  EventType = "PostToolUse"
-	Notification EventType = "Notification"
+	PreToolUse         EventType = "PreToolUse"
+	PostToolUse        EventType = "PostToolUse"
+	Notification       EventType = "Notification"
+	PostStopValidation EventType = "PostStopValidation"
 )
 
 const defaultTimeout = 60 * time.Second
@@ -62,7 +64,7 @@ func New(cfg config.HooksConfig, sessionID string, engine *approval.Engine) *Run
 
 	for event, entries := range cfg {
 		et := EventType(event)
-		if et != PreToolUse && et != PostToolUse && et != Notification {
+		if et != PreToolUse && et != PostToolUse && et != Notification && et != PostStopValidation {
 			log.Printf("hooks: unknown event %q, skipped", event)
 			continue
 		}
@@ -160,6 +162,23 @@ func (r *Runner) RunNotification(_ context.Context, message string) {
 			}
 		}(e)
 	}
+}
+
+// RunPostStopValidation executes matching PostStopValidation hooks synchronously.
+// Returns the combined stderr/error output of the first failing hook, or "" on success.
+func (r *Runner) RunPostStopValidation(ctx context.Context) (failOutput string) {
+	payload := Payload{Event: PostStopValidation, Message: "post-stop validation"}
+	for _, e := range r.matching(PostStopValidation, "") {
+		stdout, err := r.run(ctx, e, payload)
+		if err != nil {
+			msg := strings.TrimSpace(string(stdout))
+			if msg == "" {
+				msg = err.Error()
+			}
+			return msg
+		}
+	}
+	return ""
 }
 
 // matching returns entries for the given event that match the tool name.

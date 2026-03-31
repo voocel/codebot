@@ -28,8 +28,7 @@ type SessionConfig struct {
 	// LazyPersist buffers user messages and flushes them only when
 	// an assistant response arrives. Disabled by default for safety.
 	LazyPersist bool
-	// ChatModel is the active ChatModel reference, used for max_tokens adjustment
-	// during overflow recovery.
+	// ChatModel is the active ChatModel reference.
 	ChatModel agentcore.ChatModel
 	// HookRunner fires lifecycle hooks (notification, etc.). Nil when no hooks configured.
 	HookRunner *hooks.Runner
@@ -88,11 +87,8 @@ type Session struct {
 
 	retryAttempt     int
 	overflowDetected bool
-	overflowErr      error
 
-	chatModel         agentcore.ChatModel
-	maxTokensReduced  bool
-	originalMaxTokens int
+	chatModel agentcore.ChatModel
 
 	lazyPersist             bool
 	pendingUserMsg          []agentcore.Message
@@ -105,6 +101,7 @@ type Session struct {
 	lastRunSummary          *agentcore.RunSummary
 	lastReminder            *ReminderSnapshot
 	lastCompaction          *CompactionSnapshot
+	dirtySinceLastSuccessfulHook bool // set on code-edit tool success, cleared on hook success
 
 	prompts     *sessionPromptManager
 	persistence *sessionPersistence
@@ -179,5 +176,6 @@ func (s *Session) resetHarnessStateLocked() {
 	s.lastRunSummary = nil
 	s.lastReminder = nil
 	s.lastCompaction = nil
+	s.dirtySinceLastSuccessfulHook = false
 	s.metrics = newRuntimeMetrics()
 }
