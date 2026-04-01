@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -243,8 +244,14 @@ func (c *sessionContextController) handleAgentEnd() bool {
 
 	if overflow {
 		if result, err := c.compactWithReason("overflow"); err == nil && result.Changed {
+			c.session.mu.Lock()
+			gen := c.session.generation
+			c.session.mu.Unlock()
 			go func() {
-				if err := c.session.agent.Continue(); err != nil {
+				if err := c.session.continueIfCurrentGeneration(gen); err != nil {
+					if errors.Is(err, errStaleSessionGeneration) {
+						return
+					}
 					c.session.emitContinueError(err)
 				}
 			}()

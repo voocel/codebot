@@ -14,20 +14,28 @@ import (
 const (
 	// DefaultOutputLimit is the maximum tool output size before truncation (30KB).
 	DefaultOutputLimit = 30 * 1024
-	outputHead         = 1000 // characters to keep from the start
-	outputTail         = 1000 // characters to keep from the end
-	outputSubDir       = "codebot-outputs"
 	outputCleanupAge   = 7 * 24 * time.Hour
 )
 
-// outputDir returns the directory for storing truncated tool output.
+// outputBaseDir is the directory for storing truncated tool output.
+// Set by SetOutputDir; falls back to os.TempDir()/codebot-outputs.
+var outputBaseDir string
+
+// SetOutputDir sets the directory used for large tool output files.
+// Should be called once during bootstrap, before any tools execute.
+func SetOutputDir(dir string) { outputBaseDir = dir }
+
 func outputDir() string {
-	return filepath.Join(os.TempDir(), outputSubDir)
+	if outputBaseDir != "" {
+		return outputBaseDir
+	}
+	return filepath.Join(os.TempDir(), "codebot-outputs")
 }
 
 // limitableTools is the set of tools whose output should be size-limited.
+// read is excluded: persisted output files are read via Read tool, and
+// truncating Read results would cause an infinite loop (Read → persist → Read → persist).
 var limitableTools = map[string]struct{}{
-	"read":       {},
 	"bash":       {},
 	"grep":       {},
 	"glob":       {},
@@ -125,22 +133,34 @@ func buildTruncatedOutput(text, path string) json.RawMessage {
 
 func truncatedOutputSummary(text, path string) string {
 	runes := []rune(text)
-	headEnd := min(outputHead, len(runes))
+	total := len(runes)
+
+	const headSize = 1500
+	const tailSize = 500
+
+	headEnd := min(headSize, total)
 	head := string(runes[:headEnd])
 
 	var tail string
-	if len(runes) > outputHead+outputTail {
-		tail = string(runes[len(runes)-outputTail:])
+	if total > headSize+tailSize {
+		tail = string(runes[total-tailSize:])
 	}
 
-	omitted := len(runes) - headEnd
+	omitted := total - headEnd
 	if tail != "" {
-		omitted -= outputTail
+		omitted -= tailSize
 	}
 
-	summary := fmt.Sprintf("%s\n\n[Output saved to %s] [%d characters omitted]\n\n%s",
-		head, path, omitted, tail)
-	return summary
+	if tail != "" {
+		return fmt.Sprintf(
+			"<persisted-output>\nOutput too large (%d chars). Full output saved to: %s\n\n%s\n\n[%d characters omitted]\n\n%s\n</persisted-output>",
+			total, path, head, omitted, tail,
+		)
+	}
+	return fmt.Sprintf(
+		"<persisted-output>\nOutput too large (%d chars). Full output saved to: %s\n\n%s\n\n[%d characters omitted]\n</persisted-output>",
+		total, path, head, omitted,
+	)
 }
 
 // CleanOldOutputs removes tool output files older than 7 days.

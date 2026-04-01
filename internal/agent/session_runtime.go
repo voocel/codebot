@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
 )
+
+var errStaleSessionGeneration = errors.New("stale session generation")
 
 func (s *Session) Prompt(text string) error {
 	s.beginTurn()
@@ -109,6 +112,16 @@ func (s *Session) queueRuntimeReminder(key string, kind RuntimeReminderKind, rem
 		Reminder:     reminder,
 		ReminderKind: kind,
 	})
+}
+
+func (s *Session) continueIfCurrentGeneration(gen uint64) error {
+	s.mu.Lock()
+	if s.generation != gen {
+		s.mu.Unlock()
+		return errStaleSessionGeneration
+	}
+	s.mu.Unlock()
+	return s.agent.Continue()
 }
 
 // deliverRuntimeReminder prefers in-run steering and otherwise defers to the
@@ -488,6 +501,7 @@ func (s *Session) NewSession() error {
 	oldStore := s.store
 	mgr := s.mgr
 	cwd := s.cwd
+	s.generation++ // bump early so stale goroutines bail out
 	s.mu.Unlock()
 
 	newStore, err := mgr.Create(cwd)
@@ -557,6 +571,11 @@ func (s *Session) SwitchSession(id string) error {
 			return fmt.Errorf("restore model %s/%s: %w", targetProvider, targetModel, err)
 		}
 	}
+
+	// Bump generation early so stale async goroutines bail out.
+	s.mu.Lock()
+	s.generation++
+	s.mu.Unlock()
 
 	s.agent.ClearMessages()
 	s.agent.ClearAllQueues()

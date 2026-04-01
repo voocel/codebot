@@ -53,6 +53,28 @@ func (m *stubChatModel) GenerateStream(
 
 func (m *stubChatModel) SupportsTools() bool { return true }
 
+type panicChatModel struct{}
+
+func (m *panicChatModel) Generate(
+	_ context.Context,
+	_ []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	panic("stale generation should not continue agent")
+}
+
+func (m *panicChatModel) GenerateStream(
+	_ context.Context,
+	_ []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	panic("stale generation should not continue agent")
+}
+
+func (m *panicChatModel) SupportsTools() bool { return true }
+
 type scriptedReminderModel struct {
 	mu                    sync.Mutex
 	callCount             int
@@ -352,6 +374,28 @@ func TestHandleAgentEndDoesNotContinueWhenOverflowCompactionUnchanged(t *testing
 
 	if continued := s.context.handleAgentEnd(); continued {
 		t.Fatal("expected overflow handling to stop when compaction made no changes")
+	}
+}
+
+func TestContinueIfCurrentGenerationSkipsStaleSession(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&panicChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	s.mu.Lock()
+	gen := s.generation
+	s.generation++
+	s.mu.Unlock()
+
+	err := s.continueIfCurrentGeneration(gen)
+	if !errors.Is(err, errStaleSessionGeneration) {
+		t.Fatalf("expected stale generation error, got %v", err)
 	}
 }
 

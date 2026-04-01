@@ -101,7 +101,8 @@ type Session struct {
 	lastRunSummary          *agentcore.RunSummary
 	lastReminder            *ReminderSnapshot
 	lastCompaction          *CompactionSnapshot
-	dirtySinceLastSuccessfulHook bool // set on code-edit tool success, cleared on hook success
+	dirtySeq   uint64 // incremented each time a repo-mutating tool succeeds; hook goroutine captures this and only clears if unchanged
+	generation uint64 // incremented on session switch; async goroutines check this to avoid cross-session callbacks
 
 	prompts     *sessionPromptManager
 	persistence *sessionPersistence
@@ -164,6 +165,7 @@ func NewSession(cfg SessionConfig) *Session {
 }
 
 func (s *Session) resetHarnessStateLocked() {
+	s.generation++
 	s.runtimeReminders = nil
 	s.runtimeReminderKeys = make(map[string]struct{})
 	s.steeredReminderKeys = make(map[string]struct{})
@@ -176,6 +178,6 @@ func (s *Session) resetHarnessStateLocked() {
 	s.lastRunSummary = nil
 	s.lastReminder = nil
 	s.lastCompaction = nil
-	s.dirtySinceLastSuccessfulHook = false
+	s.dirtySeq = 0
 	s.metrics = newRuntimeMetrics()
 }

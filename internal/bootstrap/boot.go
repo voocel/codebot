@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
@@ -41,6 +42,7 @@ type Runtime struct {
 	GitBranch string
 
 	ApprovalEngine *approval.Engine
+	TaskRuntime    *agentcore.TaskRuntime
 
 	Settings   config.Resolved
 	Session    *agent.Session
@@ -51,6 +53,9 @@ type Runtime struct {
 
 // Close releases runtime resources.
 func (r *Runtime) Close() {
+	if r.TaskRuntime != nil {
+		r.TaskRuntime.StopAll()
+	}
 	if r.MCPManager != nil {
 		r.MCPManager.Close()
 	}

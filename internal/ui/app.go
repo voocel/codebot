@@ -7,7 +7,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
@@ -38,11 +37,8 @@ type App struct {
 	// CronStore holds session-scoped cron jobs for /loop command.
 	CronStore *cron.Store
 
-	// SubAgentTool provides access to background agent task registry for /tasks command.
-	SubAgentTool *agentcore.SubAgentTool
-
-	// BashTool provides access to background shell registry for /tasks command.
-	BashTool *agentcoretools.BashTool
+	// TaskRuntime provides unified access to all background tasks (shells + agents).
+	TaskRuntime *agentcore.TaskRuntime
 
 	// PlanStore persists plans to ~/.codebot/plans/.
 	PlanStore *storage.PlanStore

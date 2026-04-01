@@ -203,7 +203,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		return nil, fmt.Errorf("approval engine: %w", err)
 	}
 	approvalEngine.SetFilesystemRoots(approval.FilesystemRoots{
-		ReadRoots:  settings.Permissions.ReadRoots,
+		ReadRoots:  append(settings.Permissions.ReadRoots, config.SessionsDir(input.cwd)),
 		WriteRoots: settings.Permissions.WriteRoots,
 	})
 
@@ -278,6 +278,11 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 	)
 	builtTools = append(builtTools, taskTools...)
 	builtTools = append(builtTools, cronTools...)
+
+	// Set output dir to session path so truncated output files are readable
+	// by the agent (the session dir is added to read_roots below).
+	toolOutputDir := filepath.Join(config.SessionsDir(input.cwd), input.store.Header().SessionID, "tool-outputs")
+	localtools.SetOutputDir(toolOutputDir)
 	builtTools = localtools.WrapWithOutputLimit(builtTools)
 
 	taskDir := filepath.Join(config.TasksDir(), input.store.Header().SessionID)
@@ -483,6 +488,8 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 }
 
 func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
+	taskRT := agentcore.NewTaskRuntime()
+
 	opts := []agentcore.AgentOption{
 		agentcore.WithModel(spec.chatModel),
 		agentcore.WithSystemBlocks(spec.systemBlocks),
@@ -500,12 +507,14 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		agentcore.WithContextWindow(spec.settings.ContextWindow),
 		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
 		agentcore.WithToolApproval(spec.toolApproval),
+		agentcore.WithTaskRuntime(taskRT),
 	}
 	if spec.hookMiddleware != nil {
 		opts = append(opts, agentcore.WithMiddlewares(spec.hookMiddleware))
 	}
 	ag := agentcore.NewAgent(opts...)
 
+	spec.subagentTool.SetTaskRuntime(taskRT)
 	spec.subagentTool.SetNotifyFn(ag.FollowUp)
 
 	// Wire output factories: consumer provides file I/O, agentcore just writes.
@@ -526,6 +535,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		return f, path, nil
 	})
 	if spec.bashTool != nil {
+		spec.bashTool.SetTaskRuntime(taskRT)
 		spec.bashTool.SetNotifyFn(ag.FollowUp)
 		spec.bashTool.SetBgOutputFactory(func(shellID string) (io.WriteCloser, string, error) {
 			_ = os.MkdirAll(tasksDir, 0o700)
@@ -584,6 +594,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Cwd:            input.cwd,
 		GitBranch:      detectGitBranch(input.cwd),
 		ApprovalEngine: spec.approvalEngine,
+		TaskRuntime:    taskRT,
 		Settings:       spec.settings,
 		Session:        sess,
 		MCPManager:     spec.mcpManager,

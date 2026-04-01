@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -101,8 +102,8 @@ func (p *sessionRuntimePolicy) trackToolEnd(ev agentcore.Event) {
 	}
 	recent := append([]toolCallFingerprint(nil), p.session.recentToolCalls...)
 	p.session.recordTurnTool(record.Tool)
-	if record.Success && isCodeEditTool(record.Tool) {
-		p.session.dirtySinceLastSuccessfulHook = true
+	if record.Success && isRepoMutatingTool(record.Tool) {
+		p.session.dirtySeq++
 	}
 	p.session.mu.Unlock()
 
@@ -193,17 +194,22 @@ func (s *Session) finalizeTurnOutcome() {
 }
 
 func (p *sessionRuntimePolicy) continuePendingReminder() bool {
-	p.session.mu.Lock()
-	pending := p.session.pendingReminderContinue
-	p.session.pendingReminderContinue = false
-	p.session.mu.Unlock()
+	s := p.session
+	s.mu.Lock()
+	pending := s.pendingReminderContinue
+	s.pendingReminderContinue = false
+	gen := s.generation
+	s.mu.Unlock()
 	if !pending {
 		return false
 	}
 
 	go func() {
-		if err := p.session.agent.Continue(); err != nil {
-			p.session.emit(SessionEvent{
+		if err := s.continueIfCurrentGeneration(gen); err != nil {
+			if errors.Is(err, errStaleSessionGeneration) {
+				return
+			}
+			s.emit(SessionEvent{
 				Type:  SEError,
 				Error: fmt.Errorf("runtime reminder continue: %w", err),
 			})
@@ -252,6 +258,19 @@ func isCodeEditTool(name string) bool {
 	}
 }
 
+// isRepoMutatingTool returns true for tools that may modify repository state.
+// This is a superset of isCodeEditTool: bash commands can also alter files
+// (e.g. sed -i, rm, git checkout), so they should mark the repo as dirty
+// for PostStopValidation purposes.
+func isRepoMutatingTool(name string) bool {
+	switch name {
+	case "bash", "write", "edit", "replace", "apply_patch", "delete":
+		return true
+	default:
+		return false
+	}
+}
+
 // runPostStopValidation fires PostStopValidation hooks when the agent
 // stops naturally and there are unverified code edits since the last
 // successful hook run. Runs asynchronously to avoid blocking the agent-end path.
@@ -262,13 +281,14 @@ func (p *sessionRuntimePolicy) runPostStopValidation() {
 	}
 	s.mu.Lock()
 	summary := s.lastRunSummary
-	dirty := s.dirtySinceLastSuccessfulHook
+	seq := s.dirtySeq
+	gen := s.generation
 	s.mu.Unlock()
 
 	if summary == nil || summary.EndReason != agentcore.EndReasonStop {
 		return
 	}
-	if !dirty {
+	if seq == 0 {
 		return
 	}
 
@@ -279,8 +299,15 @@ func (p *sessionRuntimePolicy) runPostStopValidation() {
 		failOutput := s.hookRunner.RunPostStopValidation(ctx)
 
 		s.mu.Lock()
+		if s.generation != gen {
+			s.mu.Unlock()
+			return // session switched; discard stale result
+		}
 		if failOutput == "" {
-			s.dirtySinceLastSuccessfulHook = false
+			// Only clear dirty if no new mutations happened while the hook was running.
+			if s.dirtySeq == seq {
+				s.dirtySeq = 0
+			}
 			s.mu.Unlock()
 			return
 		}
