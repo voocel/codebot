@@ -51,7 +51,6 @@ type bootSpec struct {
 	mcpServers            map[string]mcpclient.ServerConfig
 	subagentTool          *agentcore.SubAgentTool
 	bashTool              *agentcoretools.BashTool
-	toolApproval          agentcore.ToolApprovalFunc
 	approvalEngine        *approval.Engine
 	hookMiddleware        agentcore.ToolMiddleware // nil = no hooks configured
 	hookRunner            *hooks.Runner
@@ -211,7 +210,6 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	if err != nil {
 		return nil, err
 	}
-	approvalEngine.ReplaceToolMetadata(tools)
 
 	// Wire skill allowed-tools to the approval engine.
 	for _, tool := range tools {
@@ -248,7 +246,6 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		mcpServers:            mcpServers,
 		subagentTool:          subagentTool,
 		bashTool:              bashTool,
-		toolApproval:          approvalEngine.ApproveTool,
 		approvalEngine:        approvalEngine,
 		hookMiddleware:        hookMW,
 		hookRunner:            hookRunner,
@@ -506,7 +503,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		),
 		agentcore.WithContextWindow(spec.settings.ContextWindow),
 		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
-		agentcore.WithToolApproval(spec.toolApproval),
+		agentcore.WithPermissionEngine(spec.approvalEngine),
 		agentcore.WithTaskRuntime(taskRT),
 	}
 	if spec.hookMiddleware != nil {
@@ -585,7 +582,6 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 			all := make([]agentcore.Tool, len(spec.baseTools), len(spec.baseTools)+len(mcpTools))
 			copy(all, spec.baseTools)
 			all = append(all, mcpTools...)
-			spec.approvalEngine.ReplaceToolMetadata(all)
 			sess.ReplaceAllTools(all)
 		})
 	}

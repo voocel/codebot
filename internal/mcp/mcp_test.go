@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/voocel/codebot/internal/approval"
+	"github.com/voocel/agentcore/permission"
 	sdkmcp "github.com/voocel/mcp-sdk-go/protocol"
 )
 
@@ -125,7 +125,7 @@ func TestMCPToolAdapter(t *testing.T) {
 		}
 	})
 
-	t.Run("approval_metadata_from_annotations", func(t *testing.T) {
+	t.Run("permission_metadata_from_annotations", func(t *testing.T) {
 		t.Parallel()
 		mt := sdkmcp.Tool{
 			Name:        "lookup",
@@ -133,22 +133,22 @@ func TestMCPToolAdapter(t *testing.T) {
 			Annotations: &sdkmcp.ToolAnnotation{ReadOnlyHint: true},
 		}
 		tool := NewMCPTool(c, mt)
-		meta := tool.ApprovalMetadata()
-		if meta.Capability != approval.CapRead {
-			t.Fatalf("capability = %q, want %q", meta.Capability, approval.CapRead)
+		meta := tool.PermissionMetadata()
+		if meta.Capability != permission.CapabilityRead {
+			t.Fatalf("capability = %q, want %q", meta.Capability, permission.CapabilityRead)
 		}
 	})
 
-	t.Run("approval_metadata_heuristic_network", func(t *testing.T) {
+	t.Run("permission_metadata_heuristic_network", func(t *testing.T) {
 		t.Parallel()
 		mt := sdkmcp.Tool{
 			Name:        "web-search",
 			Description: "Search the web",
 		}
 		tool := NewMCPTool(c, mt)
-		meta := tool.ApprovalMetadata()
-		if meta.Capability != approval.CapNetwork {
-			t.Fatalf("capability = %q, want %q", meta.Capability, approval.CapNetwork)
+		meta := tool.PermissionMetadata()
+		if meta.Capability != permission.CapabilityNetwork {
+			t.Fatalf("capability = %q, want %q", meta.Capability, permission.CapabilityNetwork)
 		}
 	})
 }

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/voocel/codebot/internal/approval"
+	"github.com/voocel/agentcore/permission"
 	"github.com/voocel/mcp-sdk-go/protocol"
 )
 
@@ -37,9 +37,8 @@ func (t *MCPTool) Label() string {
 
 func (t *MCPTool) Description() string { return t.tool.Description }
 
-func (t *MCPTool) ApprovalMetadata() approval.ToolMetadata {
-	return approval.ToolMetadata{
-		ToolName:    t.fullName,
+func (t *MCPTool) PermissionMetadata() permission.Metadata {
+	return permission.Metadata{
 		Capability:  t.capability(),
 		SummaryHint: t.Label(),
 		Reason:      t.reason(),
@@ -91,15 +90,15 @@ func extractText(result *protocol.CallToolResult) string {
 	return sb.String()
 }
 
-func (t *MCPTool) capability() approval.Capability {
+func (t *MCPTool) capability() permission.Capability {
 	if ann := t.tool.Annotations; ann != nil {
 		switch {
 		case ann.DestructiveHint:
-			return approval.CapWrite
+			return permission.CapabilityWrite
 		case ann.OpenWorldHint:
-			return approval.CapNetwork
+			return permission.CapabilityNetwork
 		case ann.ReadOnlyHint:
-			return approval.CapRead
+			return permission.CapabilityRead
 		}
 	}
 
@@ -109,23 +108,23 @@ func (t *MCPTool) capability() approval.Capability {
 
 	switch {
 	case containsAny(text, "search", "fetch", "browse", "http", "https", "url", "web", "remote", "api"):
-		return approval.CapNetwork
+		return permission.CapabilityNetwork
 	case containsAny(text, "create", "update", "write", "edit", "delete", "remove", "send", "post", "publish", "insert", "save"):
-		return approval.CapWrite
+		return permission.CapabilityWrite
 	case containsAny(text, "read", "list", "get", "show", "find", "query", "inspect"):
-		return approval.CapRead
+		return permission.CapabilityRead
 	default:
-		return approval.CapUnknown
+		return permission.CapabilityUnknown
 	}
 }
 
 func (t *MCPTool) reason() string {
 	switch t.capability() {
-	case approval.CapRead:
+	case permission.CapabilityRead:
 		return ""
-	case approval.CapWrite:
+	case permission.CapabilityWrite:
 		return "MCP tool may modify external state"
-	case approval.CapNetwork:
+	case permission.CapabilityNetwork:
 		return "MCP tool may access external systems"
 	default:
 		return "MCP tool requires approval"
