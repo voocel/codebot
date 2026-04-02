@@ -198,6 +198,22 @@ func TestRunPostToolUse_FireAndForget(t *testing.T) {
 	}
 }
 
+func TestDynamicProviderAddsHooksAtRuntime(t *testing.T) {
+	r := &Runner{sessionID: "test"}
+	r.SetDynamicProvider(func() config.HooksConfig {
+		return config.HooksConfig{
+			"PreToolUse": {
+				{Type: "command", Command: "exit 1", Blocking: boolPtr(true)},
+			},
+		}
+	})
+
+	err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected dynamic hook to block tool call")
+	}
+}
+
 func TestExecCommand_Timeout(t *testing.T) {
 	cfg := config.HooksConfig{
 		"PreToolUse": {

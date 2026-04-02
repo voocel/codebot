@@ -4,16 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/voocel/agentcore/schema"
-	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/skill"
 )
 
 // ForkExecutor runs a task in a forked subagent context.
@@ -23,6 +18,7 @@ type ForkExecutor func(ctx context.Context, args json.RawMessage) (json.RawMessa
 // AllowToolsSetter grants temporary tool permissions for the active skill.
 // Called with nil/empty to clear grants from the previous skill.
 type AllowToolsSetter func(tools []string)
+type InvocationApplier func(result *skill.InvocationResult) error
 
 // SkillTool lets the LLM invoke skills by name.
 // It loads the skill file, strips frontmatter, expands $ARGUMENTS placeholders,
@@ -30,21 +26,22 @@ type AllowToolsSetter func(tools []string)
 // Skills with context: fork are delegated to a subagent via the ForkExecutor.
 type SkillTool struct {
 	mu               sync.RWMutex
-	skills           []config.Skill
+	catalog          *skill.Catalog
 	sessionID        string
 	forkExecutor     ForkExecutor
 	allowToolsSetter AllowToolsSetter
+	applyInvocation  InvocationApplier
 }
 
 // NewSkillTool creates a SkillTool with the given initial skill list.
-func NewSkillTool(skills []config.Skill, sessionID string) *SkillTool {
-	return &SkillTool{skills: skills, sessionID: sessionID}
+func NewSkillTool(catalog *skill.Catalog, sessionID string) *SkillTool {
+	return &SkillTool{catalog: catalog, sessionID: sessionID}
 }
 
-// SetSkills replaces the skill list (called on /reload).
-func (t *SkillTool) SetSkills(skills []config.Skill) {
+// SetCatalog replaces the active skill catalog (called on /reload).
+func (t *SkillTool) SetCatalog(catalog *skill.Catalog) {
 	t.mu.Lock()
-	t.skills = skills
+	t.catalog = catalog
 	t.mu.Unlock()
 }
 
@@ -56,6 +53,10 @@ func (t *SkillTool) SetForkExecutor(fn ForkExecutor) {
 // SetAllowToolsSetter sets the function used to grant temporary tool permissions.
 func (t *SkillTool) SetAllowToolsSetter(fn AllowToolsSetter) {
 	t.allowToolsSetter = fn
+}
+
+func (t *SkillTool) SetInvocationApplier(fn InvocationApplier) {
+	t.applyInvocation = fn
 }
 
 func (t *SkillTool) Name() string  { return "Skill" }
@@ -103,203 +104,57 @@ func (t *SkillTool) Execute(ctx context.Context, args json.RawMessage) (json.Raw
 	}
 
 	t.mu.RLock()
-	var found config.Skill
-	var ok bool
-	for _, s := range t.skills {
-		if s.Name == name {
-			found = s
-			ok = true
-			break
-		}
-	}
+	catalog := t.catalog
+	sessionID := t.sessionID
+	forkExecutor := t.forkExecutor
+	allowSetter := t.allowToolsSetter
+	applyInvocation := t.applyInvocation
 	t.mu.RUnlock()
 
-	if !ok {
+	result, err := skill.ProcessInvocation(ctx, catalog, skill.InvokeInput{
+		Name:      name,
+		Args:      a.Args,
+		SessionID: sessionID,
+		Source:    skill.SourceModel,
+	})
+	if err == skill.ErrNotFound {
 		return json.Marshal(fmt.Sprintf(
 			"Skill %q not found. Check available skills in system-reminder messages.", name))
 	}
-
-	if found.DisableModelInvocation {
+	if err == skill.ErrModelInvocationDenied {
 		return json.Marshal(fmt.Sprintf(
 			"Skill %q is configured for manual invocation only. The user can invoke it with /%s.", name, name))
 	}
-
-	data, err := os.ReadFile(found.FilePath)
 	if err != nil {
-		return nil, fmt.Errorf("read skill %q: %w", name, err)
+		return nil, err
 	}
-
-	body := strings.TrimSpace(config.StripFrontmatter(string(data)))
-	body = ExpandSkillVars(body, found.BaseDir, t.sessionID)
-	body = ExpandShellInjections(body)
-	body = ExpandSkillArgs(body, a.Args)
 
 	// context: fork — delegate to a subagent.
-	if found.Context == "fork" && t.forkExecutor != nil {
-		agentType := normalizeAgentType(found.Agent)
-		forkParams := map[string]string{
-			"agent": agentType,
-			"task":  body,
+	if result.Mode == skill.ModeFork && forkExecutor != nil {
+		if applyInvocation != nil {
+			if err := applyInvocation(result); err != nil {
+				return nil, err
+			}
 		}
-		if found.Model != "" {
-			forkParams["model"] = found.Model
+		forkParams := map[string]string{
+			"agent": result.Agent,
+			"task":  result.PromptText,
+		}
+		if result.Delta.ModelOverride != "" {
+			forkParams["model"] = result.Delta.ModelOverride
 		}
 		forkArgs, _ := json.Marshal(forkParams)
-		return t.forkExecutor(ctx, forkArgs)
+		return forkExecutor(ctx, forkArgs)
 	}
 
-	// Grant temporary tool permissions from allowed-tools.
-	if t.allowToolsSetter != nil {
-		t.allowToolsSetter(found.AllowedTools) // nil/empty clears previous grants
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "<skill name=%q>\n", found.Name)
-	fmt.Fprintf(&sb, "References are relative to %s.\n\n", found.BaseDir)
-	sb.WriteString(body)
-	sb.WriteString("\n</skill>")
-
-	return json.Marshal(sb.String())
-}
-
-// reSkillIndexed matches $ARGUMENTS[0], $ARGUMENTS[1], etc.
-var reSkillIndexed = regexp.MustCompile(`\$ARGUMENTS\[(\d{1,2})\]`)
-
-// reSkillPositional matches $0, $1, ..., $99.
-var reSkillPositional = regexp.MustCompile(`\$(\d{1,2})(?:\b|$)`)
-
-// ExpandSkillArgs substitutes $ARGUMENTS, $@, $N, and $ARGUMENTS[N] in body.
-// If none of these placeholders exist and args is non-empty, appends "ARGUMENTS: <args>".
-func ExpandSkillArgs(body, rawArgs string) string {
-	if rawArgs == "" {
-		return body
-	}
-
-	hasPlaceholder := strings.Contains(body, "$ARGUMENTS") ||
-		strings.Contains(body, "$@") ||
-		reSkillPositional.MatchString(body)
-
-	if !hasPlaceholder {
-		return body + "\n\nARGUMENTS: " + rawArgs
-	}
-
-	parts := splitSkillArgs(rawArgs)
-
-	// 1. $ARGUMENTS[N] — indexed access (must run before $ARGUMENTS replacement)
-	result := reSkillIndexed.ReplaceAllStringFunc(body, func(m string) string {
-		sub := reSkillIndexed.FindStringSubmatch(m)
-		if sub == nil {
-			return m
+	if applyInvocation != nil {
+		if err := applyInvocation(result); err != nil {
+			return nil, err
 		}
-		idx, _ := strconv.Atoi(sub[1])
-		if idx < 0 || idx >= len(parts) {
-			return ""
-		}
-		return parts[idx]
-	})
-
-	// 2. $N — positional shorthand (0-based)
-	result = reSkillPositional.ReplaceAllStringFunc(result, func(m string) string {
-		idx, _ := strconv.Atoi(strings.TrimPrefix(m, "$"))
-		if idx < 0 || idx >= len(parts) {
-			return ""
-		}
-		return parts[idx]
-	})
-
-	// 3. $ARGUMENTS and $@ — all args joined
-	result = strings.ReplaceAll(result, "$ARGUMENTS", rawArgs)
-	result = strings.ReplaceAll(result, "$@", rawArgs)
-
-	return result
-}
-
-// ExpandSkillVars substitutes ${CODEBOT_SKILL_DIR} and ${CODEBOT_SESSION_ID} in body.
-// Also supports the official ${CLAUDE_SKILL_DIR} / ${CLAUDE_SESSION_ID} aliases for compatibility.
-func ExpandSkillVars(body, skillDir, sessionID string) string {
-	r := strings.NewReplacer(
-		"${CODEBOT_SKILL_DIR}", skillDir,
-		"${CODEBOT_SESSION_ID}", sessionID,
-		"${CLAUDE_SKILL_DIR}", skillDir,
-		"${CLAUDE_SESSION_ID}", sessionID,
-	)
-	return r.Replace(body)
-}
-
-// reShellInjection matches !`command` syntax for shell preprocessing.
-var reShellInjection = regexp.MustCompile("!`([^`]+)`")
-
-// ExpandShellInjections executes !`command` placeholders and replaces them with output.
-// Commands run in the current working directory with a short timeout.
-// On error, the placeholder is replaced with an error message.
-func ExpandShellInjections(body string) string {
-	return reShellInjection.ReplaceAllStringFunc(body, func(m string) string {
-		sub := reShellInjection.FindStringSubmatch(m)
-		if len(sub) < 2 {
-			return m
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "sh", "-c", sub[1])
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Sprintf("[error: %s]", err)
-		}
-		return strings.TrimRight(string(out), "\n")
-	})
-}
-
-// normalizeAgentType maps official agent type names to codebot's registered types.
-func normalizeAgentType(agent string) string {
-	switch strings.ToLower(strings.TrimSpace(agent)) {
-	case "explore":
-		return "explore"
-	case "plan":
-		return "plan"
-	case "coder", "general-purpose":
-		return "coder"
-	case "":
-		return "coder"
-	default:
-		return strings.ToLower(agent)
+	} else if allowSetter != nil {
+		// Backward-compatible fallback for tests/older wiring.
+		allowSetter(result.Delta.AllowedTools)
 	}
-}
 
-// splitSkillArgs splits an argument string respecting double and single quotes.
-func splitSkillArgs(s string) []string {
-	var args []string
-	var buf strings.Builder
-	var inQuote rune
-
-	for _, r := range s {
-		switch {
-		case inQuote != 0:
-			if r == inQuote {
-				if buf.Len() > 0 {
-					args = append(args, buf.String())
-					buf.Reset()
-				}
-				inQuote = 0
-			} else {
-				buf.WriteRune(r)
-			}
-		case r == '"' || r == '\'':
-			if buf.Len() > 0 {
-				args = append(args, buf.String())
-				buf.Reset()
-			}
-			inQuote = r
-		case r == ' ' || r == '\t':
-			if buf.Len() > 0 {
-				args = append(args, buf.String())
-				buf.Reset()
-			}
-		default:
-			buf.WriteRune(r)
-		}
-	}
-	if buf.Len() > 0 {
-		args = append(args, buf.String())
-	}
-	return args
+	return json.Marshal(result.PromptText)
 }

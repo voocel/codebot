@@ -16,6 +16,7 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
+	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
@@ -581,7 +582,7 @@ func (a *App) cmdReload() tea.Cmd {
 	a.Skills = a.Session.Skills()
 	if found := a.Session.ToolsByName("Skill"); len(found) > 0 {
 		if st, ok := found[0].(*tools.SkillTool); ok {
-			st.SetSkills(a.Skills)
+			st.SetCatalog(a.SkillCatalog)
 		}
 	}
 	a.rebuildRegistry()
@@ -881,5 +882,14 @@ func formatRunSummary(summary agentcore.RunSummary, ok bool) string {
 func (a *App) sendAsPrompt(text string) tea.Cmd {
 	return func() tea.Msg {
 		return tui.PromptMsg{Text: text}
+	}
+}
+
+func (a *App) sendSkillPrompt(result *skill.InvocationResult) tea.Cmd {
+	return func() tea.Msg {
+		if err := a.Session.ApplySkillInvocation(result); err != nil {
+			return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Failed to apply skill: " + err.Error())}
+		}
+		return tui.PromptMsg{Text: result.PromptText}
 	}
 }

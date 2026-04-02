@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -136,6 +137,7 @@ func (c *sessionContextController) microcompact() bool {
 		}
 		newMsgs[i] = m
 	}
+	newMsgs = c.session.injectInvokedSkillContext(newMsgs)
 
 	if err := c.session.agent.SetMessages(newMsgs); err != nil {
 		return false
@@ -198,6 +200,7 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 	if err != nil {
 		return result, fmt.Errorf("compact context: %w", err)
 	}
+	compacted = c.session.injectInvokedSkillContext(compacted)
 
 	tokensAfter := memory.EstimateTotal(compacted)
 	if tokensAfter >= tokensBefore {
@@ -292,6 +295,7 @@ func (c *sessionContextController) lightweightCompact(reason string, stage conte
 		result.TokensAfter = tokensBefore
 		return result, nil
 	}
+	newMsgs = c.session.injectInvokedSkillContext(newMsgs)
 
 	tokensAfter := memory.EstimateTotal(newMsgs)
 	if tokensAfter >= tokensBefore {
@@ -385,6 +389,74 @@ func applyStageCompactionToMessages(msgs []agentcore.AgentMessage, stage context
 	default:
 		return msgs, false
 	}
+}
+
+func (s *Session) injectInvokedSkillContext(msgs []agentcore.AgentMessage) []agentcore.AgentMessage {
+	reminder := s.invokedSkillReminderMessage()
+	if reminder == nil {
+		return msgs
+	}
+
+	insertAt := 0
+	var out []agentcore.AgentMessage
+	for i, m := range msgs {
+		if msg, ok := m.(agentcore.Message); ok && msg.Metadata["skill_preserve"] == true {
+			continue
+		}
+		if _, ok := m.(memory.CompactionSummary); ok {
+			insertAt = i + 1
+		}
+		out = append(out, m)
+	}
+
+	if insertAt < 0 || insertAt > len(out) {
+		insertAt = len(out)
+	}
+	withReminder := make([]agentcore.AgentMessage, 0, len(out)+1)
+	withReminder = append(withReminder, out[:insertAt]...)
+	withReminder = append(withReminder, *reminder)
+	withReminder = append(withReminder, out[insertAt:]...)
+	return withReminder
+}
+
+func (s *Session) invokedSkillReminderMessage() *agentcore.Message {
+	s.mu.Lock()
+	invoked := append([]invokedSkillSnapshot(nil), s.skillRuntime.invoked...)
+	s.mu.Unlock()
+	if len(invoked) == 0 {
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<system-reminder>\n")
+	sb.WriteString("Earlier in this conversation, the following skills were invoked. Preserve their intent unless the user explicitly redirects the task.\n")
+	for _, item := range invoked {
+		sb.WriteString("\n<invoked-skill name=\"")
+		sb.WriteString(item.Name)
+		sb.WriteString("\">\n")
+		if len(item.Paths) > 0 {
+			sb.WriteString("paths:\n")
+			for _, p := range item.Paths {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
+				}
+				sb.WriteString("- ")
+				sb.WriteString(p)
+				sb.WriteString("\n")
+			}
+		}
+		sb.WriteString(truncateRunes(strings.TrimSpace(item.PromptText), 1600))
+		sb.WriteString("\n</invoked-skill>\n")
+	}
+	sb.WriteString("</system-reminder>")
+
+	msg := injectedUserMsg(sb.String())
+	if msg.Metadata == nil {
+		msg.Metadata = make(map[string]any)
+	}
+	msg.Metadata["skill_preserve"] = true
+	return &msg
 }
 
 func compactMessagesByPolicy(msgs []agentcore.AgentMessage, keepRecent, threshold, preserveHead, preserveTail int, mask bool) ([]agentcore.AgentMessage, bool) {

@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/skill"
 )
 
 type sessionPersistence struct {
@@ -82,6 +85,7 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 		if s.hookRunner != nil {
 			s.hookRunner.RunNotification(context.Background(), "agent response complete")
 		}
+		s.clearSkillDelta()
 	}
 
 	s.emit(SessionEvent{
@@ -101,6 +105,141 @@ func (s *Session) emit(ev SessionEvent) {
 			fn(ev)
 		}
 	}
+}
+
+func (s *Session) ApplySkillInvocation(result *skill.InvocationResult) error {
+	if result == nil {
+		return nil
+	}
+	s.recordInvokedSkill(result.Spec.Name, result.PromptText, result.Delta.Paths)
+	if result.Mode == skill.ModeFork {
+		return nil
+	}
+	return s.ApplySkillDelta(result.Spec.Name, result.Delta)
+}
+
+func (s *Session) ApplySkillDelta(name string, delta skill.Delta) error {
+	if err := s.applyTemporarySkillModel(delta.ModelOverride); err != nil {
+		return err
+	}
+	s.applyTemporarySkillThinking(delta.Effort)
+
+	s.mu.Lock()
+	if len(delta.Hooks) > 0 {
+		s.skillRuntime.hooks = toConfigHooks(delta.Hooks)
+	} else {
+		s.skillRuntime.hooks = nil
+	}
+	s.mu.Unlock()
+
+	if s.skillAllowsSetter != nil {
+		s.skillAllowsSetter(delta.AllowedTools)
+	}
+	s.applySkillPathHints(name, delta.Paths)
+	return nil
+}
+
+func (s *Session) clearSkillDelta() {
+	if s.skillAllowsSetter != nil {
+		s.skillAllowsSetter(nil)
+	}
+	s.clearTemporarySkillOverrides()
+}
+
+func (s *Session) CurrentSkillHooks() config.HooksConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneHooksConfig(s.skillRuntime.hooks)
+}
+
+func (s *Session) recordInvokedSkill(name, promptText string, paths []string) {
+	name = strings.TrimSpace(name)
+	promptText = strings.TrimSpace(promptText)
+	if name == "" || promptText == "" {
+		return
+	}
+
+	snapshot := invokedSkillSnapshot{
+		Name:       name,
+		PromptText: truncateRunes(promptText, 2400),
+		Paths:      append([]string(nil), paths...),
+		Timestamp:  time.Now(),
+	}
+
+	s.mu.Lock()
+	if s.skillRuntime.invocationCount == nil {
+		s.skillRuntime.invocationCount = make(map[string]int)
+	}
+	s.skillRuntime.invocationCount[name]++
+	skillList := append(s.skillRuntime.invoked, snapshot)
+	if len(skillList) > 4 {
+		skillList = append([]invokedSkillSnapshot(nil), skillList[len(skillList)-4:]...)
+	}
+	s.skillRuntime.invoked = skillList
+	s.mu.Unlock()
+
+	if s.prompts != nil {
+		s.prompts.refreshSkillReminders()
+	}
+}
+
+func cloneHooksConfig(src config.HooksConfig) config.HooksConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(config.HooksConfig, len(src))
+	for event, entries := range src {
+		cp := make([]config.HookEntry, len(entries))
+		copy(cp, entries)
+		dst[event] = cp
+	}
+	return dst
+}
+
+func toConfigHooks(src skill.HooksConfig) config.HooksConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(config.HooksConfig, len(src))
+	for event, entries := range src {
+		cp := make([]config.HookEntry, len(entries))
+		for i, entry := range entries {
+			cp[i] = config.HookEntry{
+				Type:     entry.Type,
+				Command:  entry.Command,
+				Matcher:  entry.Matcher,
+				Blocking: entry.Blocking,
+				Timeout:  entry.Timeout,
+			}
+		}
+		dst[event] = cp
+	}
+	return dst
+}
+
+func cloneInvocationCounts(src map[string]int) map[string]int {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]int, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max == 1 {
+		return string(runes[:1])
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 func (s *Session) emitContinueError(err error) {

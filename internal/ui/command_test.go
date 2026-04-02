@@ -11,6 +11,7 @@ import (
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/skill"
 )
 
 func TestValidateCommandRequiresIdleWhenRunning(t *testing.T) {
@@ -82,7 +83,7 @@ func TestRebuildRegistryIncludesAllCommandSources(t *testing.T) {
 		Commands: []config.FileCommand{
 			{Name: "deploy", Description: "Deploy project"},
 		},
-		Skills: []config.Skill{
+		Skills: []skill.Spec{
 			{Name: "review", Description: "Code review skill"},
 		},
 	}

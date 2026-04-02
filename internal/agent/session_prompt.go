@@ -5,6 +5,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/skill"
 )
 
 type sessionPromptManager struct {
@@ -35,8 +36,12 @@ func (s *Session) SetSystemSuffix(suffix string) {
 	s.prompts.setSystemSuffix(suffix)
 }
 
-func (s *Session) Skills() []config.Skill {
+func (s *Session) Skills() []skill.Spec {
 	return s.skills
+}
+
+func (s *Session) SkillCatalog() *skill.Catalog {
+	return s.skillCatalog
 }
 
 func (s *Session) Reload() {
@@ -102,7 +107,12 @@ func (m *sessionPromptManager) reload() {
 	m.session.contextFiles.GitSnapshot = gitSnapshot
 	// Re-read memory from disk (LLM may have updated it during this session).
 	m.session.contextFiles.Memory, m.session.contextFiles.MemoryDir = config.LoadMemory(m.session.cwd)
-	m.session.skills = config.LoadSkills(m.session.cwd)
+	if m.session.skillCatalog != nil {
+		m.session.skillCatalog.Reload()
+		m.session.skills = m.session.skillCatalog.List()
+	} else {
+		m.session.skills = skill.NewCatalog(m.session.cwd).List()
+	}
 	m.rebuildPrompt()
 }
 
@@ -149,6 +159,14 @@ func (m *sessionPromptManager) rebuildPrompt() {
 
 	// Update reminders (skills + context files, injected per user message).
 	m.session.mu.Lock()
-	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, m.session.skills)
+	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, cloneInvocationCounts(m.session.skillRuntime.invocationCount))
+	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
+	m.session.mu.Unlock()
+}
+
+func (m *sessionPromptManager) refreshSkillReminders() {
+	m.session.mu.Lock()
+	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, cloneInvocationCounts(m.session.skillRuntime.invocationCount))
+	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
 	m.session.mu.Unlock()
 }

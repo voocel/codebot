@@ -19,6 +19,7 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
+	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
@@ -31,9 +32,9 @@ type Options struct {
 	Resume     bool
 	NonTTYMode bool
 
-	ApprovalMode string
-	ToolFactories   []ToolFactory
-	ModelFactory    agent.ModelFactory
+	ApprovalMode  string
+	ToolFactories []ToolFactory
+	ModelFactory  agent.ModelFactory
 }
 
 // Runtime is the bootstrapped app runtime state.
@@ -44,11 +45,12 @@ type Runtime struct {
 	ApprovalEngine *approval.Engine
 	TaskRuntime    *agentcore.TaskRuntime
 
-	Settings   config.Resolved
-	Session    *agent.Session
-	MCPManager *mcpclient.Manager
-	MCPServers map[string]mcpclient.ServerConfig // for async connection in TUI
-	EnvHint    string                            // non-empty when credentials come from environment variable
+	Settings     config.Resolved
+	Session      *agent.Session
+	SkillCatalog *skill.Catalog
+	MCPManager   *mcpclient.Manager
+	MCPServers   map[string]mcpclient.ServerConfig // for async connection in TUI
+	EnvHint      string                            // non-empty when credentials come from environment variable
 }
 
 // Close releases runtime resources.

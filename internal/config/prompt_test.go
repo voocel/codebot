@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/voocel/codebot/internal/skill"
 )
 
 func TestBuildSystemBlockTexts(t *testing.T) {
@@ -58,7 +60,7 @@ func TestBuildSystemBlockTextsSystemOverride(t *testing.T) {
 func TestBuildReminders(t *testing.T) {
 	t.Parallel()
 
-	skills := []Skill{
+	skills := []skill.Spec{
 		{Name: "commit", Description: "Git commit", FilePath: "/skills/commit.md"},
 	}
 	ctx := ContextFiles{Agents: "project context here"}

@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
+	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/imageinput"
 	"github.com/voocel/codebot/internal/ui/tui"
@@ -29,7 +30,9 @@ type App struct {
 	Commands []config.FileCommand
 
 	// Skills are loaded skill definitions.
-	Skills []config.Skill
+	Skills []skill.Spec
+	// SkillCatalog provides shared skill invocation behavior across UI and tools.
+	SkillCatalog *skill.Catalog
 
 	// MCPManager manages MCP server connections.
 	MCPManager *mcpclient.Manager

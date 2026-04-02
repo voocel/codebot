@@ -14,13 +14,14 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
+	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, envHint string) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, skillCatalog *skill.Catalog, envHint string) error {
 	adapter := &App{
 		Session:        sess,
 		Cwd:            cwd,
@@ -29,6 +30,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 		TaskRuntime:    taskRT,
 		Commands:       config.LoadFileCommands(cwd),
 		Skills:         sess.Skills(),
+		SkillCatalog:   skillCatalog,
 		PlanStore:      storage.NewPlanStore(config.PlansDir(cwd)),
 		MCPManager:     mcpMgr,
 		History:        newInputHistory(sess, cwd),

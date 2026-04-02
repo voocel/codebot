@@ -55,47 +55,22 @@ type Runner struct {
 	hooks     map[EventType][]entry
 	sessionID string
 	approval  *approval.Engine
+	dynamic   func() config.HooksConfig
 }
 
 // New parses a HooksConfig and returns a Runner.
 // Returns nil if no valid hooks are found.
 func New(cfg config.HooksConfig, sessionID string, engine *approval.Engine) *Runner {
-	hooks := make(map[EventType][]entry)
-
-	for event, entries := range cfg {
-		et := EventType(event)
-		if et != PreToolUse && et != PostToolUse && et != Notification && et != PostStopValidation {
-			log.Printf("hooks: unknown event %q, skipped", event)
-			continue
-		}
-		for _, he := range entries {
-			if he.Type != "command" || he.Command == "" {
-				continue
-			}
-			m, err := parseMatcher(he.Matcher)
-			if err != nil {
-				log.Printf("hooks: bad matcher %q: %v, skipped", he.Matcher, err)
-				continue
-			}
-			e := entry{
-				command: he.Command,
-				matcher: m,
-				timeout: defaultTimeout,
-			}
-			if he.Blocking != nil {
-				e.blocking = *he.Blocking
-			}
-			if he.Timeout != nil && *he.Timeout > 0 {
-				e.timeout = time.Duration(*he.Timeout) * time.Second
-			}
-			hooks[et] = append(hooks[et], e)
-		}
-	}
+	hooks := compileConfig(cfg)
 
 	if len(hooks) == 0 {
 		return nil
 	}
 	return &Runner{hooks: hooks, sessionID: sessionID, approval: engine}
+}
+
+func (r *Runner) SetDynamicProvider(fn func() config.HooksConfig) {
+	r.dynamic = fn
 }
 
 // RunPreToolUse executes all matching PreToolUse hooks.
@@ -189,7 +164,48 @@ func (r *Runner) matching(event EventType, toolName string) []entry {
 			result = append(result, e)
 		}
 	}
+	if r.dynamic != nil {
+		for _, e := range compileConfig(r.dynamic())[event] {
+			if e.matcher.Match(toolName) {
+				result = append(result, e)
+			}
+		}
+	}
 	return result
+}
+
+func compileConfig(cfg config.HooksConfig) map[EventType][]entry {
+	hooks := make(map[EventType][]entry)
+	for event, entries := range cfg {
+		et := EventType(event)
+		if et != PreToolUse && et != PostToolUse && et != Notification && et != PostStopValidation {
+			log.Printf("hooks: unknown event %q, skipped", event)
+			continue
+		}
+		for _, he := range entries {
+			if he.Type != "command" || he.Command == "" {
+				continue
+			}
+			m, err := parseMatcher(he.Matcher)
+			if err != nil {
+				log.Printf("hooks: bad matcher %q: %v, skipped", he.Matcher, err)
+				continue
+			}
+			e := entry{
+				command: he.Command,
+				matcher: m,
+				timeout: defaultTimeout,
+			}
+			if he.Blocking != nil {
+				e.blocking = *he.Blocking
+			}
+			if he.Timeout != nil && *he.Timeout > 0 {
+				e.timeout = time.Duration(*he.Timeout) * time.Second
+			}
+			hooks[et] = append(hooks[et], e)
+		}
+	}
+	return hooks
 }
 
 func (r *Runner) run(ctx context.Context, e entry, payload Payload) ([]byte, error) {

@@ -209,6 +209,7 @@ func (p *sessionRuntimePolicy) continuePendingReminder() bool {
 			if errors.Is(err, errStaleSessionGeneration) {
 				return
 			}
+			s.clearSkillDelta()
 			s.emit(SessionEvent{
 				Type:  SEError,
 				Error: fmt.Errorf("runtime reminder continue: %w", err),

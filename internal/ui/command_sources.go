@@ -1,13 +1,12 @@
 package ui
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -83,7 +82,7 @@ func (c *FileCommandAdapter) Run(ctx *CommandContext, inv CommandInvocation) tea
 }
 
 type SkillCommand struct {
-	skill config.Skill
+	skill skill.Spec
 }
 
 func (c *SkillCommand) Spec() CommandSpec {
@@ -102,29 +101,23 @@ func (c *SkillCommand) Spec() CommandSpec {
 }
 
 func (c *SkillCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
-	// context: fork — route through the Skill tool so fork/allowed-tools/model are handled.
-	// Inline skills with allowed-tools also route through the Skill tool for consistency.
-	if c.skill.Context == "fork" || len(c.skill.AllowedTools) > 0 {
+	result, err := skill.ProcessInvocation(context.Background(), ctx.App.SkillCatalog, skill.InvokeInput{
+		Name:      c.skill.Name,
+		Args:      inv.RawArgs,
+		SessionID: ctx.App.Session.SessionID(),
+		Source:    skill.SourceUser,
+	})
+	if err == skill.ErrNotFound {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(
+			fmt.Sprintf("Skill not found: %s", c.skill.Name)))
+	}
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(
+			fmt.Sprintf("Failed to invoke skill: %v", err)))
+	}
+	if result.Mode == skill.ModeFork {
 		return ctx.App.sendAsPrompt(fmt.Sprintf(
 			"Invoke the Skill tool: skill=%q args=%q", c.skill.Name, inv.RawArgs))
 	}
-
-	data, err := os.ReadFile(c.skill.FilePath)
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(
-			fmt.Sprintf("Failed to read skill file: %v", err)))
-	}
-
-	body := strings.TrimSpace(config.StripFrontmatter(string(data)))
-	body = tools.ExpandSkillVars(body, c.skill.BaseDir, ctx.App.Session.SessionID())
-	body = tools.ExpandShellInjections(body)
-	body = tools.ExpandSkillArgs(body, inv.RawArgs)
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "<skill name=%q>\n", c.skill.Name)
-	fmt.Fprintf(&sb, "References are relative to %s.\n\n", c.skill.BaseDir)
-	sb.WriteString(body)
-	sb.WriteString("\n</skill>")
-
-	return ctx.App.sendAsPrompt(sb.String())
+	return ctx.App.sendSkillPrompt(result)
 }

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/voocel/codebot/internal/skill"
 )
 
 // FileCommand is a user-defined slash command loaded from a Markdown file.
@@ -57,7 +59,7 @@ func loadFileCommandsFromDir(dir, source string) []FileCommand {
 		}
 		path := filepath.Join(dir, entry.Name())
 		cmd, err := loadFileCommand(path, source)
-		if err != nil || !validSkillName(cmd.Name) {
+		if err != nil || !skill.ValidName(cmd.Name) {
 			continue
 		}
 		commands = append(commands, cmd)
@@ -158,12 +160,28 @@ func parseFrontmatterCategory(fm string) string {
 	return category
 }
 
+func parseFrontmatterField(fm, field string) string {
+	prefix := field + ":"
+	for line := range strings.SplitSeq(fm, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			val := strings.TrimSpace(line[len(prefix):])
+			return strings.Trim(val, `"'`)
+		}
+	}
+	return ""
+}
+
+func firstLine(s string, maxLen int) string {
+	return skill.FirstLine(s, maxLen)
+}
+
 func normalizeAliases(aliases []string) []string {
 	var normalized []string
 	seen := make(map[string]bool)
 	for _, alias := range aliases {
 		alias = strings.ToLower(strings.TrimSpace(alias))
-		if !validSkillName(alias) || seen[alias] {
+		if !skill.ValidName(alias) || seen[alias] {
 			continue
 		}
 		seen[alias] = true

@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/voocel/codebot/internal/skill"
 )
 
 // ToolInfo describes a tool for system prompt generation.
@@ -61,9 +63,9 @@ func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (iden
 // BuildReminders extracts skills and context files into <system-reminder>
 // wrapped text fragments for injection into user messages.
 // Returns nil when there are no reminders to inject.
-func BuildReminders(ctx ContextFiles, skills []Skill) []string {
+func BuildReminders(ctx ContextFiles, skills []skill.Spec) []string {
 	var reminders []string
-	if skillBlock := FormatSkillsForPrompt(skills); skillBlock != "" {
+	if skillBlock := skill.RenderListing(skills, skill.DefaultListingOptions()); skillBlock != "" {
 		reminders = append(reminders, "<system-reminder>\n## Skills\n"+skillBlock+"\n</system-reminder>")
 	}
 	if ctx.Agents != "" {

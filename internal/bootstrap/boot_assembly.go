@@ -18,6 +18,7 @@ import (
 	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/provider"
+	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
@@ -46,7 +47,8 @@ type bootSpec struct {
 	deferredToolsPreamble string
 	reminders             []string
 	contextFiles          config.ContextFiles
-	skills                []config.Skill
+	skills                []skill.Spec
+	skillCatalog          *skill.Catalog
 	mcpManager            *mcpclient.Manager
 	mcpServers            map[string]mcpclient.ServerConfig
 	subagentTool          *agentcore.SubAgentTool
@@ -190,7 +192,8 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	ctxFiles.GitSnapshot = config.CollectGitSnapshot(input.cwd)
 	ctxFiles.Memory, ctxFiles.MemoryDir = config.LoadMemory(input.cwd)
 	config.EnsureMemoryDir(input.cwd)
-	skills := config.LoadSkills(input.cwd)
+	skillCatalog := skill.NewCatalog(input.cwd)
+	skills := skillCatalog.List()
 
 	rules, err := approval.ParseRuleSet(settings.Permissions.Allow, settings.Permissions.Deny)
 	if err != nil {
@@ -206,7 +209,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		WriteRoots: settings.Permissions.WriteRoots,
 	})
 
-	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories, skills)
+	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories, skillCatalog)
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +245,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		reminders:             parts.reminders,
 		contextFiles:          ctxFiles,
 		skills:                skills,
+		skillCatalog:          skillCatalog,
 		mcpManager:            mcpManager,
 		mcpServers:            mcpServers,
 		subagentTool:          subagentTool,
@@ -252,7 +256,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	}, nil
 }
 
-func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, skills []config.Skill) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
+func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, skillCatalog *skill.Catalog) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	// Find the BashTool from built tools for background shell wiring.
@@ -298,7 +302,7 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 	})
 	builtTools = append(builtTools, subagentTool)
 
-	skillTool := localtools.NewSkillTool(skills, input.store.Header().SessionID)
+	skillTool := localtools.NewSkillTool(skillCatalog, input.store.Header().SessionID)
 	skillTool.SetForkExecutor(subagentTool.Execute)
 	builtTools = append(builtTools, skillTool)
 	baseTools := builtTools
@@ -426,7 +430,7 @@ type systemParts struct {
 	reminders   []string // <system-reminder> fragments for each user message
 }
 
-func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []config.Skill, mcpManager *mcpclient.Manager) systemParts {
+func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []skill.Spec, mcpManager *mcpclient.Manager) systemParts {
 	// Separate visible tools from deferred tools.
 	var filter agentcore.DeferFilter
 	for _, t := range tools {
@@ -475,7 +479,7 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 	}
 
 	// Reminders: skills + context files for user message injection.
-	reminders := config.BuildReminders(ctxFiles, skills)
+	reminders := config.BuildReminders(ctxFiles, skill.OrderForPrompt(skills, cwd, nil))
 
 	return systemParts{
 		blocks:      blocks,
@@ -567,11 +571,21 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Tools:                 spec.tools,
 		ContextFiles:          spec.contextFiles,
 		Skills:                spec.skills,
+		SkillCatalog:          spec.skillCatalog,
 		HookRunner:            spec.hookRunner,
 		DeferredToolsPreamble: spec.deferredToolsPreamble,
 		Reminders:             spec.reminders,
 		PreambleInjected:      len(input.snapshot.Messages) > 0, // resume: preamble already in history
+		SkillAllowsSetter:     spec.approvalEngine.SetSkillAllows,
 	})
+	for _, tool := range spec.tools {
+		if st, ok := tool.(*localtools.SkillTool); ok {
+			st.SetInvocationApplier(sess.ApplySkillInvocation)
+		}
+	}
+	if spec.hookRunner != nil {
+		spec.hookRunner.SetDynamicProvider(sess.CurrentSkillHooks)
+	}
 
 	if spec.mcpManager != nil {
 		sess.SetBeforePrompt(func() {
@@ -593,6 +607,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		TaskRuntime:    taskRT,
 		Settings:       spec.settings,
 		Session:        sess,
+		SkillCatalog:   spec.skillCatalog,
 		MCPManager:     spec.mcpManager,
 		MCPServers:     spec.mcpServers,
 		EnvHint:        input.envHint,

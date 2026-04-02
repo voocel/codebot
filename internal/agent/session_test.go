@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/memory"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
+	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
@@ -374,6 +376,236 @@ func TestHandleAgentEndDoesNotContinueWhenOverflowCompactionUnchanged(t *testing
 
 	if continued := s.context.handleAgentEnd(); continued {
 		t.Fatal("expected overflow handling to stop when compaction made no changes")
+	}
+}
+
+type namedChatModel struct {
+	name string
+}
+
+func (m *namedChatModel) Generate(
+	_ context.Context,
+	_ []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	return &agentcore.LLMResponse{
+		Message: assistantTextMessage(m.name),
+	}, nil
+}
+
+func (m *namedChatModel) GenerateStream(
+	_ context.Context,
+	_ []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{
+		Type:       agentcore.StreamEventDone,
+		Message:    assistantTextMessage(m.name),
+		StopReason: agentcore.StopReasonStop,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *namedChatModel) SupportsTools() bool { return true }
+
+func TestApplySkillInvocationUsesTemporaryOverrides(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	baseModel := &namedChatModel{name: "base-model"}
+	s := NewSession(SessionConfig{
+		Agent: agentcore.NewAgent(agentcore.WithModel(baseModel)),
+		Settings: config.Resolved{
+			Provider:       "openai",
+			Model:          "base-model",
+			ThinkingLevel:  "low",
+			ContextWindow:  128000,
+			AutoCompaction: false,
+			MaxTurns:       30,
+			Providers: map[string]config.ProviderConfig{
+				"openai": {APIKey: "k", Models: []string{"base-model", "skill-model"}},
+			},
+		},
+		Cwd:       dir,
+		ChatModel: baseModel,
+		CreateModel: func(_ string, model string, _ string, _ string) (agentcore.ChatModel, error) {
+			return &namedChatModel{name: model}, nil
+		},
+	})
+	t.Cleanup(s.Close)
+
+	err := s.ApplySkillInvocation(&skill.InvocationResult{
+		Spec:       skill.Spec{Name: "review"},
+		PromptText: "skill prompt body",
+		Delta: skill.Delta{
+			ModelOverride: "skill-model",
+			Effort:        "high",
+			Paths:         []string{"internal/skill/**"},
+			Hooks: skill.HooksConfig{
+				"Notification": {
+					{Type: "command", Command: "echo hi"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplySkillInvocation error: %v", err)
+	}
+
+	if got := s.ModelName(); got != "skill-model" {
+		t.Fatalf("temporary model = %q, want skill-model", got)
+	}
+	if got := s.Settings().ThinkingLevel; got != "high" {
+		t.Fatalf("temporary thinking = %q, want high", got)
+	}
+	if hooks := s.CurrentSkillHooks(); len(hooks["Notification"]) != 1 {
+		t.Fatalf("expected temporary notification hook, got %#v", hooks)
+	}
+	s.mu.Lock()
+	reminders := append([]string(nil), s.runtimeReminders...)
+	s.mu.Unlock()
+	if len(reminders) == 0 || !strings.Contains(reminders[0], "internal/skill/**") {
+		t.Fatalf("expected path reminder, got %#v", reminders)
+	}
+
+	s.clearSkillDelta()
+
+	if got := s.ModelName(); got != "base-model" {
+		t.Fatalf("restored model = %q, want base-model", got)
+	}
+	if got := s.Settings().ThinkingLevel; got != "low" {
+		t.Fatalf("restored thinking = %q, want low", got)
+	}
+	if hooks := s.CurrentSkillHooks(); hooks != nil {
+		t.Fatalf("expected hooks cleared, got %#v", hooks)
+	}
+}
+
+func TestSkillNotificationHooksRemainActiveUntilTurnEnds(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "skill-notification.marker")
+	runner := hooks.New(config.HooksConfig{
+		"Notification": {
+			{Type: "command", Command: "true"},
+		},
+	}, "sess-test", nil)
+	if runner == nil {
+		t.Fatal("expected hook runner")
+	}
+
+	s := NewSession(SessionConfig{
+		Agent:      agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Settings:   config.Resolved{MaxTurns: 30},
+		Cwd:        dir,
+		HookRunner: runner,
+	})
+	t.Cleanup(s.Close)
+	runner.SetDynamicProvider(s.CurrentSkillHooks)
+
+	err := s.ApplySkillInvocation(&skill.InvocationResult{
+		Spec:       skill.Spec{Name: "review"},
+		Mode:       skill.ModeInline,
+		PromptText: "review prompt",
+		Delta: skill.Delta{
+			Hooks: skill.HooksConfig{
+				"Notification": {
+					{Type: "command", Command: "touch " + marker},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplySkillInvocation error: %v", err)
+	}
+
+	s.handleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	waitFor(t, 2*time.Second, func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+	if hooks := s.CurrentSkillHooks(); hooks != nil {
+		t.Fatalf("expected skill hooks cleared after turn end, got %#v", hooks)
+	}
+}
+
+func TestApplySkillInvocationForkOnlyRecords(t *testing.T) {
+	t.Parallel()
+
+	baseModel := &namedChatModel{name: "base-model"}
+	s := NewSession(SessionConfig{
+		Agent: agentcore.NewAgent(agentcore.WithModel(baseModel)),
+		Settings: config.Resolved{
+			Provider:       "openai",
+			Model:          "base-model",
+			ThinkingLevel:  "low",
+			ContextWindow:  128000,
+			AutoCompaction: false,
+			MaxTurns:       30,
+		},
+		Cwd:       t.TempDir(),
+		ChatModel: baseModel,
+	})
+	t.Cleanup(s.Close)
+
+	err := s.ApplySkillInvocation(&skill.InvocationResult{
+		Spec:       skill.Spec{Name: "debug"},
+		Mode:       skill.ModeFork,
+		PromptText: "forked prompt",
+		Delta: skill.Delta{
+			ModelOverride: "other-model",
+			Effort:        "high",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplySkillInvocation error: %v", err)
+	}
+
+	if got := s.ModelName(); got != "base-model" {
+		t.Fatalf("fork skill should not mutate parent model, got %q", got)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.skillRuntime.invocationCount["debug"] != 1 {
+		t.Fatalf("expected fork skill invocation to be recorded, got %#v", s.skillRuntime.invocationCount)
+	}
+}
+
+func TestInjectInvokedSkillContextAddsPreservedReminder(t *testing.T) {
+	t.Parallel()
+
+	s := NewSession(SessionConfig{
+		Agent:    agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	s.recordInvokedSkill("review", "Investigate the diff carefully.", []string{"internal/skill/**"})
+
+	msgs := []agentcore.AgentMessage{
+		memory.CompactionSummary{Summary: "summary"},
+		textMessage(agentcore.RoleUser, "latest user message"),
+	}
+	result := s.injectInvokedSkillContext(msgs)
+	if len(result) != 3 {
+		t.Fatalf("expected preserved reminder inserted, got %d messages", len(result))
+	}
+	msg, ok := result[1].(agentcore.Message)
+	if !ok {
+		t.Fatalf("expected inserted agentcore.Message, got %T", result[1])
+	}
+	if msg.Metadata["skill_preserve"] != true {
+		t.Fatalf("expected skill_preserve metadata, got %#v", msg.Metadata)
+	}
+	if !strings.Contains(msg.TextContent(), `name="review"`) {
+		t.Fatalf("expected skill name in reminder, got %q", msg.TextContent())
 	}
 }
 

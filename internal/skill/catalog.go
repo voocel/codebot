@@ -1,0 +1,347 @@
+package skill
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+
+	"gopkg.in/yaml.v3"
+)
+
+type Catalog struct {
+	mu     sync.RWMutex
+	cwd    string
+	list   []Spec
+	byName map[string]Spec
+}
+
+type frontmatter struct {
+	Name                   string      `yaml:"name"`
+	Description            string      `yaml:"description"`
+	WhenToUse              string      `yaml:"when_to_use"`
+	Version                string      `yaml:"version"`
+	ArgumentHint           string      `yaml:"argument-hint"`
+	Arguments              []string    `yaml:"arguments"`
+	Context                string      `yaml:"context"`
+	Agent                  string      `yaml:"agent"`
+	Model                  string      `yaml:"model"`
+	Effort                 string      `yaml:"effort"`
+	AllowedTools           any         `yaml:"allowed-tools"`
+	Paths                  []string    `yaml:"paths"`
+	UserInvocable          *bool       `yaml:"user-invocable"`
+	DisableModelInvocation *bool       `yaml:"disable-model-invocation"`
+	Hooks                  HooksConfig `yaml:"hooks"`
+}
+
+func NewCatalog(cwd string) *Catalog {
+	c := &Catalog{cwd: cwd}
+	c.Reload()
+	return c
+}
+
+func NewStaticCatalog(specs []Spec) *Catalog {
+	c := &Catalog{}
+	c.setSpecs(specs)
+	return c
+}
+
+func LoadFromDir(dir, source string) []Spec {
+	return loadSkillsFromDir(dir, source)
+}
+
+func (c *Catalog) Reload() {
+	byName := make(map[string]Spec)
+	for _, spec := range BundledSpecs(c.cwd) {
+		byName[spec.Name] = spec
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		for _, spec := range loadSkillsFromDir(filepath.Join(home, ".codebot", "skills"), "user") {
+			byName[spec.Name] = spec
+		}
+	}
+	for _, spec := range loadSkillsFromDir(filepath.Join(c.cwd, ".codebot", "skills"), "project") {
+		byName[spec.Name] = spec
+	}
+
+	specs := make([]Spec, 0, len(byName))
+	for _, spec := range byName {
+		specs = append(specs, spec)
+	}
+	sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
+	c.setSpecs(specs)
+}
+
+func (c *Catalog) setSpecs(specs []Spec) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.list = make([]Spec, len(specs))
+	c.byName = make(map[string]Spec, len(specs))
+	for i, spec := range specs {
+		spec = cloneSpec(spec)
+		if spec.GetPrompt == nil && spec.FilePath != "" {
+			spec.GetPrompt = buildPromptFn(spec, "")
+		}
+		c.list[i] = spec
+		c.byName[spec.Name] = spec
+	}
+}
+
+func (c *Catalog) List() []Spec {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]Spec, len(c.list))
+	for i, spec := range c.list {
+		out[i] = cloneSpec(spec)
+	}
+	return out
+}
+
+func (c *Catalog) Get(name string) (Spec, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	spec, ok := c.byName[NormalizeName(name)]
+	return cloneSpec(spec), ok
+}
+
+func loadSkillsFromDir(dir, source string) []Spec {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var specs []Spec
+	for _, entry := range entries {
+		if entry.IsDir() {
+			if spec, ok := findSkillInDir(filepath.Join(dir, entry.Name()), entry.Name(), source); ok {
+				specs = append(specs, spec)
+			}
+			continue
+		}
+		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+			continue
+		}
+		spec, err := loadSkillFile(filepath.Join(dir, entry.Name()), source)
+		if err == nil {
+			specs = append(specs, spec)
+		}
+	}
+	return specs
+}
+
+func findSkillInDir(dir, dirName, source string) (Spec, bool) {
+	skillFile := filepath.Join(dir, "SKILL.md")
+	if spec, err := loadSkillFile(skillFile, source); err == nil {
+		if spec.Name == "skill" {
+			spec.Name = NormalizeName(dirName)
+		}
+		if ValidName(spec.Name) {
+			return spec, true
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return Spec{}, false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if spec, ok := findSkillInDir(filepath.Join(dir, entry.Name()), dirName, source); ok {
+			return spec, true
+		}
+	}
+	return Spec{}, false
+}
+
+func loadSkillFile(path, source string) (Spec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Spec{}, err
+	}
+	return parseSkillContent(string(data), skillSource{
+		NameHint: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+		FilePath: path,
+		BaseDir:  filepath.Dir(path),
+		Source:   source,
+	}, buildPromptFn)
+}
+
+type skillSource struct {
+	NameHint string
+	FilePath string
+	BaseDir  string
+	Source   string
+}
+
+func parseSkillContent(content string, src skillSource, promptFactory func(Spec, string) GetPromptFn) (Spec, error) {
+	fm, keys, err := parseFrontmatter(content)
+	if err != nil {
+		return Spec{}, err
+	}
+
+	name := src.NameHint
+	if fm.Name != "" {
+		name = fm.Name
+	}
+	name = NormalizeName(name)
+	if !ValidName(name) {
+		return Spec{}, os.ErrInvalid
+	}
+
+	userInvocable := true
+	if fm.UserInvocable != nil {
+		userInvocable = *fm.UserInvocable
+	}
+	disableModel := false
+	if fm.DisableModelInvocation != nil {
+		disableModel = *fm.DisableModelInvocation
+	}
+
+	body := strings.TrimSpace(StripFrontmatter(content))
+	description := strings.TrimSpace(fm.Description)
+	if description == "" {
+		description = FirstLine(body, 80)
+	}
+
+	spec := Spec{
+		Name:                   name,
+		Description:            description,
+		WhenToUse:              strings.TrimSpace(fm.WhenToUse),
+		Version:                strings.TrimSpace(fm.Version),
+		FilePath:               src.FilePath,
+		BaseDir:                src.BaseDir,
+		Source:                 src.Source,
+		DisableModelInvocation: disableModel,
+		DisableUserInvocation:  !userInvocable,
+		ArgumentHint:           strings.TrimSpace(fm.ArgumentHint),
+		ArgumentNames:          append([]string(nil), fm.Arguments...),
+		Context:                normalizeContext(fm.Context),
+		Agent:                  strings.TrimSpace(fm.Agent),
+		Model:                  strings.TrimSpace(fm.Model),
+		Effort:                 strings.TrimSpace(fm.Effort),
+		AllowedTools:           normalizeAllowedTools(fm.AllowedTools),
+		Paths:                  append([]string(nil), fm.Paths...),
+		Hooks:                  cloneHooks(fm.Hooks),
+		HasExplicitDescription: strings.TrimSpace(fm.Description) != "",
+		FrontmatterKeys:        keys,
+	}
+	spec.GetPrompt = promptFactory(spec, content)
+	return spec, nil
+}
+
+func parseFrontmatter(content string) (frontmatter, []string, error) {
+	if !strings.HasPrefix(content, "---\n") && !strings.HasPrefix(content, "---\r\n") {
+		return frontmatter{}, nil, nil
+	}
+	rest := content[4:]
+	raw, _, ok := strings.Cut(rest, "\n---")
+	if !ok {
+		return frontmatter{}, nil, nil
+	}
+
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte(raw), &node); err != nil {
+		return frontmatter{}, nil, err
+	}
+	var keys []string
+	if len(node.Content) > 0 && node.Content[0].Kind == yaml.MappingNode {
+		mapping := node.Content[0]
+		for i := 0; i+1 < len(mapping.Content); i += 2 {
+			keys = append(keys, mapping.Content[i].Value)
+		}
+	}
+	var fm frontmatter
+	if err := yaml.Unmarshal([]byte(raw), &fm); err != nil {
+		return frontmatter{}, nil, err
+	}
+	return fm, keys, nil
+}
+
+func buildPromptFn(spec Spec, _ string) GetPromptFn {
+	return func(ctx context.Context, args string, sessionID string) (string, error) {
+		_ = ctx
+		data, err := os.ReadFile(spec.FilePath)
+		if err != nil {
+			return "", err
+		}
+		body := strings.TrimSpace(StripFrontmatter(string(data)))
+		body = ExpandVars(body, spec.BaseDir, sessionID)
+		if SourceAllowsShellExecution(spec.Source) {
+			body = ExpandShellInjections(body)
+		}
+		body = ExpandArgs(body, args)
+		return WrapPrompt(spec, body), nil
+	}
+}
+
+func buildStaticPromptFn(spec Spec, content string) GetPromptFn {
+	return func(ctx context.Context, args string, sessionID string) (string, error) {
+		_ = ctx
+		body := strings.TrimSpace(StripFrontmatter(content))
+		body = ExpandVars(body, spec.BaseDir, sessionID)
+		if SourceAllowsShellExecution(spec.Source) {
+			body = ExpandShellInjections(body)
+		}
+		body = ExpandArgs(body, args)
+		return WrapPrompt(spec, body), nil
+	}
+}
+
+func normalizeAllowedTools(v any) []string {
+	switch raw := v.(type) {
+	case string:
+		var out []string
+		for _, item := range strings.Split(raw, ",") {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		var out []string
+		for _, item := range raw {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	case []string:
+		return append([]string(nil), raw...)
+	default:
+		return nil
+	}
+}
+
+func normalizeContext(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "fork") {
+		return "fork"
+	}
+	return "inline"
+}
+
+func cloneHooks(src HooksConfig) HooksConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(HooksConfig, len(src))
+	for event, entries := range src {
+		cp := make([]HookEntry, len(entries))
+		copy(cp, entries)
+		dst[event] = cp
+	}
+	return dst
+}
+
+func cloneSpec(spec Spec) Spec {
+	spec.ArgumentNames = append([]string(nil), spec.ArgumentNames...)
+	spec.AllowedTools = append([]string(nil), spec.AllowedTools...)
+	spec.Paths = append([]string(nil), spec.Paths...)
+	spec.Hooks = cloneHooks(spec.Hooks)
+	spec.FrontmatterKeys = append([]string(nil), spec.FrontmatterKeys...)
+	return spec
+}

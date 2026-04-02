@@ -245,6 +245,197 @@ func (s *Session) ClearConversation() {
 	s.agent.ClearAllQueues()
 }
 
+func (s *Session) applyTemporarySkillModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
+
+	prov, resolved, chatModel, err := s.resolveModelOverride(model)
+	if err != nil {
+		return fmt.Errorf("resolve skill model %q: %w", model, err)
+	}
+
+	s.mu.Lock()
+	if !s.skillRuntime.active {
+		s.skillRuntime.active = true
+		s.skillRuntime.baseProvider = s.provider
+		s.skillRuntime.baseModel = s.modelName
+		s.skillRuntime.baseChatModel = s.chatModel
+		s.skillRuntime.baseThinking = s.settings.ThinkingLevel
+	}
+	s.provider = prov
+	s.modelName = resolved
+	s.chatModel = chatModel
+	s.mu.Unlock()
+
+	s.agent.SetModel(chatModel)
+	s.reclampThinkingTemporary()
+	return nil
+}
+
+func (s *Session) applyTemporarySkillThinking(level string) {
+	level = strings.TrimSpace(level)
+	if level == "" {
+		return
+	}
+
+	s.mu.Lock()
+	if !s.skillRuntime.active {
+		s.skillRuntime.active = true
+		s.skillRuntime.baseProvider = s.provider
+		s.skillRuntime.baseModel = s.modelName
+		s.skillRuntime.baseChatModel = s.chatModel
+		s.skillRuntime.baseThinking = s.settings.ThinkingLevel
+	}
+	s.mu.Unlock()
+
+	if s.registry != nil {
+		s.mu.Lock()
+		modelName := s.modelName
+		s.mu.Unlock()
+		available := s.registry.AvailableThinkingLevels(modelName)
+		level = provider.ClampThinkingLevel(level, available)
+	}
+	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(level))
+	s.mu.Lock()
+	s.settings.ThinkingLevel = level
+	s.mu.Unlock()
+}
+
+func (s *Session) applySkillPathHints(name string, paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	var lines []string
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			lines = append(lines, "- "+p)
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	reminder := "<system-reminder>\n"
+	if strings.TrimSpace(name) != "" {
+		reminder += fmt.Sprintf("当前 skill %q 建议优先关注这些路径或模式：\n", name)
+	} else {
+		reminder += "当前 skill 建议优先关注这些路径或模式：\n"
+	}
+	reminder += strings.Join(lines, "\n")
+	reminder += "\n如果需要扩大范围，先说明原因，再继续。\n</system-reminder>"
+	s.continueWithRuntimeReminder("skill_paths:"+strings.Join(lines, "|"), ReminderSkillPaths, reminder)
+}
+
+func (s *Session) clearTemporarySkillOverrides() {
+	s.mu.Lock()
+	active := s.skillRuntime.active
+	baseProvider := s.skillRuntime.baseProvider
+	baseModel := s.skillRuntime.baseModel
+	baseChatModel := s.skillRuntime.baseChatModel
+	baseThinking := s.skillRuntime.baseThinking
+	s.skillRuntime.active = false
+	s.skillRuntime.baseProvider = ""
+	s.skillRuntime.baseModel = ""
+	s.skillRuntime.baseChatModel = nil
+	s.skillRuntime.baseThinking = ""
+	s.skillRuntime.hooks = nil
+	s.mu.Unlock()
+
+	if !active {
+		return
+	}
+	if baseChatModel != nil {
+		s.agent.SetModel(baseChatModel)
+	}
+	if baseThinking != "" {
+		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(baseThinking))
+	} else {
+		s.agent.SetThinkingLevel("")
+	}
+	s.mu.Lock()
+	s.provider = baseProvider
+	s.modelName = baseModel
+	s.chatModel = baseChatModel
+	s.settings.ThinkingLevel = baseThinking
+	s.mu.Unlock()
+}
+
+func (s *Session) resolveModelOverride(pattern string) (string, string, agentcore.ChatModel, error) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return "", "", nil, fmt.Errorf("empty model override")
+	}
+
+	s.mu.Lock()
+	curProv := s.provider
+	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))
+	for k, v := range s.providers {
+		provSnapshot[k] = v
+	}
+	s.mu.Unlock()
+
+	if strings.Contains(pattern, "/") {
+		if prov, model, ok := strings.Cut(pattern, "/"); ok {
+			apiKey, baseURL := s.resolveCredentials(prov)
+			chatModel, err := s.createModel(s.providerType(prov), model, apiKey, baseURL)
+			if err == nil {
+				return prov, model, chatModel, nil
+			}
+		}
+	}
+
+	type match struct {
+		provider string
+		model    string
+	}
+	var matches []match
+	for provName, pc := range provSnapshot {
+		for _, m := range pc.Models {
+			if strings.EqualFold(m, pattern) {
+				matches = append(matches, match{provider: provName, model: m})
+			}
+		}
+	}
+	switch len(matches) {
+	case 1:
+		m := matches[0]
+		apiKey, baseURL := s.resolveCredentials(m.provider)
+		chatModel, err := s.createModel(s.providerType(m.provider), m.model, apiKey, baseURL)
+		return m.provider, m.model, chatModel, err
+	case 0:
+		apiKey, baseURL := s.resolveCredentials(curProv)
+		chatModel, err := s.createModel(s.providerType(curProv), pattern, apiKey, baseURL)
+		if err != nil {
+			return "", "", nil, err
+		}
+		return curProv, pattern, chatModel, nil
+	default:
+		var ids []string
+		for _, m := range matches {
+			ids = append(ids, config.FormatModelID(m.provider, m.model))
+		}
+		return "", "", nil, fmt.Errorf("ambiguous model override, matches: %s", strings.Join(ids, ", "))
+	}
+}
+
+func (s *Session) reclampThinkingTemporary() {
+	if s.registry == nil {
+		return
+	}
+	s.mu.Lock()
+	current := s.settings.ThinkingLevel
+	modelName := s.modelName
+	s.mu.Unlock()
+	available := s.registry.AvailableThinkingLevels(modelName)
+	clamped := provider.ClampThinkingLevel(current, available)
+	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
+	s.mu.Lock()
+	s.settings.ThinkingLevel = clamped
+	s.mu.Unlock()
+}
+
 func (s *Session) SetModel(prov, model string) error {
 	provType := s.providerType(prov)
 	apiKey, baseURL := s.resolveCredentials(prov)

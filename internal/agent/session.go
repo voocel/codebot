@@ -2,11 +2,13 @@ package agent
 
 import (
 	"sync"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/provider"
+	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
@@ -40,13 +42,17 @@ type SessionConfig struct {
 	// When tools change the prompt is regenerated from these inputs.
 	ContextFiles config.ContextFiles
 	// Skills holds loaded skills for system prompt injection and /skill: commands.
-	Skills []config.Skill
+	Skills []skill.Spec
+	// SkillCatalog provides indexed skill lookup and reload support.
+	SkillCatalog *skill.Catalog
 	// DeferredToolsPreamble is injected as the first user message (once).
 	DeferredToolsPreamble string
 	// Reminders are <system-reminder> fragments prepended to each user message.
 	Reminders []string
 	// PreambleInjected indicates the preamble was already in conversation history (resume).
 	PreambleInjected bool
+	// SkillAllowsSetter updates temporary tool allows for the active skill.
+	SkillAllowsSetter func([]string)
 }
 
 // Session is the business-logic core that wraps Agent + session persistence.
@@ -65,14 +71,17 @@ type Session struct {
 
 	createModel ModelFactory
 
-	allTools     []agentcore.Tool
-	activeTools  []agentcore.Tool
-	contextFiles config.ContextFiles
-	skills       []config.Skill
-	suffix       string
-	beforePrompt func()
-	hookRunner   *hooks.Runner
-	taskStore    *localtools.TaskStore
+	allTools          []agentcore.Tool
+	activeTools       []agentcore.Tool
+	contextFiles      config.ContextFiles
+	skills            []skill.Spec
+	skillCatalog      *skill.Catalog
+	suffix            string
+	beforePrompt      func()
+	hookRunner        *hooks.Runner
+	taskStore         *localtools.TaskStore
+	skillAllowsSetter func([]string)
+	skillRuntime      skillRuntimeState
 
 	deferredToolsPreamble  string   // <available-deferred-tools> for first user message
 	staticReminders        []string // 从上下文文件生成的稳定 reminders
@@ -101,8 +110,8 @@ type Session struct {
 	lastRunSummary          *agentcore.RunSummary
 	lastReminder            *ReminderSnapshot
 	lastCompaction          *CompactionSnapshot
-	dirtySeq   uint64 // incremented each time a repo-mutating tool succeeds; hook goroutine captures this and only clears if unchanged
-	generation uint64 // incremented on session switch; async goroutines check this to avoid cross-session callbacks
+	dirtySeq                uint64 // incremented each time a repo-mutating tool succeeds; hook goroutine captures this and only clears if unchanged
+	generation              uint64 // incremented on session switch; async goroutines check this to avoid cross-session callbacks
 
 	prompts     *sessionPromptManager
 	persistence *sessionPersistence
@@ -113,6 +122,24 @@ type Session struct {
 	mu sync.Mutex
 }
 
+type skillRuntimeState struct {
+	active          bool
+	baseProvider    string
+	baseModel       string
+	baseChatModel   agentcore.ChatModel
+	baseThinking    string
+	hooks           config.HooksConfig
+	invoked         []invokedSkillSnapshot
+	invocationCount map[string]int
+}
+
+type invokedSkillSnapshot struct {
+	Name       string
+	PromptText string
+	Paths      []string
+	Timestamp  time.Time
+}
+
 // NewSession creates a Session and wires auto-persist to the agent.
 func NewSession(cfg SessionConfig) *Session {
 	modelFactory := cfg.CreateModel
@@ -121,23 +148,25 @@ func NewSession(cfg SessionConfig) *Session {
 	}
 
 	s := &Session{
-		agent:        cfg.Agent,
-		store:        cfg.Store,
-		mgr:          cfg.Manager,
-		registry:     cfg.Registry,
-		settings:     cfg.Settings,
-		provider:     cfg.Settings.Provider,
-		modelName:    cfg.Settings.Model,
-		providers:    cfg.Settings.Providers,
-		cwd:          cfg.Cwd,
-		createModel:  modelFactory,
-		lazyPersist:  cfg.LazyPersist,
-		chatModel:    cfg.ChatModel,
-		hookRunner:   cfg.HookRunner,
-		allTools:     cfg.Tools,
-		activeTools:  cfg.Tools,
-		contextFiles: cfg.ContextFiles,
-		skills:       cfg.Skills,
+		agent:             cfg.Agent,
+		store:             cfg.Store,
+		mgr:               cfg.Manager,
+		registry:          cfg.Registry,
+		settings:          cfg.Settings,
+		provider:          cfg.Settings.Provider,
+		modelName:         cfg.Settings.Model,
+		providers:         cfg.Settings.Providers,
+		cwd:               cfg.Cwd,
+		createModel:       modelFactory,
+		lazyPersist:       cfg.LazyPersist,
+		chatModel:         cfg.ChatModel,
+		hookRunner:        cfg.HookRunner,
+		allTools:          cfg.Tools,
+		activeTools:       cfg.Tools,
+		contextFiles:      cfg.ContextFiles,
+		skills:            cfg.Skills,
+		skillCatalog:      cfg.SkillCatalog,
+		skillAllowsSetter: cfg.SkillAllowsSetter,
 
 		deferredToolsPreamble:  cfg.DeferredToolsPreamble,
 		staticReminders:        cfg.Reminders,
@@ -180,4 +209,5 @@ func (s *Session) resetHarnessStateLocked() {
 	s.lastCompaction = nil
 	s.dirtySeq = 0
 	s.metrics = newRuntimeMetrics()
+	s.skillRuntime = skillRuntimeState{}
 }

@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestParseFrontmatterField(t *testing.T) {
+	t.Parallel()
+
+	fm := "name: my-command\ndescription: \"A test command\"\nhidden: true\nneeds-idle: false"
+	if got := parseFrontmatterField(fm, "name"); got != "my-command" {
+		t.Errorf("name = %q, want %q", got, "my-command")
+	}
+	if got := parseFrontmatterField(fm, "description"); got != "A test command" {
+		t.Errorf("description = %q, want %q", got, "A test command")
+	}
+	if got := parseFrontmatterField(fm, "hidden"); got != "true" {
+		t.Errorf("hidden = %q, want %q", got, "true")
+	}
+	if got := parseFrontmatterField(fm, "nonexistent"); got != "" {
+		t.Errorf("nonexistent = %q, want empty", got)
+	}
+}
+
 func TestLoadFileCommands_ProjectOverridesUser(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
