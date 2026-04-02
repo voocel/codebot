@@ -325,7 +325,7 @@ func (s *Session) applySkillPathHints(name string, paths []string) {
 	}
 	reminder += strings.Join(lines, "\n")
 	reminder += "\n如果需要扩大范围，先说明原因，再继续。\n</system-reminder>"
-	s.continueWithRuntimeReminder("skill_paths:"+strings.Join(lines, "|"), ReminderSkillPaths, reminder)
+	s.deliverRuntimeReminder("skill_paths:"+strings.Join(lines, "|"), ReminderSkillPaths, reminder)
 }
 
 func (s *Session) clearTemporarySkillOverrides() {
@@ -340,7 +340,6 @@ func (s *Session) clearTemporarySkillOverrides() {
 	s.skillRuntime.baseModel = ""
 	s.skillRuntime.baseChatModel = nil
 	s.skillRuntime.baseThinking = ""
-	s.skillRuntime.hooks = nil
 	s.mu.Unlock()
 
 	if !active {

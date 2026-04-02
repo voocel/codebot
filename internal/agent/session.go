@@ -45,6 +45,8 @@ type SessionConfig struct {
 	Skills []skill.Spec
 	// SkillCatalog provides indexed skill lookup and reload support.
 	SkillCatalog *skill.Catalog
+	// SkillUsage persists cross-session usage statistics for prompt ordering.
+	SkillUsage *skill.UsageTracker
 	// DeferredToolsPreamble is injected as the first user message (once).
 	DeferredToolsPreamble string
 	// Reminders are <system-reminder> fragments prepended to each user message.
@@ -76,6 +78,7 @@ type Session struct {
 	contextFiles      config.ContextFiles
 	skills            []skill.Spec
 	skillCatalog      *skill.Catalog
+	skillUsage        *skill.UsageTracker
 	suffix            string
 	beforePrompt      func()
 	hookRunner        *hooks.Runner
@@ -166,6 +169,7 @@ func NewSession(cfg SessionConfig) *Session {
 		contextFiles:      cfg.ContextFiles,
 		skills:            cfg.Skills,
 		skillCatalog:      cfg.SkillCatalog,
+		skillUsage:        cfg.SkillUsage,
 		skillAllowsSetter: cfg.SkillAllowsSetter,
 
 		deferredToolsPreamble:  cfg.DeferredToolsPreamble,

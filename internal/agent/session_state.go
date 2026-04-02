@@ -126,9 +126,7 @@ func (s *Session) ApplySkillDelta(name string, delta skill.Delta) error {
 
 	s.mu.Lock()
 	if len(delta.Hooks) > 0 {
-		s.skillRuntime.hooks = toConfigHooks(delta.Hooks)
-	} else {
-		s.skillRuntime.hooks = nil
+		s.skillRuntime.hooks = mergeHooksConfig(s.skillRuntime.hooks, toConfigHooks(delta.Hooks))
 	}
 	s.mu.Unlock()
 
@@ -158,6 +156,10 @@ func (s *Session) recordInvokedSkill(name, promptText string, paths []string) {
 	if name == "" || promptText == "" {
 		return
 	}
+	usageName := skill.NormalizeName(name)
+	if usageName == "" {
+		usageName = name
+	}
 
 	snapshot := invokedSkillSnapshot{
 		Name:       name,
@@ -170,13 +172,22 @@ func (s *Session) recordInvokedSkill(name, promptText string, paths []string) {
 	if s.skillRuntime.invocationCount == nil {
 		s.skillRuntime.invocationCount = make(map[string]int)
 	}
-	s.skillRuntime.invocationCount[name]++
+	s.skillRuntime.invocationCount[usageName]++
 	skillList := append(s.skillRuntime.invoked, snapshot)
 	if len(skillList) > 4 {
 		skillList = append([]invokedSkillSnapshot(nil), skillList[len(skillList)-4:]...)
 	}
 	s.skillRuntime.invoked = skillList
 	s.mu.Unlock()
+
+	if s.skillUsage != nil {
+		if err := s.skillUsage.Record(usageName, time.Now()); err != nil {
+			s.emit(SessionEvent{
+				Type:  SEError,
+				Error: fmt.Errorf("record skill usage: %w", err),
+			})
+		}
+	}
 
 	if s.prompts != nil {
 		s.prompts.refreshSkillReminders()
@@ -217,6 +228,55 @@ func toConfigHooks(src skill.HooksConfig) config.HooksConfig {
 	return dst
 }
 
+func mergeHooksConfig(base, add config.HooksConfig) config.HooksConfig {
+	if len(add) == 0 {
+		return cloneHooksConfig(base)
+	}
+	merged := cloneHooksConfig(base)
+	if merged == nil {
+		merged = make(config.HooksConfig, len(add))
+	}
+	for event, entries := range add {
+		for _, entry := range entries {
+			if !containsHookEntry(merged[event], entry) {
+				merged[event] = append(merged[event], entry)
+			}
+		}
+	}
+	return merged
+}
+
+func containsHookEntry(entries []config.HookEntry, target config.HookEntry) bool {
+	for _, entry := range entries {
+		if hookEntryEqual(entry, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func hookEntryEqual(a, b config.HookEntry) bool {
+	return a.Type == b.Type &&
+		a.Command == b.Command &&
+		a.Matcher == b.Matcher &&
+		boolPtrValue(a.Blocking) == boolPtrValue(b.Blocking) &&
+		intPtrValue(a.Timeout) == intPtrValue(b.Timeout)
+}
+
+func boolPtrValue(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+func intPtrValue(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
 func cloneInvocationCounts(src map[string]int) map[string]int {
 	if len(src) == 0 {
 		return nil
@@ -226,6 +286,27 @@ func cloneInvocationCounts(src map[string]int) map[string]int {
 		dst[k] = v
 	}
 	return dst
+}
+
+func invocationUsageScores(invocations map[string]int) map[string]float64 {
+	if len(invocations) == 0 {
+		return nil
+	}
+	scores := make(map[string]float64, len(invocations))
+	for name, count := range invocations {
+		name = skill.NormalizeName(name)
+		if count <= 0 {
+			continue
+		}
+		if name == "" {
+			continue
+		}
+		scores[name] = float64(count)
+	}
+	if len(scores) == 0 {
+		return nil
+	}
+	return scores
 }
 
 func truncateRunes(s string, max int) string {

@@ -25,7 +25,7 @@ func DefaultListingOptions() ListingOptions {
 	}
 }
 
-func OrderForPrompt(skills []Spec, cwd string, usage map[string]int) []Spec {
+func OrderForPrompt(skills []Spec, cwd string, usage map[string]float64) []Spec {
 	ordered := append([]Spec(nil), skills...)
 	sortSkillsForPrompt(ordered, cwd, usage)
 	return ordered
@@ -83,7 +83,7 @@ func RenderListing(skills []Spec, opts ListingOptions) string {
 	return sb.String()
 }
 
-func sortSkillsForPrompt(skills []Spec, cwd string, usage map[string]int) {
+func sortSkillsForPrompt(skills []Spec, cwd string, usage map[string]float64) {
 	if len(skills) < 2 {
 		return
 	}

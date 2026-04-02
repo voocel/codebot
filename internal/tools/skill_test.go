@@ -282,6 +282,60 @@ func TestSkillToolInvocationApplier(t *testing.T) {
 	}
 }
 
+func TestExecuteSkillInvocationInline(t *testing.T) {
+	t.Parallel()
+
+	applied := false
+	execResult, err := ExecuteSkillInvocation(context.Background(), &skill.InvocationResult{
+		Spec:       skill.Spec{Name: "review"},
+		PromptText: "review diff",
+		Mode:       skill.ModeInline,
+	}, func(result *skill.InvocationResult) error {
+		applied = true
+		if result.PromptText != "review diff" {
+			t.Fatalf("unexpected prompt text: %q", result.PromptText)
+		}
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteSkillInvocation error: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected invocation applier to run")
+	}
+	if execResult.Forked {
+		t.Fatalf("expected inline execution result, got %#v", execResult)
+	}
+	if execResult.PromptText != "review diff" {
+		t.Fatalf("unexpected prompt text: %#v", execResult)
+	}
+}
+
+func TestBuildSkillForkArgsIncludesModelOverride(t *testing.T) {
+	t.Parallel()
+
+	args, err := BuildSkillForkArgs(&skill.InvocationResult{
+		Spec:       skill.Spec{Name: "deep-review"},
+		PromptText: "fork task",
+		Agent:      "plan",
+		Mode:       skill.ModeFork,
+		Delta: skill.Delta{
+			ModelOverride: "openai/gpt-5",
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildSkillForkArgs error: %v", err)
+	}
+
+	var params map[string]string
+	if err := json.Unmarshal(args, &params); err != nil {
+		t.Fatalf("unmarshal fork args: %v", err)
+	}
+	if params["agent"] != "plan" || params["task"] != "fork task" || params["model"] != "openai/gpt-5" {
+		t.Fatalf("unexpected fork args: %#v", params)
+	}
+}
+
 func TestNormalizeAgentType(t *testing.T) {
 	t.Parallel()
 

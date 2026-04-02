@@ -115,9 +115,5 @@ func (c *SkillCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(
 			fmt.Sprintf("Failed to invoke skill: %v", err)))
 	}
-	if result.Mode == skill.ModeFork {
-		return ctx.App.sendAsPrompt(fmt.Sprintf(
-			"Invoke the Skill tool: skill=%q args=%q", c.skill.Name, inv.RawArgs))
-	}
-	return ctx.App.sendSkillPrompt(result)
+	return ctx.App.executeSkillInvocation(result)
 }

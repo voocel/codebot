@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -12,7 +13,55 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/skill"
+	"github.com/voocel/codebot/internal/ui/tui"
 )
+
+type uiStubChatModel struct{}
+
+func (m *uiStubChatModel) Generate(
+	_ context.Context,
+	_ []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	return &agentcore.LLMResponse{
+		Message: agentcore.Message{
+			Role:       agentcore.RoleAssistant,
+			Content:    []agentcore.ContentBlock{agentcore.TextBlock("ok")},
+			StopReason: agentcore.StopReasonStop,
+		},
+	}, nil
+}
+
+func (m *uiStubChatModel) GenerateStream(
+	_ context.Context,
+	_ []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{
+		Type:       agentcore.StreamEventDone,
+		Message:    agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.TextBlock("ok")}},
+		StopReason: agentcore.StopReasonStop,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *uiStubChatModel) SupportsTools() bool { return true }
+
+type uiExecTool struct {
+	name string
+	run  func(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
+}
+
+func (t *uiExecTool) Name() string           { return t.name }
+func (t *uiExecTool) Description() string    { return "test tool" }
+func (t *uiExecTool) Schema() map[string]any { return nil }
+func (t *uiExecTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return t.run(ctx, args)
+}
 
 func TestValidateCommandRequiresIdleWhenRunning(t *testing.T) {
 	t.Parallel()
@@ -188,6 +237,113 @@ func TestCommandPaletteAutoExecuteDependsOnUsage(t *testing.T) {
 	}, "")
 	if withArgs.AutoExecute {
 		t.Fatal("expected arg command to only fill input")
+	}
+}
+
+func TestSkillCommandRunsForkedSkillDirectlyForUserInvocation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	var captured map[string]string
+	subagent := &uiExecTool{
+		name: "subagent",
+		run: func(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+			if err := json.Unmarshal(args, &captured); err != nil {
+				t.Fatalf("unmarshal subagent args: %v", err)
+			}
+			return json.Marshal(map[string]any{
+				"output": "forked result",
+			})
+		},
+	}
+
+	sess := agent.NewSession(agent.SessionConfig{
+		Agent:    agentcore.NewAgent(agentcore.WithModel(&uiStubChatModel{})),
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      dir,
+		Tools:    []agentcore.Tool{subagent},
+	})
+	t.Cleanup(sess.Close)
+
+	app := &App{
+		Session: sess,
+		Cwd:     dir,
+		SkillCatalog: skill.NewStaticCatalog([]skill.Spec{
+			{
+				Name:                   "deep-review",
+				Description:            "Forked review",
+				Context:                "fork",
+				Agent:                  "plan",
+				Model:                  "openai/gpt-5",
+				DisableModelInvocation: true,
+				GetPrompt: func(_ context.Context, args string, _ string) (string, error) {
+					return "fork task: " + args, nil
+				},
+			},
+		}),
+	}
+
+	cmd := (&SkillCommand{skill: skill.Spec{Name: "deep-review"}}).Run(&CommandContext{App: app}, CommandInvocation{
+		Name:    "deep-review",
+		RawArgs: "audit auth flow",
+	})
+
+	msg := cmd()
+	result, ok := msg.(tui.CommandResultMsg)
+	if !ok {
+		t.Fatalf("expected CommandResultMsg, got %T", msg)
+	}
+	if !strings.Contains(result.Text, "forked result") {
+		t.Fatalf("expected rendered subagent output, got %q", result.Text)
+	}
+	if captured["agent"] != "plan" {
+		t.Fatalf("expected normalized fork agent, got %#v", captured)
+	}
+	if captured["task"] != "fork task: audit auth flow" {
+		t.Fatalf("expected direct fork task execution, got %#v", captured)
+	}
+	if captured["model"] != "openai/gpt-5" {
+		t.Fatalf("expected model override to be forwarded, got %#v", captured)
+	}
+}
+
+func TestSkillCommandRunsInlineSkillThroughUnifiedExecutor(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	sess := agent.NewSession(agent.SessionConfig{
+		Agent:    agentcore.NewAgent(agentcore.WithModel(&uiStubChatModel{})),
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      dir,
+	})
+	t.Cleanup(sess.Close)
+
+	app := &App{
+		Session: sess,
+		Cwd:     dir,
+		SkillCatalog: skill.NewStaticCatalog([]skill.Spec{
+			{
+				Name:        "review",
+				Description: "Inline review",
+				GetPrompt: func(_ context.Context, args string, _ string) (string, error) {
+					return "review task: " + args, nil
+				},
+			},
+		}),
+	}
+
+	cmd := (&SkillCommand{skill: skill.Spec{Name: "review"}}).Run(&CommandContext{App: app}, CommandInvocation{
+		Name:    "review",
+		RawArgs: "auth flow",
+	})
+
+	msg := cmd()
+	prompt, ok := msg.(tui.PromptMsg)
+	if !ok {
+		t.Fatalf("expected PromptMsg, got %T", msg)
+	}
+	if prompt.Text != "review task: auth flow" {
+		t.Fatalf("unexpected prompt text: %#v", prompt)
 	}
 }
 

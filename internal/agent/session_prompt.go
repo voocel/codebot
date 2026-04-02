@@ -2,6 +2,7 @@ package agent
 
 import (
 	"strings"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
@@ -159,14 +160,21 @@ func (m *sessionPromptManager) rebuildPrompt() {
 
 	// Update reminders (skills + context files, injected per user message).
 	m.session.mu.Lock()
-	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, cloneInvocationCounts(m.session.skillRuntime.invocationCount))
+	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, m.session.skillUsageScoresLocked())
 	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
 	m.session.mu.Unlock()
 }
 
 func (m *sessionPromptManager) refreshSkillReminders() {
 	m.session.mu.Lock()
-	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, cloneInvocationCounts(m.session.skillRuntime.invocationCount))
+	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, m.session.skillUsageScoresLocked())
 	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
 	m.session.mu.Unlock()
+}
+
+func (s *Session) skillUsageScoresLocked() map[string]float64 {
+	if s.skillUsage != nil {
+		return s.skillUsage.Scores(time.Now())
+	}
+	return invocationUsageScores(s.skillRuntime.invocationCount)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/memory"
@@ -49,6 +50,7 @@ type bootSpec struct {
 	contextFiles          config.ContextFiles
 	skills                []skill.Spec
 	skillCatalog          *skill.Catalog
+	skillUsage            *skill.UsageTracker
 	mcpManager            *mcpclient.Manager
 	mcpServers            map[string]mcpclient.ServerConfig
 	subagentTool          *agentcore.SubAgentTool
@@ -155,6 +157,21 @@ func envHintFor(settings config.Resolved) string {
 	return fmt.Sprintf("Using %s from environment", envKey)
 }
 
+func resolveSkillUsageTracker() (*skill.UsageTracker, error) {
+	configDir := config.UserConfigDir()
+	if configDir == "" {
+		return nil, nil
+	}
+	return skill.NewUsageTracker(filepath.Join(configDir, "skill-usage.json"))
+}
+
+func skillUsageScores(tracker *skill.UsageTracker) map[string]float64 {
+	if tracker == nil {
+		return nil
+	}
+	return tracker.Scores(time.Now())
+}
+
 func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, error) {
 	activeProvider := input.settings.Provider
 	if input.snapshot.Provider != "" {
@@ -194,6 +211,10 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	config.EnsureMemoryDir(input.cwd)
 	skillCatalog := skill.NewCatalog(input.cwd)
 	skills := skillCatalog.List()
+	skillUsage, err := resolveSkillUsageTracker()
+	if err != nil {
+		return nil, fmt.Errorf("skill usage: %w", err)
+	}
 
 	rules, err := approval.ParseRuleSet(settings.Permissions.Allow, settings.Permissions.Deny)
 	if err != nil {
@@ -222,7 +243,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		}
 	}
 
-	parts := buildSystemParts(input.cwd, tools, ctxFiles, skills, mcpManager)
+	parts := buildSystemParts(input.cwd, tools, ctxFiles, skills, skillUsageScores(skillUsage), mcpManager)
 
 	var hookMW agentcore.ToolMiddleware
 	var hookRunner *hooks.Runner
@@ -246,6 +267,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		contextFiles:          ctxFiles,
 		skills:                skills,
 		skillCatalog:          skillCatalog,
+		skillUsage:            skillUsage,
 		mcpManager:            mcpManager,
 		mcpServers:            mcpServers,
 		subagentTool:          subagentTool,
@@ -430,7 +452,7 @@ type systemParts struct {
 	reminders   []string // <system-reminder> fragments for each user message
 }
 
-func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []skill.Spec, mcpManager *mcpclient.Manager) systemParts {
+func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []skill.Spec, usage map[string]float64, mcpManager *mcpclient.Manager) systemParts {
 	// Separate visible tools from deferred tools.
 	var filter agentcore.DeferFilter
 	for _, t := range tools {
@@ -479,7 +501,7 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 	}
 
 	// Reminders: skills + context files for user message injection.
-	reminders := config.BuildReminders(ctxFiles, skill.OrderForPrompt(skills, cwd, nil))
+	reminders := config.BuildReminders(ctxFiles, skill.OrderForPrompt(skills, cwd, usage))
 
 	return systemParts{
 		blocks:      blocks,
@@ -572,6 +594,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		ContextFiles:          spec.contextFiles,
 		Skills:                spec.skills,
 		SkillCatalog:          spec.skillCatalog,
+		SkillUsage:            spec.skillUsage,
 		HookRunner:            spec.hookRunner,
 		DeferredToolsPreamble: spec.deferredToolsPreamble,
 		Reminders:             spec.reminders,

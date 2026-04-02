@@ -885,11 +885,26 @@ func (a *App) sendAsPrompt(text string) tea.Cmd {
 	}
 }
 
-func (a *App) sendSkillPrompt(result *skill.InvocationResult) tea.Cmd {
+func (a *App) executeSkillInvocation(result *skill.InvocationResult) tea.Cmd {
 	return func() tea.Msg {
-		if err := a.Session.ApplySkillInvocation(result); err != nil {
-			return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Failed to apply skill: " + err.Error())}
+		found := a.Session.ToolsByName("subagent")
+		var forkExecutor tools.ForkExecutor
+		if len(found) > 0 {
+			forkExecutor = found[0].Execute
 		}
-		return tui.PromptMsg{Text: result.PromptText}
+
+		execResult, err := tools.ExecuteSkillInvocation(context.Background(), result, a.Session.ApplySkillInvocation, forkExecutor)
+		if err != nil {
+			if result != nil && result.Mode == skill.ModeFork && len(found) == 0 {
+				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("subagent tool is not available for forked skill execution")}
+			}
+			return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Skill execution failed: " + err.Error())}
+		}
+		if execResult.Forked {
+			return tui.CommandResultMsg{
+				Text: tui.CommandStyle.Render(tui.FormatSubagentOutput(execResult.ForkOutput)),
+			}
+		}
+		return tui.PromptMsg{Text: execResult.PromptText}
 	}
 }

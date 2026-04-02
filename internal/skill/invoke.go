@@ -50,9 +50,15 @@ func ProcessInvocation(ctx context.Context, catalog *Catalog, in InvokeInput) (*
 
 	allowedTools := append([]string(nil), spec.AllowedTools...)
 	hooks := cloneHooks(spec.Hooks)
+	modelOverride := spec.Model
+	effort := spec.Effort
+	paths := append([]string(nil), spec.Paths...)
 	if !SourceAllowsPrivilegedFields(spec.Source) {
 		allowedTools = nil
 		hooks = nil
+		modelOverride = ""
+		effort = ""
+		paths = nil
 	}
 
 	return &InvocationResult{
@@ -62,9 +68,9 @@ func ProcessInvocation(ctx context.Context, catalog *Catalog, in InvokeInput) (*
 		Agent:      NormalizeAgentType(spec.Agent),
 		Delta: Delta{
 			AllowedTools:  allowedTools,
-			ModelOverride: spec.Model,
-			Effort:        spec.Effort,
-			Paths:         append([]string(nil), spec.Paths...),
+			ModelOverride: modelOverride,
+			Effort:        effort,
+			Paths:         paths,
 			Hooks:         hooks,
 		},
 	}, nil

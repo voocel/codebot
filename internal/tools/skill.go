@@ -20,6 +20,12 @@ type ForkExecutor func(ctx context.Context, args json.RawMessage) (json.RawMessa
 type AllowToolsSetter func(tools []string)
 type InvocationApplier func(result *skill.InvocationResult) error
 
+type SkillExecutionResult struct {
+	PromptText string
+	Forked     bool
+	ForkOutput json.RawMessage
+}
+
 // SkillTool lets the LLM invoke skills by name.
 // It loads the skill file, strips frontmatter, expands $ARGUMENTS placeholders,
 // and returns the formatted content as a tool result.
@@ -93,6 +99,49 @@ type skillArgs struct {
 	Args  string `json:"args"`
 }
 
+func ExecuteSkillInvocation(ctx context.Context, result *skill.InvocationResult, apply InvocationApplier, fork ForkExecutor) (*SkillExecutionResult, error) {
+	if result == nil {
+		return nil, fmt.Errorf("skill invocation result is nil")
+	}
+	if apply != nil {
+		if err := apply(result); err != nil {
+			return nil, err
+		}
+	}
+	if result.Mode != skill.ModeFork {
+		return &SkillExecutionResult{PromptText: result.PromptText}, nil
+	}
+	if fork == nil {
+		return nil, fmt.Errorf("forked skill %q requires a fork executor", result.Spec.Name)
+	}
+	forkArgs, err := BuildSkillForkArgs(result)
+	if err != nil {
+		return nil, err
+	}
+	out, err := fork(ctx, forkArgs)
+	if err != nil {
+		return nil, err
+	}
+	return &SkillExecutionResult{
+		Forked:     true,
+		ForkOutput: out,
+	}, nil
+}
+
+func BuildSkillForkArgs(result *skill.InvocationResult) (json.RawMessage, error) {
+	if result == nil {
+		return nil, fmt.Errorf("skill invocation result is nil")
+	}
+	params := map[string]string{
+		"agent": result.Agent,
+		"task":  result.PromptText,
+	}
+	if result.Delta.ModelOverride != "" {
+		params["model"] = result.Delta.ModelOverride
+	}
+	return json.Marshal(params)
+}
+
 func (t *SkillTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a skillArgs
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -129,32 +178,22 @@ func (t *SkillTool) Execute(ctx context.Context, args json.RawMessage) (json.Raw
 		return nil, err
 	}
 
-	// context: fork — delegate to a subagent.
-	if result.Mode == skill.ModeFork && forkExecutor != nil {
-		if applyInvocation != nil {
-			if err := applyInvocation(result); err != nil {
-				return nil, err
+	execApply := applyInvocation
+	if execApply == nil && allowSetter != nil {
+		execApply = func(result *skill.InvocationResult) error {
+			if result != nil && result.Mode != skill.ModeFork {
+				allowSetter(result.Delta.AllowedTools)
 			}
+			return nil
 		}
-		forkParams := map[string]string{
-			"agent": result.Agent,
-			"task":  result.PromptText,
-		}
-		if result.Delta.ModelOverride != "" {
-			forkParams["model"] = result.Delta.ModelOverride
-		}
-		forkArgs, _ := json.Marshal(forkParams)
-		return forkExecutor(ctx, forkArgs)
 	}
 
-	if applyInvocation != nil {
-		if err := applyInvocation(result); err != nil {
-			return nil, err
-		}
-	} else if allowSetter != nil {
-		// Backward-compatible fallback for tests/older wiring.
-		allowSetter(result.Delta.AllowedTools)
+	execResult, err := ExecuteSkillInvocation(ctx, result, execApply, forkExecutor)
+	if err != nil {
+		return nil, err
 	}
-
-	return json.Marshal(result.PromptText)
+	if execResult.Forked {
+		return execResult.ForkOutput, nil
+	}
+	return json.Marshal(execResult.PromptText)
 }

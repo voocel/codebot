@@ -412,6 +412,53 @@ func (m *namedChatModel) GenerateStream(
 
 func (m *namedChatModel) SupportsTools() bool { return true }
 
+type countingChatModel struct {
+	mu        sync.Mutex
+	callCount int
+}
+
+func (m *countingChatModel) Generate(
+	_ context.Context,
+	_ []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	m.mu.Lock()
+	m.callCount++
+	m.mu.Unlock()
+	return &agentcore.LLMResponse{
+		Message: assistantTextMessage("counted"),
+	}, nil
+}
+
+func (m *countingChatModel) GenerateStream(
+	ctx context.Context,
+	msgs []agentcore.Message,
+	tools []agentcore.ToolSpec,
+	opts ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	resp, err := m.Generate(ctx, msgs, tools, opts...)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{
+		Type:       agentcore.StreamEventDone,
+		Message:    resp.Message,
+		StopReason: resp.Message.StopReason,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *countingChatModel) SupportsTools() bool { return true }
+
+func (m *countingChatModel) Calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
+
 func TestApplySkillInvocationUsesTemporaryOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -480,12 +527,12 @@ func TestApplySkillInvocationUsesTemporaryOverrides(t *testing.T) {
 	if got := s.Settings().ThinkingLevel; got != "low" {
 		t.Fatalf("restored thinking = %q, want low", got)
 	}
-	if hooks := s.CurrentSkillHooks(); hooks != nil {
-		t.Fatalf("expected hooks cleared, got %#v", hooks)
+	if hooks := s.CurrentSkillHooks(); len(hooks["Notification"]) != 1 {
+		t.Fatalf("expected session-scoped hooks to remain registered, got %#v", hooks)
 	}
 }
 
-func TestSkillNotificationHooksRemainActiveUntilTurnEnds(t *testing.T) {
+func TestSkillNotificationHooksRemainActiveAcrossTurns(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -530,8 +577,18 @@ func TestSkillNotificationHooksRemainActiveUntilTurnEnds(t *testing.T) {
 		_, err := os.Stat(marker)
 		return err == nil
 	})
-	if hooks := s.CurrentSkillHooks(); hooks != nil {
-		t.Fatalf("expected skill hooks cleared after turn end, got %#v", hooks)
+
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("remove marker: %v", err)
+	}
+	runner.RunNotification(context.Background(), "second turn")
+	waitFor(t, 2*time.Second, func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+
+	if hooks := s.CurrentSkillHooks(); len(hooks["Notification"]) != 1 {
+		t.Fatalf("expected skill hooks to persist after turn end, got %#v", hooks)
 	}
 }
 
@@ -574,6 +631,50 @@ func TestApplySkillInvocationForkOnlyRecords(t *testing.T) {
 	defer s.mu.Unlock()
 	if s.skillRuntime.invocationCount["debug"] != 1 {
 		t.Fatalf("expected fork skill invocation to be recorded, got %#v", s.skillRuntime.invocationCount)
+	}
+}
+
+func TestApplySkillInvocationQueuesPathHintsWithoutIdleAutoResume(t *testing.T) {
+	t.Parallel()
+
+	model := &countingChatModel{}
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleAssistant, "previous answer"),
+	}); err != nil {
+		t.Fatalf("SetMessages: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	err := s.ApplySkillInvocation(&skill.InvocationResult{
+		Spec:       skill.Spec{Name: "review"},
+		PromptText: "review prompt",
+		Delta: skill.Delta{
+			Paths: []string{"internal/skill/**"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplySkillInvocation error: %v", err)
+	}
+
+	if got := model.Calls(); got != 0 {
+		t.Fatalf("expected no idle auto-resume for path hints, got %d model calls", got)
+	}
+
+	s.mu.Lock()
+	reminders := append([]string(nil), s.runtimeReminders...)
+	s.mu.Unlock()
+	if len(reminders) != 1 {
+		t.Fatalf("expected one queued path reminder, got %#v", reminders)
+	}
+	if !strings.Contains(reminders[0], "internal/skill/**") {
+		t.Fatalf("expected path reminder to mention skill paths, got %q", reminders[0])
 	}
 }
 
