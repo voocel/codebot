@@ -24,7 +24,7 @@ type SessionConfig struct {
 	Registry  *provider.ModelRegistry
 	Settings  config.Resolved
 	Cwd       string
-	TodoStore *localtools.TodoStore
+	TaskStore *localtools.TaskStore
 	// CreateModel allows tests/integrations to override model construction.
 	// Defaults to provider.CreateModel when nil.
 	CreateModel ModelFactory
@@ -83,7 +83,7 @@ type Session struct {
 	suffix            string
 	beforePrompt      func()
 	hookRunner        *hooks.Runner
-	todoStore         *localtools.TodoStore
+	taskStore         *localtools.TaskStore
 	skillAllowsSetter func([]string)
 	skillRuntime      skillRuntimeState
 
@@ -165,7 +165,7 @@ func NewSession(cfg SessionConfig) *Session {
 		lazyPersist:       cfg.LazyPersist,
 		chatModel:         cfg.ChatModel,
 		hookRunner:        cfg.HookRunner,
-		todoStore:         cfg.TodoStore,
+		taskStore:         cfg.TaskStore,
 		allTools:          cfg.Tools,
 		activeTools:       cfg.Tools,
 		contextFiles:      cfg.ContextFiles,
@@ -193,18 +193,18 @@ func NewSession(cfg SessionConfig) *Session {
 	return s
 }
 
-func (s *Session) SetTodoNotifyFn(fn localtools.TodoNotifyFn) {
-	if s.todoStore == nil {
+func (s *Session) SetTaskNotifyFn(fn localtools.TaskNotifyFn) {
+	if s.taskStore == nil {
 		return
 	}
-	s.todoStore.SetNotifyFn(fn)
+	s.taskStore.SetNotifyFn(fn)
 }
 
-func (s *Session) TodoSnapshot() localtools.TodoSnapshot {
-	if s.todoStore == nil {
-		return localtools.TodoSnapshot{}
+func (s *Session) TaskSnapshot() localtools.TaskSnapshot {
+	if s.taskStore == nil {
+		return localtools.TaskSnapshot{}
 	}
-	return s.todoStore.Snapshot()
+	return s.taskStore.Snapshot()
 }
 
 func (s *Session) resetHarnessStateLocked() {

@@ -1219,14 +1219,15 @@ func TestApplyStageCompactionPruneMasksOlderMessages(t *testing.T) {
 func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testing.T) {
 	t.Parallel()
 
-	todoStore, todoTools := localtools.NewTodoTools()
-	todoStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
-	inProgress := localtools.TodoInProgress
-	if _, err := todoStore.Update("1", localtools.TodoUpdateOpts{Status: &inProgress}); err != nil {
+	taskStore := localtools.NewTaskStore()
+	taskTools := localtools.NewTaskTools(taskStore, nil)
+	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
+	inProgress := localtools.TaskInProgress
+	if _, err := taskStore.Update("1", localtools.TaskUpdateOpts{Status: &inProgress}); err != nil {
 		t.Fatalf("update task: %v", err)
 	}
 
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(todoTools...))
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
 	if err := ag.SetMessages([]agentcore.AgentMessage{
 		textMessage(agentcore.RoleUser, "上一轮任务"),
 		textMessage(agentcore.RoleAssistant, "已经完成修复，相关改动已处理好。"),
@@ -1237,8 +1238,8 @@ func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testi
 		Agent:     ag,
 		Settings:  config.Resolved{MaxTurns: 30},
 		Cwd:       t.TempDir(),
-		Tools:     todoTools,
-		TodoStore: todoStore,
+		Tools:     taskTools,
+		TaskStore: taskStore,
 	})
 	t.Cleanup(s.Close)
 
@@ -1261,20 +1262,21 @@ func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testi
 func TestAgentEndDoesNotQueueReminderWhenNoTasksRemain(t *testing.T) {
 	t.Parallel()
 
-	todoStore, todoTools := localtools.NewTodoTools()
-	todoStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
-	done := localtools.TodoDone
-	if _, err := todoStore.Update("1", localtools.TodoUpdateOpts{Status: &done}); err != nil {
+	taskStore := localtools.NewTaskStore()
+	taskTools := localtools.NewTaskTools(taskStore, nil)
+	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
+	completed := localtools.TaskCompleted
+	if _, err := taskStore.Update("1", localtools.TaskUpdateOpts{Status: &completed}); err != nil {
 		t.Fatalf("update task: %v", err)
 	}
 
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(todoTools...))
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
 	s := NewSession(SessionConfig{
 		Agent:     ag,
 		Settings:  config.Resolved{MaxTurns: 30},
 		Cwd:       t.TempDir(),
-		Tools:     todoTools,
-		TodoStore: todoStore,
+		Tools:     taskTools,
+		TaskStore: taskStore,
 	})
 	t.Cleanup(s.Close)
 

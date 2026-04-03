@@ -472,9 +472,9 @@ func (m *Model) renderQueuedMsgs() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// renderTodoList renders the todo progress bar and todo list.
-func (m *Model) renderTodoList() string {
-	snap := m.Todos
+// renderTaskList renders the task progress bar and task list.
+func (m *Model) renderTaskList() string {
+	snap := m.Tasks
 	if snap == nil || snap.Total == 0 {
 		return ""
 	}
@@ -484,13 +484,13 @@ func (m *Model) renderTodoList() string {
 	barWidth := min(max(snap.Total, 10), 24)
 	filled := 0
 	if snap.Total > 0 {
-		filled = snap.Done * barWidth / snap.Total
+		filled = snap.Completed * barWidth / snap.Total
 	}
 	bar := lipgloss.NewStyle().Foreground(ColorPrimary).Render(strings.Repeat("█", filled)) +
 		MutedStyle.Render(strings.Repeat("░", barWidth-filled))
-	b.WriteString(CardTitleStyle.Render("Todo Progress"))
+	b.WriteString(CardTitleStyle.Render("Task Progress"))
 	b.WriteString("\n")
-	b.WriteString(TaskProgressStyle.Render(fmt.Sprintf("%s  %d/%d done", bar, snap.Done, snap.Total)))
+	b.WriteString(TaskProgressStyle.Render(fmt.Sprintf("%s  %d/%d completed", bar, snap.Completed, snap.Total)))
 
 	for _, t := range snap.Items {
 		b.WriteByte('\n')
@@ -503,14 +503,14 @@ func (m *Model) renderTodoList() string {
 		case "in_progress":
 			icon = "◐"
 			color = ColorTool
-		case "done":
+		case "completed":
 			icon = "●"
 			color = ColorSuccess
 		default:
 			icon = "○"
 			color = ColorMuted
 		}
-		text := t.Title
+		text := t.Subject
 		if t.Status == "in_progress" && t.ActiveForm != "" {
 			text = t.ActiveForm
 		}

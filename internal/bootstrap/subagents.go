@@ -54,6 +54,11 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			Tools:        readOnly,
 			MaxTurns:     25,
 		},
+		// NOTE: coder subagent intentionally does NOT have task_* tools.
+		// The main agent owns the task list; short-lived subagents report
+		// results back and the main agent updates task status.
+		// TODO(team): when teammate (long-running agent) is implemented,
+		// grant task_* tools so teammates can coordinate via shared tasks.
 		agentcore.SubAgentConfig{
 			Name:         "coder",
 			Description:  "General-purpose coding agent. Independently search, read, and write code to complete subtasks.",

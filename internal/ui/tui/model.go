@@ -138,7 +138,7 @@ type Model struct {
 	AskUser    *askUserState    // non-nil when ask-user UI is active
 	Permission *permissionState // non-nil when permission prompt is active
 
-	Todos *tools.TodoSnapshot // non-nil when todo items exist; displayed above input
+	Tasks *tools.TaskSnapshot // non-nil when task items exist; displayed above input
 
 	QueuedMsgs []string // messages queued while agent is running (display only)
 
@@ -282,12 +282,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PermissionDismissMsg:
 		m.Permission = nil
 		return m, nil
-	case TodoListUpdateMsg:
+	case TaskListUpdateMsg:
 		if msg.Snapshot.Total == 0 {
-			m.Todos = nil
+			m.Tasks = nil
 		} else {
 			snap := msg.Snapshot
-			m.Todos = &snap
+			m.Tasks = &snap
 		}
 		return m, nil
 	case MCPReadyMsg:
@@ -408,9 +408,9 @@ func (m Model) View() string {
 		parts = append(parts, m.renderRunSummary(), "")
 	}
 
-	// Todo list (persistent, non-modal display above input)
-	if m.Todos != nil && m.Todos.Total > 0 {
-		parts = append(parts, m.renderTodoList(), "")
+	// Task list (persistent, non-modal display above input)
+	if m.Tasks != nil && m.Tasks.Total > 0 {
+		parts = append(parts, m.renderTaskList(), "")
 	}
 
 	// Interactive command overlay (e.g., /model selector, /btw side question).

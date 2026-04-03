@@ -233,7 +233,7 @@ func (s *Session) LastTurnOutcome() TurnOutcomeSnapshot {
 
 func isTaskMutationTool(name string) bool {
 	switch name {
-	case "todo_create", "todo_update":
+	case "task_create", "task_update":
 		return true
 	default:
 		return false
@@ -242,7 +242,7 @@ func isTaskMutationTool(name string) bool {
 
 func isWriteLikeTool(name string) bool {
 	switch name {
-	case "bash", "todo_create", "todo_update", "cron_create", "cron_delete", "write", "edit", "replace", "apply_patch", "delete":
+	case "bash", "task_create", "task_update", "cron_create", "cron_delete", "write", "edit", "replace", "apply_patch", "delete":
 		return true
 	default:
 		return false

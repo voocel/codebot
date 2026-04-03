@@ -44,9 +44,9 @@ type PasteErrorMsg struct {
 	Text string
 }
 
-// TodoListUpdateMsg notifies the TUI that the todo list has changed.
-type TodoListUpdateMsg struct {
-	Snapshot tools.TodoSnapshot
+// TaskListUpdateMsg notifies the TUI that the task list has changed.
+type TaskListUpdateMsg struct {
+	Snapshot tools.TaskSnapshot
 }
 
 // TasksRefreshMsg is a periodic tick that triggers a re-render of the /tasks overlay.

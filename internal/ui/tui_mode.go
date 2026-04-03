@@ -101,12 +101,12 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 		}
 	}
 
-	// Wire Todo tools to TUI — notify on every todo mutation.
-	sess.SetTodoNotifyFn(func(snap tools.TodoSnapshot) {
-		p.Send(tui.TodoListUpdateMsg{Snapshot: snap})
+	// Wire Task tools to TUI — notify on every task mutation.
+	sess.SetTaskNotifyFn(func(snap tools.TaskSnapshot) {
+		p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
 	})
-	if snap := sess.TodoSnapshot(); snap.Total > 0 {
-		m.Todos = &snap
+	if snap := sess.TaskSnapshot(); snap.Total > 0 {
+		m.Tasks = &snap
 	}
 
 	// Wire Cron tools to TUI — start scheduler that sends prompts.
