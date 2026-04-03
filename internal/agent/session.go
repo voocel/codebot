@@ -18,13 +18,14 @@ type ModelFactory func(prov, model, apiKey, baseURL string) (agentcore.ChatModel
 
 // SessionConfig configures a new Session.
 type SessionConfig struct {
-	Agent     *agentcore.Agent
-	Store     *storage.Store
-	Manager   *storage.Manager
-	Registry  *provider.ModelRegistry
-	Settings  config.Resolved
-	Cwd       string
-	TaskStore *localtools.TaskStore
+	Agent          *agentcore.Agent
+	ContextManager agentcore.ContextManager
+	Store          *storage.Store
+	Manager        *storage.Manager
+	Registry       *provider.ModelRegistry
+	Settings       config.Resolved
+	Cwd            string
+	TaskStore      *localtools.TaskStore
 	// CreateModel allows tests/integrations to override model construction.
 	// Defaults to provider.CreateModel when nil.
 	CreateModel ModelFactory
@@ -61,11 +62,12 @@ type SessionConfig struct {
 // Session is the business-logic core that wraps Agent + session persistence.
 // It is independent of any UI framework and drives interactive, print, and RPC modes.
 type Session struct {
-	agent    *agentcore.Agent
-	store    *storage.Store
-	mgr      *storage.Manager
-	registry *provider.ModelRegistry
-	settings config.Resolved
+	agent          *agentcore.Agent
+	contextManager agentcore.ContextManager
+	store          *storage.Store
+	mgr            *storage.Manager
+	registry       *provider.ModelRegistry
+	settings       config.Resolved
 
 	provider  string
 	modelName string
@@ -98,8 +100,7 @@ type Session struct {
 	listeners []func(SessionEvent)
 	unsub     func()
 
-	retryAttempt     int
-	overflowDetected bool
+	retryAttempt int
 
 	chatModel agentcore.ChatModel
 
@@ -153,6 +154,7 @@ func NewSession(cfg SessionConfig) *Session {
 
 	s := &Session{
 		agent:             cfg.Agent,
+		contextManager:    cfg.ContextManager,
 		store:             cfg.Store,
 		mgr:               cfg.Manager,
 		registry:          cfg.Registry,

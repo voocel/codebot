@@ -23,8 +23,6 @@ func (s *Session) Prompt(text string) error {
 	}
 	if s.runtime != nil {
 		s.runtime.beforePrompt()
-	} else {
-		s.context.microcompact()
 	}
 
 	var msgs []agentcore.AgentMessage
@@ -43,8 +41,6 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 	}
 	if s.runtime != nil {
 		s.runtime.beforePrompt()
-	} else {
-		s.context.microcompact()
 	}
 
 	var msgs []agentcore.AgentMessage

@@ -858,9 +858,25 @@ func formatLastCompaction(snapshot agent.CompactionSnapshot, ok bool) string {
 	if snapshot.Changed {
 		status = fmt.Sprintf("changed, %s -> %s", tui.FormatTokens(snapshot.TokensBefore), tui.FormatTokens(snapshot.TokensAfter))
 	}
-	return fmt.Sprintf("%s / %s, %s, at %s",
-		snapshot.Kind,
-		snapshot.Reason,
+	label := fmt.Sprintf("%s / %s", snapshot.Kind, snapshot.Reason)
+	if strategy := prettyCompactionStrategy(snapshot.Strategy); strategy != "" {
+		label += " / " + strategy
+	}
+	if snapshot.CompactedCount > 0 || snapshot.KeptCount > 0 || snapshot.SplitTurn {
+		var detailParts []string
+		if snapshot.CompactedCount > 0 {
+			detailParts = append(detailParts, fmt.Sprintf("compacted=%d", snapshot.CompactedCount))
+		}
+		if snapshot.KeptCount > 0 {
+			detailParts = append(detailParts, fmt.Sprintf("kept=%d", snapshot.KeptCount))
+		}
+		if snapshot.SplitTurn {
+			detailParts = append(detailParts, "split-turn")
+		}
+		label += " / " + strings.Join(detailParts, ",")
+	}
+	return fmt.Sprintf("%s, %s, at %s",
+		label,
 		status,
 		snapshot.Timestamp.Format("15:04:05"),
 	)

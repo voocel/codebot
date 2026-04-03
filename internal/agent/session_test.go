@@ -15,9 +15,9 @@ import (
 	"github.com/voocel/agentcore/memory"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
-	localtools "github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 type stubChatModel struct{}
@@ -357,26 +357,6 @@ func TestSessionAgentEndFiresNotificationHookWithoutUI(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("expected notification hook to fire on agent end without UI")
-}
-
-func TestHandleAgentEndDoesNotContinueWhenOverflowCompactionUnchanged(t *testing.T) {
-	t.Parallel()
-
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
-	s := NewSession(SessionConfig{
-		Agent:    ag,
-		Settings: config.Resolved{MaxTurns: 30},
-		Cwd:      t.TempDir(),
-	})
-	t.Cleanup(s.Close)
-
-	s.mu.Lock()
-	s.overflowDetected = true
-	s.mu.Unlock()
-
-	if continued := s.context.handleAgentEnd(); continued {
-		t.Fatal("expected overflow handling to stop when compaction made no changes")
-	}
 }
 
 type namedChatModel struct {
@@ -1147,75 +1127,6 @@ func TestRepeatedToolCallDoesNotTriggerWhenInterleaved(t *testing.T) {
 	}
 }
 
-func TestStageForPercent(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		percent float64
-		want    contextPressureStage
-	}{
-		{percent: 50, want: contextStageNormal},
-		{percent: 75, want: contextStageWarning},
-		{percent: 80, want: contextStageTrim},
-		{percent: 90, want: contextStagePrune},
-		{percent: 98, want: contextStageCompact},
-	}
-
-	for _, tc := range cases {
-		if got := stageForPercent(tc.percent); got != tc.want {
-			t.Fatalf("stageForPercent(%v) = %v, want %v", tc.percent, got, tc.want)
-		}
-	}
-}
-
-func TestApplyStageCompactionTrimRewritesOlderLargeMessages(t *testing.T) {
-	t.Parallel()
-
-	msgs := []agentcore.AgentMessage{
-		textMessage(agentcore.RoleUser, strings.Repeat("A", 8000)),
-		textMessage(agentcore.RoleAssistant, "older-1"),
-		textMessage(agentcore.RoleAssistant, "older-2"),
-		textMessage(agentcore.RoleAssistant, "older-3"),
-		textMessage(agentcore.RoleAssistant, "recent"),
-	}
-
-	compacted, changed := applyStageCompactionToMessages(msgs, contextStageTrim)
-	if !changed {
-		t.Fatal("expected trim stage to change messages")
-	}
-
-	first, ok := compacted[0].(agentcore.Message)
-	if !ok {
-		t.Fatal("expected compacted message")
-	}
-	if !strings.Contains(first.TextContent(), "characters trimmed") {
-		t.Fatalf("expected trimmed marker, got %q", first.TextContent())
-	}
-}
-
-func TestApplyStageCompactionPruneMasksOlderMessages(t *testing.T) {
-	t.Parallel()
-
-	msgs := []agentcore.AgentMessage{
-		textMessage(agentcore.RoleUser, strings.Repeat("B", 5000)),
-		textMessage(agentcore.RoleAssistant, strings.Repeat("C", 5000)),
-		textMessage(agentcore.RoleAssistant, "recent"),
-	}
-
-	compacted, changed := applyStageCompactionToMessages(msgs, contextStagePrune)
-	if !changed {
-		t.Fatal("expected prune stage to change messages")
-	}
-
-	first, ok := compacted[0].(agentcore.Message)
-	if !ok {
-		t.Fatal("expected compacted message")
-	}
-	if !strings.Contains(first.TextContent(), "Earlier long output omitted") {
-		t.Fatalf("expected prune placeholder, got %q", first.TextContent())
-	}
-}
-
 func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testing.T) {
 	t.Parallel()
 
@@ -1368,31 +1279,39 @@ func TestContinueWithRuntimeReminderAutoContinuesWhenIdle(t *testing.T) {
 func TestRuntimeMetricsTrackCompactionSavings(t *testing.T) {
 	t.Parallel()
 
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	model := &stubChatModel{}
+	manager := memory.NewEngine(memory.EngineConfig{
+		ContextWindow: 16,
+		Strategies: []memory.Strategy{
+			memory.NewFullSummary(memory.FullSummaryConfig{
+				Model:            model,
+				KeepRecentTokens: 1,
+			}),
+		},
+	})
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
 	s := NewSession(SessionConfig{
-		Agent:    ag,
-		Settings: config.Resolved{MaxTurns: 30},
-		Cwd:      t.TempDir(),
+		Agent:          ag,
+		ContextManager: manager,
+		Settings:       config.Resolved{MaxTurns: 30},
+		Cwd:            t.TempDir(),
 	})
 	t.Cleanup(s.Close)
 
 	msgs := []agentcore.AgentMessage{
-		textMessage(agentcore.RoleUser, strings.Repeat("X", 9000)),
-		textMessage(agentcore.RoleAssistant, "older-1"),
-		textMessage(agentcore.RoleAssistant, "older-2"),
-		textMessage(agentcore.RoleAssistant, "older-3"),
+		textMessage(agentcore.RoleUser, strings.Repeat("X", 300)),
 		textMessage(agentcore.RoleAssistant, "recent"),
 	}
 	if err := ag.SetMessages(msgs); err != nil {
 		t.Fatalf("set messages: %v", err)
 	}
 
-	result, err := s.context.lightweightCompact("threshold", contextStageTrim)
+	result, err := s.Compact()
 	if err != nil {
-		t.Fatalf("lightweight compact: %v", err)
+		t.Fatalf("compact: %v", err)
 	}
 	if !result.Changed {
-		t.Fatal("expected lightweight compaction to change context")
+		t.Fatal("expected compaction to change context")
 	}
 
 	metrics := s.RuntimeMetrics()
@@ -1405,11 +1324,56 @@ func TestRuntimeMetricsTrackCompactionSavings(t *testing.T) {
 	if metrics.CompactionSaved <= 0 {
 		t.Fatalf("expected positive compaction savings, got %#v", metrics)
 	}
+	if metrics.CompactionByKind[CompactionKindFull] != 1 {
+		t.Fatalf("expected full compaction count, got %#v", metrics.CompactionByKind)
+	}
+	if metrics.CompactionSavedByKind[CompactionKindFull] <= 0 {
+		t.Fatalf("expected full compaction savings, got %#v", metrics.CompactionSavedByKind)
+	}
+}
+
+func TestHandleProjectedCompactionUpdatesMetricsAndEvents(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	var starts, ends int
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		switch ev.Type {
+		case SEAutoCompactionStart:
+			starts++
+		case SEAutoCompactionEnd:
+			ends++
+		}
+	})
+	t.Cleanup(unsub)
+
+	s.HandleProjectedCompaction(memory.ChangeInfo{
+		Reason:       "threshold",
+		Strategy:     "light_trim",
+		Changed:      true,
+		TokensBefore: 1000,
+		TokensAfter:  600,
+	})
+
+	if starts != 1 || ends != 1 {
+		t.Fatalf("expected one auto compaction event pair, got starts=%d ends=%d", starts, ends)
+	}
+	metrics := s.RuntimeMetrics()
+	if metrics.CompactionTotal != 1 || metrics.CompactionChanged != 1 {
+		t.Fatalf("unexpected compaction metrics: %#v", metrics)
+	}
 	if metrics.CompactionByKind[CompactionKindTrim] != 1 {
 		t.Fatalf("expected trim compaction count, got %#v", metrics.CompactionByKind)
 	}
-	if metrics.CompactionSavedByKind[CompactionKindTrim] <= 0 {
-		t.Fatalf("expected trim compaction savings, got %#v", metrics.CompactionSavedByKind)
+	if metrics.CompactionSavedByKind[CompactionKindTrim] != 400 {
+		t.Fatalf("expected trim compaction savings=400, got %#v", metrics.CompactionSavedByKind)
 	}
 }
 
@@ -1430,11 +1394,22 @@ func TestSwitchSessionResetsHarnessDiagnostics(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = target.Close() })
 
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	model := &stubChatModel{}
+	manager := memory.NewEngine(memory.EngineConfig{
+		ContextWindow: 16,
+		Strategies: []memory.Strategy{
+			memory.NewFullSummary(memory.FullSummaryConfig{
+				Model:            model,
+				KeepRecentTokens: 1,
+			}),
+		},
+	})
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
 	s := NewSession(SessionConfig{
-		Agent:   ag,
-		Store:   current,
-		Manager: mgr,
+		Agent:          ag,
+		ContextManager: manager,
+		Store:          current,
+		Manager:        mgr,
 		Settings: config.Resolved{
 			Provider: "openai",
 			Model:    "good-model",
@@ -1469,16 +1444,13 @@ func TestSwitchSessionResetsHarnessDiagnostics(t *testing.T) {
 	s.queueRuntimeReminder("repeat_tool_call:test", ReminderRepeatToolCall, "<system-reminder>test</system-reminder>")
 
 	if err := ag.SetMessages([]agentcore.AgentMessage{
-		textMessage(agentcore.RoleUser, strings.Repeat("X", 9000)),
-		textMessage(agentcore.RoleAssistant, "older-1"),
-		textMessage(agentcore.RoleAssistant, "older-2"),
-		textMessage(agentcore.RoleAssistant, "older-3"),
+		textMessage(agentcore.RoleUser, strings.Repeat("X", 300)),
 		textMessage(agentcore.RoleAssistant, "recent"),
 	}); err != nil {
 		t.Fatalf("set messages: %v", err)
 	}
-	if _, err := s.context.lightweightCompact("threshold", contextStageTrim); err != nil {
-		t.Fatalf("lightweight compact: %v", err)
+	if _, err := s.Compact(); err != nil {
+		t.Fatalf("compact: %v", err)
 	}
 
 	if got := len(s.RecentToolCalls(5)); got == 0 {

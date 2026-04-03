@@ -37,12 +37,16 @@ type ReminderSnapshot struct {
 }
 
 type CompactionSnapshot struct {
-	Kind         CompactionKind
-	Reason       string
-	Changed      bool
-	TokensBefore int
-	TokensAfter  int
-	Timestamp    time.Time
+	Kind           CompactionKind
+	Strategy       string
+	Reason         string
+	Changed        bool
+	TokensBefore   int
+	TokensAfter    int
+	CompactedCount int
+	KeptCount      int
+	SplitTurn      bool
+	Timestamp      time.Time
 }
 
 // SessionEventType identifies a session-level event.
@@ -86,9 +90,13 @@ type SessionEvent struct {
 	RetrySuccess bool
 
 	// Compaction reason: "overflow" or "threshold"
-	CompactionReason  string
-	CompactionKind    CompactionKind
-	CompactionChanged bool
-	TokensBefore      int
-	TokensAfter       int
+	CompactionReason   string
+	CompactionKind     CompactionKind
+	CompactionStrategy string
+	CompactionChanged  bool
+	TokensBefore       int
+	TokensAfter        int
+	CompactedCount     int
+	KeptCount          int
+	SplitTurn          bool
 }

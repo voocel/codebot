@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -429,9 +428,6 @@ func (p *sessionPersistence) tryAutoName() {
 
 func (c *sessionContextController) handleRetry(info *agentcore.RetryInfo) {
 	if agentcore.IsContextOverflow(info.Err) {
-		c.session.mu.Lock()
-		c.session.overflowDetected = true
-		c.session.mu.Unlock()
 		return
 	}
 
@@ -449,9 +445,7 @@ func (c *sessionContextController) handleRetry(info *agentcore.RetryInfo) {
 func (c *sessionContextController) handleAgentEnd() bool {
 	c.session.mu.Lock()
 	retryAttempt := c.session.retryAttempt
-	overflow := c.session.overflowDetected
 	c.session.retryAttempt = 0
-	c.session.overflowDetected = false
 	c.session.mu.Unlock()
 
 	if retryAttempt > 0 {
@@ -460,25 +454,6 @@ func (c *sessionContextController) handleAgentEnd() bool {
 			RetryAttempt: retryAttempt,
 			RetrySuccess: true,
 		})
-	}
-
-	if overflow {
-		if result, err := c.compactWithReason("overflow"); err == nil && result.Changed {
-			c.session.mu.Lock()
-			gen := c.session.generation
-			c.session.mu.Unlock()
-			go func() {
-				if err := c.session.continueIfCurrentGeneration(gen); err != nil {
-					if errors.Is(err, errStaleSessionGeneration) {
-						return
-					}
-					c.session.emitContinueError(err)
-				}
-			}()
-			return true
-		}
-	} else {
-		c.checkAutoCompaction()
 	}
 
 	return false

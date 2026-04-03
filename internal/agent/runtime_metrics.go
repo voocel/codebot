@@ -103,15 +103,19 @@ func (s *Session) recordCompactionResult(kind CompactionKind, changed bool, befo
 	}
 }
 
-func (s *Session) recordCompactionSnapshot(kind CompactionKind, reason string, changed bool, before, after int) {
+func (s *Session) recordCompactionSnapshot(kind CompactionKind, strategy, reason string, changed bool, before, after, compactedCount, keptCount int, splitTurn bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastCompaction = &CompactionSnapshot{
-		Kind:         kind,
-		Reason:       reason,
-		Changed:      changed,
-		TokensBefore: before,
-		TokensAfter:  after,
-		Timestamp:    time.Now(),
+		Kind:           kind,
+		Strategy:       strategy,
+		Reason:         reason,
+		Changed:        changed,
+		TokensBefore:   before,
+		TokensAfter:    after,
+		CompactedCount: compactedCount,
+		KeptCount:      keptCount,
+		SplitTurn:      splitTurn,
+		Timestamp:      time.Now(),
 	}
 }

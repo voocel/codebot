@@ -249,14 +249,18 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 	if ev.CompactionReason == "manual" {
 		return "", false, false
 	}
+	strategySuffix := ""
+	if label := prettyCompactionStrategy(ev.CompactionStrategy); label != "" {
+		strategySuffix = " via " + label
+	}
 
 	switch ev.Type {
 	case agent.SEAutoCompactionStart:
 		switch ev.CompactionReason {
 		case "overflow":
-			return "Context overflow detected; compacting automatically...", true, true
+			return "Context overflow detected; compacting automatically" + strategySuffix + "...", true, true
 		default:
-			return "Auto-compacting context...", true, true
+			return "Auto-compacting context" + strategySuffix + "...", true, true
 		}
 	case agent.SEAutoCompactionEnd:
 		if ev.CompactionChanged && ev.TokensBefore > 0 && ev.TokensAfter > 0 {
@@ -270,15 +274,17 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 			switch ev.CompactionReason {
 			case "overflow":
 				return fmt.Sprintf(
-					"Context %s after overflow: %s -> %s.",
+					"Context %s after overflow%s: %s -> %s.",
 					action,
+					strategySuffix,
 					tui.FormatTokens(ev.TokensBefore),
 					tui.FormatTokens(ev.TokensAfter),
 				), false, true
 			default:
 				return fmt.Sprintf(
-					"Context %s automatically: %s -> %s.",
+					"Context %s automatically%s: %s -> %s.",
 					action,
+					strategySuffix,
 					tui.FormatTokens(ev.TokensBefore),
 					tui.FormatTokens(ev.TokensAfter),
 				), false, true
@@ -287,6 +293,19 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 		return "Auto compaction finished; context unchanged.", true, true
 	default:
 		return "", false, false
+	}
+}
+
+func prettyCompactionStrategy(name string) string {
+	switch name {
+	case "tool_result_microcompact":
+		return "tool-result microcompact"
+	case "light_trim":
+		return "light trim"
+	case "full_summary":
+		return "full summary"
+	default:
+		return ""
 	}
 }
 

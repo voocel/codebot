@@ -362,12 +362,13 @@ func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
 	t.Parallel()
 
 	text, muted, ok := formatAutoCompactionEvent(agent.SessionEvent{
-		Type:              agent.SEAutoCompactionEnd,
-		CompactionReason:  "threshold",
-		CompactionKind:    agent.CompactionKindTrim,
-		CompactionChanged: true,
-		TokensBefore:      128000,
-		TokensAfter:       64000,
+		Type:               agent.SEAutoCompactionEnd,
+		CompactionReason:   "threshold",
+		CompactionKind:     agent.CompactionKindTrim,
+		CompactionStrategy: "light_trim",
+		CompactionChanged:  true,
+		TokensBefore:       128000,
+		TokensAfter:        64000,
 	})
 	if !ok {
 		t.Fatal("expected auto compaction end event to be formatted")
@@ -375,7 +376,7 @@ func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
 	if muted {
 		t.Fatal("expected changed compaction result to use emphasized tone")
 	}
-	for _, want := range []string{"Context trimmed automatically", "128.0k", "64.0k"} {
+	for _, want := range []string{"Context trimmed automatically", "light trim", "128.0k", "64.0k"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}
@@ -474,14 +475,18 @@ func TestFormatLastCompaction(t *testing.T) {
 	t.Parallel()
 
 	changed := formatLastCompaction(agent.CompactionSnapshot{
-		Kind:         agent.CompactionKindTrim,
-		Reason:       "threshold",
-		Changed:      true,
-		TokensBefore: 128000,
-		TokensAfter:  64000,
-		Timestamp:    time.Date(2026, 3, 27, 15, 4, 8, 0, time.Local),
+		Kind:           agent.CompactionKindTrim,
+		Strategy:       "light_trim",
+		Reason:         "threshold",
+		Changed:        true,
+		TokensBefore:   128000,
+		TokensAfter:    64000,
+		CompactedCount: 12,
+		KeptCount:      3,
+		SplitTurn:      true,
+		Timestamp:      time.Date(2026, 3, 27, 15, 4, 8, 0, time.Local),
 	}, true)
-	for _, want := range []string{"trim", "threshold", "changed", "128.0k", "64.0k", "15:04:08"} {
+	for _, want := range []string{"trim", "threshold", "light trim", "compacted=12", "kept=3", "split-turn", "changed", "128.0k", "64.0k", "15:04:08"} {
 		if !strings.Contains(changed, want) {
 			t.Fatalf("expected %q in %q", want, changed)
 		}

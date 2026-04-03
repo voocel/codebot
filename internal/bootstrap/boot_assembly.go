@@ -315,13 +315,14 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 	}
 
 	subagentTool := buildSubAgentTool(subAgentDeps{
-		Cwd:         input.cwd,
-		Model:       chatModel,
-		AllTools:    builtTools,
-		CreateModel: input.createModel,
-		Provider:    activeProvider,
-		Providers:   settings.Providers,
-		SmallModel:  settings.SmallModel, // already resolved: provider config > main model
+		Cwd:           input.cwd,
+		Model:         chatModel,
+		AllTools:      builtTools,
+		ContextWindow: settings.ContextWindow,
+		CreateModel:   input.createModel,
+		Provider:      activeProvider,
+		Providers:     settings.Providers,
+		SmallModel:    settings.SmallModel, // already resolved: provider config > main model
 	})
 	builtTools = append(builtTools, subagentTool)
 
@@ -521,6 +522,23 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 	baseTools = append(baseTools, spec.baseTools...)
 	baseTools = append(baseTools, taskTools...)
 
+	toolCompact := memory.NewToolResultMicrocompact(memory.ToolResultMicrocompactConfig{
+		Classifier: agent.CodebotToolClassifier,
+		KeepRecent: 5,
+	})
+	trimCompact := memory.NewLightTrim(memory.LightTrimConfig{})
+	summaryCompact := memory.NewFullSummary(memory.FullSummaryConfig{
+		Model: spec.chatModel,
+	})
+	contextEngine := memory.NewEngine(memory.EngineConfig{
+		ContextWindow: spec.settings.ContextWindow,
+		Strategies: []memory.Strategy{
+			toolCompact,
+			trimCompact,
+			summaryCompact,
+		},
+	})
+
 	opts := []agentcore.AgentOption{
 		agentcore.WithModel(spec.chatModel),
 		agentcore.WithSystemBlocks(spec.systemBlocks),
@@ -528,13 +546,8 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		agentcore.WithMaxTurns(spec.settings.MaxTurns),
 		agentcore.WithMaxToolErrors(3),
 		agentcore.WithMaxToolConcurrency(4),
-		agentcore.WithContextPipeline(
-			memory.NewCompaction(memory.CompactionConfig{
-				Model:         spec.chatModel,
-				ContextWindow: spec.settings.ContextWindow,
-			}),
-			memory.CompactionConvertToLLM,
-		),
+		agentcore.WithContextManager(contextEngine),
+		agentcore.WithConvertToLLM(memory.CompactionConvertToLLM),
 		agentcore.WithContextWindow(spec.settings.ContextWindow),
 		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
 		agentcore.WithPermissionEngine(spec.approvalEngine),
@@ -593,6 +606,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 
 	sess := agent.NewSession(agent.SessionConfig{
 		Agent:                 ag,
+		ContextManager:        contextEngine,
 		Store:                 input.store,
 		Manager:               input.manager,
 		Registry:              input.registry,
@@ -612,6 +626,9 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		PreambleInjected:      len(input.snapshot.Messages) > 0, // resume: preamble already in history
 		SkillAllowsSetter:     spec.approvalEngine.SetSkillAllows,
 	})
+	summaryCompact.SetPostCompactHooks(sess.PostCompactRecoveryHook())
+	contextEngine.SetProjectHook(sess.HandleProjectedCompaction)
+	contextEngine.SetRecoverHook(sess.HandleOverflowRecovery)
 	for _, tool := range tools {
 		if st, ok := tool.(*localtools.SkillTool); ok {
 			st.SetInvocationApplier(sess.ApplySkillInvocation)

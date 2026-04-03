@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/memory"
 	"github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
@@ -11,15 +12,16 @@ import (
 
 // subAgentDeps holds everything needed to build and configure the SubAgentTool.
 type subAgentDeps struct {
-	Cwd      string
-	Model    agentcore.ChatModel // main agent's model (inherited by plan/coder)
-	AllTools []agentcore.Tool    // main agent's tools BEFORE subagent is appended
+	Cwd           string
+	Model         agentcore.ChatModel // main agent's model (inherited by plan/coder)
+	AllTools      []agentcore.Tool    // main agent's tools BEFORE subagent is appended
+	ContextWindow int
 
 	// For creating alternative models (e.g. a cheaper model for explore).
 	CreateModel agent.ModelFactory
-	Provider    string                         // main provider name
+	Provider    string                           // main provider name
 	Providers   map[string]config.ProviderConfig // per-provider credentials
-	SmallModel  string                         // model name for explore sub-agent
+	SmallModel  string                           // model name for explore sub-agent
 }
 
 // buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
@@ -45,6 +47,10 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			SystemPrompt: config.ExploreSubAgentPrompt(deps.Cwd),
 			Tools:        readOnly,
 			MaxTurns:     20,
+			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
+				return newSubAgentContextManager(model, deps.ContextWindow)
+			},
+			ConvertToLLM: memory.CompactionConvertToLLM,
 		},
 		agentcore.SubAgentConfig{
 			Name:         "plan",
@@ -53,6 +59,10 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			SystemPrompt: config.PlanSubAgentPrompt(deps.Cwd),
 			Tools:        readOnly,
 			MaxTurns:     25,
+			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
+				return newSubAgentContextManager(model, deps.ContextWindow)
+			},
+			ConvertToLLM: memory.CompactionConvertToLLM,
 		},
 		// NOTE: coder subagent intentionally does NOT have task_* tools.
 		// The main agent owns the task list; short-lived subagents report
@@ -66,6 +76,10 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			SystemPrompt: config.CoderSubAgentPrompt(deps.Cwd),
 			Tools:        coderTools,
 			MaxTurns:     30,
+			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
+				return newSubAgentContextManager(model, deps.ContextWindow)
+			},
+			ConvertToLLM: memory.CompactionConvertToLLM,
 		},
 	)
 
@@ -92,6 +106,25 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 	}
 
 	return sat
+}
+
+func newSubAgentContextManager(model agentcore.ChatModel, window int) agentcore.ContextManager {
+	if model == nil || window <= 0 {
+		return nil
+	}
+	return memory.NewEngine(memory.EngineConfig{
+		ContextWindow: window,
+		Strategies: []memory.Strategy{
+			memory.NewToolResultMicrocompact(memory.ToolResultMicrocompactConfig{
+				KeepRecent: 3,
+			}),
+			memory.NewLightTrim(memory.LightTrimConfig{}),
+			memory.NewFullSummary(memory.FullSummaryConfig{
+				Model:            model,
+				KeepRecentTokens: 12000,
+			}),
+		},
+	})
 }
 
 // resolveFromProviders returns credentials for a provider from the map,

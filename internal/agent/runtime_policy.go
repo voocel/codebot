@@ -47,7 +47,6 @@ func newSessionRuntimePolicy(session *Session) *sessionRuntimePolicy {
 }
 
 func (p *sessionRuntimePolicy) beforePrompt() {
-	p.session.context.promptCompact()
 }
 
 func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {
