@@ -15,9 +15,9 @@ import (
 	"github.com/voocel/agentcore/memory"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
+	localtools "github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
-	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 type stubChatModel struct{}
@@ -1219,14 +1219,14 @@ func TestApplyStageCompactionPruneMasksOlderMessages(t *testing.T) {
 func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testing.T) {
 	t.Parallel()
 
-	taskStore, taskTools := localtools.NewTaskTools()
-	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
-	inProgress := localtools.TaskInProgress
-	if _, err := taskStore.Update("1", localtools.UpdateOpts{Status: &inProgress}); err != nil {
+	todoStore, todoTools := localtools.NewTodoTools()
+	todoStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
+	inProgress := localtools.TodoInProgress
+	if _, err := todoStore.Update("1", localtools.TodoUpdateOpts{Status: &inProgress}); err != nil {
 		t.Fatalf("update task: %v", err)
 	}
 
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(todoTools...))
 	if err := ag.SetMessages([]agentcore.AgentMessage{
 		textMessage(agentcore.RoleUser, "上一轮任务"),
 		textMessage(agentcore.RoleAssistant, "已经完成修复，相关改动已处理好。"),
@@ -1234,10 +1234,11 @@ func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testi
 		t.Fatalf("set messages: %v", err)
 	}
 	s := NewSession(SessionConfig{
-		Agent:    ag,
-		Settings: config.Resolved{MaxTurns: 30},
-		Cwd:      t.TempDir(),
-		Tools:    taskTools,
+		Agent:     ag,
+		Settings:  config.Resolved{MaxTurns: 30},
+		Cwd:       t.TempDir(),
+		Tools:     todoTools,
+		TodoStore: todoStore,
 	})
 	t.Cleanup(s.Close)
 
@@ -1260,19 +1261,20 @@ func TestAgentEndDoesNotQueueReminderWithoutAssistantReplyInCurrentTurn(t *testi
 func TestAgentEndDoesNotQueueReminderWhenNoTasksRemain(t *testing.T) {
 	t.Parallel()
 
-	taskStore, taskTools := localtools.NewTaskTools()
-	taskStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
-	completed := localtools.TaskCompleted
-	if _, err := taskStore.Update("1", localtools.UpdateOpts{Status: &completed}); err != nil {
+	todoStore, todoTools := localtools.NewTodoTools()
+	todoStore.Create("实现 guard", "补任务闭环检测", "实现中", nil)
+	done := localtools.TodoDone
+	if _, err := todoStore.Update("1", localtools.TodoUpdateOpts{Status: &done}); err != nil {
 		t.Fatalf("update task: %v", err)
 	}
 
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(taskTools...))
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(todoTools...))
 	s := NewSession(SessionConfig{
-		Agent:    ag,
-		Settings: config.Resolved{MaxTurns: 30},
-		Cwd:      t.TempDir(),
-		Tools:    taskTools,
+		Agent:     ag,
+		Settings:  config.Resolved{MaxTurns: 30},
+		Cwd:       t.TempDir(),
+		Tools:     todoTools,
+		TodoStore: todoStore,
 	})
 	t.Cleanup(s.Close)
 

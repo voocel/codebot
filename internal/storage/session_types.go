@@ -15,6 +15,7 @@ const (
 	EntryCompaction     EntryKind = "compaction"
 	EntryThinkingChange EntryKind = "thinking_change"
 	EntrySessionInfo    EntryKind = "session_info"
+	EntryPlanSlug       EntryKind = "plan_slug"
 )
 
 // Entry is a single JSONL line in the session file.
@@ -50,6 +51,12 @@ type ThinkingLevelChange struct {
 type Compaction struct {
 	Summary  string            `json:"summary"`
 	Messages []json.RawMessage `json:"messages,omitempty"`
+}
+
+// PlanSlugEntry records which plan file belongs to this session.
+type PlanSlugEntry struct {
+	Slug  string `json:"slug"`
+	Title string `json:"title"`
 }
 
 // SessionInfo is a summary of a session for listing.

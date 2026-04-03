@@ -317,9 +317,15 @@ func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
 		a.planTitle = extractTitle(a.planContent)
 	}
 
-	// Archive to disk (fire-and-forget, no state dependency).
+	// Archive to disk and record slug in session log.
+	if a.planSlug == "" {
+		a.planSlug = storage.GenerateName()
+	}
 	if a.PlanStore != nil {
-		_ = a.PlanStore.Save(storage.GenerateName(), a.planContent)
+		_ = a.PlanStore.Save(a.planSlug, a.planContent)
+	}
+	if a.SessionStore != nil {
+		_ = a.SessionStore.AppendPlanSlug(a.planSlug, a.planTitle)
 	}
 
 	a.planState = planReview

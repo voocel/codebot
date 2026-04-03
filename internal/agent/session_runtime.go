@@ -1009,7 +1009,10 @@ func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...a
 		return nil, fmt.Errorf("no model configured")
 	}
 
-	raw := s.agent.BuildLLMMessages()
+	raw, err := s.agent.BuildLLMMessages()
+	if err != nil {
+		return nil, fmt.Errorf("build llm messages: %w", err)
+	}
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("no conversation context")
 	}

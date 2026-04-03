@@ -11,10 +11,12 @@ import (
 
 // ContextSnapshot is the projected runtime state from a session log.
 type ContextSnapshot struct {
-	Messages []agentcore.AgentMessage
-	Provider string
-	Model    string
-	Thinking string
+	Messages  []agentcore.AgentMessage
+	Provider  string
+	Model     string
+	Thinking  string
+	PlanSlug  string
+	PlanTitle string
 }
 
 // BuildSnapshot reconstructs runtime state by walking the tree from the current leaf.
@@ -83,6 +85,8 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	lastProvider := ""
 	lastModel := ""
 	lastThinking := ""
+	lastPlanSlug := ""
+	lastPlanTitle := ""
 
 	for _, entry := range chain {
 		switch entry.Kind {
@@ -128,15 +132,23 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 					s.header.Name = name
 				}
 			}
+		case EntryPlanSlug:
+			var ps PlanSlugEntry
+			if json.Unmarshal(entry.Data, &ps) == nil {
+				lastPlanSlug = ps.Slug
+				lastPlanTitle = ps.Title
+			}
 		}
 	}
 
 	repaired := agentcore.RepairMessageSequence(agentcore.CollectMessages(msgs))
 
 	return ContextSnapshot{
-		Messages: agentcore.ToAgentMessages(repaired),
-		Provider: lastProvider,
-		Model:    lastModel,
-		Thinking: lastThinking,
+		Messages:  agentcore.ToAgentMessages(repaired),
+		Provider:  lastProvider,
+		Model:     lastModel,
+		Thinking:  lastThinking,
+		PlanSlug:  lastPlanSlug,
+		PlanTitle: lastPlanTitle,
 	}, nil
 }

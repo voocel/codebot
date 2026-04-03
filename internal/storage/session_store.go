@@ -137,6 +137,15 @@ func (s *Store) AppendCompaction(summary string, keptMessages []json.RawMessage)
 	return s.appendChained(EntryCompaction, data)
 }
 
+// AppendPlanSlug records the plan file slug associated with this session.
+func (s *Store) AppendPlanSlug(slug, title string) error {
+	data, err := json.Marshal(PlanSlugEntry{Slug: slug, Title: title})
+	if err != nil {
+		return fmt.Errorf("marshal plan slug: %w", err)
+	}
+	return s.appendChained(EntryPlanSlug, data)
+}
+
 // SetName updates the session display name by appending a session_info entry.
 func (s *Store) SetName(name string) error {
 	data, err := json.Marshal(map[string]string{"name": name})

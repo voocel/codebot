@@ -47,10 +47,13 @@ type Runtime struct {
 
 	Settings     config.Resolved
 	Session      *agent.Session
+	SessionStore *storage.Store
 	SkillCatalog *skill.Catalog
 	MCPManager   *mcpclient.Manager
 	MCPServers   map[string]mcpclient.ServerConfig // for async connection in TUI
 	EnvHint      string                            // non-empty when credentials come from environment variable
+	PlanSlug     string                            // restored plan slug (empty if no plan)
+	PlanTitle    string                            // restored plan title
 }
 
 // Close releases runtime resources.

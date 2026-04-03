@@ -108,26 +108,38 @@ func pick(list []string) string {
 }
 
 var adjectives = []string{
-	"agile", "bold", "bright", "calm", "clever", "cozy", "crisp",
-	"dainty", "eager", "fancy", "gentle", "glowing", "happy", "humble",
-	"jolly", "keen", "lively", "mellow", "noble", "plucky", "proud",
-	"quiet", "quirky", "rapid", "silly", "smooth", "snazzy", "sorted",
-	"swift", "tidy", "vivid", "warm", "witty", "zesty",
+	"agile", "amber", "arctic", "bold", "brave", "bright", "calm", "clever",
+	"coral", "cozy", "crisp", "dainty", "dapper", "eager", "emerald", "fancy",
+	"fierce", "gentle", "gleaming", "glowing", "golden", "grand", "happy",
+	"humble", "ivory", "jade", "jolly", "keen", "lively", "lunar", "mellow",
+	"mighty", "misty", "noble", "olive", "opal", "plucky", "polar", "proud",
+	"quiet", "quirky", "rapid", "rosy", "rustic", "sandy", "scarlet", "serene",
+	"sharp", "silly", "sleek", "smooth", "snazzy", "solar", "sorted", "steady",
+	"sunny", "swift", "tidy", "vivid", "warm", "witty", "zesty",
 }
 
 var gerunds = []string{
-	"baking", "bouncing", "crafting", "dancing", "drawing", "flying",
-	"frolicking", "gathering", "giggling", "gliding", "hiking", "hugging",
+	"baking", "blazing", "bouncing", "brewing", "carving", "catching",
+	"crafting", "dashing", "dancing", "drifting", "drawing", "dreaming",
+	"fishing", "floating", "flying", "forging", "frolicking", "gardening",
+	"gathering", "giggling", "gliding", "growing", "hiking", "hugging",
 	"humming", "imagining", "jogging", "juggling", "jumping", "knitting",
-	"laughing", "mapping", "napping", "painting", "peeking", "reading",
-	"sailing", "singing", "snuggling", "sprouting", "squishing", "swimming",
-	"thinking", "typing", "walking", "wobbling", "writing", "yawning",
+	"laughing", "leaping", "mapping", "marching", "napping", "painting",
+	"peeking", "planting", "racing", "reading", "roaming", "rolling",
+	"sailing", "singing", "skating", "sketching", "snuggling", "soaring",
+	"sprouting", "squishing", "stacking", "surfing", "swimming", "swinging",
+	"thinking", "tracing", "typing", "walking", "weaving", "wobbling",
+	"writing", "yawning",
 }
 
 var nouns = []string{
-	"breeze", "candle", "cascade", "crown", "dawn", "duckling", "eagle",
-	"feather", "flame", "fountain", "garden", "grove", "harbor", "island",
-	"journal", "lantern", "maple", "meadow", "narwhal", "ocean", "orbit",
-	"pebble", "quilt", "rainbow", "river", "rose", "spark", "star",
-	"sunset", "tulip", "valley", "whale",
+	"aurora", "bamboo", "beacon", "birch", "blossom", "breeze", "brook",
+	"candle", "canyon", "cascade", "cedar", "cliff", "cloud", "coral",
+	"creek", "crown", "crystal", "dawn", "delta", "dune", "duckling",
+	"eagle", "ember", "falcon", "feather", "fern", "flame", "forest",
+	"fountain", "garden", "glacier", "grove", "harbor", "heron", "island",
+	"journal", "lagoon", "lantern", "linden", "maple", "meadow", "narwhal",
+	"ocean", "orbit", "otter", "pebble", "pine", "quilt", "rainbow",
+	"reef", "ridge", "river", "robin", "rose", "spark", "spruce", "star",
+	"summit", "sunset", "tulip", "valley", "whale", "willow",
 }

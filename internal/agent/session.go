@@ -18,12 +18,13 @@ type ModelFactory func(prov, model, apiKey, baseURL string) (agentcore.ChatModel
 
 // SessionConfig configures a new Session.
 type SessionConfig struct {
-	Agent    *agentcore.Agent
-	Store    *storage.Store
-	Manager  *storage.Manager
-	Registry *provider.ModelRegistry
-	Settings config.Resolved
-	Cwd      string
+	Agent     *agentcore.Agent
+	Store     *storage.Store
+	Manager   *storage.Manager
+	Registry  *provider.ModelRegistry
+	Settings  config.Resolved
+	Cwd       string
+	TodoStore *localtools.TodoStore
 	// CreateModel allows tests/integrations to override model construction.
 	// Defaults to provider.CreateModel when nil.
 	CreateModel ModelFactory
@@ -82,7 +83,7 @@ type Session struct {
 	suffix            string
 	beforePrompt      func()
 	hookRunner        *hooks.Runner
-	taskStore         *localtools.TaskStore
+	todoStore         *localtools.TodoStore
 	skillAllowsSetter func([]string)
 	skillRuntime      skillRuntimeState
 
@@ -164,6 +165,7 @@ func NewSession(cfg SessionConfig) *Session {
 		lazyPersist:       cfg.LazyPersist,
 		chatModel:         cfg.ChatModel,
 		hookRunner:        cfg.HookRunner,
+		todoStore:         cfg.TodoStore,
 		allTools:          cfg.Tools,
 		activeTools:       cfg.Tools,
 		contextFiles:      cfg.ContextFiles,
@@ -186,15 +188,23 @@ func NewSession(cfg SessionConfig) *Session {
 	s.context = newSessionContextController(s)
 	s.runtime = newSessionRuntimePolicy(s)
 	s.metrics = newRuntimeMetrics()
-	for _, tool := range cfg.Tools {
-		if taskCreate, ok := tool.(*localtools.TaskCreateTool); ok {
-			s.taskStore = taskCreate.Store()
-			break
-		}
-	}
 
 	s.unsub = cfg.Agent.Subscribe(s.handleAgentEvent)
 	return s
+}
+
+func (s *Session) SetTodoNotifyFn(fn localtools.TodoNotifyFn) {
+	if s.todoStore == nil {
+		return
+	}
+	s.todoStore.SetNotifyFn(fn)
+}
+
+func (s *Session) TodoSnapshot() localtools.TodoSnapshot {
+	if s.todoStore == nil {
+		return localtools.TodoSnapshot{}
+	}
+	return s.todoStore.Snapshot()
 }
 
 func (s *Session) resetHarnessStateLocked() {

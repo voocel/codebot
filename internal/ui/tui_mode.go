@@ -21,7 +21,8 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, skillCatalog *skill.Catalog, envHint string) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, skillCatalog *skill.Catalog, envHint string, sessionStore *storage.Store, planSlug, planTitle string) error {
+	planStore := storage.NewPlanStore(config.PlansDir(cwd))
 	adapter := &App{
 		Session:        sess,
 		Cwd:            cwd,
@@ -31,9 +32,20 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 		Commands:       config.LoadFileCommands(cwd),
 		Skills:         sess.Skills(),
 		SkillCatalog:   skillCatalog,
-		PlanStore:      storage.NewPlanStore(config.PlansDir(cwd)),
+		PlanStore:      planStore,
+		SessionStore:   sessionStore,
 		MCPManager:     mcpMgr,
 		History:        newInputHistory(sess, cwd),
+	}
+
+	// Restore plan context from resumed session.
+	if planSlug != "" {
+		if content, _ := planStore.Load(planSlug); content != "" {
+			adapter.planSlug = planSlug
+			adapter.planTitle = planTitle
+			adapter.planContent = content
+			sess.SetSystemSuffix(buildPlanContextSuffix(planTitle, content))
+		}
 	}
 
 	adapter.rebuildRegistry()
@@ -89,17 +101,12 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 		}
 	}
 
-	// Wire Task tools to TUI — notify on every task mutation.
-	if found := sess.ToolsByName("task_create"); len(found) > 0 {
-		if ct, ok := found[0].(*tools.TaskCreateTool); ok {
-			ct.SetNotifyFn(func(snap tools.TaskSnapshot) {
-				p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
-			})
-			// Send initial snapshot for resumed sessions with persisted tasks.
-			if snap := ct.Store().Snapshot(); snap.Total > 0 {
-				p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
-			}
-		}
+	// Wire Todo tools to TUI — notify on every todo mutation.
+	sess.SetTodoNotifyFn(func(snap tools.TodoSnapshot) {
+		p.Send(tui.TodoListUpdateMsg{Snapshot: snap})
+	})
+	if snap := sess.TodoSnapshot(); snap.Total > 0 {
+		m.Todos = &snap
 	}
 
 	// Wire Cron tools to TUI — start scheduler that sends prompts.

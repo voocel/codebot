@@ -12,13 +12,13 @@ import (
 // enter_plan_mode
 // ---------------------------------------------------------------------------
 
-type enterPlanModeTool struct{}
+type EnterPlanModeTool struct{}
 
-func NewEnterPlanMode() *enterPlanModeTool { return &enterPlanModeTool{} }
+func NewEnterPlanMode() *EnterPlanModeTool { return &EnterPlanModeTool{} }
 
-func (t *enterPlanModeTool) Name() string  { return "enter_plan_mode" }
-func (t *enterPlanModeTool) Label() string { return "Enter Plan Mode" }
-func (t *enterPlanModeTool) Description() string {
+func (t *EnterPlanModeTool) Name() string  { return "enter_plan_mode" }
+func (t *EnterPlanModeTool) Label() string { return "Enter Plan Mode" }
+func (t *EnterPlanModeTool) Description() string {
 	return `Enter plan mode to explore the codebase and design an implementation plan before making changes.
 
 Use this PROACTIVELY when ANY of these apply:
@@ -36,13 +36,13 @@ Do NOT use for:
 - Pure research or information queries`
 }
 
-func (t *enterPlanModeTool) Schema() map[string]any {
+func (t *EnterPlanModeTool) Schema() map[string]any {
 	return schema.Object(
 		schema.Property("task", schema.String("Brief description of the task to plan for")),
 	)
 }
 
-func (t *enterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *EnterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
 		Task string `json:"task"`
 	}
@@ -57,26 +57,26 @@ func (t *enterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (js
 // exit_plan_mode
 // ---------------------------------------------------------------------------
 
-type exitPlanModeTool struct{}
+type ExitPlanModeTool struct{}
 
-func NewExitPlanMode() *exitPlanModeTool { return &exitPlanModeTool{} }
+func NewExitPlanMode() *ExitPlanModeTool { return &ExitPlanModeTool{} }
 
-func (t *exitPlanModeTool) Name() string  { return "exit_plan_mode" }
-func (t *exitPlanModeTool) Label() string { return "Exit Plan Mode" }
-func (t *exitPlanModeTool) Description() string {
+func (t *ExitPlanModeTool) Name() string  { return "exit_plan_mode" }
+func (t *ExitPlanModeTool) Label() string { return "Exit Plan Mode" }
+func (t *ExitPlanModeTool) Description() string {
 	return "Submit your completed implementation plan for user review. " +
 		"You MUST write the full plan as text in the conversation first so the user can see it, " +
 		"then call this tool with the same content in the 'content' parameter."
 }
 
-func (t *exitPlanModeTool) Schema() map[string]any {
+func (t *ExitPlanModeTool) Schema() map[string]any {
 	return schema.Object(
 		schema.Property("title", schema.String("Short title summarizing the plan (under 60 chars)")).Required(),
 		schema.Property("content", schema.String("The full plan content (markdown). Must match the text you just wrote.")).Required(),
 	)
 }
 
-func (t *exitPlanModeTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *ExitPlanModeTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
 		Title   string `json:"title"`
 		Content string `json:"content"`

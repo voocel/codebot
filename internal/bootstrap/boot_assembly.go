@@ -58,6 +58,7 @@ type bootSpec struct {
 	approvalEngine        *approval.Engine
 	hookMiddleware        agentcore.ToolMiddleware // nil = no hooks configured
 	hookRunner            *hooks.Runner
+	todoStore             *localtools.TodoStore
 }
 
 func resolveBootInput(opts Options) (*bootInput, error) {
@@ -230,7 +231,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		WriteRoots: settings.Permissions.WriteRoots,
 	})
 
-	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, err := buildToolset(input, settings, activeProvider, chatModel, factories, skillCatalog)
+	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, todoStore, err := buildToolset(input, settings, activeProvider, chatModel, factories, skillCatalog)
 	if err != nil {
 		return nil, err
 	}
@@ -275,10 +276,11 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		approvalEngine:        approvalEngine,
 		hookMiddleware:        hookMW,
 		hookRunner:            hookRunner,
+		todoStore:             todoStore,
 	}, nil
 }
 
-func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, skillCatalog *skill.Catalog) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
+func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, skillCatalog *skill.Catalog) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, *localtools.TodoStore, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	// Find the BashTool from built tools for background shell wiring.
@@ -290,7 +292,7 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		}
 	}
 	askTool := localtools.NewAskUser()
-	taskStore, taskTools := localtools.NewTaskTools()
+	todoStore, todoTools := localtools.NewTodoTools()
 	_, cronTools := localtools.NewCronTools()
 	builtTools = append(builtTools,
 		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
@@ -299,7 +301,7 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 		localtools.NewEnterPlanMode(),
 		localtools.NewExitPlanMode(),
 	)
-	builtTools = append(builtTools, taskTools...)
+	builtTools = append(builtTools, todoTools...)
 	builtTools = append(builtTools, cronTools...)
 
 	// Set output dir to session path so truncated output files are readable
@@ -308,9 +310,9 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 	localtools.SetOutputDir(toolOutputDir)
 	builtTools = localtools.WrapWithOutputLimit(builtTools)
 
-	taskDir := filepath.Join(config.TasksDir(), input.store.Header().SessionID)
-	if err := taskStore.SetDir(taskDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: task persistence: %v\n", err)
+	todoDir := filepath.Join(config.TasksDir(), input.store.Header().SessionID)
+	if err := todoStore.SetDir(todoDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: todo persistence: %v\n", err)
 	}
 
 	subagentTool := buildSubAgentTool(subAgentDeps{
@@ -337,7 +339,7 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 
 	builtTools, baseTools = applyToolSearch(builtTools, baseTools, activeProvider, settings.Model)
 
-	return builtTools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, nil
+	return builtTools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, todoStore, nil
 }
 
 // coreToolNames are tools that remain always visible to the LLM.
@@ -512,11 +514,18 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 
 func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 	taskRT := agentcore.NewTaskRuntime()
+	runtimeTools := localtools.NewTaskTools(taskRT)
+	tools := make([]agentcore.Tool, 0, len(spec.tools)+len(runtimeTools))
+	tools = append(tools, spec.tools...)
+	tools = append(tools, runtimeTools...)
+	baseTools := make([]agentcore.Tool, 0, len(spec.baseTools)+len(runtimeTools))
+	baseTools = append(baseTools, spec.baseTools...)
+	baseTools = append(baseTools, runtimeTools...)
 
 	opts := []agentcore.AgentOption{
 		agentcore.WithModel(spec.chatModel),
 		agentcore.WithSystemBlocks(spec.systemBlocks),
-		agentcore.WithTools(spec.tools...),
+		agentcore.WithTools(tools...),
 		agentcore.WithMaxTurns(spec.settings.MaxTurns),
 		agentcore.WithMaxToolErrors(3),
 		agentcore.WithMaxToolConcurrency(4),
@@ -540,29 +549,31 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 	spec.subagentTool.SetTaskRuntime(taskRT)
 	spec.subagentTool.SetNotifyFn(ag.FollowUp)
 
-	// Wire output factories: consumer provides file I/O, agentcore just writes.
 	sessionID := input.store.Header().SessionID
-	tasksDir := filepath.Join(os.TempDir(), "codebot-bg", sessionID, "tasks")
-	subagentsDir := filepath.Join(config.SessionsDir(input.cwd), sessionID, "subagents")
+	bgDir := filepath.Join(config.SessionsDir(input.cwd), sessionID, "bg")
 	spec.subagentTool.SetBgOutputFactory(func(taskID, agentName string) (io.WriteCloser, string, error) {
-		_ = os.MkdirAll(subagentsDir, 0o700)
-		path := filepath.Join(subagentsDir, "agent-"+taskID+".jsonl")
+		dir := filepath.Join(bgDir, taskID)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, "", err
+		}
+		path := filepath.Join(dir, "output.jsonl")
 		f, err := os.Create(path)
 		if err != nil {
 			return nil, "", err
 		}
-		meta, _ := json.Marshal(map[string]string{"agentType": agentName})
-		_ = os.WriteFile(filepath.Join(subagentsDir, "agent-"+taskID+".meta.json"), meta, 0o600)
-		_ = os.MkdirAll(tasksDir, 0o700)
-		_ = os.Symlink(path, filepath.Join(tasksDir, "agent-"+taskID+".output"))
+		meta, _ := json.Marshal(map[string]string{"agent": agentName})
+		_ = os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o600)
 		return f, path, nil
 	})
 	if spec.bashTool != nil {
 		spec.bashTool.SetTaskRuntime(taskRT)
 		spec.bashTool.SetNotifyFn(ag.FollowUp)
 		spec.bashTool.SetBgOutputFactory(func(shellID string) (io.WriteCloser, string, error) {
-			_ = os.MkdirAll(tasksDir, 0o700)
-			path := filepath.Join(tasksDir, shellID+".output")
+			dir := filepath.Join(bgDir, shellID)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, "", err
+			}
+			path := filepath.Join(dir, "output.log")
 			f, err := os.Create(path)
 			return f, path, err
 		})
@@ -572,7 +583,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		if err := ag.SetMessages(input.snapshot.Messages); err != nil {
 			return nil, fmt.Errorf("restore agent messages: %w", err)
 		}
-		agentcore.ReactivateDeferred(spec.tools, input.snapshot.Messages)
+		agentcore.ReactivateDeferred(tools, input.snapshot.Messages)
 	}
 	if input.snapshot.Thinking != "" {
 		ag.SetThinkingLevel(agentcore.ThinkingLevel(input.snapshot.Thinking))
@@ -590,7 +601,8 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Cwd:                   input.cwd,
 		CreateModel:           input.createModel,
 		ChatModel:             spec.chatModel,
-		Tools:                 spec.tools,
+		Tools:                 tools,
+		TodoStore:             spec.todoStore,
 		ContextFiles:          spec.contextFiles,
 		Skills:                spec.skills,
 		SkillCatalog:          spec.skillCatalog,
@@ -601,7 +613,7 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		PreambleInjected:      len(input.snapshot.Messages) > 0, // resume: preamble already in history
 		SkillAllowsSetter:     spec.approvalEngine.SetSkillAllows,
 	})
-	for _, tool := range spec.tools {
+	for _, tool := range tools {
 		if st, ok := tool.(*localtools.SkillTool); ok {
 			st.SetInvocationApplier(sess.ApplySkillInvocation)
 		}
@@ -616,8 +628,8 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 			if !ok {
 				return
 			}
-			all := make([]agentcore.Tool, len(spec.baseTools), len(spec.baseTools)+len(mcpTools))
-			copy(all, spec.baseTools)
+			all := make([]agentcore.Tool, len(baseTools), len(baseTools)+len(mcpTools))
+			copy(all, baseTools)
 			all = append(all, mcpTools...)
 			sess.ReplaceAllTools(all)
 		})
@@ -630,9 +642,12 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		TaskRuntime:    taskRT,
 		Settings:       spec.settings,
 		Session:        sess,
+		SessionStore:   input.store,
 		SkillCatalog:   spec.skillCatalog,
 		MCPManager:     spec.mcpManager,
 		MCPServers:     spec.mcpServers,
 		EnvHint:        input.envHint,
+		PlanSlug:       input.snapshot.PlanSlug,
+		PlanTitle:      input.snapshot.PlanTitle,
 	}, nil
 }

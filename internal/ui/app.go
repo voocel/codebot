@@ -46,6 +46,9 @@ type App struct {
 	// PlanStore persists plans to ~/.codebot/plans/.
 	PlanStore *storage.PlanStore
 
+	// SessionStore is used to record plan slug into the session log.
+	SessionStore *storage.Store
+
 	// History provides input history for Up/Down navigation.
 	History *storage.History
 
@@ -57,6 +60,7 @@ type App struct {
 
 	// Plan mode state.
 	planState     planState
+	planSlug      string // plan file identifier, persisted in session log
 	planContent   string // free-form plan text from LLM
 	planTitle     string // short title extracted from plan content
 	planChoice    int    // selected option in planReview menu
