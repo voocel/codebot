@@ -167,12 +167,6 @@ func (m Model) renderInputPanel() string {
 	inputView := m.styledInputView()
 	sections = append(sections, inputView)
 
-	hints := []string{"Enter send", "Ctrl+J newline", "Esc abort"}
-	if strings.HasPrefix(m.Input.Value(), "!") {
-		hints = []string{"bash mode", "Enter execute", "Esc abort"}
-	}
-	sections = append(sections, InputHintStyle.Render(strings.Join(hints, " · ")))
-
 	content := strings.Join(sections, "\n\n")
 	return InputPanelStyle.Width(max(width-2, 20)).Render(content)
 }
@@ -313,7 +307,6 @@ func (m Model) renderCommandPalette() string {
 		header += " " + badge
 	}
 	lines = append(lines, header)
-	lines = append(lines, CommandPaletteHintStyle.Render("/"+selected.Name))
 	lines = append(lines, list)
 	lines = append(lines, renderCommandPaletteFooter(selected, remaining, width))
 	lines = append(lines, "")
@@ -355,7 +348,8 @@ func renderCommandPaletteRow(item CompletionItem, width int, selected bool) stri
 	// Pad name to fixed column width using display width.
 	nameText := name + strings.Repeat(" ", max(nameWidth-lipgloss.Width(name), 0))
 	// Truncate description by display width to prevent line wrapping.
-	descMaxWidth := max(width-nameWidth-4, 10) // 4 = marker(1) + space(1) + gap(1) + margin(1)
+	// 6 = marker(1) + space(1) + gap(1) + padding(2) + safety(1)
+	descMaxWidth := max(width-nameWidth-6, 10)
 	desc := truncateByWidth(item.Description, descMaxWidth)
 	prefix := marker + " "
 	if selected {
@@ -388,6 +382,7 @@ func truncateByWidth(s string, maxWidth int) string {
 func renderCommandPaletteFooter(item CompletionItem, remaining, width int) string {
 	nameWidth := min(max(width/3, 12), 18)
 	descStart := 2 + nameWidth + 1
+	contentWidth := max(width-2, 20) // account for padding
 
 	left := "  "
 	if remaining > 0 {
@@ -401,6 +396,13 @@ func renderCommandPaletteFooter(item CompletionItem, remaining, width int) strin
 		}
 		usage += " · Aliases: " + strings.Join(aliases, ", ")
 	}
+
+	usageStart := descStart
+	if lipgloss.Width(left) >= descStart {
+		usageStart = lipgloss.Width(left) + 2
+	}
+	usageMax := max(contentWidth-usageStart, 10)
+	usage = truncateByWidth(usage, usageMax)
 
 	if lipgloss.Width(left) >= descStart {
 		return CommandPaletteHintStyle.Render(left) + "  " + MutedStyle.Render(usage)

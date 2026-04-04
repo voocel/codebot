@@ -185,7 +185,11 @@ var (
 				Bold(true)
 
 	InputPanelStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.Border{Top: "─", Bottom: "─"}).
+			BorderTop(true).
+			BorderBottom(true).
+			BorderLeft(false).
+			BorderRight(false).
 			BorderForeground(ColorPrimarySoft).
 			Padding(0, 1)
 

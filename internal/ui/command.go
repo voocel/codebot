@@ -30,7 +30,7 @@ func (a *App) handleCommand(input string) tea.Cmd {
 	cmd, ok := a.registry.Lookup(inv.Name)
 	if !ok {
 		return tui.SendCommandResult(tui.CommandStyle.Render(
-			fmt.Sprintf("Unknown command: /%s. 输入 / 浏览命令，或用 /help 查看完整列表。", inv.Name)))
+			fmt.Sprintf("Unknown command: /%s. Type / to browse commands, or /help for the full list.", inv.Name)))
 	}
 
 	spec := cmd.Spec()
@@ -375,7 +375,9 @@ func (a *App) cmdContext() tea.Cmd {
 	metrics := a.Session.RuntimeMetrics()
 	lastCompaction, hasCompaction := a.Session.LastCompaction()
 	contextUsage := a.Session.ContextUsage()
-	return tui.SendCommandResult(tui.CommandStyle.Render(formatContextSnapshot(snapshot, ok, contextUsage, metrics, lastCompaction, hasCompaction)))
+	breakdown := a.Session.ContextBreakdown()
+	suggestions := a.Session.ContextSuggestions()
+	return tui.SendCommandResult(tui.CommandStyle.Render(formatContextSnapshot(snapshot, ok, contextUsage, breakdown, suggestions, metrics, lastCompaction, hasCompaction)))
 }
 
 func (a *App) cmdNew() tea.Cmd {
@@ -900,6 +902,8 @@ func formatContextSnapshot(
 	snapshot *agentcore.ContextSnapshot,
 	ok bool,
 	contextUsage *agentcore.ContextUsage,
+	breakdown agent.ContextBreakdown,
+	suggestions []agent.ContextSuggestion,
 	metrics agent.RuntimeMetricsSnapshot,
 	lastCompaction agent.CompactionSnapshot,
 	hasCompaction bool,
@@ -907,6 +911,7 @@ func formatContextSnapshot(
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
 	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
 
 	var sb strings.Builder
 	renderSection := func(title, meta string) {
@@ -934,7 +939,7 @@ func formatContextSnapshot(
 	}
 
 	sb.WriteString("Context Snapshot\n")
-	renderSection("Live usage", "当前 manager 记住的有效上下文视图。通常是当前基线；请求前投影后会暂时变成 projected。")
+	renderSection("Live usage", "")
 	usage := contextUsage
 	if ok && snapshot != nil && snapshot.Usage != nil {
 		usage = snapshot.Usage
@@ -947,8 +952,38 @@ func formatContextSnapshot(
 		renderMetaRow("Context used", "(unavailable)")
 	}
 
+	// Token breakdown by category
+	if breakdown.Total > 0 {
+		renderSection("Token breakdown", "Estimated token distribution by category.")
+		window := breakdown.ContextWindow
+		fmtPct := func(tokens int) string {
+			if window <= 0 {
+				return tui.FormatTokens(tokens)
+			}
+			return fmt.Sprintf("%s (%.0f%%)", tui.FormatTokens(tokens), float64(tokens)/float64(window)*100)
+		}
+		renderRow("User text", fmtPct(breakdown.UserText))
+		renderRow("Assistant text", fmtPct(breakdown.AssistantText))
+		renderRow("Tool calls", fmtPct(breakdown.ToolCalls))
+		renderRow("Tool results", fmtPct(breakdown.ToolResults))
+		if breakdown.Summaries > 0 {
+			renderRow("Summaries", fmtPct(breakdown.Summaries))
+		}
+		if breakdown.Images > 0 {
+			renderRow("Images", fmtPct(breakdown.Images))
+		}
+
+		if len(breakdown.TopTools) > 0 {
+			renderSection("Top tools", "Heaviest tools by token consumption.")
+			for _, t := range breakdown.TopTools {
+				detail := fmt.Sprintf("calls=%s, results=%s", tui.FormatTokens(t.CallTokens), tui.FormatTokens(t.ResultTokens))
+				renderRow(t.Name, fmt.Sprintf("%s  %s", fmtPct(t.Total), metaStyle.Render(detail)))
+			}
+		}
+	}
+
 	if ok && snapshot != nil {
-		renderSection("Composition", "当前有效视图的消息组成摘要。")
+		renderSection("Composition", "")
 		renderRow("Active scope", formatContextScope(snapshot.Scope))
 		if snapshot.TranscriptMessages != snapshot.ActiveMessages {
 			renderRow("Messages", fmt.Sprintf("%d active / %d transcript", snapshot.ActiveMessages, snapshot.TranscriptMessages))
@@ -960,7 +995,7 @@ func formatContextSnapshot(
 		renderRow("Cleared results", fmt.Sprintf("%d", snapshot.ClearedToolResults))
 		renderRow("Trimmed blocks", fmt.Sprintf("%d", snapshot.TrimmedTextBlocks))
 
-		renderSection("Last rewrite", "最近一次由 ContextManager 记住的上下文改写。")
+		renderSection("Last rewrite", "")
 		strategy := prettyCompactionStrategy(snapshot.LastStrategy)
 		if strategy == "" {
 			strategy = "(none)"
@@ -969,16 +1004,35 @@ func formatContextSnapshot(
 		renderRow("Changed", formatBool(snapshot.LastChanged))
 		renderMetaRow("Details", formatContextRewriteDetails(snapshot))
 	} else {
-		renderSection("Composition", "当前 session 未暴露额外的 context snapshot。")
+		renderSection("Composition", "")
 		renderMetaRow("Snapshot", "(unavailable)")
 	}
 
-	renderSection("Compaction totals", "当前进程内该 session 的累计压缩指标。")
+	renderSection("Compaction totals", "")
 	renderRow("Compactions total", fmt.Sprintf("%d", metrics.CompactionTotal))
 	renderRow("Compactions changed", fmt.Sprintf("%d", metrics.CompactionChanged))
 	renderRow("Compaction saved", tui.FormatTokens(metrics.CompactionSaved))
 	renderMetaRow("By kind", formatCompactionCounts(metrics.CompactionByKind))
 	renderMetaRow("Last compaction", formatLastCompaction(lastCompaction, hasCompaction))
+
+	// Suggestions
+	if len(suggestions) > 0 {
+		renderSection("Suggestions", "")
+		for _, s := range suggestions {
+			prefix := "i"
+			style := metaStyle
+			if s.Severity == "warning" {
+				prefix = "!"
+				style = warnStyle
+			}
+			line := fmt.Sprintf("[%s] %s", prefix, s.Message)
+			if s.Savings > 0 {
+				line += fmt.Sprintf(" (~%s saveable)", tui.FormatTokens(s.Savings))
+			}
+			sb.WriteString(style.Render(line))
+			sb.WriteString("\n")
+		}
+	}
 
 	return strings.TrimRight(sb.String(), "\n")
 }
