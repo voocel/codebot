@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/memory"
+	agentctx "github.com/voocel/agentcore/context"
 )
 
 type CompactionResult struct {
@@ -55,7 +55,7 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 		return result, nil
 	}
 
-	tokensBefore := memory.EstimateTotal(msgs)
+	tokensBefore := agentctx.EstimateTotal(msgs)
 	result.TokensBefore = tokensBefore
 
 	c.session.mu.Lock()
@@ -82,8 +82,17 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 	result.CompactedCount = commit.CompactedCount
 	result.KeptCount = commit.KeptCount
 	result.SplitTurn = commit.SplitTurn
+	commit.Messages = injectCommittedFileRestores(commit.Messages)
+	tokensAfter := agentctx.EstimateTotal(commit.Messages)
+	if commit.Usage != nil {
+		cp := *commit.Usage
+		cp.Tokens = tokensAfter
+		if cp.ContextWindow > 0 {
+			cp.Percent = float64(tokensAfter) / float64(cp.ContextWindow) * 100
+		}
+		commit.Usage = &cp
+	}
 
-	tokensAfter := memory.EstimateTotal(commit.Messages)
 	if tokensAfter >= tokensBefore {
 		result.TokensAfter = tokensBefore
 		return result, nil
@@ -99,6 +108,29 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 	result.Changed = true
 	result.TokensAfter = tokensAfter
 	return result, nil
+}
+
+func injectCommittedFileRestores(msgs []agentcore.AgentMessage) []agentcore.AgentMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	summary, ok := msgs[0].(agentctx.ContextSummary)
+	if !ok {
+		return msgs
+	}
+	info := agentctx.SummaryInfo{
+		ReadFiles:     append([]string(nil), summary.ReadFiles...),
+		ModifiedFiles: append([]string(nil), summary.ModifiedFiles...),
+	}
+	restore := readRecentFiles(info, msgs[1:])
+	if len(restore) == 0 {
+		return msgs
+	}
+	out := make([]agentcore.AgentMessage, 0, len(msgs)+len(restore))
+	out = append(out, msgs[0])
+	out = append(out, restore...)
+	out = append(out, msgs[1:]...)
+	return out
 }
 
 func persistCompaction(store appendCompactionStore, msgs []agentcore.AgentMessage) error {
@@ -123,7 +155,7 @@ func extractCompactionPayload(msgs []agentcore.AgentMessage) (string, []json.Raw
 	var summary string
 	start := -1
 	for i, m := range msgs {
-		cs, ok := m.(memory.CompactionSummary)
+		cs, ok := m.(agentctx.ContextSummary)
 		if !ok {
 			continue
 		}
@@ -162,7 +194,7 @@ func (s *Session) injectInvokedSkillContext(msgs []agentcore.AgentMessage) []age
 		if msg, ok := m.(agentcore.Message); ok && msg.Metadata["skill_preserve"] == true {
 			continue
 		}
-		if _, ok := m.(memory.CompactionSummary); ok {
+		if _, ok := m.(agentctx.ContextSummary); ok {
 			insertAt = i + 1
 		}
 		out = append(out, m)

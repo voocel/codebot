@@ -821,6 +821,17 @@ func (s *Session) ContextUsage() *agentcore.ContextUsage {
 	return s.agent.ContextUsage()
 }
 
+func (s *Session) ContextSnapshot() (*agentcore.ContextSnapshot, bool) {
+	if s.contextManager == nil {
+		return nil, false
+	}
+	snapshot := s.contextManager.Snapshot()
+	if snapshot == nil {
+		return nil, false
+	}
+	return snapshot, true
+}
+
 func (s *Session) RecentToolCalls(limit int) []ToolCallSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()

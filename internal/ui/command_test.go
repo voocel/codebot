@@ -139,7 +139,7 @@ func TestRebuildRegistryIncludesAllCommandSources(t *testing.T) {
 
 	app.rebuildRegistry()
 
-	for _, name := range []string{"help", "debug-harness", "deploy", "review"} {
+	for _, name := range []string{"help", "context", "debug-harness", "deploy", "review"} {
 		if _, ok := app.registry.Lookup(name); !ok {
 			t.Fatalf("expected command %q to be registered", name)
 		}
@@ -506,6 +506,72 @@ func TestFormatLastCompaction(t *testing.T) {
 
 	if got := formatLastCompaction(agent.CompactionSnapshot{}, false); got != "(none)" {
 		t.Fatalf("expected empty compaction placeholder, got %q", got)
+	}
+}
+
+func TestFormatContextSnapshot(t *testing.T) {
+	t.Parallel()
+
+	text := formatContextSnapshot(
+		&agentcore.ContextSnapshot{
+			Usage: &agentcore.ContextUsage{
+				Tokens:         64000,
+				ContextWindow:  128000,
+				Percent:        50,
+				UsageTokens:    32000,
+				TrailingTokens: 4000,
+			},
+			Scope:              "projected",
+			TranscriptMessages: 18,
+			ActiveMessages:     12,
+			SummaryMessages:    1,
+			ToolMessages:       4,
+			ClearedToolResults: 2,
+			TrimmedTextBlocks:  3,
+			LastStrategy:       "full_summary",
+			LastChanged:        true,
+			LastCompactedCount: 9,
+			LastKeptCount:      3,
+			LastSplitTurn:      true,
+		},
+		true,
+		nil,
+		agent.RuntimeMetricsSnapshot{
+			CompactionTotal:   4,
+			CompactionChanged: 3,
+			CompactionSaved:   32000,
+			CompactionByKind: map[agent.CompactionKind]int{
+				agent.CompactionKindMicro: 1,
+				agent.CompactionKindFull:  2,
+			},
+		},
+		agent.CompactionSnapshot{
+			Kind:         agent.CompactionKindFull,
+			Strategy:     "full_summary",
+			Reason:       "manual",
+			Changed:      true,
+			TokensBefore: 128000,
+			TokensAfter:  64000,
+			Timestamp:    time.Date(2026, 3, 27, 15, 4, 10, 0, time.Local),
+		},
+		true,
+	)
+
+	for _, want := range []string{
+		"Context Snapshot",
+		"64.0k (50.0%)",
+		"usage=32.0k, trailing=4.0k",
+		"projected view",
+		"12 active / 18 transcript",
+		"Summary checkpoints",
+		"Cleared results",
+		"full summary",
+		"compacted=9, kept=3, split-turn",
+		"full / manual / full summary",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
 	}
 }
 

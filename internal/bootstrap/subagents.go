@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/memory"
+	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
@@ -50,7 +50,7 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 				return newSubAgentContextManager(model, deps.ContextWindow)
 			},
-			ConvertToLLM: memory.CompactionConvertToLLM,
+			ConvertToLLM: agentctx.ContextConvertToLLM,
 		},
 		agentcore.SubAgentConfig{
 			Name:         "plan",
@@ -62,7 +62,7 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 				return newSubAgentContextManager(model, deps.ContextWindow)
 			},
-			ConvertToLLM: memory.CompactionConvertToLLM,
+			ConvertToLLM: agentctx.ContextConvertToLLM,
 		},
 		// NOTE: coder subagent intentionally does NOT have task_* tools.
 		// The main agent owns the task list; short-lived subagents report
@@ -79,7 +79,7 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 				return newSubAgentContextManager(model, deps.ContextWindow)
 			},
-			ConvertToLLM: memory.CompactionConvertToLLM,
+			ConvertToLLM: agentctx.ContextConvertToLLM,
 		},
 	)
 
@@ -112,14 +112,14 @@ func newSubAgentContextManager(model agentcore.ChatModel, window int) agentcore.
 	if model == nil || window <= 0 {
 		return nil
 	}
-	return memory.NewEngine(memory.EngineConfig{
+	return agentctx.NewEngine(agentctx.EngineConfig{
 		ContextWindow: window,
-		Strategies: []memory.Strategy{
-			memory.NewToolResultMicrocompact(memory.ToolResultMicrocompactConfig{
+		Strategies: []agentctx.Strategy{
+			agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
 				KeepRecent: 3,
 			}),
-			memory.NewLightTrim(memory.LightTrimConfig{}),
-			memory.NewFullSummary(memory.FullSummaryConfig{
+			agentctx.NewLightTrim(agentctx.LightTrimConfig{}),
+			agentctx.NewFullSummary(agentctx.FullSummaryConfig{
 				Model:            model,
 				KeepRecentTokens: 12000,
 			}),

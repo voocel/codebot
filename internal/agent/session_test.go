@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/memory"
+	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/skill"
@@ -671,7 +671,7 @@ func TestInjectInvokedSkillContextAddsPreservedReminder(t *testing.T) {
 	s.recordInvokedSkill("review", "Investigate the diff carefully.", []string{"internal/skill/**"})
 
 	msgs := []agentcore.AgentMessage{
-		memory.CompactionSummary{Summary: "summary"},
+		agentctx.ContextSummary{Summary: "summary"},
 		textMessage(agentcore.RoleUser, "latest user message"),
 	}
 	result := s.injectInvokedSkillContext(msgs)
@@ -1280,10 +1280,10 @@ func TestRuntimeMetricsTrackCompactionSavings(t *testing.T) {
 	t.Parallel()
 
 	model := &stubChatModel{}
-	manager := memory.NewEngine(memory.EngineConfig{
+	manager := agentctx.NewEngine(agentctx.EngineConfig{
 		ContextWindow: 16,
-		Strategies: []memory.Strategy{
-			memory.NewFullSummary(memory.FullSummaryConfig{
+		Strategies: []agentctx.Strategy{
+			agentctx.NewFullSummary(agentctx.FullSummaryConfig{
 				Model:            model,
 				KeepRecentTokens: 1,
 			}),
@@ -1332,7 +1332,7 @@ func TestRuntimeMetricsTrackCompactionSavings(t *testing.T) {
 	}
 }
 
-func TestHandleProjectedCompactionUpdatesMetricsAndEvents(t *testing.T) {
+func TestHandleProjectedRewriteUpdatesMetricsAndEvents(t *testing.T) {
 	t.Parallel()
 
 	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
@@ -1354,7 +1354,7 @@ func TestHandleProjectedCompactionUpdatesMetricsAndEvents(t *testing.T) {
 	})
 	t.Cleanup(unsub)
 
-	s.HandleProjectedCompaction(memory.ChangeInfo{
+	s.HandleProjectedRewrite(agentctx.RewriteEvent{
 		Reason:       "threshold",
 		Strategy:     "light_trim",
 		Changed:      true,
@@ -1395,10 +1395,10 @@ func TestSwitchSessionResetsHarnessDiagnostics(t *testing.T) {
 	t.Cleanup(func() { _ = target.Close() })
 
 	model := &stubChatModel{}
-	manager := memory.NewEngine(memory.EngineConfig{
+	manager := agentctx.NewEngine(agentctx.EngineConfig{
 		ContextWindow: 16,
-		Strategies: []memory.Strategy{
-			memory.NewFullSummary(memory.FullSummaryConfig{
+		Strategies: []agentctx.Strategy{
+			agentctx.NewFullSummary(agentctx.FullSummaryConfig{
 				Model:            model,
 				KeepRecentTokens: 1,
 			}),

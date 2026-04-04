@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/memory"
+	agentctx "github.com/voocel/agentcore/context"
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
@@ -522,17 +522,17 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 	baseTools = append(baseTools, spec.baseTools...)
 	baseTools = append(baseTools, taskTools...)
 
-	toolCompact := memory.NewToolResultMicrocompact(memory.ToolResultMicrocompactConfig{
+	toolCompact := agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
 		Classifier: agent.CodebotToolClassifier,
 		KeepRecent: 5,
 	})
-	trimCompact := memory.NewLightTrim(memory.LightTrimConfig{})
-	summaryCompact := memory.NewFullSummary(memory.FullSummaryConfig{
+	trimCompact := agentctx.NewLightTrim(agentctx.LightTrimConfig{})
+	summaryCompact := agentctx.NewFullSummary(agentctx.FullSummaryConfig{
 		Model: spec.chatModel,
 	})
-	contextEngine := memory.NewEngine(memory.EngineConfig{
+	contextEngine := agentctx.NewEngine(agentctx.EngineConfig{
 		ContextWindow: spec.settings.ContextWindow,
-		Strategies: []memory.Strategy{
+		Strategies: []agentctx.Strategy{
 			toolCompact,
 			trimCompact,
 			summaryCompact,
@@ -547,9 +547,9 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		agentcore.WithMaxToolErrors(3),
 		agentcore.WithMaxToolConcurrency(4),
 		agentcore.WithContextManager(contextEngine),
-		agentcore.WithConvertToLLM(memory.CompactionConvertToLLM),
+		agentcore.WithConvertToLLM(agentctx.ContextConvertToLLM),
 		agentcore.WithContextWindow(spec.settings.ContextWindow),
-		agentcore.WithContextEstimate(memory.ContextEstimateAdapter),
+		agentcore.WithContextEstimate(agentctx.ContextEstimateAdapter),
 		agentcore.WithPermissionEngine(spec.approvalEngine),
 		agentcore.WithTaskRuntime(taskRT),
 	}
@@ -626,9 +626,9 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		PreambleInjected:      len(input.snapshot.Messages) > 0, // resume: preamble already in history
 		SkillAllowsSetter:     spec.approvalEngine.SetSkillAllows,
 	})
-	summaryCompact.SetPostCompactHooks(sess.PostCompactRecoveryHook())
-	contextEngine.SetProjectHook(sess.HandleProjectedCompaction)
-	contextEngine.SetRecoverHook(sess.HandleOverflowRecovery)
+	summaryCompact.SetPostSummaryHooks(sess.PostSummaryRecoveryHook())
+	contextEngine.SetProjectHook(sess.HandleProjectedRewrite)
+	contextEngine.SetRecoverHook(sess.HandleOverflowRewrite)
 	for _, tool := range tools {
 		if st, ok := tool.(*localtools.SkillTool); ok {
 			st.SetInvocationApplier(sess.ApplySkillInvocation)
