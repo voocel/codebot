@@ -22,18 +22,37 @@ const (
 	PostToolUse        EventType = "PostToolUse"
 	Notification       EventType = "Notification"
 	PostStopValidation EventType = "PostStopValidation"
+	TaskCreated        EventType = "TaskCreated"
+	TaskCompleted      EventType = "TaskCompleted"
 )
 
 const defaultTimeout = 60 * time.Second
 
 // Payload is the JSON written to the hook command's stdin.
 type Payload struct {
-	Event   EventType       `json:"event"`
-	Tool    string          `json:"tool,omitempty"`
-	Args    json.RawMessage `json:"args,omitempty"`
-	Output  json.RawMessage `json:"output,omitempty"`
-	IsError bool            `json:"is_error,omitempty"`
-	Message string          `json:"message,omitempty"`
+	Event        EventType       `json:"event"`
+	Tool         string          `json:"tool,omitempty"`
+	Args         json.RawMessage `json:"args,omitempty"`
+	Output       json.RawMessage `json:"output,omitempty"`
+	IsError      bool            `json:"is_error,omitempty"`
+	Message      string          `json:"message,omitempty"`
+	Task         *TaskSnapshot   `json:"task,omitempty"`
+	PreviousTask *TaskSnapshot   `json:"previous_task,omitempty"`
+	StatusFrom   string          `json:"status_from,omitempty"`
+	StatusTo     string          `json:"status_to,omitempty"`
+}
+
+// TaskSnapshot is the task payload exposed to lifecycle hooks.
+type TaskSnapshot struct {
+	ID          string         `json:"id"`
+	Subject     string         `json:"subject"`
+	Description string         `json:"description,omitempty"`
+	ActiveForm  string         `json:"active_form,omitempty"`
+	Status      string         `json:"status"`
+	Owner       string         `json:"owner,omitempty"`
+	Blocks      []string       `json:"blocks,omitempty"`
+	BlockedBy   []string       `json:"blocked_by,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 // Result is the expected JSON structure from a blocking hook's stdout.
@@ -156,6 +175,29 @@ func (r *Runner) RunPostStopValidation(ctx context.Context) (failOutput string) 
 	return ""
 }
 
+// RunTaskCreated executes TaskCreated hooks synchronously.
+// Any hook error aborts the task creation so callers can roll back.
+func (r *Runner) RunTaskCreated(ctx context.Context, task TaskSnapshot) error {
+	return r.runLifecycleHooks(ctx, TaskCreated, "task_create", Payload{
+		Event: TaskCreated,
+		Tool:  "task_create",
+		Task:  &task,
+	})
+}
+
+// RunTaskCompleted executes TaskCompleted hooks synchronously.
+// Any hook error aborts the completion transition.
+func (r *Runner) RunTaskCompleted(ctx context.Context, previous, current TaskSnapshot) error {
+	return r.runLifecycleHooks(ctx, TaskCompleted, "task_update", Payload{
+		Event:        TaskCompleted,
+		Tool:         "task_update",
+		Task:         &current,
+		PreviousTask: &previous,
+		StatusFrom:   previous.Status,
+		StatusTo:     current.Status,
+	})
+}
+
 // matching returns entries for the given event that match the tool name.
 func (r *Runner) matching(event EventType, toolName string) []entry {
 	var result []entry
@@ -178,7 +220,12 @@ func compileConfig(cfg config.HooksConfig) map[EventType][]entry {
 	hooks := make(map[EventType][]entry)
 	for event, entries := range cfg {
 		et := EventType(event)
-		if et != PreToolUse && et != PostToolUse && et != Notification && et != PostStopValidation {
+		if et != PreToolUse &&
+			et != PostToolUse &&
+			et != Notification &&
+			et != PostStopValidation &&
+			et != TaskCreated &&
+			et != TaskCompleted {
 			log.Printf("hooks: unknown event %q, skipped", event)
 			continue
 		}
@@ -206,6 +253,41 @@ func compileConfig(cfg config.HooksConfig) map[EventType][]entry {
 		}
 	}
 	return hooks
+}
+
+func (r *Runner) runLifecycleHooks(ctx context.Context, event EventType, source string, payload Payload) error {
+	for _, e := range r.matching(event, source) {
+		stdout, err := r.run(ctx, e, payload)
+		if e.blocking {
+			if err != nil {
+				var res Result
+				if json.Unmarshal(stdout, &res) == nil && res.Blocked {
+					reason := res.Reason
+					if reason == "" {
+						reason = "blocked by hook"
+					}
+					return fmt.Errorf("hook: %s", reason)
+				}
+				return fmt.Errorf("hook: %v", err)
+			}
+
+			var res Result
+			if json.Unmarshal(stdout, &res) == nil && res.Blocked {
+				reason := res.Reason
+				if reason == "" {
+					reason = "blocked by hook"
+				}
+				return fmt.Errorf("hook: %s", reason)
+			}
+			continue
+		}
+
+		if err != nil {
+			log.Printf("hooks: %s %q: %v", event, e.command, err)
+			continue
+		}
+	}
+	return nil
 }
 
 func (r *Runner) run(ctx context.Context, e entry, payload Payload) ([]byte, error) {

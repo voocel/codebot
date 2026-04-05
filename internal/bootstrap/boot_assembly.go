@@ -514,7 +514,7 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 
 func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 	taskRT := agentcore.NewTaskRuntime()
-	taskTools := localtools.NewTaskTools(spec.taskStore, taskRT)
+	taskTools := localtools.NewTaskTools(spec.taskStore, taskRT, spec.hookRunner)
 	tools := make([]agentcore.Tool, 0, len(spec.tools)+len(taskTools))
 	tools = append(tools, spec.tools...)
 	tools = append(tools, taskTools...)

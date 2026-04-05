@@ -58,6 +58,12 @@
     "PostToolUse": [
       { "type": "command", "command": "echo done" }
     ],
+    "TaskCreated": [
+      { "type": "command", "command": "echo created:$HOOK_TOOL_NAME" }
+    ],
+    "TaskCompleted": [
+      { "type": "command", "command": "echo completed:$HOOK_TOOL_NAME" }
+    ],
     "Notification": [
       { "type": "command", "command": "notify-send 'codebot' 'Agent finished'" }
     ]

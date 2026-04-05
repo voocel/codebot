@@ -15,6 +15,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/schema"
+	"github.com/voocel/codebot/internal/hooks"
 )
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,20 @@ func (s *TaskStore) SetNotifyFn(fn TaskNotifyFn) {
 	s.mu.Lock()
 	s.notifyFn = fn
 	s.mu.Unlock()
+}
+
+// Delete removes a task and any persisted file.
+func (s *TaskStore) Delete(id string) bool {
+	s.mu.Lock()
+	if _, ok := s.tasks[id]; !ok {
+		s.mu.Unlock()
+		return false
+	}
+	delete(s.tasks, id)
+	s.mu.Unlock()
+	s.removeFile(id)
+	s.notify()
+	return true
 }
 
 // Create adds a new task and returns a copy.
@@ -411,13 +426,15 @@ func (s *TaskStore) writeHighWaterMark(id int) {
 	_ = os.WriteFile(filepath.Join(s.dir, taskHighWaterMarkFile), []byte(strconv.Itoa(id)), 0o644)
 }
 
-
 // ---------------------------------------------------------------------------
 // TaskCreateTool
 // ---------------------------------------------------------------------------
 
 // TaskCreateTool creates new tasks.
-type TaskCreateTool struct{ store *TaskStore }
+type TaskCreateTool struct {
+	store *TaskStore
+	hooks *hooks.Runner
+}
 
 func (t *TaskCreateTool) Name() string  { return "task_create" }
 func (t *TaskCreateTool) Label() string { return "Create Task" }
@@ -438,7 +455,7 @@ func (t *TaskCreateTool) SetNotifyFn(fn TaskNotifyFn) { t.store.SetNotifyFn(fn) 
 // Store returns the underlying TaskStore.
 func (t *TaskCreateTool) Store() *TaskStore { return t.store }
 
-func (t *TaskCreateTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *TaskCreateTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
 		Subject     string `json:"subject"`
 		Description string `json:"description"`
@@ -454,6 +471,12 @@ func (t *TaskCreateTool) Execute(_ context.Context, args json.RawMessage) (json.
 		return json.Marshal("Validation error: description is required")
 	}
 	task := t.store.Create(a.Subject, a.Description, a.ActiveForm, nil)
+	if t.hooks != nil {
+		if err := t.hooks.RunTaskCreated(ctx, taskHookSnapshot(task)); err != nil {
+			t.store.Delete(task.ID)
+			return json.Marshal(fmt.Sprintf("Error: %s", err))
+		}
+	}
 	return json.Marshal(fmt.Sprintf("Task #%s created successfully: %s", task.ID, task.Subject))
 }
 
@@ -494,7 +517,10 @@ func (t *TaskGetTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 // ---------------------------------------------------------------------------
 
 // TaskUpdateTool modifies an existing task.
-type TaskUpdateTool struct{ store *TaskStore }
+type TaskUpdateTool struct {
+	store *TaskStore
+	hooks *hooks.Runner
+}
 
 func (t *TaskUpdateTool) Name() string  { return "task_update" }
 func (t *TaskUpdateTool) Label() string { return "Update Task" }
@@ -515,7 +541,7 @@ func (t *TaskUpdateTool) Schema() map[string]any {
 	)
 }
 
-func (t *TaskUpdateTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *TaskUpdateTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
 		TaskID       string         `json:"taskId"`
 		Status       *TaskStatus    `json:"status,omitempty"`
@@ -532,6 +558,27 @@ func (t *TaskUpdateTool) Execute(_ context.Context, args json.RawMessage) (json.
 	}
 	if a.TaskID == "" {
 		return json.Marshal("Validation error: taskId is required")
+	}
+	if t.hooks != nil && a.Status != nil && *a.Status == TaskCompleted {
+		existing, ok := t.store.Get(a.TaskID)
+		if !ok {
+			return json.Marshal(fmt.Sprintf("Error: task %s not found", a.TaskID))
+		}
+		if existing.Status != TaskCompleted {
+			next := previewTaskUpdate(existing, TaskUpdateOpts{
+				Status:       a.Status,
+				Subject:      a.Subject,
+				Description:  a.Description,
+				ActiveForm:   a.ActiveForm,
+				Owner:        a.Owner,
+				Metadata:     a.Metadata,
+				AddBlocks:    a.AddBlocks,
+				AddBlockedBy: a.AddBlockedBy,
+			})
+			if err := t.hooks.RunTaskCompleted(ctx, taskHookSnapshot(existing), taskHookSnapshot(next)); err != nil {
+				return json.Marshal(fmt.Sprintf("Error: %s", err))
+			}
+		}
 	}
 	updated, err := t.store.Update(a.TaskID, TaskUpdateOpts{
 		Status:       a.Status,
@@ -721,11 +768,11 @@ func (t *TaskStopTool) Execute(_ context.Context, args json.RawMessage) (json.Ra
 
 // NewTaskTools creates the task tools for both planning and background execution.
 // Pass nil for rt if background task tools are not needed.
-func NewTaskTools(store *TaskStore, rt *agentcore.TaskRuntime) []agentcore.Tool {
+func NewTaskTools(store *TaskStore, rt *agentcore.TaskRuntime, hookRunner *hooks.Runner) []agentcore.Tool {
 	tools := []agentcore.Tool{
-		&TaskCreateTool{store: store},
+		&TaskCreateTool{store: store, hooks: hookRunner},
 		&TaskGetTool{store: store},
-		&TaskUpdateTool{store: store},
+		&TaskUpdateTool{store: store, hooks: hookRunner},
 		&TaskListTool{store: store},
 	}
 	if rt != nil {
@@ -735,6 +782,73 @@ func NewTaskTools(store *TaskStore, rt *agentcore.TaskRuntime) []agentcore.Tool 
 		)
 	}
 	return tools
+}
+
+func taskHookSnapshot(task *Task) hooks.TaskSnapshot {
+	if task == nil {
+		return hooks.TaskSnapshot{}
+	}
+	return hooks.TaskSnapshot{
+		ID:          task.ID,
+		Subject:     task.Subject,
+		Description: task.Description,
+		ActiveForm:  task.ActiveForm,
+		Status:      string(task.Status),
+		Owner:       task.Owner,
+		Blocks:      copyStrings(task.Blocks),
+		BlockedBy:   copyStrings(task.BlockedBy),
+		Metadata:    copyMetadata(task.Metadata),
+	}
+}
+
+func previewTaskUpdate(task *Task, opts TaskUpdateOpts) *Task {
+	if task == nil {
+		return nil
+	}
+	next := copyTask(task)
+	if opts.Status != nil {
+		next.Status = *opts.Status
+	}
+	if opts.Subject != nil {
+		next.Subject = *opts.Subject
+	}
+	if opts.Description != nil {
+		next.Description = *opts.Description
+	}
+	if opts.ActiveForm != nil {
+		next.ActiveForm = *opts.ActiveForm
+	}
+	if opts.Owner != nil {
+		next.Owner = *opts.Owner
+	}
+	if len(opts.Metadata) > 0 {
+		if next.Metadata == nil {
+			next.Metadata = make(map[string]any)
+		}
+		for k, v := range opts.Metadata {
+			if v == nil {
+				delete(next.Metadata, k)
+			} else {
+				next.Metadata[k] = v
+			}
+		}
+	}
+	if len(opts.AddBlocks) > 0 {
+		next.Blocks = taskAppendUnique(next.Blocks, opts.AddBlocks...)
+	}
+	if len(opts.AddBlockedBy) > 0 {
+		next.BlockedBy = taskAppendUnique(next.BlockedBy, opts.AddBlockedBy...)
+	}
+	return next
+}
+
+func copyMetadata(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	maps.Copy(dst, src)
+	return dst
 }
 
 // ---------------------------------------------------------------------------
