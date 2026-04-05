@@ -2,7 +2,10 @@ package approval
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+
+	"github.com/voocel/agentcore/permission"
 )
 
 func TestApproveHookAllowAlwaysPersists(t *testing.T) {
@@ -58,5 +61,90 @@ func TestApproveCommandRespectsPlanMode(t *testing.T) {
 		Category: CommandCategorySession,
 	}); err == nil {
 		t.Fatal("session command should be denied in plan mode")
+	}
+}
+
+func TestApprovedPlanActionsAllowMatchingBash(t *testing.T) {
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetPlanAllowedCommands([]string{"go test"})
+
+	decision, err := engine.Decide(context.Background(), permission.Request{
+		ToolName: "bash",
+		Args:     json.RawMessage(`{"command":"go test ./..."}`),
+	})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if decision == nil || !decision.Allowed() {
+		t.Fatalf("expected allow decision, got %#v", decision)
+	}
+	if decision.Reason != "allowed by approved plan" {
+		t.Fatalf("reason = %q", decision.Reason)
+	}
+
+	decision, err = engine.Decide(context.Background(), permission.Request{
+		ToolName: "bash",
+		Args:     json.RawMessage(`{"command":"go build ./..."}`),
+	})
+	if err != nil {
+		t.Fatalf("Decide build: %v", err)
+	}
+	if decision == nil || decision.Allowed() {
+		t.Fatalf("expected deny decision for unapproved command, got %#v", decision)
+	}
+}
+
+func TestApprovedPlanActionsRespectWorkdirRoots(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+
+	engine, err := NewEngine(workspace, ModeBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetPlanAllowedCommands([]string{"go test"})
+
+	decision, err := engine.Decide(context.Background(), permission.Request{
+		ToolName: "bash",
+		Args: json.RawMessage(`{
+			"command":"go test ./...",
+			"workdir":"` + outside + `"
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if decision == nil || decision.Allowed() {
+		t.Fatalf("expected deny decision for outside workdir, got %#v", decision)
+	}
+}
+
+func TestApprovedPlanActionsDoNotBypassDenyRules(t *testing.T) {
+	rules, err := ParseRuleSet(nil, []string{"Bash(go test)", "bash"})
+	if err != nil {
+		t.Fatalf("ParseRuleSet: %v", err)
+	}
+
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rules, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetPlanAllowedCommands([]string{"go test"})
+
+	decision, err := engine.Decide(context.Background(), permission.Request{
+		ToolName: "bash",
+		Args:     json.RawMessage(`{"command":"go test ./..."}`),
+	})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if decision == nil || decision.Allowed() {
+		t.Fatalf("expected deny decision, got %#v", decision)
+	}
+	if decision.Source != permission.DecisionSourceRule {
+		t.Fatalf("source = %q, want %q", decision.Source, permission.DecisionSourceRule)
 	}
 }

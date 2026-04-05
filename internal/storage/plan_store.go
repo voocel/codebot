@@ -97,6 +97,10 @@ func (s *PlanStore) path(name string) string {
 	return filepath.Join(s.dir, name+".md")
 }
 
+func (s *PlanStore) Path(name string) string {
+	return s.path(name)
+}
+
 // GenerateName returns a random name in adjective-gerund-noun format.
 func GenerateName() string {
 	return pick(adjectives) + "-" + pick(gerunds) + "-" + pick(nouns)

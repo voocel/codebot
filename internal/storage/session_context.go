@@ -11,12 +11,15 @@ import (
 
 // ContextSnapshot is the projected runtime state from a session log.
 type ContextSnapshot struct {
-	Messages  []agentcore.AgentMessage
-	Provider  string
-	Model     string
-	Thinking  string
-	PlanSlug  string
-	PlanTitle string
+	Messages            []agentcore.AgentMessage
+	Provider            string
+	Model               string
+	Thinking            string
+	PlanSlug            string
+	PlanTitle           string
+	PlanPhase           string
+	PlanPreMode         string
+	PlanAllowedCommands []AllowedCommandEntry
 }
 
 // BuildSnapshot reconstructs runtime state by walking the tree from the current leaf.
@@ -87,6 +90,9 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	lastThinking := ""
 	lastPlanSlug := ""
 	lastPlanTitle := ""
+	lastPlanPhase := ""
+	lastPlanPreMode := ""
+	var lastPlanAllowedCommands []AllowedCommandEntry
 
 	for _, entry := range chain {
 		switch entry.Kind {
@@ -138,17 +144,29 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 				lastPlanSlug = ps.Slug
 				lastPlanTitle = ps.Title
 			}
+		case EntryPlanState:
+			var ps PlanStateEntry
+			if json.Unmarshal(entry.Data, &ps) == nil {
+				lastPlanPhase = ps.Phase
+				lastPlanSlug = ps.Slug
+				lastPlanTitle = ps.Title
+				lastPlanPreMode = ps.PreMode
+				lastPlanAllowedCommands = append([]AllowedCommandEntry(nil), ps.AllowedCommands...)
+			}
 		}
 	}
 
 	repaired := agentcore.RepairMessageSequence(agentcore.CollectMessages(msgs))
 
 	return ContextSnapshot{
-		Messages:  agentcore.ToAgentMessages(repaired),
-		Provider:  lastProvider,
-		Model:     lastModel,
-		Thinking:  lastThinking,
-		PlanSlug:  lastPlanSlug,
-		PlanTitle: lastPlanTitle,
+		Messages:            agentcore.ToAgentMessages(repaired),
+		Provider:            lastProvider,
+		Model:               lastModel,
+		Thinking:            lastThinking,
+		PlanSlug:            lastPlanSlug,
+		PlanTitle:           lastPlanTitle,
+		PlanPhase:           lastPlanPhase,
+		PlanPreMode:         lastPlanPreMode,
+		PlanAllowedCommands: append([]AllowedCommandEntry(nil), lastPlanAllowedCommands...),
 	}, nil
 }

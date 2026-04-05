@@ -82,7 +82,7 @@ type Session struct {
 	skills            []skill.Spec
 	skillCatalog      *skill.Catalog
 	skillUsage        *skill.UsageTracker
-	suffix            string
+	overlays          promptOverlays
 	beforePrompt      func()
 	hookRunner        *hooks.Runner
 	taskStore         *localtools.TaskStore
@@ -143,6 +143,12 @@ type invokedSkillSnapshot struct {
 	PromptText string
 	Paths      []string
 	Timestamp  time.Time
+}
+
+type promptOverlays struct {
+	MCP          string
+	PlanMode     string
+	ApprovedPlan string
 }
 
 // NewSession creates a Session and wires auto-persist to the agent.

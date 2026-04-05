@@ -196,6 +196,7 @@ func TestRenderStatusBarHiddenWhilePlanReviewAwaitsChoice(t *testing.T) {
 		StatusPlan: func(*Model) *PlanBarInfo {
 			return &PlanBarInfo{
 				Prompt:  "Would you like to proceed?",
+				Details: []string{"Allowed command prefixes:", "- go test — 运行测试", "- go build — 构建项目"},
 				Choices: []string{"Execute plan", "Cancel"},
 			}
 		},
@@ -207,6 +208,22 @@ func TestRenderStatusBarHiddenWhilePlanReviewAwaitsChoice(t *testing.T) {
 
 	if bar := m.RenderStatusBar(); bar != "" {
 		t.Fatalf("expected status bar to hide while waiting for plan review choice, got %q", bar)
+	}
+}
+
+func TestRenderPlanBarShowsDetails(t *testing.T) {
+	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
+		StatusPlan: func(*Model) *PlanBarInfo {
+			return &PlanBarInfo{
+				Prompt:  "Would you like to proceed?",
+				Details: []string{"Allowed command prefixes:", "- go test — 运行测试", "- go build — 构建项目"},
+				Choices: []string{"Execute plan", "Cancel"},
+			}
+		},
+	})
+	got := stripANSI(m.RenderPlanBar())
+	if !strings.Contains(got, "Allowed command prefixes:") || !strings.Contains(got, "go test") || !strings.Contains(got, "go build") {
+		t.Fatalf("expected details in plan bar, got %q", got)
 	}
 }
 

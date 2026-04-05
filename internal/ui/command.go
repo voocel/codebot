@@ -157,7 +157,7 @@ func (a *App) builtinCommands() []Command {
 			return ctx.App.cmdCopy()
 		}),
 		NewSimple(CommandSpec{
-			Name: "plan", Usage: "/plan [cancel|<task>]", Description: "Enter plan mode or manage plans",
+			Name: "plan", Usage: "/plan [open|cancel|<task>]", Description: "Enter plan mode or manage plans",
 			Category: "plan", NeedsIdle: true, Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 			return ctx.App.cmdPlan(inv.Args)
@@ -616,21 +616,7 @@ func (a *App) cmdMemory(args []string) tea.Cmd {
 		if _, err := os.Stat(memPath); os.IsNotExist(err) {
 			_ = os.WriteFile(memPath, []byte("# Project Memory\n"), 0o644)
 		}
-		editor := os.Getenv("EDITOR")
-		if editor == "" {
-			editor = os.Getenv("VISUAL")
-		}
-		if editor == "" {
-			editor = "vi"
-		}
-		c := exec.Command(editor, memPath)
-		return tea.ExecProcess(c, func(err error) tea.Msg {
-			if err != nil {
-				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("editor: " + err.Error())}
-			}
-			a.Session.Reload()
-			return tui.CommandResultMsg{Text: tui.SystemMsgStyle.Render("Memory reloaded.")}
-		})
+		return a.openEditor(memPath, "Memory reloaded.")
 	}
 
 	// Show memory status.
@@ -656,6 +642,24 @@ func (a *App) cmdMemory(args []string) tea.Cmd {
 	}
 	sb.WriteString("\nUse /memory edit to open MEMORY.md in your editor.")
 	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
+}
+
+func (a *App) openEditor(path, successText string) tea.Cmd {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	c := exec.Command(editor, path)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		if err != nil {
+			return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("editor: " + err.Error())}
+		}
+		a.Session.Reload()
+		return tui.CommandResultMsg{Text: tui.SystemMsgStyle.Render(successText)}
+	})
 }
 
 func (a *App) cmdLoop(rawArgs string) tea.Cmd {

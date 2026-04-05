@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
+	planstate "github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
@@ -21,8 +22,9 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, skillCatalog *skill.Catalog, envHint string, sessionStore *storage.Store, planSlug, planTitle string) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, skillCatalog *skill.Catalog, envHint string, sessionStore *storage.Store, planSlug, planTitle, planPhase, planPreMode string, planAllowedCommands []storage.AllowedCommandEntry) error {
 	planStore := storage.NewPlanStore(config.PlansDir(cwd))
+	planManager := planstate.NewManager(sess, approvalEngine, planStore, sessionStore)
 	adapter := &App{
 		Session:        sess,
 		Cwd:            cwd,
@@ -34,19 +36,19 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 		SkillCatalog:   skillCatalog,
 		PlanStore:      planStore,
 		SessionStore:   sessionStore,
+		PlanManager:    planManager,
 		MCPManager:     mcpMgr,
 		History:        newInputHistory(sess, cwd),
 	}
 
-	// Restore plan context from resumed session.
-	if planSlug != "" {
-		if content, _ := planStore.Load(planSlug); content != "" {
-			adapter.planSlug = planSlug
-			adapter.planTitle = planTitle
-			adapter.planContent = content
-			sess.SetSystemSuffix(buildPlanContextSuffix(planTitle, content))
-		}
-	}
+	_ = planManager.Restore(planstate.State{
+		Phase:           planstate.Phase(planPhase),
+		Slug:            planSlug,
+		Title:           planTitle,
+		PreMode:         planPreMode,
+		AllowedCommands: planstate.ParseAllowedCommandsFromEntries(planAllowedCommands),
+	})
+	adapter.planTitle = planTitle
 
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()
@@ -55,7 +57,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 	cfg.RestoredMessages = sess.Messages()
 	cfg.OnMCPReady = func(msg tui.MCPReadyMsg) {
 		if msg.Instructions != "" {
-			sess.SetSystemSuffix(msg.Instructions)
+			sess.SetMCPInstructions(msg.Instructions)
 		}
 	}
 	m := tui.New(sess, modelName, cfg)

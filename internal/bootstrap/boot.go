@@ -45,15 +45,18 @@ type Runtime struct {
 	ApprovalEngine *approval.Engine
 	TaskRuntime    *agentcore.TaskRuntime
 
-	Settings     config.Resolved
-	Session      *agent.Session
-	SessionStore *storage.Store
-	SkillCatalog *skill.Catalog
-	MCPManager   *mcpclient.Manager
-	MCPServers   map[string]mcpclient.ServerConfig // for async connection in TUI
-	EnvHint      string                            // non-empty when credentials come from environment variable
-	PlanSlug     string                            // restored plan slug (empty if no plan)
-	PlanTitle    string                            // restored plan title
+	Settings            config.Resolved
+	Session             *agent.Session
+	SessionStore        *storage.Store
+	SkillCatalog        *skill.Catalog
+	MCPManager          *mcpclient.Manager
+	MCPServers          map[string]mcpclient.ServerConfig // for async connection in TUI
+	EnvHint             string                            // non-empty when credentials come from environment variable
+	PlanSlug            string                            // restored plan slug (empty if no plan)
+	PlanTitle           string                            // restored plan title
+	PlanPhase           string                            // restored plan phase
+	PlanPreMode         string                            // restored plan pre-mode
+	PlanAllowedCommands []storage.AllowedCommandEntry     // restored allowed command prefixes
 }
 
 // Close releases runtime resources.

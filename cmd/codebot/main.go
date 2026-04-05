@@ -57,7 +57,7 @@ func main() {
 	if rt.Session != nil && rt.Session.ModelName() != "" {
 		modelName = rt.Session.ModelName()
 	}
-	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, version, rt.ApprovalEngine, rt.TaskRuntime, rt.MCPManager, rt.MCPServers, rt.SkillCatalog, rt.EnvHint, rt.SessionStore, rt.PlanSlug, rt.PlanTitle); err != nil {
+	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, version, rt.ApprovalEngine, rt.TaskRuntime, rt.MCPManager, rt.MCPServers, rt.SkillCatalog, rt.EnvHint, rt.SessionStore, rt.PlanSlug, rt.PlanTitle, rt.PlanPhase, rt.PlanPreMode, rt.PlanAllowedCommands); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

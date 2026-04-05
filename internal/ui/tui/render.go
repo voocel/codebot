@@ -217,6 +217,17 @@ func (m *Model) RenderPlanBar() string {
 		b.WriteString(askQuestionStyle.Render(plan.Prompt))
 		b.WriteString("\n\n")
 	}
+	for _, detail := range plan.Details {
+		detail = strings.TrimSpace(detail)
+		if detail == "" {
+			continue
+		}
+		b.WriteString(askDescStyle.Render(detail))
+		b.WriteByte('\n')
+	}
+	if len(plan.Details) > 0 {
+		b.WriteByte('\n')
+	}
 
 	// Numbered options.
 	for i, c := range plan.Choices {

@@ -12,10 +12,13 @@ import (
 
 type Engine struct {
 	mu           sync.RWMutex
+	cwd          string
 	onAudit      func(AuditEntry)
 	approver     ApproverFunc
+	rules        *RuleSet
 	store        *permission.Store
 	sessionAllow map[string]storedEntry
+	planAllow    []string
 	tool         decisionEngine
 }
 
@@ -25,8 +28,10 @@ func NewEngine(cwd string, mode Mode, rules *RuleSet, onAudit func(AuditEntry)) 
 		return nil, err
 	}
 	return &Engine{
+		cwd:          cwd,
 		onAudit:      onAudit,
 		store:        store,
+		rules:        rules,
 		sessionAllow: make(map[string]storedEntry),
 		tool: permission.NewEngine(permission.EngineConfig{
 			Workspace: cwd,
@@ -39,6 +44,9 @@ func NewEngine(cwd string, mode Mode, rules *RuleSet, onAudit func(AuditEntry)) 
 }
 
 func (e *Engine) Decide(ctx context.Context, req permission.Request) (*permission.Decision, error) {
+	if decision := e.decideApprovedPlanAction(req); decision != nil {
+		return decision, nil
+	}
 	return e.tool.Decide(ctx, req)
 }
 

@@ -142,6 +142,7 @@ func inspectCommand(req CommandRequest) toolInfo {
 type decisionEngine interface {
 	Decide(ctx context.Context, req permission.Request) (*permission.Decision, error)
 	SetFilesystemRoots(roots permission.FilesystemRoots)
+	FilesystemRoots() permission.FilesystemRoots
 	SetMode(mode permission.Mode)
 	Mode() permission.Mode
 	SetPlanMode(active bool)

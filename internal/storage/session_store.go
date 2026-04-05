@@ -146,6 +146,20 @@ func (s *Store) AppendPlanSlug(slug, title string) error {
 	return s.appendChained(EntryPlanSlug, data)
 }
 
+func (s *Store) AppendPlanState(phase, slug, title, preMode string, allowedCommands []AllowedCommandEntry) error {
+	data, err := json.Marshal(PlanStateEntry{
+		Phase:           phase,
+		Slug:            slug,
+		Title:           title,
+		PreMode:         preMode,
+		AllowedCommands: allowedCommands,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal plan state: %w", err)
+	}
+	return s.appendChained(EntryPlanState, data)
+}
+
 // SetName updates the session display name by appending a session_info entry.
 func (s *Store) SetName(name string) error {
 	data, err := json.Marshal(map[string]string{"name": name})

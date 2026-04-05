@@ -16,6 +16,7 @@ const (
 	EntryThinkingChange EntryKind = "thinking_change"
 	EntrySessionInfo    EntryKind = "session_info"
 	EntryPlanSlug       EntryKind = "plan_slug"
+	EntryPlanState      EntryKind = "plan_state"
 )
 
 // Entry is a single JSONL line in the session file.
@@ -57,6 +58,19 @@ type Compaction struct {
 type PlanSlugEntry struct {
 	Slug  string `json:"slug"`
 	Title string `json:"title"`
+}
+
+type AllowedCommandEntry struct {
+	CommandPrefix string `json:"command_prefix"`
+	Description   string `json:"description,omitempty"`
+}
+
+type PlanStateEntry struct {
+	Phase           string                `json:"phase"`
+	Slug            string                `json:"slug,omitempty"`
+	Title           string                `json:"title,omitempty"`
+	PreMode         string                `json:"pre_mode,omitempty"`
+	AllowedCommands []AllowedCommandEntry `json:"allowed_commands,omitempty"`
 }
 
 // SessionInfo is a summary of a session for listing.

@@ -25,6 +25,7 @@ type PlanBarInfo struct {
 
 	// Plan review card fields.
 	Prompt    string // e.g., "Would you like to proceed?"
+	Details   []string
 	OtherMode bool   // typing custom feedback
 	OtherBuf  string // custom feedback buffer
 }

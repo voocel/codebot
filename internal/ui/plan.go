@@ -7,171 +7,156 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/storage"
-	localtools "github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-type planState int
-
-const (
-	planOff      planState = iota
-	planPlanning           // read-only exploration, agent writes plan
-	planReview             // plan submitted, awaiting user approval
-)
-
-// ---------------------------------------------------------------------------
-// System prompts
-// ---------------------------------------------------------------------------
-
-const planModePrompt = `[PLAN MODE - Read-Only]
-You are in plan mode. Explore and analyze the codebase, then create a detailed implementation plan.
-
-IMPORTANT: When your plan is ready, you MUST:
-1. Write the FULL plan as text in the conversation (so the user can read it)
-2. Then call exit_plan_mode with both title and content parameters
-
-Do NOT call exit_plan_mode before writing the plan. Do NOT modify any files.`
-
-func buildPlanContextSuffix(title, content string) string {
-	return fmt.Sprintf("[APPROVED PLAN]\nExecute the following plan.\n\nPlan: %s\n\n%s", title, content)
+func (a *App) planPhase() plan.Phase {
+	if a.PlanManager == nil {
+		return plan.PhaseOff
+	}
+	return a.PlanManager.Snapshot().Phase
 }
 
-// ---------------------------------------------------------------------------
-// Commands
-// ---------------------------------------------------------------------------
+func (a *App) currentPlanTitle() string {
+	state := a.PlanManager.Snapshot()
+	if strings.TrimSpace(state.Title) != "" {
+		return state.Title
+	}
+	content, err := a.PlanManager.CurrentPlan()
+	if err != nil {
+		return "(untitled)"
+	}
+	return plan.ExtractTitle(content)
+}
+
+func (a *App) currentAllowedCommands() []plan.AllowedCommand {
+	if a.PlanManager == nil {
+		return nil
+	}
+	return a.PlanManager.Snapshot().AllowedCommands
+}
+
+func (a *App) allowedCommandLines() []string {
+	labels := plan.DescribeAllowedCommands(a.currentAllowedCommands())
+	if len(labels) == 0 {
+		return nil
+	}
+	lines := []string{"Allowed command prefixes:"}
+	for _, label := range labels {
+		lines = append(lines, "- "+label)
+	}
+	return lines
+}
 
 func (a *App) cmdPlan(args []string) tea.Cmd {
 	if len(args) == 0 {
-		switch a.planState {
-		case planOff:
+		switch a.planPhase() {
+		case plan.PhaseOff:
 			return a.enterPlanMode("")
-		case planPlanning:
-			return tui.SendCommandResult(tui.CommandStyle.Render(
-				"Already in plan mode (read-only). Use /plan cancel to abort."))
-		case planReview:
-			return tui.SendCommandResult(tui.CommandStyle.Render(
-				"Plan awaiting approval. Use arrow keys to select, Enter to confirm."))
+		case plan.PhasePlanning:
+			return a.showCurrentPlan()
+		case plan.PhaseReview:
+			return a.showCurrentPlan()
 		}
 	}
 
-	sub := strings.ToLower(args[0])
+	sub := strings.ToLower(strings.TrimSpace(args[0]))
 	switch sub {
 	case "cancel":
 		return a.cancelPlanMode()
+	case "open":
+		return a.openCurrentPlan()
 	default:
-		if a.planState != planOff {
+		if a.planPhase() != plan.PhaseOff {
 			return tui.SendCommandResult(tui.ErrorStyle.Render(
-				"Already in plan mode. Use /plan cancel to exit first."))
+				"Already in plan mode. Use /plan open to inspect the plan, or /plan cancel to exit first."))
 		}
 		return a.enterPlanMode(strings.Join(args, " "))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// State transitions
-// ---------------------------------------------------------------------------
-
-// enterPlanMode is the shared setup for both /plan command and enter_plan_mode tool.
 func (a *App) enterPlanMode(task string) tea.Cmd {
-	readOnly := a.Session.ToolsByName("read", "glob", "grep", "ls", "ask_user")
-	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
-	a.Session.SetSystemSuffix(planModePrompt)
-	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetPlanMode(true)
+	if a.PlanManager == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
-	a.planState = planPlanning
-	a.planContent = ""
+	prompt, err := a.PlanManager.Enter(task)
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
+	}
 	a.planTitle = ""
-
-	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan.\nWrite your complete plan as text, then call exit_plan_mode with the title and content."
-	if task != "" {
-		prompt += "\n\nTask: " + task
-	}
 	return a.sendAsPrompt(prompt)
 }
 
 func (a *App) executePlan() tea.Cmd {
-	if a.planState != planReview {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan to execute."))
+	if a.PlanManager == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
-
-	title, content := a.planTitle, a.planContent
-
-	a.Session.RestoreAllTools(localtools.NewEnterPlanMode())
-	a.Session.SetSystemSuffix(buildPlanContextSuffix(title, content))
-	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetPlanMode(false)
+	title, _, _, err := a.PlanManager.Approve()
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-
-	a.planState = planOff
-	a.planContent = ""
-	a.planTitle = ""
-
+	a.planTitle = title
+	a.planOtherMode = false
+	a.planOtherBuf = ""
+	a.planChoice = 0
 	return a.sendAsPrompt("The plan has been approved. Execute it now.")
 }
 
 func (a *App) cancelPlanMode() tea.Cmd {
-	if a.planState == planOff {
+	if a.PlanManager == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
+	}
+	if a.planPhase() == plan.PhaseOff {
 		return tui.SendCommandResult(tui.CommandStyle.Render("Not in plan mode."))
 	}
-	a.resetPlanState()
+	if err := a.PlanManager.Cancel(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
+	}
+	a.resetPlanUI()
 	return tui.SendCommandResult(tui.CommandStyle.Render("Plan mode cancelled. All tools restored."))
 }
 
 func (a *App) resetPlanState() {
-	a.Session.RestoreAllTools(localtools.NewEnterPlanMode())
-	a.Session.SetSystemSuffix("")
-	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetPlanMode(false)
+	if a.PlanManager != nil {
+		_ = a.PlanManager.Cancel()
 	}
-	a.planState = planOff
-	a.planContent = ""
+	a.resetPlanUI()
+}
+
+func (a *App) resetPlanUI() {
 	a.planTitle = ""
+	a.planChoice = 0
 	a.planOtherMode = false
 	a.planOtherBuf = ""
 }
 
-// ---------------------------------------------------------------------------
-// Plan review keyboard handling (AskUser-style)
-// ---------------------------------------------------------------------------
-
-const planOptionCount = 3 // 2 choices + "Type here"
+const planOptionCount = 3
 
 func (a *App) handlePlanReviewKey(msg tea.KeyMsg) (bool, tea.Cmd) {
-	// In otherMode, handle typing.
 	if a.planOtherMode {
 		return a.handlePlanOtherInput(msg)
 	}
 
-	// Esc and Ctrl+C cancel plan mode.
 	switch msg.String() {
 	case "esc":
 		return true, a.cancelPlanMode()
 	case "ctrl+c":
 		return true, a.cancelPlanMode()
-
 	case "up", "k":
 		if a.planChoice > 0 {
 			a.planChoice--
 		}
 		return true, nil
-
 	case "down", "j", "tab":
 		if a.planChoice < planOptionCount-1 {
 			a.planChoice++
 		}
 		return true, nil
-
 	case "enter":
 		return a.handlePlanEnter()
 	}
 
-	// Number shortcuts: 1-3.
 	if len(msg.Runes) == 1 {
 		r := msg.Runes[0]
 		if r >= '1' && r <= '9' {
@@ -183,7 +168,6 @@ func (a *App) handlePlanReviewKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 	}
 
-	// Absorb all other keys.
 	return true, nil
 }
 
@@ -194,7 +178,6 @@ func (a *App) handlePlanEnter() (bool, tea.Cmd) {
 	case 1:
 		return true, a.cancelPlanMode()
 	default:
-		// "Type here" option.
 		a.planOtherMode = true
 		a.planOtherBuf = ""
 		return true, nil
@@ -230,26 +213,16 @@ func (a *App) handlePlanOtherInput(msg tea.KeyMsg) (bool, tea.Cmd) {
 }
 
 func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
-	if a.planState != planReview {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("No plan to edit."))
+	if a.PlanManager == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
-
-	readOnly := a.Session.ToolsByName("read", "glob", "grep", "ls", "ask_user")
-	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
-	a.Session.SetSystemSuffix(planModePrompt)
-	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetPlanMode(true)
+	prompt, err := a.PlanManager.Revise(feedback)
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-	a.planState = planPlanning
-	a.planContent = ""
 	a.planTitle = ""
-
-	return a.sendAsPrompt("User feedback on the plan: " + feedback + "\n\nPlease revise the plan accordingly.")
+	return a.sendAsPrompt(prompt)
 }
-
-// ---------------------------------------------------------------------------
-// Event handling
-// ---------------------------------------------------------------------------
 
 func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
 	switch ev.Type {
@@ -259,125 +232,161 @@ func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
 		}
 		switch ev.Tool {
 		case "enter_plan_mode":
-			return a.onEnterPlanMode()
+			return a.onEnterPlanMode(ev.Result)
 		case "exit_plan_mode":
 			return a.onExitPlanMode(ev.Result)
 		}
 	case agentcore.EventAgentEnd:
-		// Show plan box and approval menu after agent fully stops.
-		if a.planState == planReview {
-			title := tui.ChoiceActiveStyle.Render("Plan: " + a.planTitle)
-			hint := tui.MutedStyle.Render("Select an action below.")
-			box := tui.PlanBoxStyle.Render(title + "\n" + hint)
+		if a.planPhase() == plan.PhaseReview {
+			title := tui.ChoiceActiveStyle.Render("Plan: " + a.currentPlanTitle())
+			lines := []string{title}
+			for _, detail := range a.allowedCommandLines() {
+				lines = append(lines, tui.MutedStyle.Render(detail))
+			}
+			lines = append(lines, tui.MutedStyle.Render("Select an action below."))
+			box := tui.PlanBoxStyle.Render(strings.Join(lines, "\n"))
 			return tea.Println("\n" + box)
 		}
 	}
 	return nil
 }
 
-// onEnterPlanMode handles LLM-initiated plan mode entry.
-func (a *App) onEnterPlanMode() tea.Cmd {
-	if a.planState != planOff {
+func (a *App) onEnterPlanMode(result json.RawMessage) tea.Cmd {
+	if a.planPhase() != plan.PhaseOff {
 		return nil
 	}
-	readOnly := a.Session.ToolsByName("read", "glob", "grep", "ls", "ask_user")
-	a.Session.SetTools(append(readOnly, localtools.NewExitPlanMode())...)
-	a.Session.SetSystemSuffix(planModePrompt)
-	if a.ApprovalEngine != nil {
-		a.ApprovalEngine.SetPlanMode(true)
+	if a.PlanManager == nil {
+		return nil
 	}
-	a.planState = planPlanning
-	a.planContent = ""
+	var resp struct {
+		Task string `json:"task"`
+	}
+	_ = json.Unmarshal(result, &resp)
+	if _, err := a.PlanManager.Enter(strings.TrimSpace(resp.Task)); err != nil {
+		return tea.Println(tui.ErrorStyle.Render("Plan mode error: " + err.Error()))
+	}
 	a.planTitle = ""
 	return nil
 }
 
-// onExitPlanMode captures plan content when LLM signals completion.
 func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
-	if a.planState != planPlanning {
+	if a.planPhase() != plan.PhasePlanning || a.PlanManager == nil {
 		return nil
 	}
 
-	// Extract plan content and title from tool arguments.
 	var resp struct {
-		Title   string `json:"title"`
-		Content string `json:"content"`
+		Title           string                   `json:"title"`
+		Content         string                   `json:"content"`
+		AllowedCommands []plan.RawAllowedCommand `json:"allowed_commands"`
 	}
 	_ = json.Unmarshal(result, &resp)
 
-	// Primary source: tool argument. Fallback: last assistant text.
-	a.planContent = resp.Content
-	if a.planContent == "" {
-		a.planContent = a.Session.LastAssistantText()
+	content := resp.Content
+	if strings.TrimSpace(content) == "" {
+		content = a.Session.LastAssistantText()
+	}
+	title := strings.TrimSpace(resp.Title)
+	if title == "" {
+		title = plan.ExtractTitle(content)
+	}
+	commands := plan.ParseAllowedCommands(resp.AllowedCommands)
+	if err := a.PlanManager.Submit(title, content, commands); err != nil {
+		return tea.Println(tui.ErrorStyle.Render("Plan submit error: " + err.Error()))
 	}
 
-	if resp.Title != "" {
-		a.planTitle = resp.Title
-	} else {
-		a.planTitle = extractTitle(a.planContent)
-	}
-
-	// Archive to disk and record slug in session log.
-	if a.planSlug == "" {
-		a.planSlug = storage.GenerateName()
-	}
-	if a.PlanStore != nil {
-		_ = a.PlanStore.Save(a.planSlug, a.planContent)
-	}
-	if a.SessionStore != nil {
-		_ = a.SessionStore.AppendPlanSlug(a.planSlug, a.planTitle)
-	}
-
-	a.planState = planReview
+	a.planTitle = title
 	a.planChoice = 0
 	a.planOtherMode = false
 	a.planOtherBuf = ""
-
-	// Stop the agent so LLM doesn't get another turn.
-	// Safe: tool_result is written to messages AFTER executeToolCalls returns
-	// (loop.go:167-173), then ctx.Err() check (loop.go:102-106) exits cleanly.
-	// AbortSilent: programmatic cancellation — no abort marker in history.
 	a.Session.AbortSilent()
-
 	return nil
 }
 
-// extractTitle returns the first markdown heading or first non-empty line.
-func extractTitle(content string) string {
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "#") {
-			return strings.TrimSpace(strings.TrimLeft(line, "#"))
-		}
-		if len([]rune(line)) > 60 {
-			return string([]rune(line)[:57]) + "..."
-		}
-		return line
+func (a *App) showCurrentPlan() tea.Cmd {
+	if a.PlanManager == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
-	return "(untitled)"
+	content, err := a.PlanManager.CurrentPlan()
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
+	}
+	path := a.PlanManager.CurrentPlanPath()
+	if strings.TrimSpace(content) == "" {
+		if a.planPhase() == plan.PhasePlanning {
+			return tui.SendCommandResult(tui.CommandStyle.Render("Already in plan mode. No plan written yet."))
+		}
+		return tui.SendCommandResult(tui.CommandStyle.Render("No current plan."))
+	}
+	var sb strings.Builder
+	sb.WriteString("Current Plan\n\n")
+	if path != "" {
+		sb.WriteString("Path: " + path + "\n")
+	}
+	sb.WriteString("Phase: " + string(a.planPhase()) + "\n")
+	for _, line := range a.allowedCommandLines() {
+		sb.WriteString(line + "\n")
+	}
+	sb.WriteString("\n")
+	sb.WriteString(content)
+	if path != "" {
+		sb.WriteString("\n\nUse /plan open to edit this plan in your editor.")
+	}
+	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
 }
 
-// ---------------------------------------------------------------------------
-// Status bar integration
-// ---------------------------------------------------------------------------
+func (a *App) openCurrentPlan() tea.Cmd {
+	if a.PlanManager == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
+	}
+	path := a.PlanManager.CurrentPlanPath()
+	if path == "" {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("No active plan file."))
+	}
+	return a.openEditor(path, "Plan reloaded.")
+}
 
 func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {
-	switch a.planState {
-	case planReview:
-		if m.Running {
-			return nil
-		}
-		return &tui.PlanBarInfo{
-			Prompt:    "Would you like to proceed?",
-			Choices:   []string{"Execute plan", "Cancel"},
-			Active:    a.planChoice,
-			OtherMode: a.planOtherMode,
-			OtherBuf:  a.planOtherBuf,
-		}
-	default:
+	if a.planPhase() != plan.PhaseReview || m.Running {
 		return nil
+	}
+	return &tui.PlanBarInfo{
+		Prompt:    "Would you like to proceed?",
+		Details:   a.planReviewDetails(),
+		Choices:   []string{"Execute plan", "Cancel"},
+		Active:    a.planChoice,
+		OtherMode: a.planOtherMode,
+		OtherBuf:  a.planOtherBuf,
+	}
+}
+
+func (a *App) planReviewDetails() []string {
+	return a.allowedCommandLines()
+}
+
+func (a *App) planDebugString() string {
+	if a.PlanManager == nil {
+		return "off"
+	}
+	state := a.PlanManager.Snapshot()
+	parts := []string{string(state.Phase)}
+	if state.Slug != "" {
+		parts = append(parts, state.Slug)
+	}
+	if state.Title != "" {
+		parts = append(parts, state.Title)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func (a *App) planSummary() string {
+	if a.PlanManager == nil {
+		return ""
+	}
+	state := a.PlanManager.Snapshot()
+	switch state.Phase {
+	case plan.PhasePlanning, plan.PhaseReview:
+		return fmt.Sprintf("%s (%s)", a.currentPlanTitle(), state.Phase)
+	default:
+		return ""
 	}
 }

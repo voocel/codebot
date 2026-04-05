@@ -34,7 +34,27 @@ func (s *Session) ReplaceAllTools(tools []agentcore.Tool) {
 }
 
 func (s *Session) SetSystemSuffix(suffix string) {
-	s.prompts.setSystemSuffix(suffix)
+	s.prompts.setApprovedPlanPrompt(suffix)
+}
+
+func (s *Session) SetMCPInstructions(text string) {
+	s.prompts.setMCPInstructions(text)
+}
+
+func (s *Session) SetPlanModePrompt(text string) {
+	s.prompts.setPlanModePrompt(text)
+}
+
+func (s *Session) ClearPlanModePrompt() {
+	s.prompts.setPlanModePrompt("")
+}
+
+func (s *Session) SetApprovedPlanPrompt(text string) {
+	s.prompts.setApprovedPlanPrompt(text)
+}
+
+func (s *Session) ClearApprovedPlanPrompt() {
+	s.prompts.setApprovedPlanPrompt("")
 }
 
 func (s *Session) Skills() []skill.Spec {
@@ -97,8 +117,18 @@ func (m *sessionPromptManager) replaceAllTools(tools []agentcore.Tool) {
 	m.rebuildPrompt()
 }
 
-func (m *sessionPromptManager) setSystemSuffix(suffix string) {
-	m.session.suffix = suffix
+func (m *sessionPromptManager) setMCPInstructions(text string) {
+	m.session.overlays.MCP = text
+	m.rebuildPrompt()
+}
+
+func (m *sessionPromptManager) setPlanModePrompt(text string) {
+	m.session.overlays.PlanMode = text
+	m.rebuildPrompt()
+}
+
+func (m *sessionPromptManager) setApprovedPlanPrompt(text string) {
+	m.session.overlays.ApprovedPlan = text
 	m.rebuildPrompt()
 }
 
@@ -143,8 +173,14 @@ func (m *sessionPromptManager) rebuildPrompt() {
 
 	// Build two-block system prompt (identity + instructions) for cache stability.
 	identity, instructions := config.BuildSystemBlockTexts(m.session.cwd, m.session.contextFiles, visibleInfos)
-	if m.session.suffix != "" {
-		instructions += "\n\n" + m.session.suffix
+	for _, overlay := range []string{
+		m.session.overlays.MCP,
+		m.session.overlays.PlanMode,
+		m.session.overlays.ApprovedPlan,
+	} {
+		if strings.TrimSpace(overlay) != "" {
+			instructions += "\n\n" + overlay
+		}
 	}
 	blocks := []agentcore.SystemBlock{
 		{Text: identity, CacheControl: "ephemeral"},

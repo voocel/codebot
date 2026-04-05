@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
+	"github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/imageinput"
@@ -52,16 +53,14 @@ type App struct {
 	// History provides input history for Up/Down navigation.
 	History *storage.History
 
+	PlanManager *plan.Manager
+
 	// registry holds all slash commands assembled from built-ins and file-backed sources.
 	registry *Registry
 
 	// CommandLoaders allow alternative command sources to be injected at app construction time.
 	CommandLoaders []CommandLoader
 
-	// Plan mode state.
-	planState     planState
-	planSlug      string // plan file identifier, persisted in session log
-	planContent   string // free-form plan text from LLM
 	planTitle     string // short title extracted from plan content
 	planChoice    int    // selected option in planReview menu
 	planOtherMode bool   // typing custom feedback
@@ -70,8 +69,9 @@ type App struct {
 
 // Config returns a tui.Config with all hooks wired to this App.
 func (a *App) Config() tui.Config {
-	// Restore all tools (enter_plan_mode is already registered in buildToolset).
-	a.Session.RestoreAllTools()
+	if a.PlanManager == nil {
+		a.Session.RestoreAllTools()
+	}
 	return tui.Config{
 		Cwd:         a.Cwd,
 		GitBranch:   a.GitBranch,
@@ -93,7 +93,7 @@ func (a *App) Config() tui.Config {
 func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	return func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 		// Plan pending approval: AskUser-style interaction.
-		if a.planState == planReview && !m.Running {
+		if a.planPhase() == plan.PhaseReview && !m.Running {
 			return a.handlePlanReviewKey(msg)
 		}
 

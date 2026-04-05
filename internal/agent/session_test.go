@@ -530,6 +530,36 @@ func TestInjectInvokedSkillContextAddsPreservedReminder(t *testing.T) {
 	}
 }
 
+func TestPromptOverlaysAppendInFixedOrder(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+		Tools: []agentcore.Tool{
+			&stubTool{name: "read", desc: "read file"},
+		},
+	})
+	t.Cleanup(s.Close)
+
+	s.SetMCPInstructions("mcp overlay")
+	s.SetPlanModePrompt("plan overlay")
+	s.SetApprovedPlanPrompt("approved overlay")
+
+	systemPrompt := ag.State().SystemPrompt
+	mcpIdx := strings.Index(systemPrompt, "mcp overlay")
+	planIdx := strings.Index(systemPrompt, "plan overlay")
+	approvedIdx := strings.Index(systemPrompt, "approved overlay")
+	if mcpIdx < 0 || planIdx < 0 || approvedIdx < 0 {
+		t.Fatalf("missing overlays in system prompt: %q", systemPrompt)
+	}
+	if !(mcpIdx < planIdx && planIdx < approvedIdx) {
+		t.Fatalf("unexpected overlay order: %q", systemPrompt)
+	}
+}
+
 func TestSetToolsRebuildsPrompt(t *testing.T) {
 	t.Parallel()
 

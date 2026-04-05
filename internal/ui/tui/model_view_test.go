@@ -170,6 +170,7 @@ func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
 		StatusPlan: func(*Model) *PlanBarInfo {
 			return &PlanBarInfo{
 				Prompt:  "Would you like to proceed?",
+				Details: []string{"Allowed command prefixes:", "- go test — 运行测试"},
 				Choices: []string{"Execute plan", "Cancel"},
 			}
 		},
@@ -183,6 +184,9 @@ func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
 	modeIdx := strings.Index(view, "◇ plan mode")
 	if promptIdx < 0 || modeIdx < 0 {
 		t.Fatalf("expected plan review prompt and bottom mode indicator, got: %q", view)
+	}
+	if !strings.Contains(view, "Allowed command prefixes:") || !strings.Contains(view, "go test") {
+		t.Fatalf("expected allowed command details, got: %q", view)
 	}
 	if modeIdx < promptIdx {
 		t.Fatalf("expected mode indicator below plan review card, got: %q", view)
