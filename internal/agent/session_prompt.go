@@ -118,6 +118,10 @@ func (m *sessionPromptManager) reload() {
 }
 
 func (m *sessionPromptManager) rebuildPrompt() {
+	if m.session.skillCatalog != nil {
+		m.session.skills = m.session.skillCatalog.List()
+	}
+
 	// Find DeferFilter (if tool_search is active) to exclude deferred tools from prompt.
 	var filter agentcore.DeferFilter
 	for _, t := range m.session.activeTools {
@@ -167,6 +171,9 @@ func (m *sessionPromptManager) rebuildPrompt() {
 
 func (m *sessionPromptManager) refreshSkillReminders() {
 	m.session.mu.Lock()
+	if m.session.skillCatalog != nil {
+		m.session.skills = m.session.skillCatalog.List()
+	}
 	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, m.session.skillUsageScoresLocked())
 	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
 	m.session.mu.Unlock()

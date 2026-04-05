@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -143,6 +145,37 @@ func TestRebuildRegistryIncludesAllCommandSources(t *testing.T) {
 		if _, ok := app.registry.Lookup(name); !ok {
 			t.Fatalf("expected command %q to be registered", name)
 		}
+	}
+}
+
+func TestRebuildRegistryUsesActiveSkillsFromCatalog(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, "internal", "skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(cwd, ".codebot", "skills")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "review.md"), []byte("---\ndescription: Code review skill\npaths:\n  - internal/skill/**\n---\nReview code"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "frontend.md"), []byte("---\ndescription: Frontend skill\npaths:\n  - web/**\n---\nBuild UI"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{
+		Cwd:          cwd,
+		SkillCatalog: skill.NewCatalog(cwd),
+	}
+	app.rebuildRegistry()
+	if _, ok := app.registry.Lookup("review"); !ok {
+		t.Fatal("expected active skill command to be registered")
+	}
+	if _, ok := app.registry.Lookup("frontend"); ok {
+		t.Fatal("expected inactive path-scoped skill to stay out of the registry")
 	}
 }
 

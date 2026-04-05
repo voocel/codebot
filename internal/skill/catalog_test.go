@@ -157,6 +157,70 @@ func TestLoadFromDir(t *testing.T) {
 	}
 }
 
+func TestDeduplicateSpecsPrefersLaterSourceForSameName(t *testing.T) {
+	t.Parallel()
+
+	specs := deduplicateSpecs([]Spec{
+		{Name: "review", Description: "bundled", Source: "bundled", FilePath: "/tmp/bundled-review.md"},
+		{Name: "review", Description: "project", Source: "project", FilePath: "/tmp/project-review.md"},
+	})
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 skill after dedupe, got %d", len(specs))
+	}
+	if specs[0].Description != "project" {
+		t.Fatalf("expected later source to win, got %#v", specs[0])
+	}
+}
+
+func TestDeduplicateSpecsUsesResolvedPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "review.md")
+	link := filepath.Join(dir, "alias.md")
+	writeSkillFile(t, target, "review")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	specs := deduplicateSpecs([]Spec{
+		{Name: "review", Description: "original", FilePath: target},
+		{Name: "review-link", Description: "linked", FilePath: link},
+	})
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 skill after file-identity dedupe, got %d", len(specs))
+	}
+	if specs[0].Name != "review-link" {
+		t.Fatalf("expected later duplicate file to replace earlier one, got %#v", specs[0])
+	}
+}
+
+func TestCatalogFiltersInactivePathScopedSkills(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, "internal", "skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	catalog := &Catalog{cwd: cwd}
+	catalog.setSpecs([]Spec{
+		{Name: "always-on"},
+		{Name: "review", Paths: []string{"internal/skill/**"}},
+		{Name: "frontend", Paths: []string{"web/**"}},
+	})
+
+	list := catalog.List()
+	if len(list) != 2 {
+		t.Fatalf("expected 2 active skills, got %#v", list)
+	}
+	if _, ok := catalog.Get("review"); !ok {
+		t.Fatal("expected matching path-scoped skill to be active")
+	}
+	if _, ok := catalog.Get("frontend"); ok {
+		t.Fatal("expected non-matching path-scoped skill to stay inactive")
+	}
+}
+
 func writeSkillFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

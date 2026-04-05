@@ -29,8 +29,13 @@ func (fileCommandLoader) Load(app *App) []Command {
 type skillCommandLoader struct{}
 
 func (skillCommandLoader) Load(app *App) []Command {
-	commands := make([]Command, 0, len(app.Skills))
-	for _, skill := range app.Skills {
+	skills := app.Skills
+	if app.SkillCatalog != nil {
+		skills = app.SkillCatalog.List()
+		app.Skills = skills
+	}
+	commands := make([]Command, 0, len(skills))
+	for _, skill := range skills {
 		if skill.DisableUserInvocation {
 			continue
 		}

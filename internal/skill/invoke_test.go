@@ -81,3 +81,21 @@ func TestUntrustedSkillSourceDisablesPrivilegedFields(t *testing.T) {
 		t.Fatalf("expected prompt text to remain literal for untrusted source, got %q", result.PromptText)
 	}
 }
+
+func TestProcessInvocationRejectsInactivePathScopedSkill(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	catalog := &Catalog{cwd: cwd}
+	catalog.setSpecs([]Spec{
+		{Name: "frontend", Paths: []string{"web/**"}, GetPrompt: buildStaticPromptFn(Spec{Name: "frontend"}, "build ui")},
+	})
+
+	_, err := ProcessInvocation(context.Background(), catalog, InvokeInput{
+		Name:   "frontend",
+		Source: SourceUser,
+	})
+	if err != ErrNotFound {
+		t.Fatalf("expected inactive skill to behave as not found, got %v", err)
+	}
+}

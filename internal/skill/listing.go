@@ -89,8 +89,8 @@ func sortSkillsForPrompt(skills []Spec, cwd string, usage map[string]float64) {
 	}
 	sort.SliceStable(skills, func(i, j int) bool {
 		a, b := skills[i], skills[j]
-		aApplicable := skillAppliesToWorkspace(a, cwd)
-		bApplicable := skillAppliesToWorkspace(b, cwd)
+		aApplicable := skillIsActive(a, cwd)
+		bApplicable := skillIsActive(b, cwd)
 		if aApplicable != bApplicable {
 			return aApplicable
 		}
@@ -108,7 +108,7 @@ func sortSkillsForPrompt(skills []Spec, cwd string, usage map[string]float64) {
 	})
 }
 
-func skillAppliesToWorkspace(spec Spec, cwd string) bool {
+func skillIsActive(spec Spec, cwd string) bool {
 	if len(spec.Paths) == 0 || cwd == "" {
 		return true
 	}

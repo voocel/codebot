@@ -53,25 +53,79 @@ func LoadFromDir(dir, source string) []Spec {
 }
 
 func (c *Catalog) Reload() {
-	byName := make(map[string]Spec)
-	for _, spec := range BundledSpecs(c.cwd) {
-		byName[spec.Name] = spec
-	}
+	specs := make([]Spec, 0)
+	specs = append(specs, BundledSpecs(c.cwd)...)
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		for _, spec := range loadSkillsFromDir(filepath.Join(home, ".codebot", "skills"), "user") {
-			byName[spec.Name] = spec
+		specs = append(specs, loadSkillsFromDir(filepath.Join(home, ".codebot", "skills"), "user")...)
+	}
+	specs = append(specs, loadSkillsFromDir(filepath.Join(c.cwd, ".codebot", "skills"), "project")...)
+	c.setSpecs(deduplicateSpecs(specs))
+}
+
+func deduplicateSpecs(specs []Spec) []Spec {
+	if len(specs) < 2 {
+		return append([]Spec(nil), specs...)
+	}
+	deduped := make([]Spec, 0, len(specs))
+	byName := make(map[string]int, len(specs))
+	byIdentity := make(map[string]int, len(specs))
+	for _, spec := range specs {
+		nameKey := NormalizeName(spec.Name)
+		identityKey := specIdentityKey(spec)
+		if idx, ok := byName[nameKey]; ok {
+			releaseSpecKeys(deduped[idx], byName, byIdentity, idx)
+			deduped[idx] = spec
+			storeSpecKeys(spec, byName, byIdentity, idx, identityKey)
+			continue
+		}
+		if identityKey != "" {
+			if idx, ok := byIdentity[identityKey]; ok {
+				releaseSpecKeys(deduped[idx], byName, byIdentity, idx)
+				deduped[idx] = spec
+				storeSpecKeys(spec, byName, byIdentity, idx, identityKey)
+				continue
+			}
+		}
+		idx := len(deduped)
+		deduped = append(deduped, spec)
+		storeSpecKeys(spec, byName, byIdentity, idx, identityKey)
+	}
+	sort.Slice(deduped, func(i, j int) bool { return deduped[i].Name < deduped[j].Name })
+	return deduped
+}
+
+func storeSpecKeys(spec Spec, byName map[string]int, byIdentity map[string]int, idx int, identityKey string) {
+	byName[NormalizeName(spec.Name)] = idx
+	if identityKey != "" {
+		byIdentity[identityKey] = idx
+	}
+}
+
+func releaseSpecKeys(spec Spec, byName map[string]int, byIdentity map[string]int, idx int) {
+	nameKey := NormalizeName(spec.Name)
+	if cur, ok := byName[nameKey]; ok && cur == idx {
+		delete(byName, nameKey)
+	}
+	if identityKey := specIdentityKey(spec); identityKey != "" {
+		if cur, ok := byIdentity[identityKey]; ok && cur == idx {
+			delete(byIdentity, identityKey)
 		}
 	}
-	for _, spec := range loadSkillsFromDir(filepath.Join(c.cwd, ".codebot", "skills"), "project") {
-		byName[spec.Name] = spec
-	}
+}
 
-	specs := make([]Spec, 0, len(byName))
-	for _, spec := range byName {
-		specs = append(specs, spec)
+func specIdentityKey(spec Spec) string {
+	if spec.FilePath == "" {
+		return ""
 	}
-	sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
-	c.setSpecs(specs)
+	resolved, err := filepath.EvalSymlinks(spec.FilePath)
+	if err == nil && resolved != "" {
+		return filepath.Clean(resolved)
+	}
+	abs, err := filepath.Abs(spec.FilePath)
+	if err != nil {
+		return filepath.Clean(spec.FilePath)
+	}
+	return filepath.Clean(abs)
 }
 
 func (c *Catalog) setSpecs(specs []Spec) {
@@ -92,9 +146,12 @@ func (c *Catalog) setSpecs(specs []Spec) {
 func (c *Catalog) List() []Spec {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	out := make([]Spec, len(c.list))
-	for i, spec := range c.list {
-		out[i] = cloneSpec(spec)
+	out := make([]Spec, 0, len(c.list))
+	for _, spec := range c.list {
+		if !skillIsActive(spec, c.cwd) {
+			continue
+		}
+		out = append(out, cloneSpec(spec))
 	}
 	return out
 }
@@ -103,7 +160,10 @@ func (c *Catalog) Get(name string) (Spec, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	spec, ok := c.byName[NormalizeName(name)]
-	return cloneSpec(spec), ok
+	if !ok || !skillIsActive(spec, c.cwd) {
+		return Spec{}, false
+	}
+	return cloneSpec(spec), true
 }
 
 func loadSkillsFromDir(dir, source string) []Spec {
