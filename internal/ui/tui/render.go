@@ -13,14 +13,10 @@ import (
 	reflowwrap "github.com/muesli/reflow/wrap"
 )
 
-// Precomputed grayscale styles for scanText (xterm-256 indices 240..255).
-var scanStyles [16]lipgloss.Style
-
-func init() {
-	for i := range scanStyles {
-		scanStyles[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("%d", 240+i)))
-	}
-}
+var (
+	scanStepsLight = [...]string{"243", "243", "244", "244", "245", "245", "246", "246", "247", "247", "248", "248", "249", "250", "251", "252"}
+	scanStepsDark  = [...]string{"246", "246", "247", "248", "248", "249", "250", "250", "251", "252", "252", "253", "254", "255", "255", "255"}
+)
 
 // scanText renders text with a scanning light effect.
 // speed: how fast the light moves (chars per second).
@@ -52,9 +48,22 @@ func scanText(text string, now float64, speed float64, band, slope int) string {
 		}
 
 		idx := int(brightness * 15)
-		b.WriteString(scanStyles[idx].Render(string(r)))
+		b.WriteString(lipgloss.NewStyle().Foreground(scanStepColor(idx)).Render(string(r)))
 	}
 	return b.String()
+}
+
+func scanStepColor(idx int) lipgloss.TerminalColor {
+	if idx < 0 {
+		idx = 0
+	}
+	if idx > 15 {
+		idx = 15
+	}
+	if lipgloss.HasDarkBackground() {
+		return lipgloss.Color(scanStepsDark[idx])
+	}
+	return lipgloss.Color(scanStepsLight[idx])
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +447,7 @@ func commandPaletteWindow(total, cursor, limit int) (start, end int) {
 // Markdown rendering
 // ---------------------------------------------------------------------------
 
-// RenderMarkdown renders markdown content using glamour.
+// RenderMarkdown renders a lightweight terminal-friendly markdown subset.
 func (m *Model) RenderMarkdown(content string) string {
 	if m.Markdown == nil || content == "" {
 		return content
@@ -465,12 +474,13 @@ func (m Model) renderMarkdownBlock(content string, indent int) string {
 // renderRunSummary renders per-run stats shown after agent completion.
 func (m *Model) renderRunSummary() string {
 	s := m.RunStats
+	style := MutedStyle
 	return strings.Join([]string{
-		ContextChipStyle.Render(fmt.Sprintf("%d turns", s.Turns)),
-		ContextChipStyle.Render("· " + fmt.Sprintf("%d tools", s.ToolCalls)),
-		ContextChipStyle.Render("· ↑" + FormatTokens(s.Input)),
-		ContextChipStyle.Render("· ↓" + FormatTokens(s.Output)),
-		ContextChipAccentStyle.Render("· " + formatDuration(s.Duration)),
+		style.Render(fmt.Sprintf("%d turns", s.Turns)),
+		style.Render("· " + fmt.Sprintf("%d tools", s.ToolCalls)),
+		style.Render("· ↑" + FormatTokens(s.Input)),
+		style.Render("· ↓" + FormatTokens(s.Output)),
+		style.Render("· " + formatDuration(s.Duration)),
 	}, " ")
 }
 
@@ -602,7 +612,7 @@ func (m Model) wrapTextForIndent(content string, indent int) string {
 
 // dedent strips the common leading whitespace from all lines.
 // Preserves relative indentation (code blocks, lists) while removing
-// any unwanted base indentation added by renderers like glamour.
+// any unwanted base indentation added by multiline renderers.
 func dedent(s string) string {
 	lines := strings.Split(s, "\n")
 	minIndent := -1

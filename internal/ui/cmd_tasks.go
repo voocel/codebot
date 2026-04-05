@@ -212,10 +212,10 @@ func (c *TasksCommand) stopTask(id string) {
 func (c *TasksCommand) viewList(_ int) string {
 	s := c.state
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorSoftText)
 	activeStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent).Bold(true)
 	inactiveStyle := tui.MutedStyle
-	groupStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("249"))
+	groupStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
 
 	// Separate by type.
 	var shellEntries, agentEntries []int
@@ -323,9 +323,9 @@ func (c *TasksCommand) viewDetail(width int) string {
 }
 
 func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width int) string {
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorSoftText)
+	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
 
 	var sb strings.Builder
 
@@ -391,9 +391,9 @@ func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width in
 }
 
 func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width int) string {
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorSoftText)
+	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
 
 	var sb strings.Builder
 

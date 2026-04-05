@@ -4,28 +4,42 @@ import "github.com/charmbracelet/lipgloss"
 
 // Color palette — terminal-friendly, restrained, and readable.
 var (
-	ColorPrimary     = lipgloss.Color("#3FA796") // teal, core brand/action
-	ColorPrimarySoft = lipgloss.Color("#2F6F68") // muted teal for borders/labels
-	ColorAccent      = lipgloss.Color("#D89B5B") // warm amber accent
-	ColorUser        = lipgloss.Color("#8AB4F8") // calm blue
-	ColorAssistant   = lipgloss.Color("#B8E1DD") // pale teal
-	ColorTool        = lipgloss.Color("#E5B567") // amber/yellow
-	ColorError       = lipgloss.Color("#E06C75") // soft red
-	ColorSuccess     = lipgloss.Color("#98C379") // green
-	ColorMuted       = lipgloss.Color("243")     // medium gray
-	ColorThinking    = lipgloss.Color("240")     // dim gray, secondary text
-	ColorToken       = lipgloss.Color("249")     // light gray
-	ColorCommand     = lipgloss.Color("#78C6E7") // cool cyan
-	ColorRunning     = lipgloss.Color("#5FD7FF") // dedicated live-status cyan
-	ColorStatusBg    = lipgloss.Color("236")     // dark neutral background
-	ColorSeparator   = lipgloss.Color("241")     // neutral separator
-	ColorBorder      = lipgloss.Color("245")
-	ColorShell       = lipgloss.Color("#D16D9E") // shell hint
-	ColorPanelBg     = lipgloss.Color("235")
-	ColorPanelEdge   = lipgloss.Color("239")
-	ColorSubtleBg    = lipgloss.Color("237")
-	ColorTitle       = lipgloss.Color("#F0E6D2")
-	ColorSoftText    = lipgloss.Color("252")
+	ColorPrimary   = lipgloss.Color("#3FA796") // teal, core brand/action
+	ColorAccent    = lipgloss.Color("#D89B5B") // warm amber accent
+	ColorUser      = lipgloss.Color("#8AB4F8") // calm blue
+	ColorAssistant = lipgloss.Color("#B8E1DD") // pale teal
+	ColorTool      = lipgloss.Color("#E5B567") // amber/yellow
+	ColorError     = lipgloss.Color("#E06C75") // soft red
+	ColorSuccess   = lipgloss.Color("#98C379") // green
+	ColorCommand   = lipgloss.Color("#78C6E7") // cool cyan
+	ColorShell     = lipgloss.Color("#D16D9E") // shell hint
+
+	// Claude Code 也是先走语义色，再让组件消费语义：
+	// text / inactive / subtle / promptBorder / suggestion。
+	// 这里保持同样的思路，只保留一条中性色阶，避免每块 UI 自己挑灰度。
+	ColorText       = lipgloss.AdaptiveColor{Light: "236", Dark: "252"} // 默认正文
+	ColorTextMuted  = lipgloss.AdaptiveColor{Light: "242", Dark: "247"} // 次级信息 / 状态
+	ColorTextSubtle = lipgloss.AdaptiveColor{Light: "246", Dark: "243"} // placeholder / thinking / 弱提示
+	ColorChrome     = lipgloss.AdaptiveColor{Light: "248", Dark: "242"} // 分隔线 / 边框 / 输入框 chrome
+
+	ColorPrimarySoft = lipgloss.AdaptiveColor{Light: "30", Dark: "72"} // muted teal for borders/labels
+	ColorMuted       = ColorTextMuted
+	ColorThinking    = ColorTextSubtle
+	ColorToken       = lipgloss.AdaptiveColor{Light: "244", Dark: "245"} // neutral metadata
+	ColorRunning     = lipgloss.AdaptiveColor{Light: "31", Dark: "153"}  // live-status spinner / strong live chrome
+	ColorStatusBg    = lipgloss.AdaptiveColor{Light: "254", Dark: "236"} // soft strip behind user echoes
+	ColorSeparator   = ColorChrome
+	ColorBorder      = lipgloss.AdaptiveColor{Light: "247", Dark: "241"}
+	ColorPanelBg     = lipgloss.AdaptiveColor{Light: "255", Dark: "235"}
+	ColorPanelEdge   = lipgloss.AdaptiveColor{Light: "248", Dark: "241"}
+	ColorSubtleBg    = lipgloss.AdaptiveColor{Light: "254", Dark: "237"}
+	ColorTitle       = lipgloss.AdaptiveColor{Light: "235", Dark: "255"}
+	ColorSoftText    = ColorText
+	ColorInputChrome = lipgloss.AdaptiveColor{Light: "245", Dark: "244"}
+	ColorPlaceholder = ColorTextSubtle
+	ColorPath        = lipgloss.AdaptiveColor{Light: "26", Dark: "111"}  // path / file highlight
+	ColorToolOutput  = lipgloss.AdaptiveColor{Light: "239", Dark: "250"} // tool body text
+	ColorToolMeta    = lipgloss.AdaptiveColor{Light: "243", Dark: "246"} // tool line numbers / tails
 )
 
 // Tool blocks
@@ -36,9 +50,9 @@ var (
 
 	ToolArgsStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 
-	ToolResultStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+	ToolResultStyle = lipgloss.NewStyle().Foreground(ColorToolOutput)
 
-	ToolPathStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#82AAFF"))
+	ToolPathStyle = lipgloss.NewStyle().Foreground(ColorPath)
 )
 
 // Thinking body
@@ -85,7 +99,7 @@ var (
 
 // Footer
 var FooterStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("235")).
+	Foreground(ColorThinking).
 	Background(lipgloss.Color("#b5e6b5")).
 	Padding(0, 1)
 
@@ -118,13 +132,13 @@ var (
 				Foreground(ColorSoftText)
 
 	CommandPaletteDescStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("249"))
+				Foreground(ColorToken)
 
 	CommandPaletteSelectedDescStyle = lipgloss.NewStyle().
 					Foreground(ColorAssistant)
 
 	CommandPaletteHintStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("246"))
+				Foreground(ColorBorder)
 )
 
 // Plan box
@@ -190,7 +204,7 @@ var (
 			BorderBottom(true).
 			BorderLeft(false).
 			BorderRight(false).
-			BorderForeground(ColorPrimarySoft).
+			BorderForeground(ColorInputChrome).
 			Padding(0, 1)
 
 	InputHintStyle = lipgloss.NewStyle().

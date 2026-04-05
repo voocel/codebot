@@ -205,8 +205,8 @@ func (a *App) helpText() string {
 		groups[spec.Kind] = append(groups[spec.Kind], cmd)
 	}
 
-	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
-	sectionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("249"))
+	headerStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
+	sectionStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
 	var sb strings.Builder
 	sb.WriteString(headerStyle.Render("Available commands (/ opens the command palette):"))
 	a.renderCommandGroup(&sb, "Built-in", groups[CommandKindBuiltin])
@@ -231,10 +231,10 @@ func (a *App) renderCommandGroup(sb *strings.Builder, title string, commands []C
 		return
 	}
 
-	sectionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("249"))
-	usageStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
-	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	sectionStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
+	usageStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
+	descStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
+	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
 
 	sb.WriteString("\n\n")
 	sb.WriteString(sectionStyle.Render(title + ":"))
@@ -406,9 +406,9 @@ func (a *App) cmdSettings() tea.Cmd {
 	apiKey := a.Session.APIKey()
 	masked := maskKey(apiKey)
 
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
-	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
+	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
 
 	autoCompact := "off"
 	if s.AutoCompaction {
@@ -515,9 +515,9 @@ func (a *App) cmdDebugHarness() tea.Cmd {
 		toolCalls = lastRunSummary.ToolCalls
 	}
 
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
-	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
+	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
 
 	var sb strings.Builder
 	renderSection := func(title, meta string) {
@@ -912,10 +912,10 @@ func formatContextSnapshot(
 	lastCompaction agent.CompactionSnapshot,
 	hasCompaction bool,
 ) string {
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
-	metaStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
-	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
+	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
+	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
+	warnStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent)
 
 	var sb strings.Builder
 	renderSection := func(title, meta string) {

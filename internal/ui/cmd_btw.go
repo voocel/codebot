@@ -92,7 +92,7 @@ func (c *BtwCommand) View(width int) string {
 	sb.WriteString("\n\n")
 
 	hintStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.AdaptiveColor{Light: "248", Dark: "235"}).
+		Foreground(tui.ColorThinking).
 		Italic(true)
 	sb.WriteString(hintStyle.Render("Press Space, Enter, or Esc to dismiss"))
 

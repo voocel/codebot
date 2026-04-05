@@ -193,7 +193,10 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		return "  "
 	})
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(ColorMuted) // 243, medium gray
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(ColorInputChrome)
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(ColorPlaceholder)
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(ColorInputChrome)
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(ColorPlaceholder)
 	ta.Focus()
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false

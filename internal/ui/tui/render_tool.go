@@ -430,7 +430,7 @@ func RenderLsResult(result json.RawMessage) (dirPath string, body string) {
 
 	connector := MutedStyle.Render("└ ")
 	padding := "  "
-	contentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	contentStyle := lipgloss.NewStyle().Foreground(ColorToolOutput)
 
 	var sb strings.Builder
 	for i, line := range remaining {
@@ -466,8 +466,8 @@ func RenderReadResult(result json.RawMessage) string {
 
 	connector := MutedStyle.Render("└ ")
 	padding := "  "
-	lineNumStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	contentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	lineNumStyle := lipgloss.NewStyle().Foreground(ColorToolMeta)
+	contentStyle := lipgloss.NewStyle().Foreground(ColorToolOutput)
 
 	var sb strings.Builder
 	for i, line := range lines {
