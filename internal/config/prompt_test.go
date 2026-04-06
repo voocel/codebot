@@ -43,6 +43,26 @@ func TestBuildSystemBlockTextsNoTools(t *testing.T) {
 	}
 }
 
+func TestBuildSystemBlockTextsAddsTaskManagementSection(t *testing.T) {
+	t.Parallel()
+
+	tools := []ToolInfo{
+		{Name: "task_create", Description: "Create task"},
+		{Name: "task_update", Description: "Update task"},
+		{Name: "task_list", Description: "List tasks"},
+	}
+
+	_, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, tools)
+	if !strings.Contains(instructions, "## Task Management") {
+		t.Fatalf("expected task management section, got %q", instructions)
+	}
+	for _, name := range []string{"task_create", "task_update", "task_list"} {
+		if !strings.Contains(instructions, name) {
+			t.Fatalf("expected task management section to mention %s, got %q", name, instructions)
+		}
+	}
+}
+
 func TestBuildSystemBlockTextsSystemOverride(t *testing.T) {
 	t.Parallel()
 

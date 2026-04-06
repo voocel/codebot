@@ -49,6 +49,12 @@ type TaskListUpdateMsg struct {
 	Snapshot tools.TaskSnapshot
 }
 
+// HideCompletedTasksMsg hides the task card after all tasks stayed completed
+// for a short delay. Version prevents stale timers from hiding a newer list.
+type HideCompletedTasksMsg struct {
+	Version uint64
+}
+
 // TasksRefreshMsg is a periodic tick that triggers a re-render of the /tasks overlay.
 type TasksRefreshMsg struct{}
 

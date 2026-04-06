@@ -46,7 +46,14 @@ func newSessionRuntimePolicy(session *Session) *sessionRuntimePolicy {
 	return &sessionRuntimePolicy{session: session}
 }
 
-func (p *sessionRuntimePolicy) beforePrompt() {
+func (p *sessionRuntimePolicy) beforeUserPrompt(blocks []agentcore.ContentBlock) {
+	if reminder, ok := taskManagementReminderForPrompt(blocks, p.session.TaskSnapshot()); ok {
+		p.session.queueRuntimeReminder(
+			"task_management:pre_prompt",
+			ReminderTaskManagement,
+			reminder,
+		)
+	}
 }
 
 func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {
@@ -107,6 +114,7 @@ func (p *sessionRuntimePolicy) trackToolEnd(ev agentcore.Event) {
 	p.session.mu.Unlock()
 
 	p.detectRepeatedCalls(record, recent)
+	p.detectTaskManagementGap()
 }
 
 func (p *sessionRuntimePolicy) detectRepeatedCalls(current toolCallFingerprint, recent []toolCallFingerprint) {
@@ -127,7 +135,27 @@ func (p *sessionRuntimePolicy) detectRepeatedCalls(current toolCallFingerprint, 
 		p.session.deliverRuntimeReminder(
 			"repeat_tool_call:"+current.Tool+":"+current.ArgsHash,
 			ReminderRepeatToolCall,
-			"<system-reminder>\n检测到你在重复调用同一个工具且参数基本相同。先总结当前已知信息、差距和下一步假设；避免在没有新信息时继续相同调用。\n</system-reminder>",
+			"<system-reminder>\nYou are repeatedly calling the same tool with effectively the same arguments. Summarize what you already know, what is still missing, and your next hypothesis before making the same call again.\n</system-reminder>",
+		)
+	}
+}
+
+func (p *sessionRuntimePolicy) detectTaskManagementGap() {
+	s := p.session
+	if s.taskStore == nil {
+		return
+	}
+
+	s.mu.Lock()
+	turn := s.currentTurn
+	s.mu.Unlock()
+
+	snap := s.taskStore.Snapshot()
+	if key, reminder, ok := taskManagementReminderForTurn(turn, snap); ok {
+		p.session.deliverRuntimeReminder(
+			key,
+			ReminderTaskManagement,
+			reminder,
 		)
 	}
 }
@@ -317,7 +345,7 @@ func (p *sessionRuntimePolicy) runPostStopValidation() {
 			"post_stop_validation",
 			ReminderPostStopValidation,
 			fmt.Sprintf(
-				"<system-reminder>\nPostStopValidation hook 检查失败，请根据以下输出修复问题：\n%s\n</system-reminder>",
+				"<system-reminder>\nThe PostStopValidation hook failed. Fix the problem based on the following output:\n%s\n</system-reminder>",
 				failOutput,
 			),
 		)

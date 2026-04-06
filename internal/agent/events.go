@@ -12,6 +12,7 @@ const (
 	ReminderRepeatToolCall     RuntimeReminderKind = "repeat_tool_call"
 	ReminderPostStopValidation RuntimeReminderKind = "post_stop_validation"
 	ReminderSkillPaths         RuntimeReminderKind = "skill_paths"
+	ReminderTaskManagement     RuntimeReminderKind = "task_management"
 )
 
 type CompactionKind string

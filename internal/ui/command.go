@@ -787,6 +787,7 @@ func formatReminderCounts(counts map[agent.RuntimeReminderKind]int) string {
 	order := []agent.RuntimeReminderKind{
 		agent.ReminderRepeatToolCall,
 		agent.ReminderPostStopValidation,
+		agent.ReminderTaskManagement,
 	}
 	parts := make([]string, 0, len(counts))
 	for _, kind := range order {

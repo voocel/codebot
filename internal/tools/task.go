@@ -87,6 +87,48 @@ func (s *TaskStore) SetNotifyFn(fn TaskNotifyFn) {
 	s.mu.Unlock()
 }
 
+// Reset clears all tasks from memory and persistence while preserving the
+// monotonic task ID sequence for future task creation.
+func (s *TaskStore) Reset() error {
+	s.mu.RLock()
+	currentHighWaterMark := s.nextID - 1
+	for _, task := range s.tasks {
+		if id, err := strconv.Atoi(task.ID); err == nil && id > currentHighWaterMark {
+			currentHighWaterMark = id
+		}
+	}
+	dir := s.dir
+	nextID := s.nextID
+	s.mu.RUnlock()
+
+	if dir != "" {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return fmt.Errorf("read task dir: %w", err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if !strings.HasSuffix(name, ".json") || strings.HasPrefix(name, ".") {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove task file %s: %w", name, err)
+			}
+		}
+		s.writeHighWaterMark(currentHighWaterMark)
+	}
+
+	s.mu.Lock()
+	s.tasks = make(map[string]*Task)
+	if nextID < currentHighWaterMark+1 {
+		s.nextID = currentHighWaterMark + 1
+	}
+	s.mu.Unlock()
+
+	s.notify()
+	return nil
+}
+
 // Delete removes a task and any persisted file.
 func (s *TaskStore) Delete(id string) bool {
 	s.mu.Lock()
@@ -439,7 +481,25 @@ type TaskCreateTool struct {
 func (t *TaskCreateTool) Name() string  { return "task_create" }
 func (t *TaskCreateTool) Label() string { return "Create Task" }
 func (t *TaskCreateTool) Description() string {
-	return `Create a structured task to track progress on multi-step work. Tasks support dependencies (blocks/blockedBy) for coordinating parallel work streams.`
+	return `Use this tool to create a structured task list for the current coding session. This helps track progress, organize complex work, and make progress visible to the user.
+
+Use this tool proactively when:
+- the task has 3 or more distinct steps
+- the work is non-trivial and spans multiple operations, files, or phases
+- the user explicitly asks for a todo list or gives multiple requirements
+- you receive new complex instructions and should capture them as tasks before implementation
+
+Do not use this tool when:
+- there is only a single straightforward task
+- the task is trivial and tracking it adds no value
+- the request is purely conversational or informational
+
+Task fields:
+- subject: brief actionable title in imperative form
+- description: what needs to be done
+- activeForm: present continuous form shown while the task is in_progress
+
+All new tasks start as pending. Break larger requests into multiple specific tasks instead of one broad task. Check task_list before creating more tasks to avoid duplicates. After creating tasks, use task_update to mark the next task in_progress and to set dependencies if needed.`
 }
 func (t *TaskCreateTool) Schema() map[string]any {
 	return schema.Object(
@@ -490,7 +550,14 @@ type TaskGetTool struct{ store *TaskStore }
 func (t *TaskGetTool) Name() string  { return "task_get" }
 func (t *TaskGetTool) Label() string { return "Get Task" }
 func (t *TaskGetTool) Description() string {
-	return `Retrieve full details of a task by its ID, including description, status, and dependencies.`
+	return `Use this tool to retrieve a task by ID from the task list.
+
+Use this tool when:
+- you need the full description and context before starting work
+- you need to understand dependencies such as what blocks the task or what it blocks
+- you were assigned a task and need the complete requirements before updating it
+
+The result includes the task subject, description, status, and dependency details. Use task_list for summary view and task_get for full detail.`
 }
 func (t *TaskGetTool) Schema() map[string]any {
 	return schema.Object(
@@ -525,7 +592,36 @@ type TaskUpdateTool struct {
 func (t *TaskUpdateTool) Name() string  { return "task_update" }
 func (t *TaskUpdateTool) Label() string { return "Update Task" }
 func (t *TaskUpdateTool) Description() string {
-	return `Update a task's status, fields, or dependencies. Set status to "deleted" to remove a task. Use addBlocks/addBlockedBy to set up dependency chains between tasks.`
+	return `Use this tool to update a task in the task list.
+
+Use this tool when:
+- starting work on a task: mark it in_progress before you begin
+- completing work on a task: mark it completed immediately after it is fully done
+- a task is no longer needed: set status to deleted
+- task details become clearer or dependencies need to be recorded
+
+Task status workflow:
+- pending -> in_progress -> completed
+- use deleted to permanently remove a task
+
+Rules:
+- keep at most one task in_progress at a time
+- do not batch multiple completions together
+- after completing a task, call task_list to find the next available task
+- if the work is blocked, partial, or failing verification, keep the task in_progress
+- never mark a task completed if tests are failing, implementation is partial, or unresolved errors remain
+
+Fields you can update:
+- status
+- subject
+- description
+- activeForm
+- owner
+- metadata
+- addBlocks
+- addBlockedBy
+
+Read the latest task state with task_get before updating if there is any chance it changed since you last saw it.`
 }
 func (t *TaskUpdateTool) Schema() map[string]any {
 	return schema.Object(
@@ -618,7 +714,16 @@ type TaskListTool struct{ store *TaskStore }
 func (t *TaskListTool) Name() string  { return "task_list" }
 func (t *TaskListTool) Label() string { return "List Tasks" }
 func (t *TaskListTool) Description() string {
-	return `List all tasks with their status, subject, and dependencies. Use to check overall progress and find available tasks.`
+	return `Use this tool to list all tasks in the task list.
+
+Use this tool when:
+- checking overall progress
+- looking for the next pending and unblocked task
+- checking for newly unblocked work after completing a task
+- reviewing blocked tasks and their dependencies
+- checking what already exists before creating more tasks
+
+The output summarizes each task with its id, subject, status, owner, and dependencies. When multiple tasks are available, prefer lower task IDs first because earlier tasks often unlock later work. Use task_get for full details on a specific task.`
 }
 func (t *TaskListTool) Schema() map[string]any { return schema.Object() }
 

@@ -6,12 +6,24 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/codebot/internal/tools"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func stripANSI(s string) string {
 	return ansiPattern.ReplaceAllString(s, "")
+}
+
+func useImmediateHideCompletedTasksTick(t *testing.T) {
+	t.Helper()
+	orig := hideCompletedTasksTick
+	hideCompletedTasksTick = func(version uint64) tea.Cmd {
+		return func() tea.Msg { return HideCompletedTasksMsg{Version: version} }
+	}
+	t.Cleanup(func() {
+		hideCompletedTasksTick = orig
+	})
 }
 
 func TestViewShowsLiveThinkingWhenStreaming(t *testing.T) {
@@ -72,7 +84,7 @@ func TestEnterOnArgCommandOnlyFillsInput(t *testing.T) {
 	m := New(nil, "test-model")
 	m.compItems = []CompletionItem{{
 		Name:        "plan",
-		Description: "进入计划模式",
+		Description: "Enter plan mode",
 		Usage:       "/plan [cancel|<task>]",
 		AutoExecute: false,
 	}}
@@ -93,7 +105,7 @@ func TestEnterOnNoArgCommandExecutesImmediately(t *testing.T) {
 	m := New(nil, "test-model")
 	m.compItems = []CompletionItem{{
 		Name:        "help",
-		Description: "显示帮助",
+		Description: "Show help",
 		Usage:       "/help",
 		AutoExecute: true,
 	}}
@@ -118,7 +130,7 @@ func TestCommandPaletteReplacesBottomContextArea(t *testing.T) {
 	m.Input.SetValue("/")
 	m.compItems = []CompletionItem{{
 		Name:        "help",
-		Description: "显示帮助",
+		Description: "Show help",
 		Usage:       "/help",
 		Kind:        "builtin",
 		Category:    "info",
@@ -170,7 +182,7 @@ func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
 		StatusPlan: func(*Model) *PlanBarInfo {
 			return &PlanBarInfo{
 				Prompt:  "Would you like to proceed?",
-				Details: []string{"Allowed command prefixes:", "- go test — 运行测试"},
+				Details: []string{"Allowed command prefixes:", "- go test — run tests"},
 				Choices: []string{"Execute plan", "Cancel"},
 			}
 		},
@@ -193,5 +205,150 @@ func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
 	}
 	if strings.Contains(view, "❯ ") {
 		t.Fatalf("expected input area to stay hidden during plan review, got: %q", view)
+	}
+}
+
+func TestTaskListUpdateSchedulesHideWhenAllCompleted(t *testing.T) {
+	useImmediateHideCompletedTasksTick(t)
+
+	m := New(nil, "test-model")
+	nextModel, cmd := m.Update(TaskListUpdateMsg{
+		Snapshot: tools.TaskSnapshot{
+			Completed: 1,
+			Total:     1,
+		},
+	})
+	next := nextModel.(Model)
+
+	if next.Tasks == nil || next.Tasks.Total != 1 || next.Tasks.Completed != 1 {
+		t.Fatalf("expected completed task snapshot to be kept before hiding, got %#v", next.Tasks)
+	}
+	if next.taskHideVersion != 1 {
+		t.Fatalf("taskHideVersion = %d, want 1", next.taskHideVersion)
+	}
+	if cmd == nil {
+		t.Fatal("expected hide command for fully completed tasks")
+	}
+	hideMsg, ok := cmd().(HideCompletedTasksMsg)
+	if !ok {
+		t.Fatalf("expected HideCompletedTasksMsg, got %T", cmd())
+	}
+	if hideMsg.Version != 1 {
+		t.Fatalf("hide version = %d, want 1", hideMsg.Version)
+	}
+}
+
+func TestHideCompletedTasksMsgClearsCompletedSnapshot(t *testing.T) {
+	m := New(nil, "test-model")
+	snap := tools.TaskSnapshot{
+		Completed: 1,
+		Total:     1,
+	}
+	m.Tasks = &snap
+	m.taskHideVersion = 3
+
+	nextModel, _ := m.Update(HideCompletedTasksMsg{Version: 3})
+	next := nextModel.(Model)
+	if next.Tasks != nil {
+		t.Fatalf("expected tasks to be hidden, got %#v", next.Tasks)
+	}
+}
+
+func TestHideCompletedTasksMsgRunsHideCallback(t *testing.T) {
+	m := New(nil, "test-model", Config{
+		OnHideCompletedTasks: func(snap tools.TaskSnapshot) tea.Cmd {
+			return func() tea.Msg {
+				if snap.Total != 1 || snap.Completed != 1 {
+					t.Fatalf("unexpected snapshot passed to hide callback: %#v", snap)
+				}
+				return CommandResultMsg{Text: "hidden"}
+			}
+		},
+	})
+	snap := tools.TaskSnapshot{
+		Completed: 1,
+		Total:     1,
+	}
+	m.Tasks = &snap
+	m.taskHideVersion = 1
+
+	nextModel, cmd := m.Update(HideCompletedTasksMsg{Version: 1})
+	next := nextModel.(Model)
+	if next.Tasks != nil {
+		t.Fatalf("expected tasks to be hidden, got %#v", next.Tasks)
+	}
+	if cmd == nil {
+		t.Fatal("expected hide callback command")
+	}
+	msg := cmd()
+	if _, ok := msg.(CommandResultMsg); !ok {
+		t.Fatalf("expected CommandResultMsg from hide callback, got %T", msg)
+	}
+}
+
+func TestHideCompletedTasksMsgDoesNotClearNewOpenTasks(t *testing.T) {
+	useImmediateHideCompletedTasksTick(t)
+
+	m := New(nil, "test-model")
+	nextModel, cmd := m.Update(TaskListUpdateMsg{
+		Snapshot: tools.TaskSnapshot{
+			Completed: 1,
+			Total:     1,
+		},
+	})
+	staleHide := cmd().(HideCompletedTasksMsg)
+	next := nextModel.(Model)
+
+	nextModel, _ = next.Update(TaskListUpdateMsg{
+		Snapshot: tools.TaskSnapshot{
+			Pending: 1,
+			Total:   1,
+		},
+	})
+	next = nextModel.(Model)
+	if next.taskHideVersion != 2 {
+		t.Fatalf("taskHideVersion = %d, want 2 after new snapshot", next.taskHideVersion)
+	}
+
+	nextModel, _ = next.Update(staleHide)
+	next = nextModel.(Model)
+	if next.Tasks == nil {
+		t.Fatal("expected stale hide message to be ignored")
+	}
+	if next.Tasks.Pending != 1 || next.Tasks.Total != 1 {
+		t.Fatalf("expected new pending task snapshot to stay visible, got %#v", next.Tasks)
+	}
+}
+
+func TestInitSchedulesHideForInitiallyCompletedTasks(t *testing.T) {
+	useImmediateHideCompletedTasksTick(t)
+
+	snap := tools.TaskSnapshot{
+		Completed: 2,
+		Total:     2,
+	}
+	m := New(nil, "test-model", Config{InitialTasks: &snap})
+
+	if m.taskHideVersion != 1 {
+		t.Fatalf("taskHideVersion = %d, want 1 for initial completed snapshot", m.taskHideVersion)
+	}
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("expected init command batch")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from Init, got %T", cmd())
+	}
+	if len(batch) == 0 {
+		t.Fatal("expected init batch to include commands")
+	}
+	msg := batch[len(batch)-1]()
+	hideMsg, ok := msg.(HideCompletedTasksMsg)
+	if !ok {
+		t.Fatalf("expected final init command to schedule HideCompletedTasksMsg, got %T", msg)
+	}
+	if hideMsg.Version != 1 {
+		t.Fatalf("hide version = %d, want 1", hideMsg.Version)
 	}
 }

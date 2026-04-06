@@ -22,7 +22,7 @@ func (s *Session) Prompt(text string) error {
 		s.beforePrompt()
 	}
 	if s.runtime != nil {
-		s.runtime.beforePrompt()
+		s.runtime.beforeUserPrompt([]agentcore.ContentBlock{agentcore.TextBlock(text)})
 	}
 
 	var msgs []agentcore.AgentMessage
@@ -40,7 +40,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 		s.beforePrompt()
 	}
 	if s.runtime != nil {
-		s.runtime.beforePrompt()
+		s.runtime.beforeUserPrompt(blocks)
 	}
 
 	var msgs []agentcore.AgentMessage

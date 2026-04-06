@@ -53,8 +53,22 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()
 	cfg.Version = version
+	cfg.Provider = sess.Provider()
 	cfg.EnvHint = envHint
 	cfg.RestoredMessages = sess.Messages()
+	if snap := sess.TaskSnapshot(); snap.Total > 0 {
+		cfg.InitialTasks = &snap
+	}
+	cfg.OnHideCompletedTasks = func(_ tools.TaskSnapshot) tea.Cmd {
+		return func() tea.Msg {
+			if err := sess.ResetTaskList(); err != nil {
+				return tui.CommandResultMsg{
+					Text: tui.ErrorStyle.Render("Task list reset failed: " + err.Error()),
+				}
+			}
+			return nil
+		}
+	}
 	cfg.OnMCPReady = func(msg tui.MCPReadyMsg) {
 		if msg.Instructions != "" {
 			sess.SetMCPInstructions(msg.Instructions)
@@ -107,9 +121,6 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 	sess.SetTaskNotifyFn(func(snap tools.TaskSnapshot) {
 		p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
 	})
-	if snap := sess.TaskSnapshot(); snap.Total > 0 {
-		m.Tasks = &snap
-	}
 
 	// Wire Cron tools to TUI — start scheduler that sends prompts.
 	if found := sess.ToolsByName("cron_create"); len(found) > 0 {
@@ -317,6 +328,8 @@ func formatRuntimeReminderKind(kind agent.RuntimeReminderKind) string {
 		return "repeated tool call"
 	case agent.ReminderPostStopValidation:
 		return "post-stop validation failed"
+	case agent.ReminderTaskManagement:
+		return "task management reminder"
 	default:
 		if kind == "" {
 			return "unknown"

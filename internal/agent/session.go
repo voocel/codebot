@@ -215,6 +215,13 @@ func (s *Session) TaskSnapshot() localtools.TaskSnapshot {
 	return s.taskStore.Snapshot()
 }
 
+func (s *Session) ResetTaskList() error {
+	if s.taskStore == nil {
+		return nil
+	}
+	return s.taskStore.Reset()
+}
+
 func (s *Session) resetHarnessStateLocked() {
 	s.generation++
 	s.runtimeReminders = nil

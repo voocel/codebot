@@ -32,24 +32,27 @@ type PlanBarInfo struct {
 
 // Config provides hooks for extending the base TUI behavior.
 type Config struct {
-	Placeholder      string
-	Version          string
-	Cwd              string
-	GitBranch        string
-	EnvHint          string                   // shown below welcome when using env var credentials
-	History          *storage.History         // input history (Up/Down navigation)
-	RestoredMessages []agentcore.AgentMessage // messages restored from a previous session (rendered on Init)
-	OnKey            func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
-	OnEvent          func(m *Model, ev agentcore.Event) tea.Cmd
-	OnPaste          func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
-	OnDrop           func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
-	OnMCPReady       func(msg MCPReadyMsg)               // called when MCP servers finish connecting
-	StatusRight      func(m *Model) string
-	StatusMode       func(m *Model) string // mode indicator for context bar (e.g. "⏵⏵ trust")
-	StatusPlan       func(m *Model) *PlanBarInfo
-	Overlay          func(m *Model) *OverlayState         // interactive command overlay
-	Completions      func(prefix string) []CompletionItem // slash command completions
-	OnBtwResult      func(msg BtwResultMsg)               // called when /btw side question completes
+	Placeholder          string
+	Version              string
+	Provider             string
+	Cwd                  string
+	GitBranch            string
+	EnvHint              string                   // shown below welcome when using env var credentials
+	History              *storage.History         // input history (Up/Down navigation)
+	InitialTasks         *tools.TaskSnapshot      // initial task snapshot restored before first render
+	RestoredMessages     []agentcore.AgentMessage // messages restored from a previous session (rendered on Init)
+	OnKey                func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
+	OnEvent              func(m *Model, ev agentcore.Event) tea.Cmd
+	OnPaste              func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
+	OnDrop               func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
+	OnMCPReady           func(msg MCPReadyMsg)               // called when MCP servers finish connecting
+	OnHideCompletedTasks func(snap tools.TaskSnapshot) tea.Cmd
+	StatusRight          func(m *Model) string
+	StatusMode           func(m *Model) string // mode indicator for context bar (e.g. "⏵⏵ trust")
+	StatusPlan           func(m *Model) *PlanBarInfo
+	Overlay              func(m *Model) *OverlayState         // interactive command overlay
+	Completions          func(prefix string) []CompletionItem // slash command completions
+	OnBtwResult          func(msg BtwResultMsg)               // called when /btw side question completes
 }
 
 // CompletionItem is a single command completion candidate.
@@ -100,6 +103,7 @@ type runStats struct {
 type Model struct {
 	Driver    Driver
 	ModelName string
+	Provider  string
 	Version   string
 
 	Input   textarea.Model
@@ -141,6 +145,8 @@ type Model struct {
 
 	Tasks *tools.TaskSnapshot // non-nil when task items exist; displayed above input
 
+	taskHideVersion uint64
+
 	QueuedMsgs []string // messages queued while agent is running (display only)
 
 	MCPLoading bool // true while MCP servers are connecting in background
@@ -164,6 +170,16 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	var c Config
 	if len(cfg) > 0 {
 		c = cfg[0]
+	}
+
+	var initialTasks *tools.TaskSnapshot
+	var taskHideVersion uint64
+	if c.InitialTasks != nil && c.InitialTasks.Total > 0 {
+		snap := *c.InitialTasks
+		initialTasks = &snap
+		if tasksFullyCompleted(snap) {
+			taskHideVersion = 1
+		}
 	}
 
 	sp := spinner.New()
@@ -205,6 +221,7 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 	return Model{
 		Driver:          driver,
 		ModelName:       modelName,
+		Provider:        c.Provider,
 		Version:         c.Version,
 		Spinner:         sp,
 		ToolSpinner:     tsp,
@@ -223,6 +240,8 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 		ImageCursor:     -1,
 		Markdown:        markdown.NewRenderer(80),
 		config:          c,
+		Tasks:           initialTasks,
+		taskHideVersion: taskHideVersion,
 		history:         c.History,
 		histIdx:         -1,
 	}
@@ -230,6 +249,14 @@ func New(driver Driver, modelName string, cfg ...Config) Model {
 
 // quitResetMsg resets QuitPending after timeout.
 type quitResetMsg struct{}
+
+const completedTasksHideDelay = 5 * time.Second
+
+var hideCompletedTasksTick = func(version uint64) tea.Cmd {
+	return tea.Tick(completedTasksHideDelay, func(time.Time) tea.Msg {
+		return HideCompletedTasksMsg{Version: version}
+	})
+}
 
 // TasksTickCmd returns a tea.Cmd that fires TasksRefreshMsg after 500ms.
 func TasksTickCmd() tea.Cmd {
@@ -247,6 +274,9 @@ func (m Model) Init() tea.Cmd {
 	if len(m.config.RestoredMessages) > 0 {
 		msgs := m.config.RestoredMessages
 		cmds = append(cmds, func() tea.Msg { return RestoreMsg{Msgs: msgs} })
+	}
+	if m.Tasks != nil && tasksFullyCompleted(*m.Tasks) && m.taskHideVersion > 0 {
+		cmds = append(cmds, hideCompletedTasksTick(m.taskHideVersion))
 	}
 	return tea.Batch(cmds...)
 }
@@ -287,13 +317,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Permission = nil
 		return m, nil
 	case TaskListUpdateMsg:
-		if msg.Snapshot.Total == 0 {
-			m.Tasks = nil
-		} else {
-			snap := msg.Snapshot
-			m.Tasks = &snap
+		return m, m.applyTaskSnapshot(msg.Snapshot)
+	case HideCompletedTasksMsg:
+		if msg.Version != m.taskHideVersion || m.Tasks == nil || !tasksFullyCompleted(*m.Tasks) {
+			return m, nil
 		}
-		return m, nil
+		var cmd tea.Cmd
+		if m.config.OnHideCompletedTasks != nil {
+			cmd = m.config.OnHideCompletedTasks(*m.Tasks)
+		}
+		m.Tasks = nil
+		return m, cmd
 	case MCPReadyMsg:
 		m.MCPLoading = false
 		if m.config.OnMCPReady != nil {
@@ -349,6 +383,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.Input, cmd = m.Input.Update(msg)
 	m.adjustInputHeight()
 	return m, cmd
+}
+
+func (m *Model) applyTaskSnapshot(snap tools.TaskSnapshot) tea.Cmd {
+	m.taskHideVersion++
+	if snap.Total == 0 {
+		m.Tasks = nil
+		return nil
+	}
+	snapshot := snap
+	m.Tasks = &snapshot
+	if tasksFullyCompleted(snap) {
+		return hideCompletedTasksTick(m.taskHideVersion)
+	}
+	return nil
+}
+
+func tasksFullyCompleted(snap tools.TaskSnapshot) bool {
+	return snap.Total > 0 && snap.Pending == 0 && snap.InProgress == 0
 }
 
 // View renders the live area pinned at the bottom of the terminal.

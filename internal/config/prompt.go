@@ -42,16 +42,44 @@ func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (iden
 	identity = identityBody.String()
 
 	var toolsBody strings.Builder
+	hasTaskCreate := false
+	hasTaskUpdate := false
+	hasTaskList := false
 	if len(tools) > 0 {
 		fmt.Fprintf(&toolsBody, "## Tools\nYou have %d tools:\n", len(tools))
 		for _, t := range tools {
 			fmt.Fprintf(&toolsBody, "- **%s**: %s\n", t.Name, t.Description)
+			switch t.Name {
+			case "task_create":
+				hasTaskCreate = true
+			case "task_update":
+				hasTaskUpdate = true
+			case "task_list":
+				hasTaskList = true
+			}
 		}
+	}
+	taskManagementInstructions := ""
+	if hasTaskCreate && hasTaskUpdate && hasTaskList {
+		taskManagementInstructions = `## Task Management
+Break down and manage your work with task_create, task_update, and task_list.
+- Use these tools proactively for non-trivial work with multiple steps or requirements
+- Do not create a task list for a single trivial or purely conversational request
+- Break larger requests into multiple specific tasks instead of one broad task
+- Mark a task in_progress before starting it
+- Mark a task completed immediately after fully finishing it
+- Do not batch multiple completions together
+- Keep at most one task in_progress at a time
+- Check task_list before creating more tasks if a relevant task may already exist
+- After completing a task, call task_list to find the next pending or unblocked task`
 	}
 	autoMemoryInstructions := BuildAutoMemoryInstructions(ctx.MemoryDir)
 	var instructionParts []string
 	if toolsBody.Len() > 0 {
 		instructionParts = append(instructionParts, toolsBody.String())
+	}
+	if taskManagementInstructions != "" {
+		instructionParts = append(instructionParts, taskManagementInstructions)
 	}
 	if autoMemoryInstructions != "" {
 		instructionParts = append(instructionParts, autoMemoryInstructions)

@@ -81,63 +81,87 @@ func (m *Model) renderWelcome() string {
 		ver = "dev"
 	}
 
+	bc := lipgloss.NewStyle().Foreground(ColorPrimarySoft)
 	edge := WelcomeKickerStyle
-	face := WelcomeBodyStyle
 	title := WelcomeTitleStyle
-	muted := WelcomeMutedStyle
+
+	// Terminal window logo with drop shadow
+	dotR := lipgloss.NewStyle().Foreground(ColorError)
+	dotY := lipgloss.NewStyle().Foreground(ColorTool)
+	dotG := lipgloss.NewStyle().Foreground(ColorSuccess)
+	cursor := lipgloss.NewStyle().Foreground(ColorAccent)
+	shadow := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "249", Dark: "238"})
+
 	logoLines := []string{
-		"      " + edge.Render("╭──────────────╮"),
-		"     " + edge.Render("╱") + "  " + edge.Render("╭────────╮") + "  " + edge.Render("╱│"),
-		"    " + edge.Render("╱") + "   " + face.Render("│  ❯_    │") + " " + edge.Render("╱ │"),
-		"   " + edge.Render("╱____") + face.Render("│________│") + edge.Render("╱  │"),
-		"   " + face.Render("│   ") + title.Render("CODEBOT") + face.Render("   │  │"),
-		"   " + face.Render("│ ") + muted.Render("terminal harness") + face.Render(" │ ╱"),
-		"   " + face.Render("│______________│╱"),
+		edge.Render("╭──────────────────────╮"),
+		edge.Render("│") + " " + dotR.Render("●") + " " + dotY.Render("●") + " " + dotG.Render("●") + "    " + title.Render("CODEBOT") + "     " + edge.Render("│"),
+		edge.Render("├──────────────────────┤") + shadow.Render("░"),
+		edge.Render("│") + "                      " + edge.Render("│") + shadow.Render("░"),
+		edge.Render("│") + "       " + edge.Render("❯_") + " " + cursor.Render("█") + "           " + edge.Render("│") + shadow.Render("░"),
+		edge.Render("│") + "                      " + edge.Render("│") + shadow.Render("░"),
+		edge.Render("╰──────────────────────╯") + shadow.Render("░"),
+		" " + shadow.Render(strings.Repeat("░", 23)),
 	}
-	logo := lipgloss.NewStyle().Width(28).Render(strings.Join(logoLines, "\n"))
+	logo := lipgloss.NewStyle().Width(27).Render(strings.Join(logoLines, "\n"))
 
-	rightWidth := max(width-30, 22)
-	var meta []string
-	meta = append(meta, TagStyle.Render("AI coding"))
+	// Vertical separator (match logo height)
+	const logoHeight = 8
+	sepParts := make([]string, logoHeight)
+	for i := range sepParts {
+		sepParts[i] = bc.Render("│")
+	}
+	sep := strings.Join(sepParts, "\n")
 
+	// Right panel
+	rightWidth := max(width-34, 20)
 	rightLines := []string{
-		WelcomeKickerStyle.Render("CODEBOT"),
 		WelcomeTitleStyle.Render("Long-running coding agent for the terminal."),
 		"",
 		WelcomeBodyStyle.Render("Small execution kernel. Strong runtime harness."),
-		WelcomeMutedStyle.Render("  / to browse commands"),
-		WelcomeMutedStyle.Render("  Enter send · Ctrl+J newline"),
-		WelcomeMutedStyle.Render("  Esc abort"),
-		"",
-		CardSectionStyle.Render("Workspace"),
-		WelcomeBodyStyle.Render("  " + shortenPath(m.Cwd)),
+		bc.Render(strings.Repeat("─", min(rightWidth, 44))),
+		WelcomeMutedStyle.Render("/ commands · Enter send · Esc abort"),
 	}
 	right := lipgloss.NewStyle().Width(rightWidth).Render(strings.Join(rightLines, "\n"))
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, logo, "  ", right)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, logo, " ", sep, " ", right)
 
-	footerBits := []string{
-		ContextChipAccentStyle.Render(ver),
+	// Footer: provider · model · path · branch (version in top border)
+	var footerBits []string
+	if m.Provider != "" {
+		footerBits = append(footerBits, ContextChipAccentStyle.Render(m.Provider))
 	}
 	if m.ModelName != "" {
-		footerBits = append(footerBits, ContextChipStyle.Render("· "+m.ModelName))
+		footerBits = append(footerBits, ContextChipStyle.Render(m.ModelName))
 	}
 	if m.Cwd != "" {
-		footerBits = append(footerBits, ContextChipStyle.Render("· "+shortenPath(m.Cwd)))
+		footerBits = append(footerBits, ContextChipStyle.Render(shortenPath(m.Cwd)))
 	}
 	if m.GitBranch != "" {
-		footerBits = append(footerBits, ContextChipStyle.Render("· branch "+m.GitBranch))
+		footerBits = append(footerBits, ContextChipStyle.Render("branch "+m.GitBranch))
 	}
+	footer := strings.Join(footerBits, ContextChipStyle.Render(" · "))
 
-	content := strings.Join([]string{
-		strings.Join(meta, " "),
-		"",
-		body,
-		"",
-		strings.Join(footerBits, " "),
-	}, "\n")
+	// Assemble inner content
+	content := strings.Join([]string{"", body, "", footer}, "\n")
 
-	result := "\n" + WelcomeFrameStyle.Width(width).Render(content)
+	// Manual frame with title embedded in top border
+	innerW := width - 4
+	titleTag := WelcomeKickerStyle.Render("Codebot") + " " + ContextChipAccentStyle.Render(ver)
+	titleW := lipgloss.Width(titleTag)
+	topDash := max(width-titleW-5, 1)
+	topLine := bc.Render("╭─ ") + titleTag + " " + bc.Render(strings.Repeat("─", topDash)+"╮")
+	botLine := bc.Render("╰" + strings.Repeat("─", width-2) + "╯")
+
+	lines := strings.Split(content, "\n")
+	framed := make([]string, 0, len(lines)+2)
+	framed = append(framed, topLine)
+	for _, line := range lines {
+		pad := max(innerW-lipgloss.Width(line), 0)
+		framed = append(framed, bc.Render("│ ")+line+strings.Repeat(" ", pad)+bc.Render(" │"))
+	}
+	framed = append(framed, botLine)
+
+	result := "\n" + strings.Join(framed, "\n")
 	if m.EnvHint != "" {
 		result += "\n" + InputHintStyle.Render("  "+m.EnvHint)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 type stubChatModel struct{}
@@ -93,7 +95,7 @@ func (m *scriptedReminderModel) Generate(
 		if msg.Role == agentcore.RoleUser && strings.Contains(msg.TextContent(), "<system-reminder>") {
 			sawInjectedReminder = true
 		}
-		if msg.Role == agentcore.RoleUser && strings.Contains(msg.TextContent(), "重复调用同一个工具") {
+		if msg.Role == agentcore.RoleUser && strings.Contains(msg.TextContent(), "repeatedly calling the same tool") {
 			m.secondCallSawReminder = true
 		}
 	}
@@ -597,16 +599,16 @@ func TestBuildUserMessagePrependsRuntimeRemindersBeforeStaticReminders(t *testin
 		Agent:     ag,
 		Settings:  config.Resolved{MaxTurns: 30},
 		Cwd:       t.TempDir(),
-		Reminders: []string{"<system-reminder>\n静态提醒\n</system-reminder>"},
+		Reminders: []string{"<system-reminder>\nstatic reminder\n</system-reminder>"},
 	})
 	t.Cleanup(s.Close)
 
-	s.queueRuntimeReminder("loop", ReminderRepeatToolCall, "<system-reminder>\n动态提醒\n</system-reminder>")
-	msg := s.buildUserMessage(agentcore.TextBlock("用户输入"))
+	s.queueRuntimeReminder("loop", ReminderRepeatToolCall, "<system-reminder>\nruntime reminder\n</system-reminder>")
+	msg := s.buildUserMessage(agentcore.TextBlock("user input"))
 	if len(msg.Content) != 3 {
 		t.Fatalf("expected 3 content blocks, got %d", len(msg.Content))
 	}
-	if !strings.Contains(msg.Content[0].Text, "动态提醒") || !strings.Contains(msg.Content[1].Text, "静态提醒") {
+	if !strings.Contains(msg.Content[0].Text, "runtime reminder") || !strings.Contains(msg.Content[1].Text, "static reminder") {
 		t.Fatalf("unexpected content ordering: %#v", msg.Content)
 	}
 }
@@ -651,8 +653,8 @@ func TestRepeatedToolCallQueuesRuntimeReminder(t *testing.T) {
 		s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecEnd, ToolID: toolID, Tool: "read"})
 	}
 
-	msg := s.buildUserMessage(agentcore.TextBlock("继续"))
-	if len(msg.Content) == 0 || !strings.Contains(msg.Content[0].Text, "重复调用同一个工具") {
+	msg := s.buildUserMessage(agentcore.TextBlock("continue"))
+	if len(msg.Content) == 0 || !strings.Contains(msg.Content[0].Text, "repeatedly calling the same tool") {
 		t.Fatalf("expected repeated-call reminder, got %#v", msg.Content)
 	}
 }
@@ -671,7 +673,7 @@ func TestDeliverRuntimeReminderSteersCurrentRun(t *testing.T) {
 	})
 	t.Cleanup(s.Close)
 
-	if err := s.Prompt("开始"); err != nil {
+	if err := s.Prompt("start"); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitFor(t, time.Second, func() bool {
@@ -685,8 +687,8 @@ func TestContinueWithRuntimeReminderAutoContinuesWhenIdle(t *testing.T) {
 	model := &scriptedReminderModel{}
 	ag := agentcore.NewAgent(agentcore.WithModel(model), agentcore.WithMaxTurns(10))
 	if err := ag.SetMessages([]agentcore.AgentMessage{
-		textMessage(agentcore.RoleUser, "初始任务"),
-		textMessage(agentcore.RoleAssistant, "任务已完成。"),
+		textMessage(agentcore.RoleUser, "initial task"),
+		textMessage(agentcore.RoleAssistant, "task completed."),
 	}); err != nil {
 		t.Fatalf("set messages: %v", err)
 	}
@@ -697,10 +699,127 @@ func TestContinueWithRuntimeReminderAutoContinuesWhenIdle(t *testing.T) {
 	})
 	t.Cleanup(s.Close)
 
-	s.continueWithRuntimeReminder("test_reminder:1:0", ReminderRepeatToolCall, "<system-reminder>\n测试运行时提醒。\n</system-reminder>")
+	s.continueWithRuntimeReminder("test_reminder:1:0", ReminderRepeatToolCall, "<system-reminder>\ntest runtime reminder.\n</system-reminder>")
 	waitFor(t, time.Second, func() bool {
 		return s.LastAssistantText() == "steered"
 	})
+}
+
+func TestComplexPromptQueuesTaskManagementReminder(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:     ag,
+		Settings:  config.Resolved{MaxTurns: 30},
+		Cwd:       t.TempDir(),
+		TaskStore: localtools.NewTaskStore(),
+	})
+	t.Cleanup(s.Close)
+
+	s.beginTurn()
+	s.runtime.beforeUserPrompt([]agentcore.ContentBlock{
+		agentcore.TextBlock("Build a complete project: a Go CLI app that lets AI agents autonomously write novels."),
+	})
+
+	msg := s.buildUserMessage(agentcore.TextBlock("start"))
+	if len(msg.Content) != 2 {
+		t.Fatalf("expected one injected reminder plus user block, got %#v", msg.Content)
+	}
+	if !strings.Contains(msg.Content[0].Text, "<system-reminder>") {
+		t.Fatalf("expected injected system reminder, got %#v", msg.Content)
+	}
+	if msg.Content[1].Text != "start" {
+		t.Fatalf("expected task management reminder, got %#v", msg.Content)
+	}
+}
+
+func TestSimplePromptDoesNotQueueTaskManagementReminder(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:     ag,
+		Settings:  config.Resolved{MaxTurns: 30},
+		Cwd:       t.TempDir(),
+		TaskStore: localtools.NewTaskStore(),
+	})
+	t.Cleanup(s.Close)
+
+	s.beginTurn()
+	s.runtime.beforeUserPrompt([]agentcore.ContentBlock{
+		agentcore.TextBlock("How do I print hello world in Go?"),
+	})
+
+	msg := s.buildUserMessage(agentcore.TextBlock("start"))
+	if len(msg.Content) != 1 {
+		t.Fatalf("expected no task reminder blocks, got %#v", msg.Content)
+	}
+	if strings.Contains(msg.Content[0].Text, "task_create") {
+		t.Fatalf("unexpected task reminder in %#v", msg.Content)
+	}
+}
+
+func TestTaskManagementReminderQueuedForUntrackedOrBroadWork(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		store *localtools.TaskStore
+		run   func(s *Session)
+	}{
+		{
+			name:  "missing task list",
+			store: localtools.NewTaskStore(),
+			run: func(s *Session) {
+				args := json.RawMessage(`{"path":"main.go"}`)
+				for i := 0; i < 3; i++ {
+					toolID := fmt.Sprintf("read-%d", i)
+					s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecStart, ToolID: toolID, Tool: "read", Args: args})
+					s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecEnd, ToolID: toolID, Tool: "read"})
+				}
+			},
+		},
+		{
+			name: "single broad task",
+			store: func() *localtools.TaskStore {
+				store := localtools.NewTaskStore()
+				store.Create("Implement the entire project", "An overly broad task", "Implementing the entire project", nil)
+				return store
+			}(),
+			run: func(s *Session) {
+				s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecStart, ToolID: "task-1", Tool: "task_create"})
+				s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecEnd, ToolID: "task-1", Tool: "task_create"})
+				editArgs := json.RawMessage(`{"file":"main.go"}`)
+				s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecStart, ToolID: "edit-1", Tool: "edit", Args: editArgs})
+				s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecEnd, ToolID: "edit-1", Tool: "edit"})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+			s := NewSession(SessionConfig{
+				Agent:     ag,
+				Settings:  config.Resolved{MaxTurns: 30},
+				Cwd:       t.TempDir(),
+				TaskStore: tc.store,
+			})
+			t.Cleanup(s.Close)
+
+			s.beginTurn()
+			tc.run(s)
+
+			msg := s.buildUserMessage(agentcore.TextBlock("continue"))
+			if len(msg.Content) != 2 {
+				t.Fatalf("expected one injected reminder plus user block, got %#v", msg.Content)
+			}
+			if !strings.Contains(msg.Content[0].Text, "<system-reminder>") {
+				t.Fatalf("expected injected system reminder, got %#v", msg.Content)
+			}
+		})
+	}
 }
 
 func TestRuntimeMetricsTrackCompactionSavings(t *testing.T) {
