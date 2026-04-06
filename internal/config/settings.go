@@ -120,11 +120,17 @@ var providerEnvVars = map[string]struct{ key, base string }{
 
 // ProviderCredentials returns API key and base URL for the given provider.
 // It checks the providers map first, then falls back to standard environment variables.
+// Config base URL is preserved even when the API key comes from the environment.
 func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
-	if pc, ok := r.Providers[prov]; ok && pc.APIKey != "" {
+	pc, hasConfig := r.Providers[prov]
+	if hasConfig && pc.APIKey != "" {
 		return pc.APIKey, pc.BaseURL
 	}
-	return EnvCredentials(prov)
+	apiKey, baseURL = EnvCredentials(prov)
+	if hasConfig && baseURL == "" {
+		baseURL = pc.BaseURL
+	}
+	return apiKey, baseURL
 }
 
 // ProviderEnvKey returns the standard environment variable name for a provider's API key.

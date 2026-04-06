@@ -93,13 +93,11 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 
 func ensureProviderSetup(cwd string, settings config.Resolved, nonTTY bool) (config.Resolved, string, error) {
 	configExists := config.GlobalConfigExists() || config.ProjectConfigExists(cwd)
-	if configExists {
-		if hasConfiguredProviderCredentials(settings, settings.Provider) {
-			return settings, "", nil
-		}
-		return settings, "", fmt.Errorf("configuration error: settings.provider=%q is missing or not configured in settings.json", settings.Provider)
+	if configExists && hasConfiguredProviderCredentials(settings, settings.Provider) {
+		return settings, "", nil
 	}
 
+	// Even with a config file, try env var fallback when api_key is empty.
 	apiKey, _ := settings.ProviderCredentials(settings.Provider)
 	if apiKey != "" {
 		return settings, envHintFor(settings), nil
@@ -110,6 +108,10 @@ func ensureProviderSetup(cwd string, settings config.Resolved, nonTTY bool) (con
 		settings.Model = config.DefaultModelName(prov)
 		settings.SmallModel = settings.Model
 		return settings, fmt.Sprintf("Using %s from environment", envKey), nil
+	}
+
+	if configExists {
+		return settings, "", fmt.Errorf("configuration error: settings.provider=%q is missing or not configured in settings.json", settings.Provider)
 	}
 
 	if nonTTY {
