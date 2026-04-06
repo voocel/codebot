@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/litellm"
 )
 
 // CreateModel creates a ChatModel for the given provider, model name, API key, and optional base URL.
@@ -40,12 +42,26 @@ func newProviderModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, 
 			return llm.NewOpenAIModel(name, apiKey, baseURL)
 		}
 		return llm.NewOpenAIModel(name, apiKey)
+	case "glm":
+		return newGLMModel(name, apiKey, baseURL)
 	default:
 		if baseURL != "" {
 			return llm.NewOpenAIModel(name, apiKey, baseURL)
 		}
 		return llm.NewOpenAIModel(name, apiKey)
 	}
+}
+
+func newGLMModel(model, apiKey, baseURL string) (agentcore.ChatModel, error) {
+	cfg := litellm.ProviderConfig{APIKey: apiKey}
+	if baseURL != "" {
+		cfg.BaseURL = baseURL
+	}
+	client, err := litellm.NewWithProvider("glm", cfg)
+	if err != nil {
+		return nil, fmt.Errorf("glm: %w", err)
+	}
+	return llm.NewLiteLLMAdapter(model, client), nil
 }
 
 func applyProviderDefaults(prov, modelName string, model agentcore.ChatModel) {

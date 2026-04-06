@@ -18,6 +18,7 @@ var KnownProviderTypes = map[string]string{
 	"openai":     "openai",
 	"openrouter": "openrouter",
 	"gemini":     "gemini",
+	"zhipu":      "glm",
 }
 
 // ProviderConfig holds credentials and model configuration for a single provider.
@@ -116,6 +117,7 @@ var providerEnvVars = map[string]struct{ key, base string }{
 	"openai":     {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
 	"openrouter": {"OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"},
 	"gemini":     {"GEMINI_API_KEY", "GEMINI_BASE_URL"},
+	"zhipu":      {"ZHIPU_API_KEY", "ZHIPU_BASE_URL"},
 }
 
 // ProviderCredentials returns API key and base URL for the given provider.
