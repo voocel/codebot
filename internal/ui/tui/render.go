@@ -601,7 +601,7 @@ func (m *Model) renderUserMessage(text string) string {
 	lines := strings.Split(wrapped, "\n")
 	bgStyle := lipgloss.NewStyle().Background(ColorStatusBg)
 	prefixStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(ColorStatusBg).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(ColorStatusBg)
+	textStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(ColorStatusBg).Bold(true)
 	padStyle := lipgloss.NewStyle().Background(ColorStatusBg)
 	var out []string
 	for i, line := range lines {

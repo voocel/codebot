@@ -231,6 +231,17 @@ func ProjectConfigExists(cwd string) bool {
 	return err == nil
 }
 
+// GlobalSettingsPath returns ~/.codebot/settings.json.
+func GlobalSettingsPath() string {
+	return filepath.Join(UserConfigDir(), "settings.json")
+}
+
+// GlobalConfigExists reports whether ~/.codebot/settings.json exists.
+func GlobalConfigExists() bool {
+	_, err := os.Stat(GlobalSettingsPath())
+	return err == nil
+}
+
 // SessionsDir returns ~/.codebot/projects/<projectID>/.
 // Sessions are stored globally but scoped by project.
 func SessionsDir(cwd string) string {
@@ -297,6 +308,26 @@ func LoadSettings(cwd string) Resolved {
 	}
 	project := loadSettingsFile(SettingsPath(cwd))
 	return mergeSettings(global, project).Resolve()
+}
+
+// LoadSettingsStrict loads and merges settings like LoadSettings, but returns
+// an error when either settings file exists and cannot be parsed.
+func LoadSettingsStrict(cwd string) (Resolved, error) {
+	var global Settings
+	if dir := UserConfigDir(); dir != "" {
+		var err error
+		global, err = loadSettingsFileStrict(filepath.Join(dir, "settings.json"))
+		if err != nil {
+			return Resolved{}, err
+		}
+	}
+
+	project, err := loadSettingsFileStrict(SettingsPath(cwd))
+	if err != nil {
+		return Resolved{}, err
+	}
+
+	return mergeSettings(global, project).Resolve(), nil
 }
 
 // mergeSettings merges two Settings; non-nil fields in override take precedence.
@@ -401,7 +432,10 @@ func PatchGlobalSettings(patch Settings) error {
 	if dir == "" {
 		return fmt.Errorf("cannot determine user config directory")
 	}
-	existing := loadSettingsFile(filepath.Join(dir, "settings.json"))
+	existing, err := loadSettingsFileStrict(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		return err
+	}
 	merged := mergeSettings(existing, patch)
 	return SaveSettings(merged)
 }
@@ -409,7 +443,10 @@ func PatchGlobalSettings(patch Settings) error {
 // PatchProjectSettings loads project-level settings, applies the patch, and saves back.
 func PatchProjectSettings(cwd string, patch Settings) error {
 	path := SettingsPath(cwd)
-	existing := loadSettingsFile(path)
+	existing, err := loadSettingsFileStrict(path)
+	if err != nil {
+		return err
+	}
 	merged := mergeSettings(existing, patch)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -432,6 +469,21 @@ func loadSettingsFile(path string) Settings {
 		fmt.Fprintf(os.Stderr, "warning: malformed %s: %v\n", path, err)
 	}
 	return s
+}
+
+func loadSettingsFileStrict(path string) (Settings, error) {
+	var s Settings
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return s, nil
+		}
+		return s, err
+	}
+	if err := json.Unmarshal(data, &s); err != nil {
+		return s, fmt.Errorf("malformed %s: %w", path, err)
+	}
+	return s, nil
 }
 
 // DefaultModelName returns the default model name for a given provider.
@@ -457,14 +509,12 @@ func ResolveAll(cwd string) Resolved {
 	}
 
 	// SmallModel: settings > provider config > main model.
-	// Persist to config so the user can see and edit it.
 	if settings.SmallModel == "" {
 		if pc, ok := settings.Providers[settings.Provider]; ok && pc.SmallModel != "" {
 			settings.SmallModel = pc.SmallModel
 		} else {
 			settings.SmallModel = settings.Model
 		}
-		_ = PatchGlobalSettings(Settings{SmallModel: &settings.SmallModel})
 	}
 
 	// Normalize search provider name.
@@ -479,6 +529,38 @@ func ResolveAll(cwd string) Resolved {
 	settings.Permissions = normalizePermissionRoots(cwd, settings.Permissions)
 
 	return settings
+}
+
+// ResolveAllStrict resolves settings like ResolveAll, but refuses to continue
+// when an existing settings file is malformed.
+func ResolveAllStrict(cwd string) (Resolved, error) {
+	settings, err := LoadSettingsStrict(cwd)
+	if err != nil {
+		return Resolved{}, err
+	}
+
+	if settings.Model == "" {
+		settings.Model = DefaultModelName(settings.Provider)
+	}
+
+	if settings.SmallModel == "" {
+		if pc, ok := settings.Providers[settings.Provider]; ok && pc.SmallModel != "" {
+			settings.SmallModel = pc.SmallModel
+		} else {
+			settings.SmallModel = settings.Model
+		}
+	}
+
+	switch strings.ToLower(strings.TrimSpace(settings.SearchProvider)) {
+	case "jina", "jina.ai", "jinaai":
+		settings.SearchProvider = "jina"
+	}
+	if settings.SearchAPIKey == "" {
+		settings.SearchAPIKey = searchAPIKeyFromEnv(settings.SearchProvider)
+	}
+
+	settings.Permissions = normalizePermissionRoots(cwd, settings.Permissions)
+	return settings, nil
 }
 
 func searchAPIKeyFromEnv(provider string) string {

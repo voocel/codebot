@@ -2,10 +2,12 @@ package bootstrap
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/voocel/codebot/internal/approval"
+	"github.com/voocel/codebot/internal/config"
 )
 
 func TestParseMode(t *testing.T) {
@@ -67,5 +69,37 @@ func TestBootNonTTYWithTestProvider(t *testing.T) {
 		if _, ok := os.LookupEnv(key); !ok {
 			t.Setenv(key, "test-key-"+strings.ToLower(key))
 		}
+	}
+}
+
+func TestResolveInputEnvProviderDoesNotCreateSettingsFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("OPENAI_API_KEY", "test-openai-key")
+
+	cwd := t.TempDir()
+	input, err := resolveInput(Options{
+		Cwd:        cwd,
+		NonTTYMode: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveInput() error: %v", err)
+	}
+	defer input.sessionStore.Close()
+
+	if input.settings.Provider != "openai" {
+		t.Fatalf("provider = %q, want openai", input.settings.Provider)
+	}
+	if input.settings.SmallModel != input.settings.Model {
+		t.Fatalf("small model = %q, want %q", input.settings.SmallModel, input.settings.Model)
+	}
+	if input.envHint != "Using OPENAI_API_KEY from environment" {
+		t.Fatalf("envHint = %q", input.envHint)
+	}
+
+	if _, err := os.Stat(config.GlobalSettingsPath()); !os.IsNotExist(err) {
+		t.Fatalf("global settings file should not be created, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".codebot", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("project settings file should not be created, stat err = %v", err)
 	}
 }

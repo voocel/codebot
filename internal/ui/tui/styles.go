@@ -4,15 +4,15 @@ import "github.com/charmbracelet/lipgloss"
 
 // Color palette — terminal-friendly, restrained, and readable.
 var (
-	ColorPrimary   = lipgloss.Color("#3FA796") // teal, core brand/action
-	ColorAccent    = lipgloss.Color("#D89B5B") // warm amber accent
-	ColorUser      = lipgloss.Color("#8AB4F8") // calm blue
-	ColorAssistant = lipgloss.Color("#B8E1DD") // pale teal
-	ColorTool      = lipgloss.Color("#E5B567") // amber/yellow
-	ColorError     = lipgloss.Color("#E06C75") // soft red
-	ColorSuccess   = lipgloss.Color("#98C379") // green
-	ColorCommand   = lipgloss.Color("#78C6E7") // cool cyan
-	ColorShell     = lipgloss.Color("#D16D9E") // shell hint
+	ColorPrimary   = lipgloss.Color("#3FA796")                            // teal, core brand/action
+	ColorAccent    = lipgloss.Color("#D89B5B")                            // warm amber accent
+	ColorUser      = lipgloss.AdaptiveColor{Light: "25", Dark: "#8AB4F8"} // deeper blue on light theme, calm blue on dark
+	ColorAssistant = lipgloss.Color("#B8E1DD")                            // pale teal
+	ColorTool      = lipgloss.Color("#E5B567")                            // amber/yellow
+	ColorError     = lipgloss.Color("#E06C75")                            // soft red
+	ColorSuccess   = lipgloss.Color("#98C379")                            // green
+	ColorCommand   = lipgloss.Color("#78C6E7")                            // cool cyan
+	ColorShell     = lipgloss.Color("#D16D9E")                            // shell hint
 
 	// Claude Code 也是先走语义色，再让组件消费语义：
 	// text / inactive / subtle / promptBorder / suggestion。
