@@ -54,6 +54,12 @@ This split matters. The agent loop stays small and reusable, while long-running 
 - Non-interactive print mode for pipes and scripts (`-p`)
 - Slash commands: `/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
 
+**Extensibility**
+- Plugin-first architecture with project and user plugin scopes
+- Plugin contributions: skills, commands, MCP servers
+- `/plugins create`, `/plugins install`, and `/plugins remove` for local plugin lifecycle
+- Trust / enable / disable governance with runtime reload
+
 ## Installation
 
 **Pre-built binary (recommended):**
@@ -144,6 +150,8 @@ This means codebot is not just "an agent with tools". It is an agent plus a harn
 Config files: `~/.codebot/settings.json` (global) or `.codebot/settings.json` (project-level, takes precedence).
 
 All fields are optional. See [settings.example.jsonc](settings.example.jsonc) for the full reference with comments.
+
+Plugin authoring guide: [docs/plugins.md](docs/plugins.md). Real example plugins live under `docs/examples/plugins/`, including `review-assistant`, `release-ops`, and `docs-context`.
 
 ## Requirements
 

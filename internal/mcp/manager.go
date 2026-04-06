@@ -63,6 +63,23 @@ func (m *Manager) StartAll(ctx context.Context, servers map[string]ServerConfig)
 // triggers a tool reload. Used after initial async connection completes.
 func (m *Manager) MarkDirty() { m.dirty.Store(true) }
 
+// Reconfigure replaces the active MCP server set with a new configuration.
+// Existing clients are closed, connection failures are reset, and the manager
+// is marked dirty so the session can refresh its MCP tool list.
+func (m *Manager) Reconfigure(ctx context.Context, servers map[string]ServerConfig) []error {
+	oldClients := m.reset()
+	for _, c := range oldClients {
+		_ = c.Close()
+	}
+
+	var errs []error
+	if len(servers) > 0 {
+		errs = m.StartAll(ctx, servers)
+	}
+	m.MarkDirty()
+	return errs
+}
+
 // RefreshIfDirty re-fetches tools from all servers if any sent a list_changed
 // notification since the last call. Returns the new tool list and true,
 // or nil and false if nothing changed. Safe to call from the main loop.
@@ -165,4 +182,18 @@ func (m *Manager) Status(ctx context.Context) []ServerStatus {
 		out = append(out, ServerStatus{Name: name, Error: errMsg})
 	}
 	return out
+}
+
+func (m *Manager) reset() []*Client {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	oldClients := make([]*Client, 0, len(m.clients))
+	for _, c := range m.clients {
+		oldClients = append(oldClients, c)
+	}
+	m.clients = make(map[string]*Client)
+	m.failures = make(map[string]string)
+	m.dirty.Store(false)
+	return oldClients
 }

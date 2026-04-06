@@ -133,7 +133,6 @@ type skillRuntimeState struct {
 	baseModel       string
 	baseChatModel   agentcore.ChatModel
 	baseThinking    string
-	hooks           config.HooksConfig
 	invoked         []invokedSkillSnapshot
 	invocationCount map[string]int
 }

@@ -157,6 +157,21 @@ func TestLoadFromDir(t *testing.T) {
 	}
 }
 
+func TestValidateDirReportsInvalidSkill(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeSkillFile(t, filepath.Join(dir, "Bad Skill.md"), "---\ndescription: bad\n---\nbody")
+
+	specs, errs := ValidateDir(dir, "test")
+	if len(specs) != 0 {
+		t.Fatalf("expected no valid specs, got %d", len(specs))
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected validation errors")
+	}
+}
+
 func TestDeduplicateSpecsPrefersLaterSourceForSameName(t *testing.T) {
 	t.Parallel()
 

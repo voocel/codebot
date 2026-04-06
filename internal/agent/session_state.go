@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/skill"
 )
 
@@ -123,12 +122,6 @@ func (s *Session) ApplySkillDelta(name string, delta skill.Delta) error {
 	}
 	s.applyTemporarySkillThinking(delta.Effort)
 
-	s.mu.Lock()
-	if len(delta.Hooks) > 0 {
-		s.skillRuntime.hooks = mergeHooksConfig(s.skillRuntime.hooks, toConfigHooks(delta.Hooks))
-	}
-	s.mu.Unlock()
-
 	if s.skillAllowsSetter != nil {
 		s.skillAllowsSetter(delta.AllowedTools)
 	}
@@ -141,12 +134,6 @@ func (s *Session) clearSkillDelta() {
 		s.skillAllowsSetter(nil)
 	}
 	s.clearTemporarySkillOverrides()
-}
-
-func (s *Session) CurrentSkillHooks() config.HooksConfig {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return cloneHooksConfig(s.skillRuntime.hooks)
 }
 
 func (s *Session) recordInvokedSkill(name, promptText string, paths []string) {
@@ -191,89 +178,6 @@ func (s *Session) recordInvokedSkill(name, promptText string, paths []string) {
 	if s.prompts != nil {
 		s.prompts.refreshSkillReminders()
 	}
-}
-
-func cloneHooksConfig(src config.HooksConfig) config.HooksConfig {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(config.HooksConfig, len(src))
-	for event, entries := range src {
-		cp := make([]config.HookEntry, len(entries))
-		copy(cp, entries)
-		dst[event] = cp
-	}
-	return dst
-}
-
-func toConfigHooks(src skill.HooksConfig) config.HooksConfig {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(config.HooksConfig, len(src))
-	for event, entries := range src {
-		cp := make([]config.HookEntry, len(entries))
-		for i, entry := range entries {
-			cp[i] = config.HookEntry{
-				Type:     entry.Type,
-				Command:  entry.Command,
-				Matcher:  entry.Matcher,
-				Blocking: entry.Blocking,
-				Timeout:  entry.Timeout,
-			}
-		}
-		dst[event] = cp
-	}
-	return dst
-}
-
-func mergeHooksConfig(base, add config.HooksConfig) config.HooksConfig {
-	if len(add) == 0 {
-		return cloneHooksConfig(base)
-	}
-	merged := cloneHooksConfig(base)
-	if merged == nil {
-		merged = make(config.HooksConfig, len(add))
-	}
-	for event, entries := range add {
-		for _, entry := range entries {
-			if !containsHookEntry(merged[event], entry) {
-				merged[event] = append(merged[event], entry)
-			}
-		}
-	}
-	return merged
-}
-
-func containsHookEntry(entries []config.HookEntry, target config.HookEntry) bool {
-	for _, entry := range entries {
-		if hookEntryEqual(entry, target) {
-			return true
-		}
-	}
-	return false
-}
-
-func hookEntryEqual(a, b config.HookEntry) bool {
-	return a.Type == b.Type &&
-		a.Command == b.Command &&
-		a.Matcher == b.Matcher &&
-		boolPtrValue(a.Blocking) == boolPtrValue(b.Blocking) &&
-		intPtrValue(a.Timeout) == intPtrValue(b.Timeout)
-}
-
-func boolPtrValue(v *bool) bool {
-	if v == nil {
-		return false
-	}
-	return *v
-}
-
-func intPtrValue(v *int) int {
-	if v == nil {
-		return 0
-	}
-	return *v
 }
 
 func cloneInvocationCounts(src map[string]int) map[string]int {

@@ -2,6 +2,7 @@ package skill
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,32 +13,42 @@ import (
 )
 
 type Catalog struct {
-	mu     sync.RWMutex
-	cwd    string
-	list   []Spec
-	byName map[string]Spec
+	mu        sync.RWMutex
+	cwd       string
+	baseSpecs []Spec
+	extraDirs []DirSource
+	list      []Spec
+	byName    map[string]Spec
+}
+
+type DirSource struct {
+	Path   string
+	Source string
 }
 
 type frontmatter struct {
-	Name                   string      `yaml:"name"`
-	Description            string      `yaml:"description"`
-	WhenToUse              string      `yaml:"when_to_use"`
-	Version                string      `yaml:"version"`
-	ArgumentHint           string      `yaml:"argument-hint"`
-	Arguments              []string    `yaml:"arguments"`
-	Context                string      `yaml:"context"`
-	Agent                  string      `yaml:"agent"`
-	Model                  string      `yaml:"model"`
-	Effort                 string      `yaml:"effort"`
-	AllowedTools           any         `yaml:"allowed-tools"`
-	Paths                  []string    `yaml:"paths"`
-	UserInvocable          *bool       `yaml:"user-invocable"`
-	DisableModelInvocation *bool       `yaml:"disable-model-invocation"`
-	Hooks                  HooksConfig `yaml:"hooks"`
+	Name                   string   `yaml:"name"`
+	Description            string   `yaml:"description"`
+	WhenToUse              string   `yaml:"when_to_use"`
+	Version                string   `yaml:"version"`
+	ArgumentHint           string   `yaml:"argument-hint"`
+	Arguments              []string `yaml:"arguments"`
+	Context                string   `yaml:"context"`
+	Agent                  string   `yaml:"agent"`
+	Model                  string   `yaml:"model"`
+	Effort                 string   `yaml:"effort"`
+	AllowedTools           any      `yaml:"allowed-tools"`
+	Paths                  []string `yaml:"paths"`
+	UserInvocable          *bool    `yaml:"user-invocable"`
+	DisableModelInvocation *bool    `yaml:"disable-model-invocation"`
 }
 
-func NewCatalog(cwd string) *Catalog {
-	c := &Catalog{cwd: cwd}
+func NewCatalog(cwd string, baseSpecs []Spec, extraDirs ...DirSource) *Catalog {
+	c := &Catalog{
+		cwd:       cwd,
+		baseSpecs: append([]Spec(nil), baseSpecs...),
+		extraDirs: append([]DirSource(nil), extraDirs...),
+	}
 	c.Reload()
 	return c
 }
@@ -52,13 +63,50 @@ func LoadFromDir(dir, source string) []Spec {
 	return loadSkillsFromDir(dir, source)
 }
 
-func (c *Catalog) Reload() {
-	specs := make([]Spec, 0)
-	specs = append(specs, BundledSpecs(c.cwd)...)
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		specs = append(specs, loadSkillsFromDir(filepath.Join(home, ".codebot", "skills"), "user")...)
+func ValidateDir(dir, source string) ([]Spec, []error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, []error{err}
 	}
-	specs = append(specs, loadSkillsFromDir(filepath.Join(c.cwd, ".codebot", "skills"), "project")...)
+
+	var specs []Spec
+	var errs []error
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if entry.IsDir() {
+			spec, ok := findSkillInDir(path, entry.Name(), source)
+			if ok {
+				specs = append(specs, spec)
+				continue
+			}
+			errs = append(errs, fmt.Errorf("%s: no valid skill found", path))
+			continue
+		}
+		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+			continue
+		}
+		spec, err := loadSkillFile(path, source)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			continue
+		}
+		specs = append(specs, spec)
+	}
+	return specs, errs
+}
+
+func (c *Catalog) Reload() {
+	specs := append([]Spec(nil), c.baseSpecs...)
+	for _, extra := range c.extraDirs {
+		if strings.TrimSpace(extra.Path) == "" {
+			continue
+		}
+		source := strings.TrimSpace(extra.Source)
+		if source == "" {
+			source = "plugin"
+		}
+		specs = append(specs, loadSkillsFromDir(extra.Path, source)...)
+	}
 	c.setSpecs(deduplicateSpecs(specs))
 }
 
@@ -285,7 +333,6 @@ func parseSkillContent(content string, src skillSource, promptFactory func(Spec,
 		Effort:                 strings.TrimSpace(fm.Effort),
 		AllowedTools:           normalizeAllowedTools(fm.AllowedTools),
 		Paths:                  append([]string(nil), fm.Paths...),
-		Hooks:                  cloneHooks(fm.Hooks),
 		HasExplicitDescription: strings.TrimSpace(fm.Description) != "",
 		FrontmatterKeys:        keys,
 	}
@@ -384,24 +431,10 @@ func normalizeContext(raw string) string {
 	return "inline"
 }
 
-func cloneHooks(src HooksConfig) HooksConfig {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(HooksConfig, len(src))
-	for event, entries := range src {
-		cp := make([]HookEntry, len(entries))
-		copy(cp, entries)
-		dst[event] = cp
-	}
-	return dst
-}
-
 func cloneSpec(spec Spec) Spec {
 	spec.ArgumentNames = append([]string(nil), spec.ArgumentNames...)
 	spec.AllowedTools = append([]string(nil), spec.AllowedTools...)
 	spec.Paths = append([]string(nil), spec.Paths...)
-	spec.Hooks = cloneHooks(spec.Hooks)
 	spec.FrontmatterKeys = append([]string(nil), spec.FrontmatterKeys...)
 	return spec
 }

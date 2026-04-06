@@ -18,6 +18,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
+	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
@@ -48,6 +49,7 @@ type bootSpec struct {
 	deferredToolsPreamble string
 	reminders             []string
 	contextFiles          config.ContextFiles
+	pluginCatalog         *plugin.Catalog
 	skills                []skill.Spec
 	skillCatalog          *skill.Catalog
 	skillUsage            *skill.UsageTracker
@@ -210,7 +212,19 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	ctxFiles.GitSnapshot = config.CollectGitSnapshot(input.cwd)
 	ctxFiles.Memory, ctxFiles.MemoryDir = config.LoadMemory(input.cwd)
 	config.EnsureMemoryDir(input.cwd)
-	skillCatalog := skill.NewCatalog(input.cwd)
+	pluginCatalog, err := plugin.LoadAll(input.cwd)
+	if err != nil {
+		return nil, fmt.Errorf("plugins: %w", err)
+	}
+	contrib := pluginCatalog.Contributions()
+	extraSkillDirs := make([]skill.DirSource, 0, len(contrib.SkillDirs))
+	for _, dir := range contrib.SkillDirs {
+		extraSkillDirs = append(extraSkillDirs, skill.DirSource{
+			Path:   dir.Path,
+			Source: dir.Source,
+		})
+	}
+	skillCatalog := skill.NewCatalog(input.cwd, contrib.SkillSpecs, extraSkillDirs...)
 	skills := skillCatalog.List()
 	skillUsage, err := resolveSkillUsageTracker()
 	if err != nil {
@@ -231,7 +245,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		WriteRoots: settings.Permissions.WriteRoots,
 	})
 
-	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, taskStore, err := buildToolset(input, settings, activeProvider, chatModel, factories, skillCatalog)
+	tools, baseTools, mcpManager, mcpServers, subagentTool, bashTool, taskStore, err := buildToolset(input, settings, activeProvider, chatModel, factories, skillCatalog, contrib)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +263,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	var hookMW agentcore.ToolMiddleware
 	var hookRunner *hooks.Runner
 	if len(settings.Hooks) > 0 {
-		hookRunner = hooks.New(settings.Hooks, input.store.Header().SessionID, approvalEngine)
+		hookRunner = hooks.New(settings.Hooks, input.store.Header().SessionID, approvalEngine, chatModel)
 		if hookRunner != nil {
 			hookMW = hookRunner.Middleware()
 		}
@@ -266,6 +280,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 		deferredToolsPreamble: parts.deferredMsg,
 		reminders:             parts.reminders,
 		contextFiles:          ctxFiles,
+		pluginCatalog:         pluginCatalog,
 		skills:                skills,
 		skillCatalog:          skillCatalog,
 		skillUsage:            skillUsage,
@@ -280,7 +295,7 @@ func assembleBootSpec(input *bootInput, factories []ToolFactory) (*bootSpec, err
 	}, nil
 }
 
-func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, skillCatalog *skill.Catalog) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, *localtools.TaskStore, error) {
+func buildToolset(input *bootInput, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, skillCatalog *skill.Catalog, contrib plugin.Contributions) ([]agentcore.Tool, []agentcore.Tool, *mcpclient.Manager, map[string]mcpclient.ServerConfig, *agentcore.SubAgentTool, *agentcoretools.BashTool, *localtools.TaskStore, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	// Find the BashTool from built tools for background shell wiring.
@@ -333,6 +348,11 @@ func buildToolset(input *bootInput, settings config.Resolved, activeProvider str
 
 	var mcpManager *mcpclient.Manager
 	mcpServers := mcpclient.LoadAllMCPServers(input.cwd)
+	for name, cfg := range contrib.MCPServers {
+		if _, exists := mcpServers[name]; !exists {
+			mcpServers[name] = cfg
+		}
+	}
 	if len(mcpServers) > 0 {
 		mcpManager = mcpclient.NewManager()
 	}
@@ -634,10 +654,6 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 			st.SetInvocationApplier(sess.ApplySkillInvocation)
 		}
 	}
-	if spec.hookRunner != nil {
-		spec.hookRunner.SetDynamicProvider(sess.CurrentSkillHooks)
-	}
-
 	if spec.mcpManager != nil {
 		sess.SetBeforePrompt(func() {
 			mcpTools, ok := spec.mcpManager.RefreshIfDirty(context.Background())
@@ -651,6 +667,10 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		})
 	}
 
+	if spec.hookRunner != nil {
+		spec.hookRunner.RunSessionStart(context.Background())
+	}
+
 	return &Runtime{
 		Cwd:                 input.cwd,
 		GitBranch:           detectGitBranch(input.cwd),
@@ -659,9 +679,11 @@ func buildRuntime(input *bootInput, spec *bootSpec) (*Runtime, error) {
 		Settings:            spec.settings,
 		Session:             sess,
 		SessionStore:        input.store,
+		PluginCatalog:       spec.pluginCatalog,
 		SkillCatalog:        spec.skillCatalog,
 		MCPManager:          spec.mcpManager,
 		MCPServers:          spec.mcpServers,
+		HookRunner:          spec.hookRunner,
 		EnvHint:             input.envHint,
 		PlanSlug:            input.snapshot.PlanSlug,
 		PlanTitle:           input.snapshot.PlanTitle,

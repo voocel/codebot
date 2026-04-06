@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,11 +24,54 @@ type FileCommand struct {
 	Hidden      bool
 }
 
+type ExtraCommandSource struct {
+	Path   string
+	Source string
+}
+
 // LoadFileCommands discovers and loads Markdown-backed slash commands from
-// user and project command directories. Project commands override user
-// commands with the same name.
-func LoadFileCommands(cwd string) []FileCommand {
+// user, project, and extra paths (e.g. skill-declared command files).
+// Project commands override user commands; extra paths have lowest priority.
+func LoadFileCommands(cwd string, extraPaths ...string) []FileCommand {
+	extraSources := make([]ExtraCommandSource, 0, len(extraPaths))
+	for _, path := range extraPaths {
+		extraSources = append(extraSources, ExtraCommandSource{Path: path, Source: "skill"})
+	}
+	return LoadFileCommandsWithSources(cwd, extraSources...)
+}
+
+// LoadFileCommandsWithSources discovers Markdown-backed slash commands from
+// user, project, and extra plugin/skill paths. Project commands override user
+// commands; extra paths have lowest priority.
+func LoadFileCommandsWithSources(cwd string, extraSources ...ExtraCommandSource) []FileCommand {
 	byName := make(map[string]FileCommand)
+
+	// Extra paths first (lowest priority — overridden by user/project).
+	for _, extra := range extraSources {
+		path := strings.TrimSpace(extra.Path)
+		if path == "" {
+			continue
+		}
+		source := strings.TrimSpace(extra.Source)
+		if source == "" {
+			source = "extra"
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			for _, cmd := range loadFileCommandsFromDir(path, source) {
+				byName[cmd.Name] = cmd
+			}
+			continue
+		}
+		cmd, err := loadFileCommand(path, source)
+		if err != nil || !skill.ValidName(cmd.Name) {
+			continue
+		}
+		byName[cmd.Name] = cmd
+	}
 
 	if userDir := UserConfigDir(); userDir != "" {
 		for _, cmd := range loadFileCommandsFromDir(filepath.Join(userDir, "commands"), "user") {
@@ -44,6 +88,37 @@ func LoadFileCommands(cwd string) []FileCommand {
 		commands = append(commands, cmd)
 	}
 	return commands
+}
+
+func LoadCommandsFromDir(dir, source string) []FileCommand {
+	return loadFileCommandsFromDir(dir, source)
+}
+
+func ValidateCommandsDir(dir, source string) ([]FileCommand, []error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, []error{err}
+	}
+
+	var commands []FileCommand
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		cmd, err := loadFileCommand(path, source)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			continue
+		}
+		if !skill.ValidName(cmd.Name) {
+			errs = append(errs, fmt.Errorf("%s: invalid command name %q", path, cmd.Name))
+			continue
+		}
+		commands = append(commands, cmd)
+	}
+	return commands, errs
 }
 
 func loadFileCommandsFromDir(dir, source string) []FileCommand {

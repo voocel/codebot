@@ -16,6 +16,7 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
+	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
@@ -54,6 +55,13 @@ func validateCommand(ctx context.Context, engine *approval.Engine, spec CommandS
 		IsRunning: isRunning,
 		Summary:   "/" + spec.Name,
 	})
+}
+
+func validatePluginMutation(isRunning bool) error {
+	if isRunning {
+		return fmt.Errorf("agent is running; press Esc to abort first")
+	}
+	return nil
 }
 
 func parseCommandInvocation(input string) (CommandInvocation, bool) {
@@ -143,6 +151,12 @@ func (a *App) builtinCommands() []Command {
 			Category: "info", Kind: CommandKindBuiltin,
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdMCP()
+		}),
+		NewSimple(CommandSpec{
+			Name: "plugins", Usage: "/plugins [list|show|validate|create|install|remove|enable|disable|trust] ...", Description: "Inspect or manage plugins",
+			Category: "info", Kind: CommandKindBuiltin,
+		}, func(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
+			return ctx.App.cmdPlugins(inv.Args)
 		}),
 		NewSimple(CommandSpec{
 			Name: "debug-harness", Usage: "/debug-harness", Description: "Show harness runtime diagnostics",
@@ -502,6 +516,381 @@ func (a *App) cmdMCP() tea.Cmd {
 	}
 }
 
+func (a *App) cmdPlugins(args []string) tea.Cmd {
+	if len(args) > 0 {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "list":
+			return a.cmdPluginsList()
+		case "show":
+			return a.cmdPluginsShow(args[1:])
+		case "validate":
+			return a.cmdPluginsValidate(args[1:])
+		case "create":
+			return a.cmdPluginsCreate(args[1:])
+		case "install":
+			return a.cmdPluginsInstall(args[1:])
+		case "remove":
+			return a.cmdPluginsRemove(args[1:])
+		case "enable", "disable", "trust":
+			return a.cmdPluginsMutate(args)
+		}
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins [list|show|validate|create|install|remove|enable|disable|trust] ..."))
+	}
+	return a.cmdPluginsList()
+}
+
+func (a *App) cmdPluginsList() tea.Cmd {
+	if a.PluginCatalog == nil {
+		return tui.SendCommandResult(tui.CommandStyle.Render("Plugins\n\nNo plugin catalog loaded."))
+	}
+
+	plugins := a.PluginCatalog.Plugins()
+	if len(plugins) == 0 {
+		return tui.SendCommandResult(tui.CommandStyle.Render("Plugins\n\nNo plugins loaded."))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Plugins\n\n")
+	for _, p := range plugins {
+		status := "enabled"
+		if !p.State.Enabled {
+			status = "disabled"
+		}
+		fmt.Fprintf(&sb, "%s (%s)\n", p.Manifest.Name, p.Manifest.ID)
+		fmt.Fprintf(&sb, "  version: %s\n", p.Manifest.Version)
+		fmt.Fprintf(&sb, "  scope:   %s\n", p.Scope)
+		fmt.Fprintf(&sb, "  status:  %s\n", status)
+		fmt.Fprintf(&sb, "  trust:   %s\n", p.State.Trust)
+		fmt.Fprintf(&sb, "  skills:  %d\n", p.SkillCount())
+		fmt.Fprintf(&sb, "  commands:%d\n", p.CommandCount())
+		fmt.Fprintf(&sb, "  mcp:     %d\n", p.MCPCount())
+		if desc := strings.TrimSpace(p.Manifest.Description); desc != "" {
+			fmt.Fprintf(&sb, "  about:   %s\n", desc)
+		}
+		sb.WriteString("\n")
+	}
+
+	return tui.SendCommandResult(tui.CommandStyle.Render(strings.TrimRight(sb.String(), "\n")))
+}
+
+func (a *App) cmdPluginsShow(args []string) tea.Cmd {
+	if len(args) < 1 {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins show <plugin-id>"))
+	}
+	loaded, ok := a.findPlugin(args[0])
+	if !ok {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + strings.TrimSpace(args[0])))
+	}
+
+	status := "enabled"
+	if !loaded.State.Enabled {
+		status = "disabled"
+	}
+	var sb strings.Builder
+	sb.WriteString("Plugin\n\n")
+	fmt.Fprintf(&sb, "name:     %s\n", loaded.Manifest.Name)
+	fmt.Fprintf(&sb, "id:       %s\n", loaded.Manifest.ID)
+	fmt.Fprintf(&sb, "version:  %s\n", loaded.Manifest.Version)
+	fmt.Fprintf(&sb, "scope:    %s\n", loaded.Scope)
+	fmt.Fprintf(&sb, "status:   %s\n", status)
+	fmt.Fprintf(&sb, "trust:    %s\n", loaded.State.Trust)
+	if loaded.RootDir != "" {
+		fmt.Fprintf(&sb, "root:     %s\n", loaded.RootDir)
+	}
+	fmt.Fprintf(&sb, "skills:   %d\n", loaded.SkillCount())
+	fmt.Fprintf(&sb, "commands: %d\n", loaded.CommandCount())
+	fmt.Fprintf(&sb, "mcp:      %d\n", loaded.MCPCount())
+	if desc := strings.TrimSpace(loaded.Manifest.Description); desc != "" {
+		fmt.Fprintf(&sb, "about:    %s\n", desc)
+	}
+	if !loaded.IsTrusted() {
+		sb.WriteString("policy:   untrusted plugins cannot contribute MCP servers and their skills run without privileged fields\n")
+	}
+	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
+}
+
+func (a *App) cmdPluginsMutate(args []string) tea.Cmd {
+	if len(args) < 2 {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins [enable|disable|trust] ..."))
+	}
+	if a.PluginCatalog == nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin catalog not loaded."))
+	}
+	if a.Session != nil {
+		if err := validatePluginMutation(a.Session.IsRunning()); err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
+		}
+	}
+
+	action := strings.ToLower(strings.TrimSpace(args[0]))
+	id := strings.TrimSpace(args[1])
+	enable := false
+	switch action {
+	case "enable":
+		enable = true
+	case "disable":
+		enable = false
+	case "trust":
+		return a.cmdPluginsTrust(id, args[2:])
+	default:
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins [enable|disable|trust] ..."))
+	}
+
+	loaded, ok := a.findPlugin(id)
+	if !ok {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + id))
+	}
+	if err := plugin.SetEnabled(a.Cwd, loaded, enable); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin update failed: " + err.Error()))
+	}
+	if err := a.reloadPluginState(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
+	}
+	mcpResult, err := a.refreshRuntimeAfterPluginReload()
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
+	}
+
+	status := "disabled"
+	if enable {
+		status = "enabled"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Plugin %s %s.", loaded.Manifest.ID, status)
+	if loaded.MCPCount() > 0 || len(mcpResult.Errors) > 0 {
+		fmt.Fprintf(&sb, " MCP runtime reloaded: %d connected, %d failed, %d tools.", mcpResult.Connected, mcpResult.Failed, mcpResult.Tools)
+	}
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
+}
+
+func (a *App) cmdPluginsTrust(id string, args []string) tea.Cmd {
+	if len(args) < 1 {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins trust <plugin-id> <trusted|untrusted>"))
+	}
+	if a.Session != nil {
+		if err := validatePluginMutation(a.Session.IsRunning()); err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
+		}
+	}
+	loaded, ok := a.findPlugin(id)
+	if !ok {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + id))
+	}
+	trust := strings.ToLower(strings.TrimSpace(args[0]))
+	switch trust {
+	case plugin.TrustTrusted, plugin.TrustUntrusted:
+	default:
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins trust <plugin-id> <trusted|untrusted>"))
+	}
+	if err := plugin.SetTrust(a.Cwd, loaded, trust); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin trust update failed: " + err.Error()))
+	}
+	if err := a.reloadPluginState(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
+	}
+	mcpResult, err := a.refreshRuntimeAfterPluginReload()
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Plugin %s trust set to %s.", loaded.Manifest.ID, trust)
+	if trust == plugin.TrustUntrusted {
+		sb.WriteString(" MCP contributions are disabled and skill privileged fields are stripped.")
+	} else if loaded.MCPCount() > 0 || len(mcpResult.Errors) > 0 {
+		fmt.Fprintf(&sb, " MCP runtime reloaded: %d connected, %d failed, %d tools.", mcpResult.Connected, mcpResult.Failed, mcpResult.Tools)
+	}
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
+}
+
+func (a *App) cmdPluginsCreate(args []string) tea.Cmd {
+	if len(args) < 1 {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins create <plugin-id> [project|user|--project|--user]"))
+	}
+	if a.Session != nil {
+		if err := validatePluginMutation(a.Session.IsRunning()); err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
+		}
+	}
+
+	scope := plugin.ScopeProject
+	if len(args) > 1 {
+		switch strings.ToLower(strings.TrimSpace(args[1])) {
+		case "project", "--project":
+			scope = plugin.ScopeProject
+		case "user", "--user":
+			scope = plugin.ScopeUser
+		default:
+			return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins create <plugin-id> [project|user|--project|--user]"))
+		}
+	}
+
+	created, err := plugin.Scaffold(plugin.ScaffoldInput{
+		Cwd:   a.Cwd,
+		ID:    args[0],
+		Scope: scope,
+	})
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin scaffold failed: " + err.Error()))
+	}
+	if err := a.reloadPluginState(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
+	}
+	if _, err := a.refreshRuntimeAfterPluginReload(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Plugin scaffold created: %s (%s).\n", created.ID, created.Scope)
+	fmt.Fprintf(&sb, "root: %s\n", created.RootDir)
+	fmt.Fprintf(&sb, "manifest: %s\n", created.ManifestPath)
+	sb.WriteString("next: edit plugin.json, add files under skills/ or commands/, then run /reload.")
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
+}
+
+func (a *App) cmdPluginsValidate(args []string) tea.Cmd {
+	if len(args) < 1 {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins validate <plugin-id|path>"))
+	}
+
+	target := strings.TrimSpace(args[0])
+	var report *plugin.ValidationReport
+	var err error
+
+	if _, statErr := os.Stat(target); statErr == nil {
+		report, err = plugin.ValidatePath(target, "external")
+	} else {
+		loaded, ok := a.findPlugin(target)
+		if !ok {
+			return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin or path: " + target))
+		}
+		report, err = plugin.ValidateLoaded(loaded)
+	}
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin validation failed: " + err.Error()))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Plugin Validation\n\n")
+	fmt.Fprintf(&sb, "id:        %s\n", report.Manifest.ID)
+	fmt.Fprintf(&sb, "name:      %s\n", report.Manifest.Name)
+	fmt.Fprintf(&sb, "version:   %s\n", report.Manifest.Version)
+	fmt.Fprintf(&sb, "scope:     %s\n", report.Scope)
+	fmt.Fprintf(&sb, "root:      %s\n", report.RootDir)
+	if report.State != nil {
+		status := "enabled"
+		if !report.State.Enabled {
+			status = "disabled"
+		}
+		fmt.Fprintf(&sb, "status:    %s\n", status)
+		fmt.Fprintf(&sb, "trust:     %s\n", report.State.Trust)
+	}
+	fmt.Fprintf(&sb, "skills:    %d\n", report.SkillCount)
+	fmt.Fprintf(&sb, "commands:  %d\n", report.CommandCount)
+	fmt.Fprintf(&sb, "mcp:       %d\n", report.MCPCount)
+	fmt.Fprintf(&sb, "summary:   %s\n", report.Summary())
+	if len(report.Warnings) > 0 {
+		sb.WriteString("\nWarnings:\n")
+		for _, warning := range report.Warnings {
+			sb.WriteString("  - " + warning + "\n")
+		}
+	}
+	if len(report.Errors) > 0 {
+		sb.WriteString("\nErrors:\n")
+		for _, issue := range report.Errors {
+			sb.WriteString("  - " + issue + "\n")
+		}
+	}
+	return tui.SendCommandResult(tui.CommandStyle.Render(strings.TrimRight(sb.String(), "\n")))
+}
+
+func (a *App) cmdPluginsInstall(args []string) tea.Cmd {
+	if len(args) < 1 {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins install <path> [project|user|--project|--user]"))
+	}
+	if a.Session != nil {
+		if err := validatePluginMutation(a.Session.IsRunning()); err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
+		}
+	}
+
+	scope := plugin.ScopeProject
+	if len(args) > 1 {
+		switch strings.ToLower(strings.TrimSpace(args[1])) {
+		case "project", "--project":
+			scope = plugin.ScopeProject
+		case "user", "--user":
+			scope = plugin.ScopeUser
+		default:
+			return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins install <path> [project|user|--project|--user]"))
+		}
+	}
+
+	installed, err := plugin.InstallLocal(plugin.InstallInput{
+		Cwd:        a.Cwd,
+		SourcePath: args[0],
+		Scope:      scope,
+	})
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin install failed: " + err.Error()))
+	}
+	if err := a.reloadPluginState(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
+	}
+	if _, err := a.refreshRuntimeAfterPluginReload(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Plugin installed: %s (%s).\n", installed.ID, installed.Scope)
+	fmt.Fprintf(&sb, "root: %s\n", installed.RootDir)
+	fmt.Fprintf(&sb, "manifest: %s", installed.ManifestPath)
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
+}
+
+func (a *App) cmdPluginsRemove(args []string) tea.Cmd {
+	if len(args) < 1 {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins remove <plugin-id>"))
+	}
+	if a.Session != nil {
+		if err := validatePluginMutation(a.Session.IsRunning()); err != nil {
+			return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
+		}
+	}
+
+	loaded, ok := a.findPlugin(args[0])
+	if !ok {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + strings.TrimSpace(args[0])))
+	}
+	if loaded.Scope == "builtin" {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Builtin plugins cannot be removed."))
+	}
+	if err := plugin.Remove(a.Cwd, loaded); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin remove failed: " + err.Error()))
+	}
+	if err := a.reloadPluginState(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
+	}
+	if _, err := a.refreshRuntimeAfterPluginReload(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
+	}
+
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render("Plugin " + loaded.Manifest.ID + " removed."))
+}
+
+func (a *App) findPlugin(id string) (plugin.Loaded, bool) {
+	if a.PluginCatalog == nil {
+		return plugin.Loaded{}, false
+	}
+	id = strings.ToLower(strings.TrimSpace(id))
+	for _, loaded := range a.PluginCatalog.Plugins() {
+		if strings.ToLower(loaded.Manifest.ID) == id {
+			return loaded, true
+		}
+	}
+	return plugin.Loaded{}, false
+}
+
 func (a *App) cmdDebugHarness() tea.Cmd {
 	metrics := a.Session.RuntimeMetrics()
 	lastTurn := a.Session.LastTurnOutcome()
@@ -593,17 +982,15 @@ func (a *App) cmdDebugHarness() tea.Cmd {
 }
 
 func (a *App) cmdReload() tea.Cmd {
-	a.Session.Reload()
-	a.Commands = config.LoadFileCommands(a.Cwd)
-	a.Skills = a.Session.Skills()
-	if found := a.Session.ToolsByName("Skill"); len(found) > 0 {
-		if st, ok := found[0].(*tools.SkillTool); ok {
-			st.SetCatalog(a.SkillCatalog)
-		}
+	if err := a.reloadPluginState(); err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Reload failed: " + err.Error()))
 	}
-	a.rebuildRegistry()
+	mcpResult, err := a.refreshRuntimeAfterPluginReload()
+	if err != nil {
+		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
+	}
 	return tui.SendCommandResult(tui.SystemMsgStyle.Render(
-		fmt.Sprintf("Reloaded: %d commands, %d skills.", len(a.Commands), len(a.Skills))))
+		fmt.Sprintf("Reloaded: %d commands, %d skills, %d MCP tools (%d connected, %d failed).", len(a.Commands), len(a.Skills), mcpResult.Tools, mcpResult.Connected, mcpResult.Failed)))
 }
 
 func (a *App) cmdMemory(args []string) tea.Cmd {

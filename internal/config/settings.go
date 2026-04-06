@@ -42,13 +42,18 @@ func (pc ProviderConfig) ProviderType(name string) string {
 	return "openai"
 }
 
-// HookEntry describes a single hook command.
+// HookEntry describes a single hook.
+// Supported types: "command" (shell), "prompt" (LLM evaluation), "http" (POST).
 type HookEntry struct {
-	Type     string `json:"type"`               // "command" (only type for now)
-	Command  string `json:"command"`            // shell command to execute
-	Matcher  string `json:"matcher,omitempty"`  // tool name filter: exact or /regex/
-	Blocking *bool  `json:"blocking,omitempty"` // PreToolUse: can block execution
-	Timeout  *int   `json:"timeout,omitempty"`  // seconds (default 60)
+	Type     string            `json:"type"`               // "command", "prompt", or "http"
+	Command  string            `json:"command,omitempty"`  // type=command: shell command
+	Prompt   string            `json:"prompt,omitempty"`   // type=prompt: LLM prompt ($ARGUMENTS = payload)
+	URL      string            `json:"url,omitempty"`      // type=http: POST endpoint
+	Headers  map[string]string `json:"headers,omitempty"`  // type=http: request headers
+	Matcher  string            `json:"matcher,omitempty"`  // tool name filter: exact or /regex/
+	If       string            `json:"if,omitempty"`       // argument content filter: substring or /regex/
+	Blocking *bool             `json:"blocking,omitempty"` // can block execution
+	Timeout  *int              `json:"timeout,omitempty"`  // seconds (default 60)
 }
 
 // HooksConfig maps event names to their hook entries.

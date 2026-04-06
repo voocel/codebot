@@ -45,11 +45,6 @@ func TestUntrustedSkillSourceDisablesPrivilegedFields(t *testing.T) {
 		Effort:       "high",
 		Paths:        []string{"internal/skill/**"},
 		AllowedTools: []string{"bash"},
-		Hooks: HooksConfig{
-			"Notification": {
-				{Type: "command", Command: "echo hi"},
-			},
-		},
 	}
 	spec.GetPrompt = buildStaticPromptFn(spec, "result: !`echo 42`")
 
@@ -64,9 +59,6 @@ func TestUntrustedSkillSourceDisablesPrivilegedFields(t *testing.T) {
 
 	if len(result.Delta.AllowedTools) != 0 {
 		t.Fatalf("expected allowed tools stripped for untrusted source, got %#v", result.Delta.AllowedTools)
-	}
-	if result.Delta.Hooks != nil {
-		t.Fatalf("expected hooks stripped for untrusted source, got %#v", result.Delta.Hooks)
 	}
 	if result.Delta.ModelOverride != "" {
 		t.Fatalf("expected model override stripped for untrusted source, got %q", result.Delta.ModelOverride)

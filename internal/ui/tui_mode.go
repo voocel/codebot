@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	planstate "github.com/voocel/codebot/internal/plan"
+	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
@@ -22,7 +23,7 @@ import (
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, skillCatalog *skill.Catalog, envHint string, sessionStore *storage.Store, planSlug, planTitle, planPhase, planPreMode string, planAllowedCommands []storage.AllowedCommandEntry) error {
+func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, pluginCatalog *plugin.Catalog, skillCatalog *skill.Catalog, envHint string, sessionStore *storage.Store, planSlug, planTitle, planPhase, planPreMode string, planAllowedCommands []storage.AllowedCommandEntry) error {
 	planStore := storage.NewPlanStore(config.PlansDir(cwd))
 	planManager := planstate.NewManager(sess, approvalEngine, planStore, sessionStore)
 	adapter := &App{
@@ -31,15 +32,19 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 		GitBranch:      gitBranch,
 		ApprovalEngine: approvalEngine,
 		TaskRuntime:    taskRT,
-		Commands:       config.LoadFileCommands(cwd),
+		Commands:       nil,
 		Skills:         sess.Skills(),
+		PluginCatalog:  pluginCatalog,
 		SkillCatalog:   skillCatalog,
 		PlanStore:      planStore,
 		SessionStore:   sessionStore,
 		PlanManager:    planManager,
 		MCPManager:     mcpMgr,
+		MCPServers:     mcpServers,
 		History:        newInputHistory(sess, cwd),
 	}
+	adapter.Commands = adapter.loadPluginCommands()
+	adapter.installMCPRefreshHook()
 
 	_ = planManager.Restore(planstate.State{
 		Phase:           planstate.Phase(planPhase),

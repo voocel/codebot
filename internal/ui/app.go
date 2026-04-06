@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
@@ -13,8 +15,10 @@ import (
 	"github.com/voocel/codebot/internal/cron"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/plan"
+	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/imageinput"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
@@ -33,10 +37,12 @@ type App struct {
 	// Skills are loaded skill definitions.
 	Skills []skill.Spec
 	// SkillCatalog provides shared skill invocation behavior across UI and tools.
-	SkillCatalog *skill.Catalog
+	SkillCatalog  *skill.Catalog
+	PluginCatalog *plugin.Catalog
 
 	// MCPManager manages MCP server connections.
 	MCPManager *mcpclient.Manager
+	MCPServers map[string]mcpclient.ServerConfig
 
 	// CronStore holds session-scoped cron jobs for /loop command.
 	CronStore *cron.Store
@@ -65,6 +71,150 @@ type App struct {
 	planChoice    int    // selected option in planReview menu
 	planOtherMode bool   // typing custom feedback
 	planOtherBuf  string // custom feedback buffer
+}
+
+func (a *App) reloadPluginState() error {
+	catalog, err := plugin.LoadAll(a.Cwd)
+	if err != nil {
+		return err
+	}
+	contrib := catalog.Contributions()
+	extraSkillDirs := make([]skill.DirSource, 0, len(contrib.SkillDirs))
+	for _, dir := range contrib.SkillDirs {
+		extraSkillDirs = append(extraSkillDirs, skill.DirSource{
+			Path:   dir.Path,
+			Source: dir.Source,
+		})
+	}
+	a.PluginCatalog = catalog
+	a.SkillCatalog = skill.NewCatalog(a.Cwd, contrib.SkillSpecs, extraSkillDirs...)
+	a.Commands = a.loadPluginCommands()
+	a.Skills = a.SkillCatalog.List()
+	if a.Session != nil {
+		a.Session.SetSkillCatalog(a.SkillCatalog)
+	}
+	return nil
+}
+
+func (a *App) loadPluginCommands() []config.FileCommand {
+	if a.PluginCatalog == nil {
+		return config.LoadFileCommandsWithSources(a.Cwd)
+	}
+	contrib := a.PluginCatalog.Contributions()
+	extraCommands := make([]config.ExtraCommandSource, 0, len(contrib.CommandDirs))
+	for _, dir := range contrib.CommandDirs {
+		extraCommands = append(extraCommands, config.ExtraCommandSource{Path: dir, Source: "plugin"})
+	}
+	return config.LoadFileCommandsWithSources(a.Cwd, extraCommands...)
+}
+
+type mcpReloadResult struct {
+	Connected int
+	Failed    int
+	Tools     int
+	Errors    []string
+}
+
+func (a *App) effectiveMCPServers() map[string]mcpclient.ServerConfig {
+	servers := mcpclient.LoadAllMCPServers(a.Cwd)
+	if a.PluginCatalog != nil {
+		for name, cfg := range a.PluginCatalog.Contributions().MCPServers {
+			if servers == nil {
+				servers = make(map[string]mcpclient.ServerConfig)
+			}
+			if _, exists := servers[name]; !exists {
+				servers[name] = cfg
+			}
+		}
+	}
+	if len(servers) == 0 {
+		return nil
+	}
+	return servers
+}
+
+func (a *App) installMCPRefreshHook() {
+	if a.Session == nil || a.MCPManager == nil {
+		return
+	}
+	a.Session.SetBeforePrompt(func() {
+		mcpTools, ok := a.MCPManager.RefreshIfDirty(context.Background())
+		if !ok {
+			return
+		}
+		a.Session.ReplaceMCPTools(mcpTools)
+		a.Session.SetMCPInstructions(strings.Join(a.MCPManager.Instructions(), "\n\n"))
+	})
+}
+
+func (a *App) reloadMCPRuntime() (mcpReloadResult, error) {
+	var result mcpReloadResult
+
+	a.MCPServers = a.effectiveMCPServers()
+	if a.MCPManager == nil && len(a.MCPServers) == 0 {
+		if a.Session != nil {
+			a.Session.ReplaceMCPTools(nil)
+			a.Session.SetMCPInstructions("")
+		}
+		return result, nil
+	}
+
+	if a.MCPManager == nil {
+		a.MCPManager = mcpclient.NewManager()
+	}
+	a.installMCPRefreshHook()
+
+	reloadCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	errs := a.MCPManager.Reconfigure(reloadCtx, a.MCPServers)
+
+	snapshotCtx, snapshotCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer snapshotCancel()
+
+	tools := a.MCPManager.Tools(snapshotCtx)
+	instructions := strings.Join(a.MCPManager.Instructions(), "\n\n")
+	statuses := a.MCPManager.Status(snapshotCtx)
+
+	if a.Session != nil {
+		a.Session.ReplaceMCPTools(tools)
+		a.Session.SetMCPInstructions(instructions)
+	}
+
+	result.Tools = len(tools)
+	for _, status := range statuses {
+		if status.Error != "" {
+			result.Failed++
+			continue
+		}
+		result.Connected++
+	}
+	if len(errs) > 0 {
+		result.Errors = make([]string, 0, len(errs))
+		for _, err := range errs {
+			result.Errors = append(result.Errors, err.Error())
+		}
+	}
+	return result, nil
+}
+
+func (a *App) refreshRuntimeAfterPluginReload() (mcpReloadResult, error) {
+	mcpResult, err := a.reloadMCPRuntime()
+	if err != nil {
+		return mcpResult, err
+	}
+	if a.Session != nil {
+		a.Session.Reload()
+		a.Skills = a.Session.Skills()
+		if found := a.Session.ToolsByName("Skill"); len(found) > 0 {
+			if st, ok := found[0].(*tools.SkillTool); ok {
+				st.SetCatalog(a.SkillCatalog)
+			}
+		}
+	} else if a.SkillCatalog != nil {
+		a.Skills = a.SkillCatalog.List()
+	}
+	a.rebuildRegistry()
+	return mcpResult, nil
 }
 
 // Config returns a tui.Config with all hooks wired to this App.

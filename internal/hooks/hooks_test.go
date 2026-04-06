@@ -55,7 +55,7 @@ func TestParseMatcher(t *testing.T) {
 func TestNewRunner(t *testing.T) {
 	t.Parallel()
 
-	if r := New(nil, "sess1", nil); r != nil {
+	if r := New(nil, "sess1", nil, nil); r != nil {
 		t.Fatal("nil config should return nil runner")
 	}
 
@@ -69,7 +69,7 @@ func TestNewRunner(t *testing.T) {
 			{Type: "command", Command: "echo bad"},
 		},
 	}
-	r := New(cfg, "sess1", nil)
+	r := New(cfg, "sess1", nil, nil)
 	if r == nil {
 		t.Fatal("expected valid hook runner")
 	}
@@ -86,7 +86,7 @@ func TestRunPreToolUse(t *testing.T) {
 			{Type: "command", Command: `echo '{"blocked":true,"reason":"not allowed"}'`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test", nil)
+	r := New(cfg, "test", nil, nil)
 
 	if err := r.RunPreToolUse(context.Background(), "write", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("non-matching hook should be skipped: %v", err)
@@ -108,7 +108,7 @@ func TestRunPostToolUse_FireAndForget(t *testing.T) {
 			{Type: "command", Command: "touch " + marker},
 		},
 	}
-	r := New(cfg, "test", nil)
+	r := New(cfg, "test", nil, nil)
 	r.RunPostToolUse(context.Background(), "bash", nil, json.RawMessage(`"ok"`), false)
 
 	time.Sleep(200 * time.Millisecond)
@@ -133,7 +133,7 @@ func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
 			{Type: "command", Command: "echo ok", Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test", engine)
+	r := New(cfg, "test", engine, nil)
 	err = r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err == nil || err.Error() != "hook: blocking hook command requires approval" {
 		t.Fatalf("expected approval denial, got %v", err)
@@ -150,7 +150,7 @@ func TestRunTaskCreated_Payload(t *testing.T) {
 			{Type: "command", Command: "cat > " + outFile},
 		},
 	}
-	r := New(cfg, "test", nil)
+	r := New(cfg, "test", nil, nil)
 	task := TaskSnapshot{
 		ID:          "1",
 		Subject:     "Fix auth",
@@ -185,7 +185,7 @@ func TestRunTaskCompleted_Blocking(t *testing.T) {
 			{Type: "command", Command: `echo '{"blocked":true,"reason":"verify results first"}'`, Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test", nil)
+	r := New(cfg, "test", nil, nil)
 	err := r.RunTaskCompleted(context.Background(),
 		TaskSnapshot{ID: "1", Subject: "Fix auth", Status: "in_progress"},
 		TaskSnapshot{ID: "1", Subject: "Fix auth", Status: "completed"},
@@ -203,7 +203,7 @@ func TestRunTaskCompleted_NonBlocking(t *testing.T) {
 			{Type: "command", Command: "exit 1", Blocking: boolPtr(false)},
 		},
 	}
-	r := New(cfg, "test", nil)
+	r := New(cfg, "test", nil, nil)
 	err := r.RunTaskCompleted(context.Background(),
 		TaskSnapshot{ID: "1", Subject: "Fix auth", Status: "in_progress"},
 		TaskSnapshot{ID: "1", Subject: "Fix auth", Status: "completed"},

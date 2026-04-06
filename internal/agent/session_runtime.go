@@ -17,6 +17,11 @@ import (
 var errStaleSessionGeneration = errors.New("stale session generation")
 
 func (s *Session) Prompt(text string) error {
+	if s.hookRunner != nil {
+		if err := s.hookRunner.RunUserPromptSubmit(context.Background(), text); err != nil {
+			return err
+		}
+	}
 	s.beginTurn()
 	if s.beforePrompt != nil {
 		s.beforePrompt()

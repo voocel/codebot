@@ -54,6 +54,12 @@
 - 非交互管道模式（`-p`）
 - 斜杠命令：`/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
 
+**扩展**
+- plugin-first 架构，支持 project / user 两级 plugin
+- plugin 贡献：skills、commands、MCP servers
+- `/plugins create`、`/plugins install`、`/plugins remove` 管理本地 plugin 生命周期
+- trust / enable / disable 治理与运行时热刷新
+
 ## 安装
 
 **预编译二进制（推荐）：**
@@ -144,6 +150,8 @@ Codebot 采用分层的 Coding Agent 架构：
 配置文件：`~/.codebot/settings.json`（全局）或 `.codebot/settings.json`（项目级，优先）。
 
 所有字段可选，参考 [settings.example.jsonc](settings.example.jsonc) 了解完整配置项及说明。
+
+Plugin 开发参考 [docs/plugins.md](docs/plugins.md)。真实示例 plugin 放在 `docs/examples/plugins/`，目前包含 `review-assistant`、`release-ops`、`docs-context`。
 
 ## 环境要求
 

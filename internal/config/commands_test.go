@@ -120,3 +120,20 @@ hidden: true
 		t.Fatalf("unexpected aliases: %v", cmd.Aliases)
 	}
 }
+
+func TestValidateCommandsDirReportsInvalidCommandName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Bad Name.md"), []byte("body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmds, errs := ValidateCommandsDir(dir, "plugin")
+	if len(cmds) != 0 {
+		t.Fatalf("expected no valid commands, got %d", len(cmds))
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected validation errors")
+	}
+}

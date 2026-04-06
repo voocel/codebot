@@ -12,16 +12,6 @@ import (
 
 type GetPromptFn func(ctx context.Context, args string, sessionID string) (string, error)
 
-type HookEntry struct {
-	Type     string `yaml:"type" json:"type"`
-	Command  string `yaml:"command" json:"command"`
-	Matcher  string `yaml:"matcher,omitempty" json:"matcher,omitempty"`
-	Blocking *bool  `yaml:"blocking,omitempty" json:"blocking,omitempty"`
-	Timeout  *int   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-}
-
-type HooksConfig map[string][]HookEntry
-
 type Spec struct {
 	Name        string
 	Description string
@@ -45,7 +35,6 @@ type Spec struct {
 
 	AllowedTools []string
 	Paths        []string
-	Hooks        HooksConfig
 
 	HasExplicitDescription bool
 	FrontmatterKeys        []string
@@ -58,7 +47,6 @@ type Delta struct {
 	ModelOverride string
 	Effort        string
 	Paths         []string
-	Hooks         HooksConfig
 }
 
 type InvocationMode string

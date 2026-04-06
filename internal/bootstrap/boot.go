@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +19,9 @@ import (
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
+	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
@@ -48,9 +51,11 @@ type Runtime struct {
 	Settings            config.Resolved
 	Session             *agent.Session
 	SessionStore        *storage.Store
+	PluginCatalog       *plugin.Catalog
 	SkillCatalog        *skill.Catalog
 	MCPManager          *mcpclient.Manager
 	MCPServers          map[string]mcpclient.ServerConfig // for async connection in TUI
+	HookRunner          *hooks.Runner                     // nil if no hooks configured
 	EnvHint             string                            // non-empty when credentials come from environment variable
 	PlanSlug            string                            // restored plan slug (empty if no plan)
 	PlanTitle           string                            // restored plan title
@@ -61,6 +66,9 @@ type Runtime struct {
 
 // Close releases runtime resources.
 func (r *Runtime) Close() {
+	if r.HookRunner != nil {
+		r.HookRunner.RunSessionEnd(context.Background())
+	}
 	if r.TaskRuntime != nil {
 		r.TaskRuntime.StopAll()
 	}

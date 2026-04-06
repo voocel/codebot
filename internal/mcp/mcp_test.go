@@ -178,6 +178,26 @@ func TestManagerDirtyFlag(t *testing.T) {
 	}
 }
 
+func TestManagerReconfigureClearsFailuresAndMarksDirty(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager()
+	defer m.Close()
+
+	m.failures["broken"] = "boom"
+
+	errs := m.Reconfigure(t.Context(), nil)
+	if len(errs) != 0 {
+		t.Fatalf("expected no reconfigure errors, got %v", errs)
+	}
+	if len(m.failures) != 0 {
+		t.Fatalf("expected failures to be cleared, got %v", m.failures)
+	}
+	if _, ok := m.RefreshIfDirty(t.Context()); !ok {
+		t.Fatal("expected reconfigure to mark manager dirty")
+	}
+}
+
 // --- helpers ---
 
 func writeMCPConfig(t *testing.T, data string) string {

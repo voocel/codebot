@@ -33,6 +33,10 @@ func (s *Session) ReplaceAllTools(tools []agentcore.Tool) {
 	s.prompts.replaceAllTools(tools)
 }
 
+func (s *Session) ReplaceMCPTools(tools []agentcore.Tool) {
+	s.prompts.replaceMCPTools(tools)
+}
+
 func (s *Session) SetSystemSuffix(suffix string) {
 	s.prompts.setApprovedPlanPrompt(suffix)
 }
@@ -63,6 +67,18 @@ func (s *Session) Skills() []skill.Spec {
 
 func (s *Session) SkillCatalog() *skill.Catalog {
 	return s.skillCatalog
+}
+
+func (s *Session) SetSkillCatalog(catalog *skill.Catalog) {
+	s.skillCatalog = catalog
+	if catalog != nil {
+		s.skills = catalog.List()
+	} else {
+		s.skills = nil
+	}
+	if s.prompts != nil {
+		s.prompts.rebuildPrompt()
+	}
 }
 
 func (s *Session) Reload() {
@@ -117,6 +133,25 @@ func (m *sessionPromptManager) replaceAllTools(tools []agentcore.Tool) {
 	m.rebuildPrompt()
 }
 
+func (m *sessionPromptManager) replaceMCPTools(tools []agentcore.Tool) {
+	wasAllTools := sameToolSet(m.session.activeTools, m.session.allTools)
+	activeHasMCP := hasMCPTools(m.session.activeTools)
+
+	m.session.allTools = replaceMCPToolsInSlice(m.session.allTools, tools)
+
+	switch {
+	case wasAllTools:
+		m.session.activeTools = m.session.allTools
+	case activeHasMCP:
+		m.session.activeTools = replaceMCPToolsInSlice(m.session.activeTools, tools)
+	default:
+		return
+	}
+
+	m.session.agent.SetTools(m.session.activeTools...)
+	m.rebuildPrompt()
+}
+
 func (m *sessionPromptManager) setMCPInstructions(text string) {
 	m.session.overlays.MCP = text
 	m.rebuildPrompt()
@@ -142,7 +177,7 @@ func (m *sessionPromptManager) reload() {
 		m.session.skillCatalog.Reload()
 		m.session.skills = m.session.skillCatalog.List()
 	} else {
-		m.session.skills = skill.NewCatalog(m.session.cwd).List()
+		m.session.skills = skill.NewCatalog(m.session.cwd, nil).List()
 	}
 	m.rebuildPrompt()
 }
@@ -213,6 +248,41 @@ func (m *sessionPromptManager) refreshSkillReminders() {
 	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, m.session.skillUsageScoresLocked())
 	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
 	m.session.mu.Unlock()
+}
+
+const mcpToolPrefix = "mcp__"
+
+func replaceMCPToolsInSlice(base []agentcore.Tool, mcpTools []agentcore.Tool) []agentcore.Tool {
+	out := make([]agentcore.Tool, 0, len(base)+len(mcpTools))
+	for _, tool := range base {
+		if strings.HasPrefix(tool.Name(), mcpToolPrefix) {
+			continue
+		}
+		out = append(out, tool)
+	}
+	out = append(out, mcpTools...)
+	return out
+}
+
+func hasMCPTools(tools []agentcore.Tool) bool {
+	for _, tool := range tools {
+		if strings.HasPrefix(tool.Name(), mcpToolPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameToolSet(a, b []agentcore.Tool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name() != b[i].Name() {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Session) skillUsageScoresLocked() map[string]float64 {

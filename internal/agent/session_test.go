@@ -591,6 +591,40 @@ func TestSetToolsRebuildsPrompt(t *testing.T) {
 	}
 }
 
+func TestReplaceMCPToolsUpdatesAllToolsWithoutBreakingFilteredActiveTools(t *testing.T) {
+	t.Parallel()
+
+	allTools := []agentcore.Tool{
+		&stubTool{name: "read", desc: "Read file contents"},
+		&stubTool{name: "write", desc: "Write file contents"},
+		&stubTool{name: "mcp__docs__search", desc: "Search docs"},
+	}
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}), agentcore.WithTools(allTools...))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+		Tools:    allTools,
+	})
+	t.Cleanup(s.Close)
+
+	s.SetTools(s.ToolsByName("read")...)
+	s.ReplaceMCPTools([]agentcore.Tool{
+		&stubTool{name: "mcp__ops__deploy", desc: "Deploy service"},
+	})
+
+	if got := len(s.ToolsByName("mcp__ops__deploy")); got != 1 {
+		t.Fatalf("expected refreshed MCP tool in all tools, got %d", got)
+	}
+	if got := len(s.ToolsByName("mcp__docs__search")); got != 0 {
+		t.Fatalf("expected stale MCP tool removed from all tools, got %d", got)
+	}
+	if len(s.activeTools) != 1 || s.activeTools[0].Name() != "read" {
+		t.Fatalf("expected filtered active tools to remain unchanged, got %#v", s.activeTools)
+	}
+}
+
 func TestBuildUserMessagePrependsRuntimeRemindersBeforeStaticReminders(t *testing.T) {
 	t.Parallel()
 

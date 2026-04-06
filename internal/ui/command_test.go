@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
@@ -108,6 +109,17 @@ func TestValidateCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	}
 }
 
+func TestValidatePluginMutationRequiresIdle(t *testing.T) {
+	t.Parallel()
+
+	if err := validatePluginMutation(true); err == nil {
+		t.Fatal("expected running agent mutation to be denied")
+	}
+	if err := validatePluginMutation(false); err != nil {
+		t.Fatalf("expected idle mutation to pass: %v", err)
+	}
+}
+
 func TestParseCommandInvocationRespectsQuotes(t *testing.T) {
 	t.Parallel()
 
@@ -168,7 +180,7 @@ func TestRebuildRegistryUsesActiveSkillsFromCatalog(t *testing.T) {
 
 	app := &App{
 		Cwd:          cwd,
-		SkillCatalog: skill.NewCatalog(cwd),
+		SkillCatalog: skill.NewCatalog(cwd, nil, skill.DirSource{Path: skillDir, Source: "plugin"}),
 	}
 	app.rebuildRegistry()
 	if _, ok := app.registry.Lookup("review"); !ok {
@@ -197,6 +209,207 @@ func TestRegistryPreservesCanonicalNameOverConflictingAlias(t *testing.T) {
 	spec := reg.EffectiveSpec(builtin)
 	if len(spec.Aliases) != 0 {
 		t.Fatalf("expected conflicting alias to be hidden, got %v", spec.Aliases)
+	}
+}
+
+func TestCmdPluginsShowsLoadedPlugins(t *testing.T) {
+	t.Parallel()
+
+	app := &App{
+		PluginCatalog: &plugin.Catalog{},
+	}
+	if msg := app.cmdPlugins(nil)(); msg == nil {
+		t.Fatal("expected plugin command to return a message")
+	}
+}
+
+func TestCmdPluginsDisableWritesStateAndReloadsCatalog(t *testing.T) {
+	cwd := t.TempDir()
+	home := filepath.Join(cwd, "home")
+	t.Setenv("HOME", home)
+
+	pluginRoot := filepath.Join(cwd, ".codebot", "plugins", "docs")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "plugin.json"), []byte(`{"id":"docs","name":"Docs","version":"0.1.0","skillsDir":"./skills"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, err := plugin.LoadAll(cwd)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	app := &App{Cwd: cwd, PluginCatalog: catalog}
+
+	if msg := app.cmdPlugins([]string{"disable", "docs"})(); msg == nil {
+		t.Fatal("expected command result")
+	}
+
+	reloaded, err := plugin.LoadAll(cwd)
+	if err != nil {
+		t.Fatalf("LoadAll after disable: %v", err)
+	}
+	found := false
+	for _, loaded := range reloaded.Plugins() {
+		if loaded.Manifest.ID == "docs" {
+			found = true
+			if loaded.State.Enabled {
+				t.Fatal("expected docs plugin to be disabled")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected docs plugin to still exist after disable")
+	}
+}
+
+func TestCmdPluginsTrustWritesStateAndReloadsCatalog(t *testing.T) {
+	cwd := t.TempDir()
+	home := filepath.Join(cwd, "home")
+	t.Setenv("HOME", home)
+
+	pluginRoot := filepath.Join(cwd, ".codebot", "plugins", "ops")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "plugin.json"), []byte(`{"id":"ops","name":"Ops","version":"0.1.0","skillsDir":"./skills"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, err := plugin.LoadAll(cwd)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	app := &App{Cwd: cwd, PluginCatalog: catalog}
+
+	if msg := app.cmdPlugins([]string{"trust", "ops", "untrusted"})(); msg == nil {
+		t.Fatal("expected command result")
+	}
+
+	reloaded, err := plugin.LoadAll(cwd)
+	if err != nil {
+		t.Fatalf("LoadAll after trust: %v", err)
+	}
+	found := false
+	for _, loaded := range reloaded.Plugins() {
+		if loaded.Manifest.ID == "ops" {
+			found = true
+			if loaded.State.Trust != plugin.TrustUntrusted {
+				t.Fatalf("expected ops plugin trust to be untrusted, got %q", loaded.State.Trust)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected ops plugin to still exist after trust change")
+	}
+}
+
+func TestCmdPluginsShowRejectsUnknownPlugin(t *testing.T) {
+	t.Parallel()
+
+	app := &App{
+		PluginCatalog: &plugin.Catalog{},
+	}
+	if msg := app.cmdPlugins([]string{"show", "missing"})(); msg == nil {
+		t.Fatal("expected command result")
+	}
+}
+
+func TestCmdPluginsCreateScaffoldsProjectPlugin(t *testing.T) {
+	cwd := t.TempDir()
+	app := &App{Cwd: cwd, PluginCatalog: &plugin.Catalog{}}
+
+	msg := app.cmdPlugins([]string{"create", "review-helper"})()
+	if msg == nil {
+		t.Fatal("expected command result")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".codebot", "plugins", "review-helper", "plugin.json")); err != nil {
+		t.Fatalf("plugin manifest missing: %v", err)
+	}
+}
+
+func TestCmdPluginsCreateRejectsBadScope(t *testing.T) {
+	t.Parallel()
+
+	app := &App{Cwd: t.TempDir(), PluginCatalog: &plugin.Catalog{}}
+	if msg := app.cmdPlugins([]string{"create", "review-helper", "team"})(); msg == nil {
+		t.Fatal("expected command result")
+	}
+}
+
+func TestCmdPluginsValidatePath(t *testing.T) {
+	cwd := t.TempDir()
+	root := filepath.Join(cwd, "review-assistant")
+	if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plugin.json"), []byte(`{"id":"review-assistant","name":"Review Assistant","version":"0.1.0","skillsDir":"./skills"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "skills", "review.md"), []byte("---\ndescription: review\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{Cwd: cwd, PluginCatalog: &plugin.Catalog{}}
+	if msg := app.cmdPlugins([]string{"validate", root})(); msg == nil {
+		t.Fatal("expected command result")
+	}
+}
+
+func TestCmdPluginsInstallCopiesPluginIntoProjectScope(t *testing.T) {
+	cwd := t.TempDir()
+	src := filepath.Join(cwd, "external-plugin")
+	if err := os.MkdirAll(filepath.Join(src, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "plugin.json"), []byte(`{"id":"ops-kit","name":"Ops Kit","version":"0.1.0","skillsDir":"./skills"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{Cwd: cwd, PluginCatalog: &plugin.Catalog{}}
+	if msg := app.cmdPlugins([]string{"install", src})(); msg == nil {
+		t.Fatal("expected command result")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".codebot", "plugins", "ops-kit", "plugin.json")); err != nil {
+		t.Fatalf("installed plugin manifest missing: %v", err)
+	}
+}
+
+func TestCmdPluginsRemoveDeletesPlugin(t *testing.T) {
+	cwd := t.TempDir()
+	home := filepath.Join(cwd, "home")
+	t.Setenv("HOME", home)
+
+	pluginRoot := filepath.Join(cwd, ".codebot", "plugins", "docs")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "plugin.json"), []byte(`{"id":"docs","name":"Docs","version":"0.1.0","skillsDir":"./skills"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := plugin.LoadAll(cwd)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	app := &App{Cwd: cwd, PluginCatalog: catalog}
+
+	if msg := app.cmdPlugins([]string{"remove", "docs"})(); msg == nil {
+		t.Fatal("expected command result")
+	}
+	if _, err := os.Stat(pluginRoot); !os.IsNotExist(err) {
+		t.Fatalf("expected plugin dir removed, got err=%v", err)
+	}
+}
+
+func TestCmdPluginsListSubcommand(t *testing.T) {
+	t.Parallel()
+
+	app := &App{
+		PluginCatalog: &plugin.Catalog{},
+	}
+	if msg := app.cmdPlugins([]string{"list"})(); msg == nil {
+		t.Fatal("expected command result")
 	}
 }
 

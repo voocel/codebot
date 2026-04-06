@@ -11,7 +11,8 @@ import (
 func TestBundledSpecsIncludedInCatalog(t *testing.T) {
 	t.Parallel()
 
-	catalog := NewCatalog(t.TempDir())
+	cwd := t.TempDir()
+	catalog := NewCatalog(cwd, BundledSpecs(cwd))
 	spec, ok := catalog.Get("review")
 	if !ok {
 		t.Fatal("expected bundled review skill to be present")
@@ -27,7 +28,8 @@ func TestBundledSpecsIncludedInCatalog(t *testing.T) {
 func TestBundledSkillPromptExpansion(t *testing.T) {
 	t.Parallel()
 
-	catalog := NewCatalog(t.TempDir())
+	cwd := t.TempDir()
+	catalog := NewCatalog(cwd, BundledSpecs(cwd))
 	result, err := ProcessInvocation(context.Background(), catalog, InvokeInput{
 		Name:      "debug",
 		Args:      "failing test",
@@ -45,7 +47,7 @@ func TestBundledSkillPromptExpansion(t *testing.T) {
 	}
 }
 
-func TestProjectSkillOverridesBundledSkill(t *testing.T) {
+func TestExtraDirSkillOverridesBundledSkill(t *testing.T) {
 	t.Parallel()
 
 	cwd := t.TempDir()
@@ -59,7 +61,7 @@ func TestProjectSkillOverridesBundledSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	catalog := NewCatalog(cwd)
+	catalog := NewCatalog(cwd, BundledSpecs(cwd), DirSource{Path: skillsDir, Source: "project"})
 	spec, ok := catalog.Get("review")
 	if !ok {
 		t.Fatal("expected review skill")

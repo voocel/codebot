@@ -1,15 +1,14 @@
 package hooks
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 )
@@ -24,6 +23,11 @@ const (
 	PostStopValidation EventType = "PostStopValidation"
 	TaskCreated        EventType = "TaskCreated"
 	TaskCompleted      EventType = "TaskCompleted"
+	SessionStart       EventType = "SessionStart"
+	SessionEnd         EventType = "SessionEnd"
+	PreCompact         EventType = "PreCompact"
+	PostCompact        EventType = "PostCompact"
+	UserPromptSubmit   EventType = "UserPromptSubmit"
 )
 
 const defaultTimeout = 60 * time.Second
@@ -40,6 +44,10 @@ type Payload struct {
 	PreviousTask *TaskSnapshot   `json:"previous_task,omitempty"`
 	StatusFrom   string          `json:"status_from,omitempty"`
 	StatusTo     string          `json:"status_to,omitempty"`
+	Prompt       string          `json:"prompt,omitempty"`        // UserPromptSubmit
+	Reason       string          `json:"reason,omitempty"`        // Pre/PostCompact
+	TokensBefore int             `json:"tokens_before,omitempty"` // Pre/PostCompact
+	TokensAfter  int             `json:"tokens_after,omitempty"`  // PostCompact
 }
 
 // TaskSnapshot is the task payload exposed to lifecycle hooks.
@@ -63,10 +71,12 @@ type Result struct {
 
 // entry is a compiled, ready-to-run hook.
 type entry struct {
-	command  string
-	matcher  matcher
-	blocking bool
-	timeout  time.Duration
+	exec      executor
+	label     string // human-readable identifier for logging
+	matcher   matcher
+	argFilter matcher // if-condition: matches against tool args JSON; nil = no filter
+	blocking  bool
+	timeout   time.Duration
 }
 
 // Runner manages and executes hooks.
@@ -74,29 +84,26 @@ type Runner struct {
 	hooks     map[EventType][]entry
 	sessionID string
 	approval  *approval.Engine
-	dynamic   func() config.HooksConfig
+	model     agentcore.ChatModel // for prompt hooks; may be nil
 }
 
 // New parses a HooksConfig and returns a Runner.
 // Returns nil if no valid hooks are found.
-func New(cfg config.HooksConfig, sessionID string, engine *approval.Engine) *Runner {
+// The model parameter is used for prompt-type hooks and may be nil.
+func New(cfg config.HooksConfig, sessionID string, engine *approval.Engine, model agentcore.ChatModel) *Runner {
 	hooks := compileConfig(cfg)
 
 	if len(hooks) == 0 {
 		return nil
 	}
-	return &Runner{hooks: hooks, sessionID: sessionID, approval: engine}
-}
-
-func (r *Runner) SetDynamicProvider(fn func() config.HooksConfig) {
-	r.dynamic = fn
+	return &Runner{hooks: hooks, sessionID: sessionID, approval: engine, model: model}
 }
 
 // RunPreToolUse executes all matching PreToolUse hooks.
 // A blocking hook that exits non-zero or returns {"blocked":true} returns an error.
 func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, args json.RawMessage) error {
 	payload := Payload{Event: PreToolUse, Tool: toolName, Args: args}
-	for _, e := range r.matching(PreToolUse, toolName) {
+	for _, e := range r.matching(PreToolUse, toolName, args) {
 		stdout, err := r.run(ctx, e, payload)
 		if e.blocking {
 			if err != nil {
@@ -122,7 +129,7 @@ func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, args json.R
 			}
 		}
 		if err != nil {
-			log.Printf("hooks: PreToolUse %q: %v", e.command, err)
+			log.Printf("hooks: PreToolUse %q: %v", e.label, err)
 		}
 	}
 	return nil
@@ -132,12 +139,12 @@ func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, args json.R
 // Uses a detached context so hooks survive parent cancellation.
 func (r *Runner) RunPostToolUse(_ context.Context, toolName string, args, output json.RawMessage, isError bool) {
 	payload := Payload{Event: PostToolUse, Tool: toolName, Args: args, Output: output, IsError: isError}
-	for _, e := range r.matching(PostToolUse, toolName) {
+	for _, e := range r.matching(PostToolUse, toolName, args) {
 		go func(e entry) {
 			ctx, cancel := detachedHookContext(e.timeout)
 			defer cancel()
 			if _, err := r.run(ctx, e, payload); err != nil {
-				log.Printf("hooks: PostToolUse %q: %v", e.command, err)
+				log.Printf("hooks: PostToolUse %q: %v", e.label, err)
 			}
 		}(e)
 	}
@@ -152,7 +159,7 @@ func (r *Runner) RunNotification(_ context.Context, message string) {
 			ctx, cancel := detachedHookContext(e.timeout)
 			defer cancel()
 			if _, err := r.run(ctx, e, payload); err != nil {
-				log.Printf("hooks: Notification %q: %v", e.command, err)
+				log.Printf("hooks: Notification %q: %v", e.label, err)
 			}
 		}(e)
 	}
@@ -198,19 +205,94 @@ func (r *Runner) RunTaskCompleted(ctx context.Context, previous, current TaskSna
 	})
 }
 
-// matching returns entries for the given event that match the tool name.
-func (r *Runner) matching(event EventType, toolName string) []entry {
-	var result []entry
-	for _, e := range r.hooks[event] {
-		if e.matcher.Match(toolName) {
-			result = append(result, e)
+// RunSessionStart fires SessionStart hooks asynchronously.
+func (r *Runner) RunSessionStart(ctx context.Context) {
+	r.fireAsync(SessionStart, Payload{Event: SessionStart})
+}
+
+// RunSessionEnd fires SessionEnd hooks asynchronously.
+func (r *Runner) RunSessionEnd(ctx context.Context) {
+	r.fireAsync(SessionEnd, Payload{Event: SessionEnd})
+}
+
+// RunPreCompact fires PreCompact hooks asynchronously.
+func (r *Runner) RunPreCompact(ctx context.Context, reason string, tokensBefore int) {
+	r.fireAsync(PreCompact, Payload{Event: PreCompact, Reason: reason, TokensBefore: tokensBefore})
+}
+
+// RunPostCompact fires PostCompact hooks asynchronously.
+func (r *Runner) RunPostCompact(ctx context.Context, reason string, tokensBefore, tokensAfter int) {
+	r.fireAsync(PostCompact, Payload{Event: PostCompact, Reason: reason, TokensBefore: tokensBefore, TokensAfter: tokensAfter})
+}
+
+// RunUserPromptSubmit executes UserPromptSubmit hooks synchronously.
+// A blocking hook that returns {"blocked":true} rejects the user's input.
+func (r *Runner) RunUserPromptSubmit(ctx context.Context, prompt string) error {
+	payload := Payload{Event: UserPromptSubmit, Prompt: prompt}
+	for _, e := range r.matching(UserPromptSubmit, "") {
+		stdout, err := r.run(ctx, e, payload)
+		if e.blocking {
+			if err != nil {
+				var res Result
+				if json.Unmarshal(stdout, &res) == nil && res.Blocked {
+					reason := res.Reason
+					if reason == "" {
+						reason = "blocked by hook"
+					}
+					return fmt.Errorf("hook: %s", reason)
+				}
+				return fmt.Errorf("hook: %v", err)
+			}
+			var res Result
+			if json.Unmarshal(stdout, &res) == nil && res.Blocked {
+				reason := res.Reason
+				if reason == "" {
+					reason = "blocked by hook"
+				}
+				return fmt.Errorf("hook: %s", reason)
+			}
+		}
+		if err != nil {
+			log.Printf("hooks: UserPromptSubmit %q: %v", e.label, err)
 		}
 	}
-	if r.dynamic != nil {
-		for _, e := range compileConfig(r.dynamic())[event] {
-			if e.matcher.Match(toolName) {
-				result = append(result, e)
+	return nil
+}
+
+// fireAsync runs all matching hooks for the event in background goroutines.
+func (r *Runner) fireAsync(event EventType, payload Payload) {
+	for _, e := range r.matching(event, "") {
+		go func(e entry) {
+			ctx, cancel := detachedHookContext(e.timeout)
+			defer cancel()
+			if _, err := r.run(ctx, e, payload); err != nil {
+				log.Printf("hooks: %s %q: %v", event, e.label, err)
 			}
+		}(e)
+	}
+}
+
+// matching returns entries for the given event that match the tool name
+// and optionally the tool arguments (if an argFilter is configured).
+func (r *Runner) matching(event EventType, toolName string, args ...json.RawMessage) []entry {
+	argsStr := ""
+	if len(args) > 0 && len(args[0]) > 0 {
+		argsStr = string(args[0])
+	}
+	match := func(e entry) bool {
+		if !e.matcher.Match(toolName) {
+			return false
+		}
+		if e.argFilter != nil && !e.argFilter.Match(argsStr) {
+			return false
+		}
+		return true
+	}
+
+	var result []entry
+	for _, e := range r.hooks[event] {
+		if match(e) {
+			result = append(result, e)
 		}
 	}
 	return result
@@ -220,17 +302,13 @@ func compileConfig(cfg config.HooksConfig) map[EventType][]entry {
 	hooks := make(map[EventType][]entry)
 	for event, entries := range cfg {
 		et := EventType(event)
-		if et != PreToolUse &&
-			et != PostToolUse &&
-			et != Notification &&
-			et != PostStopValidation &&
-			et != TaskCreated &&
-			et != TaskCompleted {
+		if !isKnownEvent(et) {
 			log.Printf("hooks: unknown event %q, skipped", event)
 			continue
 		}
 		for _, he := range entries {
-			if he.Type != "command" || he.Command == "" {
+			exec, label := buildExecutor(he)
+			if exec == nil {
 				continue
 			}
 			m, err := parseMatcher(he.Matcher)
@@ -238,10 +316,20 @@ func compileConfig(cfg config.HooksConfig) map[EventType][]entry {
 				log.Printf("hooks: bad matcher %q: %v, skipped", he.Matcher, err)
 				continue
 			}
+			var af matcher
+			if he.If != "" {
+				af, err = parseMatcher(he.If)
+				if err != nil {
+					log.Printf("hooks: bad if-condition %q: %v, skipped", he.If, err)
+					continue
+				}
+			}
 			e := entry{
-				command: he.Command,
-				matcher: m,
-				timeout: defaultTimeout,
+				exec:      exec,
+				label:     label,
+				matcher:   m,
+				argFilter: af,
+				timeout:   defaultTimeout,
 			}
 			if he.Blocking != nil {
 				e.blocking = *he.Blocking
@@ -253,6 +341,50 @@ func compileConfig(cfg config.HooksConfig) map[EventType][]entry {
 		}
 	}
 	return hooks
+}
+
+func isKnownEvent(et EventType) bool {
+	switch et {
+	case PreToolUse, PostToolUse, Notification, PostStopValidation,
+		TaskCreated, TaskCompleted,
+		SessionStart, SessionEnd, PreCompact, PostCompact, UserPromptSubmit:
+		return true
+	}
+	return false
+}
+
+func buildExecutor(he config.HookEntry) (executor, string) {
+	switch he.Type {
+	case "command":
+		if he.Command == "" {
+			return nil, ""
+		}
+		return &commandExec{command: he.Command}, he.Command
+	case "prompt":
+		if he.Prompt == "" {
+			return nil, ""
+		}
+		label := "prompt:" + truncate(he.Prompt, 40)
+		return &promptExec{prompt: he.Prompt}, label
+	case "http":
+		if he.URL == "" {
+			return nil, ""
+		}
+		return &httpExec{url: he.URL, headers: he.Headers}, "http:" + he.URL
+	default:
+		if he.Type != "" {
+			log.Printf("hooks: unknown type %q, skipped", he.Type)
+		}
+		return nil, ""
+	}
+}
+
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
 }
 
 func (r *Runner) runLifecycleHooks(ctx context.Context, event EventType, source string, payload Payload) error {
@@ -283,7 +415,7 @@ func (r *Runner) runLifecycleHooks(ctx context.Context, event EventType, source 
 		}
 
 		if err != nil {
-			log.Printf("hooks: %s %q: %v", event, e.command, err)
+			log.Printf("hooks: %s %q: %v", event, e.label, err)
 			continue
 		}
 	}
@@ -295,13 +427,13 @@ func (r *Runner) run(ctx context.Context, e entry, payload Payload) ([]byte, err
 		if err := r.approval.ApproveHook(ctx, approval.HookRequest{
 			Event:    string(payload.Event),
 			Tool:     payload.Tool,
-			Command:  e.command,
+			Command:  e.label,
 			Blocking: e.blocking,
 		}); err != nil {
 			return nil, err
 		}
 	}
-	return r.execCommand(ctx, e, payload)
+	return r.execEntry(ctx, e, payload)
 }
 
 func detachedHookContext(timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -311,30 +443,25 @@ func detachedHookContext(timeout time.Duration) (context.Context, context.Cancel
 	return context.WithTimeout(context.Background(), timeout)
 }
 
-// execCommand runs a hook command with the payload on stdin.
-func (r *Runner) execCommand(ctx context.Context, e entry, payload Payload) ([]byte, error) {
+// execEntry dispatches the hook to its executor with proper context and env.
+func (r *Runner) execEntry(ctx context.Context, e entry, payload Payload) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", e.command)
-	cmd.Env = append(cmd.Environ(),
-		"HOOK_EVENT="+string(payload.Event),
-		"HOOK_TOOL_NAME="+payload.Tool,
-		"HOOK_SESSION_ID="+r.sessionID,
-	)
+	if r.model != nil {
+		ctx = withModel(ctx, r.model)
+	}
 
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal hook payload: %w", err)
 	}
-	cmd.Stdin = bytes.NewReader(data)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("command %q: %w (stderr: %s)", e.command, err, stderr.String())
+	env := []string{
+		"HOOK_EVENT=" + string(payload.Event),
+		"HOOK_TOOL_NAME=" + payload.Tool,
+		"HOOK_SESSION_ID=" + r.sessionID,
 	}
-	return stdout.Bytes(), nil
+
+	return e.exec.execute(ctx, data, env)
 }

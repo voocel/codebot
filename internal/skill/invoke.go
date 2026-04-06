@@ -49,13 +49,11 @@ func ProcessInvocation(ctx context.Context, catalog *Catalog, in InvokeInput) (*
 	}
 
 	allowedTools := append([]string(nil), spec.AllowedTools...)
-	hooks := cloneHooks(spec.Hooks)
 	modelOverride := spec.Model
 	effort := spec.Effort
 	paths := append([]string(nil), spec.Paths...)
 	if !SourceAllowsPrivilegedFields(spec.Source) {
 		allowedTools = nil
-		hooks = nil
 		modelOverride = ""
 		effort = ""
 		paths = nil
@@ -71,7 +69,6 @@ func ProcessInvocation(ctx context.Context, catalog *Catalog, in InvokeInput) (*
 			ModelOverride: modelOverride,
 			Effort:        effort,
 			Paths:         paths,
-			Hooks:         hooks,
 		},
 	}, nil
 }
