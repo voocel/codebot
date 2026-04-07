@@ -536,6 +536,20 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 		}
 	}
 
+	// Handle explicit provider/model format (e.g. "zhipu/glm-5.1").
+	if strings.Contains(pattern, "/") {
+		if prov, model, ok := strings.Cut(pattern, "/"); ok {
+			if err := s.SetModel(prov, model); err != nil {
+				return "", err
+			}
+			s.updateContextFromRegistry(prov, model)
+			if thinkingLevel != "" {
+				s.SetThinkingLevel(thinkingLevel)
+			}
+			return config.FormatModelID(prov, model), nil
+		}
+	}
+
 	// Search across all configured providers' models lists.
 	s.mu.Lock()
 	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))
