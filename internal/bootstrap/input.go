@@ -66,7 +66,7 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 	sessionManager := storage.NewManager(config.SessionsDir(cwd))
 	sessionStore, err := resolveSession(sessionManager, cwd, opts.Continue, opts.Resume, opts.NonTTYMode)
 	if err != nil {
-		return nil, fmt.Errorf("session: %w", err)
+		return nil, apperr.WrapKind(apperr.KindSession, "session setup failed", err)
 	}
 
 	var sessionSnapshot storage.ContextSnapshot
@@ -74,7 +74,7 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 		sessionSnapshot, err = sessionStore.BuildSnapshot()
 		if err != nil {
 			_ = sessionStore.Close()
-			return nil, fmt.Errorf("restore context: %w", err)
+			return nil, apperr.WrapKind(apperr.KindSession, "restore context failed", err)
 		}
 	}
 
@@ -98,7 +98,7 @@ func ensureProviderSetup(cwd string, settings config.Resolved, nonTTY bool) (con
 		if hasConfiguredProviderCredentials(settings, settings.Provider) {
 			return settings, "", nil
 		}
-		return settings, "", apperr.Newf("configuration error: settings.provider=%q is missing or not configured in settings.json", settings.Provider)
+		return settings, "", apperr.NewKindf(apperr.KindConfig, "configuration error: settings.provider=%q is missing or not configured in settings.json", settings.Provider)
 	}
 
 	apiKey, _ := settings.ProviderCredentials(settings.Provider)
@@ -114,12 +114,12 @@ func ensureProviderSetup(cwd string, settings config.Resolved, nonTTY bool) (con
 	}
 
 	if nonTTY {
-		return settings, "", fmt.Errorf("api key not set; set %s or configure providers in %s",
+		return settings, "", apperr.NewKindf(apperr.KindConfig, "api key not set; set %s or configure providers in %s",
 			config.ProviderEnvKey(settings.Provider), filepath.Join(config.UserConfigDir(), "settings.json"))
 	}
 
 	if err := config.RunSetup(settings); err != nil {
-		return settings, "", fmt.Errorf("setup: %w", err)
+		return settings, "", apperr.WrapKind(apperr.KindConfig, "setup failed", err)
 	}
 	resolved, err := config.ResolveAllStrict(cwd)
 	if err != nil {
@@ -160,7 +160,7 @@ func resolveSession(mgr *storage.Manager, cwd string, cont, resume, nonTTY bool)
 			return mgr.Create(cwd)
 		}
 		if nonTTY {
-			return nil, fmt.Errorf("-r requires interactive terminal, use -c or -session in non-interactive mode")
+			return nil, apperr.NewKind(apperr.KindSession, "-r requires interactive terminal, use -c or -session in non-interactive mode")
 		}
 
 		fmt.Fprintf(os.Stderr, "Available sessions:\n")
@@ -177,11 +177,11 @@ func resolveSession(mgr *storage.Manager, cwd string, cont, resume, nonTTY bool)
 		reader := bufio.NewReader(os.Stdin)
 		raw, err := reader.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("read session selection: %w", err)
+			return nil, apperr.WrapKind(apperr.KindSession, "read session selection failed", err)
 		}
 		choice := strings.TrimSpace(raw)
 		if choice == "" {
-			return nil, fmt.Errorf("no session selected")
+			return nil, apperr.NewKind(apperr.KindSession, "no session selected")
 		}
 
 		for _, s := range sessions {
@@ -192,11 +192,11 @@ func resolveSession(mgr *storage.Manager, cwd string, cont, resume, nonTTY bool)
 
 		if idx, convErr := strconv.Atoi(choice); convErr == nil {
 			if idx < 1 || idx > len(sessions) {
-				return nil, fmt.Errorf("invalid session index %d (range: 1-%d)", idx, len(sessions))
+				return nil, apperr.NewKindf(apperr.KindSession, "invalid session index %d (range: 1-%d)", idx, len(sessions))
 			}
 			return mgr.OpenPath(sessions[idx-1].Path)
 		}
-		return nil, fmt.Errorf("invalid session selection %q", choice)
+		return nil, apperr.NewKindf(apperr.KindSession, "invalid session selection %q", choice)
 	default:
 		return mgr.Create(cwd)
 	}

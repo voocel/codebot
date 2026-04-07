@@ -8,11 +8,32 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/apperr"
 )
+
+// RunPrint executes non-interactive print/json mode.
+func RunPrint(sess *agent.Session, args []string, jsonMode bool) error {
+	prompt := strings.Join(args, " ")
+	if prompt == "" {
+		stdinPrompt, err := ReadStdinPrompt()
+		if err != nil {
+			return apperr.WrapKind(apperr.KindToolInput, "stdin error", err)
+		}
+		prompt = strings.TrimSpace(stdinPrompt)
+	}
+	if prompt == "" {
+		return apperr.NewKind(apperr.KindToolInput, "print mode requires a prompt (argument or stdin pipe)")
+	}
+	if err := RunPrintMode(sess, prompt, jsonMode); err != nil {
+		return fmt.Errorf("print mode: %w", err)
+	}
+	return nil
+}
 
 // RunPrintMode runs the agent in non-interactive mode.
 // stdout receives assistant text (pipe-friendly), stderr receives tool/status info.

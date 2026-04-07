@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
@@ -112,7 +113,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 				select {
 				case resp, ok := <-respCh:
 					if !ok || resp == nil {
-						return nil, fmt.Errorf("user cancelled")
+						return nil, apperr.NewKind(apperr.KindCanceled, "user cancelled")
 					}
 					return resp, nil
 				case <-ctx.Done():

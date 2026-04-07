@@ -12,6 +12,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/plugin"
@@ -691,6 +692,54 @@ func TestFormatRecentToolCalls(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"15:04:06", "grep", "error", "def67890"} {
+		if !strings.Contains(lines[1], want) {
+			t.Fatalf("expected %q in %q", want, lines[1])
+		}
+	}
+}
+
+func TestFormatErrorCounts(t *testing.T) {
+	t.Parallel()
+
+	text := formatErrorCounts(map[apperr.Kind]int{
+		apperr.KindCanceled: 2,
+		apperr.KindProvider: 1,
+		apperr.KindUnknown:  3,
+	})
+
+	for _, want := range []string{"canceled=2", "provider=1", "unknown=3"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+}
+
+func TestFormatRecentErrors(t *testing.T) {
+	t.Parallel()
+
+	lines := formatRecentErrors([]agent.ErrorSnapshot{
+		{
+			Kind:      apperr.KindProvider,
+			Message:   "provider unavailable",
+			Detail:    "dial tcp timeout",
+			Timestamp: time.Date(2026, 3, 27, 15, 4, 5, 0, time.Local),
+		},
+		{
+			Kind:      apperr.KindUnknown,
+			Message:   "plain failure",
+			Timestamp: time.Date(2026, 3, 27, 15, 4, 6, 0, time.Local),
+		},
+	})
+
+	if len(lines) != 2 {
+		t.Fatalf("expected two lines, got %d", len(lines))
+	}
+	for _, want := range []string{"15:04:05", "provider", "provider unavailable", "dial tcp timeout"} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("expected %q in %q", want, lines[0])
+		}
+	}
+	for _, want := range []string{"15:04:06", "unknown", "plain failure"} {
 		if !strings.Contains(lines[1], want) {
 			t.Fatalf("expected %q in %q", want, lines[1])
 		}

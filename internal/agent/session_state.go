@@ -93,6 +93,15 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 }
 
 func (s *Session) emit(ev SessionEvent) {
+	switch ev.Type {
+	case SEError:
+		s.recordErrorDiagnostic(ev.Error)
+	case SEAgentEvent:
+		if ev.AgentEvent != nil && ev.AgentEvent.Type == agentcore.EventError {
+			s.recordErrorDiagnostic(ev.AgentEvent.Err)
+		}
+	}
+
 	s.mu.Lock()
 	listeners := make([]func(SessionEvent), len(s.listeners))
 	copy(listeners, s.listeners)

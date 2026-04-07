@@ -1,6 +1,18 @@
 package agent
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"github.com/voocel/codebot/internal/apperr"
+)
+
+type ErrorSnapshot struct {
+	Kind      apperr.Kind
+	Message   string
+	Detail    string
+	Timestamp time.Time
+}
 
 type RuntimeMetricsSnapshot struct {
 	ReminderTotal         int
@@ -10,6 +22,8 @@ type RuntimeMetricsSnapshot struct {
 	CompactionSaved       int
 	CompactionByKind      map[CompactionKind]int
 	CompactionSavedByKind map[CompactionKind]int
+	ErrorTotal            int
+	ErrorByKind           map[apperr.Kind]int
 }
 
 type runtimeMetrics struct {
@@ -20,6 +34,8 @@ type runtimeMetrics struct {
 	compactionSaved       int
 	compactionByKind      map[CompactionKind]int
 	compactionSavedByKind map[CompactionKind]int
+	errorTotal            int
+	errorByKind           map[apperr.Kind]int
 }
 
 func newRuntimeMetrics() *runtimeMetrics {
@@ -27,6 +43,7 @@ func newRuntimeMetrics() *runtimeMetrics {
 		reminderByKind:        make(map[RuntimeReminderKind]int),
 		compactionByKind:      make(map[CompactionKind]int),
 		compactionSavedByKind: make(map[CompactionKind]int),
+		errorByKind:           make(map[apperr.Kind]int),
 	}
 }
 
@@ -46,6 +63,10 @@ func (s *Session) RuntimeMetrics() RuntimeMetricsSnapshot {
 	for k, v := range s.metrics.compactionSavedByKind {
 		compactionSavedByKind[k] = v
 	}
+	errorByKind := make(map[apperr.Kind]int, len(s.metrics.errorByKind))
+	for k, v := range s.metrics.errorByKind {
+		errorByKind[k] = v
+	}
 	return RuntimeMetricsSnapshot{
 		ReminderTotal:         s.metrics.reminderTotal,
 		ReminderByKind:        reminderByKind,
@@ -54,6 +75,8 @@ func (s *Session) RuntimeMetrics() RuntimeMetricsSnapshot {
 		CompactionSaved:       s.metrics.compactionSaved,
 		CompactionByKind:      compactionByKind,
 		CompactionSavedByKind: compactionSavedByKind,
+		ErrorTotal:            s.metrics.errorTotal,
+		ErrorByKind:           errorByKind,
 	}
 }
 
@@ -118,4 +141,58 @@ func (s *Session) recordCompactionSnapshot(kind CompactionKind, strategy, reason
 		SplitTurn:      splitTurn,
 		Timestamp:      time.Now(),
 	}
+}
+
+func (s *Session) recordErrorDiagnostic(err error) {
+	if err == nil {
+		return
+	}
+
+	snapshot := buildErrorSnapshot(err)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.metrics == nil {
+		s.metrics = newRuntimeMetrics()
+	}
+	s.metrics.errorTotal++
+	s.metrics.errorByKind[snapshot.Kind]++
+
+	s.recentErrors = append(s.recentErrors, snapshot)
+	if len(s.recentErrors) > maxRecentErrors {
+		s.recentErrors = append([]ErrorSnapshot(nil), s.recentErrors[len(s.recentErrors)-maxRecentErrors:]...)
+	}
+}
+
+func buildErrorSnapshot(err error) ErrorSnapshot {
+	message := strings.TrimSpace(apperr.Format(err, ""))
+	if message == "" {
+		message = "error"
+	}
+	detail := strings.TrimSpace(err.Error())
+	if detail == message {
+		detail = ""
+	} else if strings.HasPrefix(detail, message+": ") {
+		detail = strings.TrimSpace(strings.TrimPrefix(detail, message+": "))
+	}
+	return ErrorSnapshot{
+		Kind:      apperr.KindOf(err),
+		Message:   message,
+		Detail:    detail,
+		Timestamp: time.Now(),
+	}
+}
+
+func (s *Session) RecentErrors(limit int) []ErrorSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if limit <= 0 || limit > len(s.recentErrors) {
+		limit = len(s.recentErrors)
+	}
+	start := len(s.recentErrors) - limit
+	snapshots := make([]ErrorSnapshot, limit)
+	copy(snapshots, s.recentErrors[start:])
+	return snapshots
 }

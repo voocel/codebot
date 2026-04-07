@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/voocel/agentcore/schema"
+	"github.com/voocel/codebot/internal/apperr"
 )
 
 // AskUserResponse carries answers and optional user notes.
@@ -84,7 +85,7 @@ type askUserArgs struct {
 func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a askUserArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
+		return nil, apperr.WrapKind(apperr.KindToolInput, "invalid args", err)
 	}
 
 	if err := validateQuestions(a.Questions); err != nil {

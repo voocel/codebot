@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore/schema"
+	"github.com/voocel/codebot/internal/apperr"
 )
 
 // SearchResult represents a single web search result.
@@ -75,10 +76,10 @@ type webSearchArgs struct {
 func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a webSearchArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
+		return nil, apperr.WrapKind(apperr.KindToolInput, "invalid args", err)
 	}
 	if a.Query == "" {
-		return nil, fmt.Errorf("query is required")
+		return nil, apperr.NewKind(apperr.KindToolInput, "query is required")
 	}
 	if t.provider == nil {
 		if t.providerName != "" {
@@ -97,7 +98,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (json
 
 	results, err := t.provider.Search(ctx, a.Query, maxResults)
 	if err != nil {
-		return nil, fmt.Errorf("search failed: %w", err)
+		return nil, apperr.WrapKind(apperr.KindToolExec, "search failed", err)
 	}
 	if len(results) == 0 {
 		return json.Marshal([]SearchResult{})

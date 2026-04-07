@@ -47,12 +47,12 @@ func ResolveProviderType(name, explicitType string) (string, error) {
 		if provider.IsSupportedType(provType) {
 			return provType, nil
 		}
-		return "", apperr.Newf("configuration error: providers.%s.type=%q is unsupported", name, explicitType)
+		return "", apperr.NewKindf(apperr.KindConfig, "configuration error: providers.%s.type=%q is unsupported", name, explicitType)
 	}
 	if t, ok := KnownProviderTypes[name]; ok {
 		return t, nil
 	}
-	return "", apperr.Newf("configuration error: providers.%s.type is required for custom providers", name)
+	return "", apperr.NewKindf(apperr.KindConfig, "configuration error: providers.%s.type is required for custom providers", name)
 }
 
 // ResolveConfiguredProviderType resolves the protocol type for a configured provider.
@@ -502,7 +502,7 @@ func loadSettingsFileStrict(path string) (Settings, error) {
 		return s, err
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
-		return s, apperr.Wrap("configuration error: malformed settings.json", fmt.Errorf("%s: %w", path, err))
+		return s, apperr.WrapKind(apperr.KindConfig, "configuration error: malformed settings.json", fmt.Errorf("%s: %w", path, err))
 	}
 	return s, nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentcoretools "github.com/voocel/agentcore/tools"
+	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
@@ -84,7 +85,7 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	}
 	chatModel, err := input.modelFactory(provType, activeModel, activeAPIKey, activeBaseURL)
 	if err != nil {
-		return config.Resolved{}, "", nil, fmt.Errorf("create model: %w", err)
+		return config.Resolved{}, "", nil, apperr.WrapKind(apperr.KindProvider, "create model failed", err)
 	}
 
 	settings := input.settings

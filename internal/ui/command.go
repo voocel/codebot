@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
@@ -44,22 +45,25 @@ func (a *App) handleCommand(input string) tea.Cmd {
 func validateCommand(ctx context.Context, engine *approval.Engine, spec CommandSpec, isRunning bool) error {
 	if engine == nil {
 		if spec.NeedsIdle && isRunning {
-			return fmt.Errorf("command requires idle agent; press Esc to abort current run")
+			return apperr.NewKind(apperr.KindPermission, "command requires idle agent; press Esc to abort current run")
 		}
 		return nil
 	}
-	return engine.ApproveCommand(ctx, approval.CommandRequest{
+	if err := engine.ApproveCommand(ctx, approval.CommandRequest{
 		Name:      spec.Name,
 		Category:  approval.NormalizeCommandCategory(spec.Category),
 		NeedsIdle: spec.NeedsIdle,
 		IsRunning: isRunning,
 		Summary:   "/" + spec.Name,
-	})
+	}); err != nil {
+		return apperr.WrapKind(apperr.KindPermission, err.Error(), err)
+	}
+	return nil
 }
 
 func validatePluginMutation(isRunning bool) error {
 	if isRunning {
-		return fmt.Errorf("agent is running; press Esc to abort first")
+		return apperr.NewKind(apperr.KindPermission, "agent is running; press Esc to abort first")
 	}
 	return nil
 }
@@ -896,6 +900,7 @@ func (a *App) cmdDebugHarness() tea.Cmd {
 	lastTurn := a.Session.LastTurnOutcome()
 	lastRunSummary, hasRunSummary := a.Session.LastRunSummary()
 	recentTools := a.Session.RecentToolCalls(5)
+	recentErrors := a.Session.RecentErrors(5)
 	lastReminder, hasReminder := a.Session.LastReminder()
 	lastCompaction, hasCompaction := a.Session.LastCompaction()
 	contextUsage := a.Session.ContextUsage()
@@ -960,6 +965,7 @@ func (a *App) cmdDebugHarness() tea.Cmd {
 
 	renderSection("Recent activity", "Recent runtime events inside the current loaded session.")
 	renderBlock("Recent tool calls", formatRecentToolCalls(recentTools))
+	renderBlock("Recent errors", formatRecentErrors(recentErrors))
 	renderMetaRow("Last reminder", formatLastReminder(lastReminder, hasReminder))
 	renderMetaRow("Last compaction", formatLastCompaction(lastCompaction, hasCompaction))
 
@@ -971,6 +977,8 @@ func (a *App) cmdDebugHarness() tea.Cmd {
 	renderRow("Compaction saved", tui.FormatTokens(metrics.CompactionSaved))
 	renderMetaRow("Compaction kinds", formatCompactionCounts(metrics.CompactionByKind))
 	renderMetaRow("Saved by compaction", formatCompactionSavings(metrics.CompactionSavedByKind))
+	renderRow("Errors total", fmt.Sprintf("%d", metrics.ErrorTotal))
+	renderMetaRow("Error kinds", formatErrorCounts(metrics.ErrorByKind))
 
 	if contextUsage != nil {
 		renderSection("Current context", "Live context window usage for the current agent state.")
@@ -1226,6 +1234,33 @@ func formatCompactionSavings(savings map[agent.CompactionKind]int) string {
 	return strings.Join(parts, ", ")
 }
 
+func formatErrorCounts(counts map[apperr.Kind]int) string {
+	order := []apperr.Kind{
+		apperr.KindCanceled,
+		apperr.KindConfig,
+		apperr.KindPermission,
+		apperr.KindProvider,
+		apperr.KindSession,
+		apperr.KindToolInput,
+		apperr.KindToolExec,
+		apperr.KindUnknown,
+	}
+	parts := make([]string, 0, len(counts))
+	for _, kind := range order {
+		if count := counts[kind]; count > 0 {
+			label := string(kind)
+			if kind == apperr.KindUnknown {
+				label = "unknown"
+			}
+			parts = append(parts, fmt.Sprintf("%s=%d", label, count))
+		}
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, ", ")
+}
+
 func formatRecentToolCalls(calls []agent.ToolCallSnapshot) []string {
 	if len(calls) == 0 {
 		return nil
@@ -1247,6 +1282,30 @@ func formatRecentToolCalls(calls []agent.ToolCallSnapshot) []string {
 			status,
 			argsHash,
 		))
+	}
+	return lines
+}
+
+func formatRecentErrors(errors []agent.ErrorSnapshot) []string {
+	if len(errors) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(errors))
+	for _, snapshot := range errors {
+		kind := string(snapshot.Kind)
+		if snapshot.Kind == apperr.KindUnknown {
+			kind = "unknown"
+		}
+		line := fmt.Sprintf("%s  %-12s %s",
+			snapshot.Timestamp.Format("15:04:05"),
+			kind,
+			snapshot.Message,
+		)
+		if snapshot.Detail != "" {
+			line += " | " + snapshot.Detail
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }

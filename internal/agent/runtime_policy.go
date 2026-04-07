@@ -15,6 +15,7 @@ import (
 
 const (
 	maxRecentToolCalls        = 8
+	maxRecentErrors           = 10
 	repeatedToolCallThreshold = 4
 )
 

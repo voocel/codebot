@@ -115,6 +115,7 @@ type Session struct {
 	lastRunSummary          *agentcore.RunSummary
 	lastReminder            *ReminderSnapshot
 	lastCompaction          *CompactionSnapshot
+	recentErrors            []ErrorSnapshot
 	dirtySeq                uint64 // incremented each time a repo-mutating tool succeeds; hook goroutine captures this and only clears if unchanged
 	generation              uint64 // incremented on session switch; async goroutines check this to avoid cross-session callbacks
 
@@ -235,6 +236,7 @@ func (s *Session) resetHarnessStateLocked() {
 	s.lastRunSummary = nil
 	s.lastReminder = nil
 	s.lastCompaction = nil
+	s.recentErrors = nil
 	s.dirtySeq = 0
 	s.metrics = newRuntimeMetrics()
 	s.skillRuntime = skillRuntimeState{}

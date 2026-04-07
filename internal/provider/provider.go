@@ -1,12 +1,12 @@
 package provider
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/codebot/internal/apperr"
 )
 
 var supportedTypeNames = []string{"openai", "anthropic", "gemini", "openrouter"}
@@ -65,7 +65,7 @@ func CreateModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error
 func newProviderModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
 	factory, ok := modelFactories[prov]
 	if !ok {
-		return nil, fmt.Errorf("unsupported provider type %q", prov)
+		return nil, apperr.NewKindf(apperr.KindProvider, "unsupported provider type %q", prov)
 	}
 	return factory(name, apiKey, baseURL)
 }
