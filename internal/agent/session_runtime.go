@@ -536,7 +536,7 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 		}
 	}
 
-	// Search across all configured providers' models lists.
+	// Snapshot configured providers.
 	s.mu.Lock()
 	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))
 	for k, v := range s.providers {
@@ -544,6 +544,24 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 	}
 	s.mu.Unlock()
 
+	// Explicit provider/model (e.g. "anthropic/claude-sonnet-4-5").
+	// Only split when the left side is a configured provider key so that
+	// model IDs containing slashes (e.g. OpenRouter's "openai/gpt-5") fall
+	// through to the search below.
+	if prov, model, ok := strings.Cut(pattern, "/"); ok {
+		if _, ok := provSnapshot[prov]; ok {
+			if err := s.SetModel(prov, model); err != nil {
+				return "", err
+			}
+			s.updateContextFromRegistry(prov, model)
+			if thinkingLevel != "" {
+				s.SetThinkingLevel(thinkingLevel)
+			}
+			return config.FormatModelID(prov, model), nil
+		}
+	}
+
+	// Search across all configured providers' models lists.
 	type match struct {
 		provider string
 		model    string
