@@ -33,9 +33,11 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 	if deps.SmallModel != "" && deps.CreateModel != nil {
 		prov := deps.Provider
 		apiKey, baseURL := resolveFromProviders(deps.Providers, prov)
-		provType := resolveProviderType(deps.Providers, prov)
-		if m, err := deps.CreateModel(provType, deps.SmallModel, apiKey, baseURL); err == nil {
-			exploreModel = m
+		provType, err := resolveProviderType(deps.Providers, prov)
+		if err == nil {
+			if m, err := deps.CreateModel(provType, deps.SmallModel, apiKey, baseURL); err == nil {
+				exploreModel = m
+			}
 		}
 	}
 
@@ -100,7 +102,10 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 				}
 			}
 			apiKey, baseURL := resolveFromProviders(providers, prov)
-			provType := resolveProviderType(providers, prov)
+			provType, err := resolveProviderType(providers, prov)
+			if err != nil {
+				return nil, err
+			}
 			return factory(provType, name, apiKey, baseURL)
 		})
 	}
@@ -137,14 +142,8 @@ func resolveFromProviders(providers map[string]config.ProviderConfig, prov strin
 }
 
 // resolveProviderType returns the protocol type for a provider key.
-func resolveProviderType(providers map[string]config.ProviderConfig, prov string) string {
-	if pc, ok := providers[prov]; ok {
-		return pc.ProviderType(prov)
-	}
-	if t, ok := config.KnownProviderTypes[prov]; ok {
-		return t
-	}
-	return "openai"
+func resolveProviderType(providers map[string]config.ProviderConfig, prov string) (string, error) {
+	return config.ResolveConfiguredProviderType(providers, prov)
 }
 
 // readOnlyTools constructs a read-only tool set for explore/plan sub-agents.

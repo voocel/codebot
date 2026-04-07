@@ -103,3 +103,32 @@ func TestResolveInputEnvProviderDoesNotCreateSettingsFile(t *testing.T) {
 		t.Fatalf("project settings file should not be created, stat err = %v", err)
 	}
 }
+
+func TestBootCustomProviderRequiresExplicitType(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, ".codebot"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := `{
+  "provider": "myproxy",
+  "model": "gpt-4o-mini",
+  "providers": {
+    "myproxy": {
+      "api_key": "test-key"
+    }
+  }
+}`
+	if err := os.WriteFile(filepath.Join(cwd, ".codebot", "settings.json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Boot(Options{Cwd: cwd, NonTTYMode: true})
+	if err == nil {
+		t.Fatal("expected boot error for custom provider without type")
+	}
+	if err.Error() != `configuration error: providers.myproxy.type is required for custom providers` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

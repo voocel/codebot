@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/provider"
 )
 
 // ConfigDir is the project-level config directory name.
@@ -22,24 +25,42 @@ var KnownProviderTypes = map[string]string{
 
 // ProviderConfig holds credentials and model configuration for a single provider.
 type ProviderConfig struct {
-	Type       string   `json:"type,omitempty"` // protocol: openai/anthropic/gemini; inferred from name if empty
+	Type       string   `json:"type,omitempty"` // LiteLLM provider type: openai/anthropic/gemini/openrouter; required for custom providers
 	APIKey     string   `json:"api_key,omitempty"`
 	BaseURL    string   `json:"base_url,omitempty"`
 	Models     []string `json:"models,omitempty"`      // available model list for this provider
 	SmallModel string   `json:"small_model,omitempty"` // lightweight model for sub-agents
 }
 
-// ProviderType returns the protocol type for this provider.
-// Uses explicit Type field first, then infers from the provider name,
-// defaulting to "openai" for unknown providers.
-func (pc ProviderConfig) ProviderType(name string) string {
-	if pc.Type != "" {
-		return pc.Type
+// ProviderType resolves the protocol type for this provider.
+// Built-in providers infer their type from the provider name.
+// Custom providers must declare providers.<name>.type explicitly.
+func (pc ProviderConfig) ProviderType(name string) (string, error) {
+	return ResolveProviderType(name, pc.Type)
+}
+
+// ResolveProviderType resolves a provider's protocol type.
+// The type value maps directly to the underlying LiteLLM provider name.
+func ResolveProviderType(name, explicitType string) (string, error) {
+	provType := strings.ToLower(strings.TrimSpace(explicitType))
+	if provType != "" {
+		if provider.IsSupportedType(provType) {
+			return provType, nil
+		}
+		return "", apperr.Newf("configuration error: providers.%s.type=%q is unsupported", name, explicitType)
 	}
 	if t, ok := KnownProviderTypes[name]; ok {
-		return t
+		return t, nil
 	}
-	return "openai"
+	return "", apperr.Newf("configuration error: providers.%s.type is required for custom providers", name)
+}
+
+// ResolveConfiguredProviderType resolves the protocol type for a configured provider.
+func ResolveConfiguredProviderType(providers map[string]ProviderConfig, name string) (string, error) {
+	if pc, ok := providers[name]; ok {
+		return pc.ProviderType(name)
+	}
+	return ResolveProviderType(name, "")
 }
 
 // HookEntry describes a single hook.
@@ -481,7 +502,7 @@ func loadSettingsFileStrict(path string) (Settings, error) {
 		return s, err
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
-		return s, fmt.Errorf("malformed %s: %w", path, err)
+		return s, apperr.Wrap("configuration error: malformed settings.json", fmt.Errorf("%s: %w", path, err))
 	}
 	return s, nil
 }

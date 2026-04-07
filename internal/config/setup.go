@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/voocel/codebot/internal/provider"
 )
 
 var providerList = []struct {
@@ -52,15 +54,13 @@ func RunSetup(settings Resolved) error {
 		}
 		provDisplayName = provName
 
-		fmt.Print("Protocol type (openai/anthropic/gemini) [openai]: ")
+		fmt.Printf("Protocol type (%s) [openai]: ", strings.Join(provider.SupportedTypeNames(), "/"))
 		provType = strings.ToLower(readLine(reader))
-		switch provType {
-		case "", "openai":
+		switch {
+		case provType == "":
 			provType = "openai"
-		case "anthropic", "gemini":
-			// valid
-		default:
-			return fmt.Errorf("unsupported protocol type %q (allowed: openai, anthropic, gemini)", provType)
+		case !provider.IsSupportedType(provType):
+			return fmt.Errorf("unsupported protocol type %q (allowed: %s)", provType, strings.Join(provider.SupportedTypeNames(), ", "))
 		}
 
 		fmt.Print("Base URL: ")
@@ -74,9 +74,9 @@ func RunSetup(settings Resolved) error {
 	}
 
 	// Auto-resolve default model.
-	resolvedType := provType
-	if resolvedType == "" {
-		resolvedType = ProviderConfig{}.ProviderType(provName)
+	resolvedType, err := ResolveProviderType(provName, provType)
+	if err != nil {
+		return err
 	}
 	model := DefaultModelName(resolvedType)
 

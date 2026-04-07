@@ -78,11 +78,9 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	}
 
 	activeAPIKey, activeBaseURL := input.settings.ProviderCredentials(activeProvider)
-	provType := "openai"
-	if pc, ok := input.settings.Providers[activeProvider]; ok {
-		provType = pc.ProviderType(activeProvider)
-	} else if t, ok := config.KnownProviderTypes[activeProvider]; ok {
-		provType = t
+	provType, err := config.ResolveConfiguredProviderType(input.settings.Providers, activeProvider)
+	if err != nil {
+		return config.Resolved{}, "", nil, err
 	}
 	chatModel, err := input.modelFactory(provType, activeModel, activeAPIKey, activeBaseURL)
 	if err != nil {

@@ -1,11 +1,55 @@
 package provider
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
 )
+
+var supportedTypeNames = []string{"openai", "anthropic", "gemini", "openrouter"}
+
+type modelFactory func(name, apiKey, baseURL string) (agentcore.ChatModel, error)
+
+var modelFactories = map[string]modelFactory{
+	"anthropic": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
+		if baseURL != "" {
+			return llm.NewAnthropicModel(name, apiKey, baseURL)
+		}
+		return llm.NewAnthropicModel(name, apiKey)
+	},
+	"gemini": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
+		if baseURL != "" {
+			return llm.NewGeminiModel(name, apiKey, baseURL)
+		}
+		return llm.NewGeminiModel(name, apiKey)
+	},
+	"openrouter": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
+		if baseURL != "" {
+			return llm.NewOpenRouterModel(name, apiKey, baseURL)
+		}
+		return llm.NewOpenRouterModel(name, apiKey)
+	},
+	"openai": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
+		if baseURL != "" {
+			return llm.NewOpenAIModel(name, apiKey, baseURL)
+		}
+		return llm.NewOpenAIModel(name, apiKey)
+	},
+}
+
+// SupportedTypeNames returns the supported LiteLLM provider type names in stable order.
+func SupportedTypeNames() []string {
+	return slices.Clone(supportedTypeNames)
+}
+
+// IsSupportedType reports whether the given provider type is supported.
+func IsSupportedType(name string) bool {
+	_, ok := modelFactories[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
 
 // CreateModel creates a ChatModel for the given provider, model name, API key, and optional base URL.
 func CreateModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
@@ -19,33 +63,11 @@ func CreateModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error
 }
 
 func newProviderModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-	switch prov {
-	case "anthropic":
-		if baseURL != "" {
-			return llm.NewAnthropicModel(name, apiKey, baseURL)
-		}
-		return llm.NewAnthropicModel(name, apiKey)
-	case "gemini":
-		if baseURL != "" {
-			return llm.NewGeminiModel(name, apiKey, baseURL)
-		}
-		return llm.NewGeminiModel(name, apiKey)
-	case "openrouter":
-		if baseURL != "" {
-			return llm.NewOpenRouterModel(name, apiKey, baseURL)
-		}
-		return llm.NewOpenRouterModel(name, apiKey)
-	case "openai":
-		if baseURL != "" {
-			return llm.NewOpenAIModel(name, apiKey, baseURL)
-		}
-		return llm.NewOpenAIModel(name, apiKey)
-	default:
-		if baseURL != "" {
-			return llm.NewOpenAIModel(name, apiKey, baseURL)
-		}
-		return llm.NewOpenAIModel(name, apiKey)
+	factory, ok := modelFactories[prov]
+	if !ok {
+		return nil, fmt.Errorf("unsupported provider type %q", prov)
 	}
+	return factory(name, apiKey, baseURL)
 }
 
 func applyProviderDefaults(prov, modelName string, model agentcore.ChatModel) {

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/provider"
@@ -97,7 +98,7 @@ func ensureProviderSetup(cwd string, settings config.Resolved, nonTTY bool) (con
 		if hasConfiguredProviderCredentials(settings, settings.Provider) {
 			return settings, "", nil
 		}
-		return settings, "", fmt.Errorf("configuration error: settings.provider=%q is missing or not configured in settings.json", settings.Provider)
+		return settings, "", apperr.Newf("configuration error: settings.provider=%q is missing or not configured in settings.json", settings.Provider)
 	}
 
 	apiKey, _ := settings.ProviderCredentials(settings.Provider)

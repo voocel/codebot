@@ -378,8 +378,12 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 
 	if strings.Contains(pattern, "/") {
 		if prov, model, ok := strings.Cut(pattern, "/"); ok {
+			provType, err := s.providerType(prov)
+			if err != nil {
+				return "", "", nil, err
+			}
 			apiKey, baseURL := s.resolveCredentials(prov)
-			chatModel, err := s.createModel(s.providerType(prov), model, apiKey, baseURL)
+			chatModel, err := s.createModel(provType, model, apiKey, baseURL)
 			if err == nil {
 				return prov, model, chatModel, nil
 			}
@@ -401,12 +405,20 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 	switch len(matches) {
 	case 1:
 		m := matches[0]
+		provType, err := s.providerType(m.provider)
+		if err != nil {
+			return "", "", nil, err
+		}
 		apiKey, baseURL := s.resolveCredentials(m.provider)
-		chatModel, err := s.createModel(s.providerType(m.provider), m.model, apiKey, baseURL)
+		chatModel, err := s.createModel(provType, m.model, apiKey, baseURL)
 		return m.provider, m.model, chatModel, err
 	case 0:
+		provType, err := s.providerType(curProv)
+		if err != nil {
+			return "", "", nil, err
+		}
 		apiKey, baseURL := s.resolveCredentials(curProv)
-		chatModel, err := s.createModel(s.providerType(curProv), pattern, apiKey, baseURL)
+		chatModel, err := s.createModel(provType, pattern, apiKey, baseURL)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -437,7 +449,10 @@ func (s *Session) reclampThinkingTemporary() {
 }
 
 func (s *Session) SetModel(prov, model string) error {
-	provType := s.providerType(prov)
+	provType, err := s.providerType(prov)
+	if err != nil {
+		return err
+	}
 	apiKey, baseURL := s.resolveCredentials(prov)
 	s.mu.Lock()
 	store := s.store
@@ -500,17 +515,14 @@ func (s *Session) SetModel(prov, model string) error {
 }
 
 // providerType returns the protocol type for a provider key.
-func (s *Session) providerType(prov string) string {
+func (s *Session) providerType(prov string) (string, error) {
 	s.mu.Lock()
 	pc, ok := s.providers[prov]
 	s.mu.Unlock()
 	if ok {
 		return pc.ProviderType(prov)
 	}
-	if t, ok := config.KnownProviderTypes[prov]; ok {
-		return t
-	}
-	return "openai"
+	return config.ResolveProviderType(prov, "")
 }
 
 func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
@@ -583,13 +595,20 @@ func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
 		return
 	}
 	// Try provider-qualified lookup using the protocol type.
-	provType := s.providerType(providerKey)
-	entry, _, err := s.registry.Resolve(provType + "/" + modelID)
-	if err != nil {
-		// Fallback to bare model ID for custom providers.
-		entry, _, err = s.registry.Resolve(modelID)
+	provType, err := s.providerType(providerKey)
+	if err == nil {
+		entry, _, err := s.registry.Resolve(provType + "/" + modelID)
+		if err == nil && entry.ContextWindow > 0 {
+			s.agent.SetContextWindow(entry.ContextWindow)
+			s.mu.Lock()
+			s.settings.ContextWindow = entry.ContextWindow
+			s.mu.Unlock()
+			return
+		}
 	}
+	entry, _, err := s.registry.Resolve(modelID)
 	if err != nil || entry.ContextWindow <= 0 {
+		// Fallback to bare model ID for custom providers.
 		return
 	}
 	s.agent.SetContextWindow(entry.ContextWindow)
@@ -756,7 +775,10 @@ func (s *Session) SwitchSession(id string) error {
 
 	var restoredModel agentcore.ChatModel
 	if snapshot.Model != "" || snapshot.Provider != "" {
-		targetType := s.providerType(targetProvider)
+		targetType, err := s.providerType(targetProvider)
+		if err != nil {
+			return err
+		}
 		restoredModel, err = s.createModel(targetType, targetModel, targetKey, targetBase)
 		if err != nil {
 			return fmt.Errorf("restore model %s/%s: %w", targetProvider, targetModel, err)

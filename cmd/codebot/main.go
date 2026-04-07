@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui"
@@ -40,14 +41,14 @@ func main() {
 		ApprovalMode: *modeFlag,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "boot error: %v\n", err)
+		fmt.Fprintln(os.Stderr, formatBootError(err))
 		os.Exit(1)
 	}
 	defer rt.Close()
 
 	if printMode {
 		if err := ui.RunPrint(rt.Session, flag.Args(), *jsonFlag); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			fmt.Fprintln(os.Stderr, formatCLIError(err))
 			os.Exit(1)
 		}
 		return
@@ -58,7 +59,15 @@ func main() {
 		modelName = rt.Session.ModelName()
 	}
 	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, version, rt.ApprovalEngine, rt.TaskRuntime, rt.MCPManager, rt.MCPServers, rt.PluginCatalog, rt.SkillCatalog, rt.EnvHint, rt.SessionStore, rt.PlanSlug, rt.PlanTitle, rt.PlanPhase, rt.PlanPreMode, rt.PlanAllowedCommands); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintln(os.Stderr, formatCLIError(err))
 		os.Exit(1)
 	}
+}
+
+func formatBootError(err error) string {
+	return apperr.Format(err, "boot error")
+}
+
+func formatCLIError(err error) string {
+	return apperr.Format(err, "error")
 }
