@@ -63,6 +63,10 @@ func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {
 		p.trackToolStart(ev)
 	case agentcore.EventToolExecEnd:
 		p.trackToolEnd(ev)
+	case agentcore.EventMessageEnd:
+		if msg, ok := ev.Message.(agentcore.Message); ok {
+			p.handleMessageEnd(msg)
+		}
 	}
 }
 
@@ -154,6 +158,25 @@ func (p *sessionRuntimePolicy) detectTaskManagementGap() {
 	snap := s.taskStore.Snapshot()
 	if key, reminder, ok := taskManagementReminderForTurn(turn, snap); ok {
 		p.session.deliverRuntimeReminder(
+			key,
+			ReminderTaskManagement,
+			reminder,
+		)
+	}
+}
+
+func (p *sessionRuntimePolicy) handleMessageEnd(msg agentcore.Message) {
+	if msg.Role != agentcore.RoleAssistant {
+		return
+	}
+
+	s := p.session
+	if s.taskStore == nil {
+		return
+	}
+	snap := s.taskStore.Snapshot()
+	if key, reminder, ok := taskManagementReminderBeforeStop(msg, snap); ok {
+		s.deliverRuntimeReminder(
 			key,
 			ReminderTaskManagement,
 			reminder,

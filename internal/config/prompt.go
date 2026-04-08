@@ -68,6 +68,7 @@ Break down and manage your work with task_create, task_update, and task_list.
 - Break larger requests into multiple specific tasks instead of one broad task
 - Mark a task in_progress before starting it
 - Mark a task completed immediately after fully finishing it
+- IMPORTANT: always mark the current task completed before giving your final answer, unless the work is blocked, partial, or still failing verification
 - Do not batch multiple completions together
 - Keep at most one task in_progress at a time
 - Check task_list before creating more tasks if a relevant task may already exist

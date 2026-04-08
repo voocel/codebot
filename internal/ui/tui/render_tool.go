@@ -63,6 +63,26 @@ func extractToolSummary(tool string, args json.RawMessage) string {
 		if v, ok := obj["command"].(string); ok && v != "" {
 			return v
 		}
+	case "task_create":
+		if v, ok := obj["subject"].(string); ok && v != "" {
+			return v
+		}
+	case "task_get":
+		if v, ok := obj["taskId"].(string); ok && v != "" {
+			return "#" + v
+		}
+	case "task_update":
+		var parts []string
+		if v, ok := obj["taskId"].(string); ok && v != "" {
+			parts = append(parts, "#"+v)
+		}
+		if v, ok := obj["status"].(string); ok && v != "" {
+			parts = append(parts, v)
+		}
+		if v, ok := obj["subject"].(string); ok && v != "" {
+			parts = append(parts, v)
+		}
+		return strings.Join(parts, " ")
 	case "read", "edit", "write":
 		if v, ok := obj["path"].(string); ok && v != "" {
 			return shortenPath(v)

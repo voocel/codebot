@@ -5,12 +5,14 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/truncate"
 	reflowwrap "github.com/muesli/reflow/wrap"
+	"github.com/voocel/codebot/internal/tools"
 )
 
 var (
@@ -171,7 +173,7 @@ func (m *Model) renderWelcome() string {
 	return result
 }
 
-func (m Model) renderInputPanel() string {
+func (m *Model) renderInputPanel() string {
 	width := m.Width
 	if width <= 0 {
 		width = 80
@@ -331,7 +333,7 @@ func (m *Model) RenderContextBar() string {
 	return line
 }
 
-func (m Model) renderCommandPalette() string {
+func (m *Model) renderCommandPalette() string {
 	if len(m.compItems) == 0 {
 		return ""
 	}
@@ -370,7 +372,7 @@ func (m Model) renderCommandPalette() string {
 
 const commandPaletteMaxVisible = 8
 
-func (m Model) renderCommandPaletteList(width int) (string, int) {
+func (m *Model) renderCommandPaletteList(width int) (string, int) {
 	start, end := commandPaletteWindow(len(m.compItems), m.compIdx, commandPaletteMaxVisible)
 	lines := make([]string, 0, commandPaletteMaxVisible)
 
@@ -481,7 +483,7 @@ func (m *Model) RenderMarkdown(content string) string {
 
 // renderMarkdownBlock renders complete markdown and applies only outer
 // indentation. Markdown output is already wrapped by the renderer.
-func (m Model) renderMarkdownBlock(content string, indent int) string {
+func (m *Model) renderMarkdownBlock(content string, indent int) string {
 	if content == "" {
 		return ""
 	}
@@ -538,6 +540,8 @@ func (m *Model) renderTaskList() string {
 	b.WriteString(CardTitleStyle.Render("Task Progress"))
 	b.WriteString("\n")
 	b.WriteString(TaskProgressStyle.Render(fmt.Sprintf("%s  %d/%d completed", bar, snap.Completed, snap.Total)))
+	b.WriteString("\n")
+	b.WriteString(MutedStyle.Render(fmt.Sprintf("%d in progress · %d pending", snap.InProgress, snap.Pending)))
 
 	for _, t := range snap.Items {
 		b.WriteByte('\n')
@@ -566,10 +570,31 @@ func (m *Model) renderTaskList() string {
 		if t.Owner != "" {
 			line += " " + TagSubtleStyle.Render("· "+t.Owner)
 		}
+		if blockers := openTaskBlockers(*snap, t); len(blockers) > 0 {
+			line += " " + MutedStyle.Render("blocked by "+strings.Join(blockers, ", "))
+		}
 		b.WriteString(line)
 	}
 
 	return TaskCardStyle.Width(max(min(m.Width-2, 96), 24)).Render(b.String())
+}
+
+func openTaskBlockers(snap tools.TaskSnapshot, task tools.Task) []string {
+	if len(task.BlockedBy) == 0 {
+		return nil
+	}
+	statusByID := make(map[string]tools.TaskStatus, len(snap.Items))
+	for _, item := range snap.Items {
+		statusByID[item.ID] = item.Status
+	}
+	var active []string
+	for _, id := range task.BlockedBy {
+		if statusByID[id] != tools.TaskCompleted {
+			active = append(active, "#"+id)
+		}
+	}
+	sort.Strings(active)
+	return active
 }
 
 // FormatTokens formats a token count with k/M suffix for readability.
@@ -623,7 +648,7 @@ func (m *Model) renderUserMessage(text string) string {
 // ---------------------------------------------------------------------------
 
 // wrapTextForIndent wraps content to fit terminal width after indentation.
-func (m Model) wrapTextForIndent(content string, indent int) string {
+func (m *Model) wrapTextForIndent(content string, indent int) string {
 	if content == "" {
 		return ""
 	}

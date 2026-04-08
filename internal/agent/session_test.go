@@ -137,6 +137,78 @@ func (m *scriptedReminderModel) GenerateStream(
 
 func (m *scriptedReminderModel) SupportsTools() bool { return true }
 
+type taskCompletionReminderModel struct {
+	mu          sync.Mutex
+	callCount   int
+	sawReminder bool
+	taskID      string
+}
+
+func (m *taskCompletionReminderModel) Generate(
+	_ context.Context,
+	msgs []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sawInjectedReminder := false
+	for _, msg := range msgs {
+		if msg.Role == agentcore.RoleUser && strings.Contains(msg.TextContent(), "still in_progress") {
+			sawInjectedReminder = true
+			m.sawReminder = true
+		}
+	}
+
+	m.callCount++
+	switch m.callCount {
+	case 1:
+		return &agentcore.LLMResponse{Message: assistantTextMessage("总结完毕")}, nil
+	case 2:
+		if !sawInjectedReminder {
+			return &agentcore.LLMResponse{Message: assistantTextMessage("no reminder")}, nil
+		}
+		return &agentcore.LLMResponse{
+			Message: toolCallMessage(agentcore.ToolCall{
+				ID:   "task-update-1",
+				Name: "task_update",
+				Args: json.RawMessage(fmt.Sprintf(`{"taskId":%q,"status":"completed"}`, m.taskID)),
+			}),
+		}, nil
+	default:
+		return &agentcore.LLMResponse{Message: assistantTextMessage("已补上任务完成状态")}, nil
+	}
+}
+
+func (m *taskCompletionReminderModel) GenerateStream(
+	ctx context.Context,
+	msgs []agentcore.Message,
+	tools []agentcore.ToolSpec,
+	opts ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	resp, err := m.Generate(ctx, msgs, tools, opts...)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{
+		Type:       agentcore.StreamEventDone,
+		Message:    resp.Message,
+		StopReason: resp.Message.StopReason,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *taskCompletionReminderModel) SupportsTools() bool { return true }
+
+func (m *taskCompletionReminderModel) SawReminder() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sawReminder
+}
+
 type namedChatModel struct {
 	name string
 }
@@ -854,6 +926,42 @@ func TestTaskManagementReminderQueuedForUntrackedOrBroadWork(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTaskManagementReminderSteersBeforeStopWithOpenInProgressTask(t *testing.T) {
+	t.Parallel()
+
+	store := localtools.NewTaskStore()
+	task := store.Create("Summarize project state", "Write the final analysis summary", "Summarizing project state", nil)
+	inProgress := localtools.TaskInProgress
+	if _, err := store.Update(task.ID, localtools.TaskUpdateOpts{Status: &inProgress}); err != nil {
+		t.Fatalf("set task in_progress: %v", err)
+	}
+
+	model := &taskCompletionReminderModel{taskID: task.ID}
+	taskTools := localtools.NewTaskTools(store, nil, nil)
+	ag := agentcore.NewAgent(
+		agentcore.WithModel(model),
+		agentcore.WithTools(taskTools...),
+		agentcore.WithMaxTurns(10),
+	)
+	s := NewSession(SessionConfig{
+		Agent:     ag,
+		Settings:  config.Resolved{MaxTurns: 10},
+		Cwd:       t.TempDir(),
+		TaskStore: store,
+		Tools:     taskTools,
+	})
+	t.Cleanup(s.Close)
+
+	if err := s.Prompt("分析一下项目"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+
+	waitFor(t, time.Second, func() bool {
+		snap := store.Snapshot()
+		return model.SawReminder() && snap.Completed == 1 && snap.InProgress == 0 && s.LastAssistantText() == "已补上任务完成状态"
+	})
 }
 
 func TestRuntimeMetricsTrackCompactionSavings(t *testing.T) {

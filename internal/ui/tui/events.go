@@ -22,7 +22,7 @@ func printBlock(content string) tea.Cmd {
 // HandleAgentEvent processes agent events.
 // Completed content is printed to terminal scrollback via tea.Println.
 // In-progress content (streaming, tool output) is shown in the live View().
-func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
+func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch ev.Type {
@@ -241,7 +241,7 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 	}
 
 	if m.config.OnEvent != nil {
-		if cmd := m.config.OnEvent(&m, ev); cmd != nil {
+		if cmd := m.config.OnEvent(m, ev); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	}
@@ -253,7 +253,7 @@ func (m Model) HandleAgentEvent(ev agentcore.Event) (Model, tea.Cmd) {
 }
 
 // flushSubagentStreaming writes accumulated thinking/delta to the output buffer as single lines.
-func (m Model) flushSubagentStreaming(toolID string, buf *strings.Builder) {
+func (m *Model) flushSubagentStreaming(toolID string, buf *strings.Builder) {
 	if tbuf, ok := m.ToolThinkingBuf[toolID]; ok && tbuf.Len() > 0 {
 		text := strings.ReplaceAll(strings.TrimSpace(tbuf.String()), "\n", " ")
 		buf.WriteString(ThinkingBodyStyle.Render("thinking " + truncateRunes(text, 71)))

@@ -331,12 +331,29 @@ func sortedTasks(tasks map[string]*Task) []Task {
 	for _, t := range tasks {
 		out = append(out, *copyTask(t))
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, _ := strconv.Atoi(out[i].ID)
-		b, _ := strconv.Atoi(out[j].ID)
-		return a < b
-	})
+	sortTasksByID(out)
 	return out
+}
+
+func sortTasksByID(tasks []Task) {
+	sort.Slice(tasks, func(i, j int) bool {
+		return compareTaskIDStrings(tasks[i].ID, tasks[j].ID) < 0
+	})
+}
+
+func compareTaskIDStrings(a, b string) int {
+	ai, aErr := strconv.Atoi(a)
+	bi, bErr := strconv.Atoi(b)
+	switch {
+	case aErr == nil && bErr == nil:
+		return ai - bi
+	case aErr == nil:
+		return -1
+	case bErr == nil:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
 }
 
 func copyStrings(src []string) []string {
@@ -537,7 +554,14 @@ func (t *TaskCreateTool) Execute(ctx context.Context, args json.RawMessage) (jso
 			return json.Marshal(fmt.Sprintf("Error: %s", err))
 		}
 	}
-	return json.Marshal(fmt.Sprintf("Task #%s created successfully: %s", task.ID, task.Subject))
+	return json.Marshal(map[string]any{
+		"success": true,
+		"task": map[string]any{
+			"id":      task.ID,
+			"subject": task.Subject,
+		},
+		"message": fmt.Sprintf("Created task #%s: %s", task.ID, task.Subject),
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +630,7 @@ Task status workflow:
 
 Rules:
 - keep at most one task in_progress at a time
+- IMPORTANT: always mark your current in_progress task completed before giving your final answer, unless the work is blocked, partial, or still failing verification
 - do not batch multiple completions together
 - after completing a task, call task_list to find the next available task
 - if the work is blocked, partial, or failing verification, keep the task in_progress
@@ -655,11 +680,11 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args json.RawMessage) (jso
 	if a.TaskID == "" {
 		return json.Marshal("Validation error: taskId is required")
 	}
+	existing, ok := t.store.Get(a.TaskID)
+	if !ok {
+		return json.Marshal(fmt.Sprintf("Error: task %s not found", a.TaskID))
+	}
 	if t.hooks != nil && a.Status != nil && *a.Status == TaskCompleted {
-		existing, ok := t.store.Get(a.TaskID)
-		if !ok {
-			return json.Marshal(fmt.Sprintf("Error: task %s not found", a.TaskID))
-		}
 		if existing.Status != TaskCompleted {
 			next := previewTaskUpdate(existing, TaskUpdateOpts{
 				Status:       a.Status,
@@ -692,10 +717,52 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args json.RawMessage) (jso
 	if updated == nil {
 		return json.Marshal(fmt.Sprintf("Task %s deleted", a.TaskID))
 	}
+	updatedFields := make([]string, 0, 8)
+	statusChange := map[string]any(nil)
+	if a.Status != nil {
+		updatedFields = append(updatedFields, "status")
+		statusChange = map[string]any{
+			"from": string(existing.Status),
+			"to":   string(updated.Status),
+		}
+	}
+	if a.Subject != nil {
+		updatedFields = append(updatedFields, "subject")
+	}
+	if a.Description != nil {
+		updatedFields = append(updatedFields, "description")
+	}
+	if a.ActiveForm != nil {
+		updatedFields = append(updatedFields, "activeForm")
+	}
+	if a.Owner != nil {
+		updatedFields = append(updatedFields, "owner")
+	}
+	if len(a.Metadata) > 0 {
+		updatedFields = append(updatedFields, "metadata")
+	}
+	if len(a.AddBlocks) > 0 {
+		updatedFields = append(updatedFields, "blocks")
+	}
+	if len(a.AddBlockedBy) > 0 {
+		updatedFields = append(updatedFields, "blockedBy")
+	}
+	message := fmt.Sprintf("Updated task #%s", updated.ID)
+	if len(updatedFields) > 0 {
+		message += ": " + strings.Join(updatedFields, ", ")
+	}
+	if statusChange != nil {
+		message += fmt.Sprintf(" (%s -> %s)", statusChange["from"], statusChange["to"])
+	}
 	result := map[string]any{
-		"id":      updated.ID,
-		"status":  updated.Status,
-		"message": fmt.Sprintf("Task #%s updated successfully", updated.ID),
+		"success":        true,
+		"id":             updated.ID,
+		"status":         updated.Status,
+		"updated_fields": updatedFields,
+		"message":        message,
+	}
+	if statusChange != nil {
+		result["status_change"] = statusChange
 	}
 	if updated.Status == TaskCompleted {
 		result["verification_needed"] = true
@@ -728,46 +795,135 @@ The output summarizes each task with its id, subject, status, owner, and depende
 func (t *TaskListTool) Schema() map[string]any { return schema.Object() }
 
 func (t *TaskListTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
-	tasks := t.store.List()
-	if len(tasks) == 0 {
+	snap := t.store.Snapshot()
+	if snap.Total == 0 {
 		return json.Marshal("No tasks")
 	}
 
 	var sb strings.Builder
-	var pending, inProgress, completed int
-	for _, task := range tasks {
-		switch task.Status {
-		case TaskPending:
-			pending++
-		case TaskInProgress:
-			inProgress++
-		case TaskCompleted:
-			completed++
-		}
-	}
 	fmt.Fprintf(&sb, "Tasks: %d total (%d pending, %d in_progress, %d completed)\n",
-		len(tasks), pending, inProgress, completed)
+		snap.Total, snap.Pending, snap.InProgress, snap.Completed)
 
-	for _, task := range tasks {
-		line := fmt.Sprintf("- #%s [%s] %s", task.ID, task.Status, task.Subject)
+	items := prioritizeTaskSnapshotItems(snap)
+	if current := currentInProgressTask(items); current != nil {
+		fmt.Fprintf(&sb, "Current: #%s %s\n", current.ID, renderTaskSubject(*current))
+	}
+	if next := nextAvailableTask(items, snap); next != nil {
+		fmt.Fprintf(&sb, "Next: #%s %s\n", next.ID, next.Subject)
+	}
+
+	for _, task := range items {
+		line := fmt.Sprintf("- #%s [%s] %s", task.ID, task.Status, renderTaskSubject(task))
 		if task.Owner != "" {
 			line += fmt.Sprintf(" (owner: %s)", task.Owner)
 		}
-		if len(task.BlockedBy) > 0 {
-			// Filter out completed blockers.
-			var active []string
-			for _, bid := range task.BlockedBy {
-				if t, ok := t.store.Get(bid); ok && t.Status != TaskCompleted {
-					active = append(active, bid)
-				}
-			}
-			if len(active) > 0 {
-				line += fmt.Sprintf(" [blocked by: %s]", strings.Join(active, ", "))
-			}
+		if active := taskBlockedByOpenIDs(task, snap); len(active) > 0 {
+			line += fmt.Sprintf(" [blocked by: %s]", strings.Join(active, ", "))
 		}
 		sb.WriteString(line + "\n")
 	}
 	return json.Marshal(strings.TrimRight(sb.String(), "\n"))
+}
+
+func prioritizeTaskSnapshotItems(snap TaskSnapshot) []Task {
+	if len(snap.Items) == 0 {
+		return nil
+	}
+
+	unresolved := make(map[string]struct{}, len(snap.Items))
+	for _, task := range snap.Items {
+		if task.Status != TaskCompleted {
+			unresolved[task.ID] = struct{}{}
+		}
+	}
+
+	var inProgress []Task
+	var pending []Task
+	var completed []Task
+	for _, task := range snap.Items {
+		switch task.Status {
+		case TaskInProgress:
+			inProgress = append(inProgress, task)
+		case TaskPending:
+			pending = append(pending, task)
+		case TaskCompleted:
+			completed = append(completed, task)
+		default:
+			pending = append(pending, task)
+		}
+	}
+
+	sortTasksByID(inProgress)
+	sort.Slice(pending, func(i, j int) bool {
+		aBlocked := taskHasOpenBlockers(pending[i], unresolved)
+		bBlocked := taskHasOpenBlockers(pending[j], unresolved)
+		if aBlocked != bBlocked {
+			return !aBlocked
+		}
+		return compareTaskIDStrings(pending[i].ID, pending[j].ID) < 0
+	})
+	sortTasksByID(completed)
+
+	out := make([]Task, 0, len(snap.Items))
+	out = append(out, inProgress...)
+	out = append(out, pending...)
+	out = append(out, completed...)
+	return out
+}
+
+func currentInProgressTask(tasks []Task) *Task {
+	for i := range tasks {
+		if tasks[i].Status == TaskInProgress {
+			return &tasks[i]
+		}
+	}
+	return nil
+}
+
+func nextAvailableTask(tasks []Task, snap TaskSnapshot) *Task {
+	for i := range tasks {
+		if tasks[i].Status != TaskPending {
+			continue
+		}
+		if len(taskBlockedByOpenIDs(tasks[i], snap)) == 0 {
+			return &tasks[i]
+		}
+	}
+	return nil
+}
+
+func renderTaskSubject(task Task) string {
+	if task.Status == TaskInProgress && task.ActiveForm != "" {
+		return task.ActiveForm
+	}
+	return task.Subject
+}
+
+func taskBlockedByOpenIDs(task Task, snap TaskSnapshot) []string {
+	if len(task.BlockedBy) == 0 {
+		return nil
+	}
+	statusByID := make(map[string]TaskStatus, len(snap.Items))
+	for _, item := range snap.Items {
+		statusByID[item.ID] = item.Status
+	}
+	var active []string
+	for _, id := range task.BlockedBy {
+		if statusByID[id] != TaskCompleted {
+			active = append(active, "#"+id)
+		}
+	}
+	sort.Strings(active)
+	return active
+}
+
+func taskHasOpenBlockers(task Task, unresolved map[string]struct{}) bool {
+	for _, id := range task.BlockedBy {
+		if _, ok := unresolved[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

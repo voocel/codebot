@@ -1,0 +1,821 @@
+package tui
+
+import (
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/ui/tui/markdown"
+)
+
+// quitResetMsg resets QuitPending after timeout.
+type quitResetMsg struct{}
+
+const completedTasksHideDelay = 5 * time.Second
+
+const maxInputHeight = 8
+
+const defaultPlaceholder = "Ask anything... (Enter send, Ctrl+J newline, Esc abort)"
+
+var hideCompletedTasksTick = func(version uint64) tea.Cmd {
+	return tea.Tick(completedTasksHideDelay, func(time.Time) tea.Msg {
+		return HideCompletedTasksMsg{Version: version}
+	})
+}
+
+// TasksTickCmd returns a tea.Cmd that fires TasksRefreshMsg after 500ms.
+func TasksTickCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return TasksRefreshMsg{}
+	})
+}
+
+// RestoreMsg is sent to replay restored session messages into scrollback.
+type RestoreMsg struct{ Msgs []agentcore.AgentMessage }
+
+// Init implements tea.Model.
+func (m *Model) Init() tea.Cmd {
+	cmds := []tea.Cmd{m.Spinner.Tick, m.ToolSpinner.Tick, textarea.Blink}
+	if len(m.config.RestoredMessages) > 0 {
+		msgs := m.config.RestoredMessages
+		cmds = append(cmds, func() tea.Msg { return RestoreMsg{Msgs: msgs} })
+	}
+	if m.Tasks != nil && tasksFullyCompleted(*m.Tasks) && m.taskHideVersion > 0 {
+		cmds = append(cmds, hideCompletedTasksTick(m.taskHideVersion))
+	}
+	return tea.Batch(cmds...)
+}
+
+// Update implements tea.Model.
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+	case tea.WindowSizeMsg:
+		return m.handleResize(msg)
+	case RestoreMsg:
+		return m.handleRestore(msg)
+	case AgentEventMsg:
+		return m.HandleAgentEvent(msg.Event)
+	case CommandResultMsg:
+		return m.handleCommandResult(msg)
+	case PromptMsg:
+		return m.handlePrompt(msg)
+	case ImageAttachedMsg:
+		m.Pasting--
+		m.Images = append(m.Images, msg.Block)
+		return m, nil
+	case PasteTextMsg:
+		m.Pasting--
+		return m, textarea.Paste
+	case PasteErrorMsg:
+		m.Pasting--
+		return m, tea.Println(indentBlock(msg.Text, 2))
+	case AskUserMsg:
+		m.AskUser = initAskUser(msg, m.Width, m.Height)
+		return m, nil
+	case PermissionMsg:
+		m.Permission = initPermission(msg)
+		return m, nil
+	case PermissionDismissMsg:
+		m.Permission = nil
+		return m, nil
+	case TaskListUpdateMsg:
+		return m, m.applyTaskSnapshot(msg.Snapshot)
+	case HideCompletedTasksMsg:
+		if msg.Version != m.taskHideVersion || m.Tasks == nil || !tasksFullyCompleted(*m.Tasks) {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		if m.config.OnHideCompletedTasks != nil {
+			cmd = m.config.OnHideCompletedTasks(*m.Tasks)
+		}
+		m.Tasks = nil
+		return m, cmd
+	case MCPReadyMsg:
+		return m.handleMCPReady(msg)
+	case quitResetMsg:
+		m.QuitPending = false
+		return m, nil
+	case SuggestionMsg:
+		if !m.Running && msg.Text != "" {
+			m.Suggestion = msg.Text
+			m.Input.Placeholder = msg.Text
+		}
+		return m, nil
+	case BtwResultMsg:
+		if m.config.OnBtwResult != nil {
+			m.config.OnBtwResult(msg)
+		}
+		return m, nil
+	case TasksRefreshMsg:
+		if m.config.Overlay != nil {
+			if ov := m.config.Overlay(m); ov != nil {
+				return m, TasksTickCmd()
+			}
+		}
+		return m, nil
+	case spinner.TickMsg:
+		var cmd1, cmd2 tea.Cmd
+		m.Spinner, cmd1 = m.Spinner.Update(msg)
+		m.ToolSpinner, cmd2 = m.ToolSpinner.Update(msg)
+		m.RunStats.DisplayInput = animateStep(m.RunStats.DisplayInput, m.RunStats.Input)
+		m.RunStats.DisplayOutput = animateStep(m.RunStats.DisplayOutput, m.RunStats.Output)
+		return m, tea.Batch(cmd1, cmd2)
+	}
+
+	return m.updateInput(msg)
+}
+
+func (m *Model) applyTaskSnapshot(snap tools.TaskSnapshot) tea.Cmd {
+	m.taskHideVersion++
+	if snap.Total == 0 {
+		m.Tasks = nil
+		return nil
+	}
+	snapshot := snap
+	m.Tasks = &snapshot
+	if tasksFullyCompleted(snap) {
+		return hideCompletedTasksTick(m.taskHideVersion)
+	}
+	return nil
+}
+
+func tasksFullyCompleted(snap tools.TaskSnapshot) bool {
+	return snap.Total > 0 && snap.Pending == 0 && snap.InProgress == 0
+}
+
+// handleKey processes keyboard input.
+func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if next, cmd, handled := m.handleModalKey(msg); handled {
+		return next, cmd
+	}
+	if next, cmd, handled := m.handleOverlayKey(msg); handled {
+		return next, cmd
+	}
+	if next, cmd, handled := m.handleSuggestionKey(msg); handled {
+		return next, cmd
+	}
+	if next, cmd, handled := m.handleCompletionKey(msg); handled {
+		return next, cmd
+	}
+
+	if m.QuitPending && msg.String() != "ctrl+c" {
+		m.QuitPending = false
+	}
+
+	if m.config.OnKey != nil {
+		if handled, cmd := m.config.OnKey(m, msg); handled {
+			return m, cmd
+		}
+	}
+
+	if next, cmd, handled := m.handleDropKey(msg); handled {
+		return next, cmd
+	}
+	if next, cmd, handled := m.handleImageSelectionKey(msg); handled {
+		return next, cmd
+	}
+
+	switch msg.String() {
+	case "ctrl+c":
+		m.compActive = false
+		if m.QuitPending {
+			return m, tea.Quit
+		}
+		if m.Running && m.Driver != nil {
+			m.Driver.Abort()
+		}
+		m.QuitPending = true
+		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return quitResetMsg{} })
+	case "esc":
+		if m.Running && m.Driver != nil {
+			m.Driver.Abort()
+		}
+		return m, nil
+	case "alt+enter", "ctrl+j":
+		m.Input.SetHeight(maxInputHeight)
+		m.Input.InsertString("\n")
+		m.adjustInputHeight()
+		return m, nil
+	case "ctrl+l":
+		return m, nil
+	case "ctrl+v":
+		if m.config.OnPaste != nil {
+			m.Pasting++
+			return m, m.config.OnPaste(m)
+		}
+		var cmd tea.Cmd
+		m.Input.SetHeight(maxInputHeight)
+		m.Input, cmd = m.Input.Update(msg)
+		m.adjustInputHeight()
+		return m, cmd
+	case "enter":
+		return m.handleSubmitKey()
+	case "up":
+		if next, cmd, handled := m.handleUpKey(); handled {
+			return next, cmd
+		}
+	case "down":
+		if next, cmd, handled := m.handleDownKey(); handled {
+			return next, cmd
+		}
+	}
+
+	var cmd tea.Cmd
+	m.Input.SetHeight(maxInputHeight)
+	m.Input, cmd = m.Input.Update(msg)
+	m.adjustInputHeight()
+	m.updateCompletions()
+	if m.Suggestion != "" && m.Input.Value() != "" {
+		m.clearSuggestion()
+	}
+	return m, cmd
+}
+
+func (m *Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if m.AskUser != nil {
+		if msg.String() == "ctrl+c" {
+			close(m.AskUser.respCh)
+			m.AskUser = nil
+			if m.Running && m.Driver != nil {
+				m.Driver.Abort()
+			}
+			return m, nil, true
+		}
+		handled, cmd := handleAskUserKey(m.AskUser, msg)
+		if handled {
+			if m.AskUser.done {
+				m.AskUser = nil
+				if msg.String() == "esc" && m.Running && m.Driver != nil {
+					m.Driver.Abort()
+				}
+			}
+			return m, cmd, true
+		}
+	}
+
+	if m.Permission == nil {
+		return m, nil, false
+	}
+	if msg.String() == "ctrl+c" || msg.String() == "esc" {
+		m.Permission.respCh <- PermitChoiceDeny
+		m.Permission = nil
+		return m, nil, true
+	}
+	handled, cmd := handlePermissionKey(m.Permission, msg)
+	if handled {
+		if m.Permission.done {
+			m.Permission = nil
+		}
+		return m, cmd, true
+	}
+	return m, nil, false
+}
+
+func (m *Model) handleOverlayKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if m.config.Overlay == nil {
+		return m, nil, false
+	}
+	ov := m.config.Overlay(m)
+	if ov == nil {
+		return m, nil, false
+	}
+	handled, cmd := ov.HandleKey(msg)
+	if !handled {
+		return m, nil, false
+	}
+	return m, cmd, true
+}
+
+func (m *Model) handleSuggestionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if (msg.String() != "tab" && msg.String() != "right") || m.Suggestion == "" || m.Input.Value() != "" || m.compActive {
+		return m, nil, false
+	}
+	m.Input.SetValue(m.Suggestion)
+	m.Input.CursorEnd()
+	m.clearSuggestion()
+	return m, nil, true
+}
+
+func (m *Model) handleCompletionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if !m.compActive {
+		return m, nil, false
+	}
+	switch msg.String() {
+	case "tab":
+		m.acceptCompletion()
+		return m, nil, true
+	case "enter":
+		item := m.acceptCompletion()
+		if !item.AutoExecute {
+			return m, nil, true
+		}
+		return m, nil, false
+	case "up":
+		if m.compIdx > 0 {
+			m.compIdx--
+		}
+		return m, nil, true
+	case "down":
+		if m.compIdx < len(m.compItems)-1 {
+			m.compIdx++
+		}
+		return m, nil, true
+	case "esc":
+		m.compActive = false
+		return m, nil, true
+	default:
+		return m, nil, false
+	}
+}
+
+func (m *Model) handleDropKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if !msg.Paste || m.config.OnDrop == nil {
+		return m, nil, false
+	}
+	cmd := m.config.OnDrop(m, string(msg.Runes))
+	if cmd == nil {
+		return m, nil, false
+	}
+	m.Pasting++
+	return m, cmd, true
+}
+
+func (m *Model) handleImageSelectionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if m.ImageCursor < 0 {
+		return m, nil, false
+	}
+	switch msg.String() {
+	case "left", "h":
+		if m.ImageCursor > 0 {
+			m.ImageCursor--
+		}
+		return m, nil, true
+	case "right", "l":
+		if m.ImageCursor < len(m.Images)-1 {
+			m.ImageCursor++
+		}
+		return m, nil, true
+	case "delete", "backspace":
+		m.Images = slices.Delete(m.Images, m.ImageCursor, m.ImageCursor+1)
+		if len(m.Images) == 0 {
+			m.ImageCursor = -1
+		} else if m.ImageCursor >= len(m.Images) {
+			m.ImageCursor = len(m.Images) - 1
+		}
+		return m, nil, true
+	case "esc", "down":
+		m.ImageCursor = -1
+		return m, nil, true
+	default:
+		m.ImageCursor = -1
+		return m, nil, false
+	}
+}
+
+func (m *Model) handleSubmitKey() (tea.Model, tea.Cmd) {
+	req, ok := m.prepareSubmission()
+	if !ok {
+		return m, nil
+	}
+
+	output := m.RenderPromptOutput(req.displayText)
+	m.ShowWelcome = false
+	if m.Driver == nil {
+		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: session driver is not configured", 2)), 2)
+	} else if m.Running {
+		m.Images = req.images
+		m.Driver.Steer(req.text)
+		m.QueuedMsgs = append(m.QueuedMsgs, req.text)
+	} else if err := m.promptWithImages(req.text, req.images); err != nil {
+		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+err.Error(), 2)), 2)
+	}
+	return m, printBlock(output)
+}
+
+type submitRequest struct {
+	text        string
+	images      []agentcore.ContentBlock
+	displayText string
+}
+
+func (m *Model) prepareSubmission() (submitRequest, bool) {
+	if m.Pasting > 0 {
+		return submitRequest{}, false
+	}
+
+	text := strings.TrimSpace(m.Input.Value())
+	if text == "" && m.Suggestion != "" && len(m.Images) == 0 {
+		text = m.Suggestion
+		m.clearSuggestion()
+	}
+	if text == "" && len(m.Images) == 0 {
+		m.Input.Reset()
+		m.Input.SetHeight(1)
+		return submitRequest{}, false
+	}
+
+	if m.history != nil && text != "" {
+		m.history.Add(text)
+	}
+	m.histIdx = -1
+	m.histDraft = ""
+
+	req := submitRequest{
+		text:   text,
+		images: m.Images,
+	}
+	req.displayText = formatSubmitDisplayText(req.text, req.images)
+
+	m.Images = nil
+	m.ImageCursor = -1
+	m.Input.Reset()
+	m.Input.SetHeight(1)
+	m.Input.Placeholder = ""
+	m.ShowSummary = false
+
+	return req, true
+}
+
+func formatSubmitDisplayText(text string, images []agentcore.ContentBlock) string {
+	if len(images) == 0 {
+		return text
+	}
+	tags := make([]string, 0, len(images))
+	for i := range images {
+		tags = append(tags, fmt.Sprintf("[Image #%d]", i+1))
+	}
+	if text == "" {
+		return strings.Join(tags, " ")
+	}
+	return text + " " + strings.Join(tags, " ")
+}
+
+func (m *Model) handleMCPReady(msg MCPReadyMsg) (tea.Model, tea.Cmd) {
+	m.MCPLoading = false
+	if m.config.OnMCPReady != nil {
+		m.config.OnMCPReady(msg)
+	}
+	var parts []string
+	if msg.Tools > 0 {
+		parts = append(parts, fmt.Sprintf("%d tools connected", msg.Tools))
+	}
+	for _, e := range msg.Errors {
+		parts = append(parts, ErrorStyle.Render(e))
+	}
+	if len(parts) == 0 {
+		return m, nil
+	}
+	text := MutedStyle.Render("  mcp: ") + strings.Join(parts, MutedStyle.Render(", "))
+	return m, tea.Println(text)
+}
+
+func (m *Model) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.Input.SetHeight(maxInputHeight)
+	m.Input, cmd = m.Input.Update(msg)
+	m.adjustInputHeight()
+	return m, cmd
+}
+
+func (m *Model) handleUpKey() (tea.Model, tea.Cmd, bool) {
+	if len(m.Images) > 0 && !m.Running && m.Input.Line() == 0 {
+		m.ImageCursor = len(m.Images) - 1
+		return m, nil, true
+	}
+	if m.history == nil || m.history.Len() == 0 || m.Input.Line() != 0 || m.Running {
+		return m, nil, false
+	}
+	if m.histIdx == -1 {
+		m.histDraft = m.Input.Value()
+		m.histIdx = 0
+	} else if m.histIdx < m.history.Len()-1 {
+		m.histIdx++
+	}
+	m.Input.Reset()
+	m.Input.SetValue(m.history.Get(m.histIdx))
+	m.Input.CursorEnd()
+	m.adjustInputHeight()
+	return m, nil, true
+}
+
+func (m *Model) handleDownKey() (tea.Model, tea.Cmd, bool) {
+	if m.histIdx < 0 || m.Input.Line() != m.Input.LineCount()-1 {
+		return m, nil, false
+	}
+	if m.histIdx > 0 {
+		m.histIdx--
+		m.Input.Reset()
+		m.Input.SetValue(m.history.Get(m.histIdx))
+	} else {
+		m.histIdx = -1
+		m.Input.Reset()
+		m.Input.SetValue(m.histDraft)
+		m.histDraft = ""
+	}
+	m.Input.CursorEnd()
+	m.adjustInputHeight()
+	return m, nil, true
+}
+
+// handleResize processes terminal resize events.
+func (m *Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.Width = msg.Width
+	m.Height = msg.Height
+	m.Ready = true
+	m.Input.SetWidth(m.Width - 2)
+	if m.Markdown == nil {
+		m.Markdown = markdown.NewRenderer(max(m.Width-6, 20))
+	} else {
+		m.Markdown.SetWidth(max(m.Width-6, 20))
+	}
+	m.adjustInputHeight()
+	if m.AskUser != nil {
+		m.AskUser.width = m.Width
+		m.AskUser.height = m.Height
+	}
+	return m, nil
+}
+
+// clearSuggestion removes the current prompt suggestion and clears the placeholder.
+func (m *Model) clearSuggestion() {
+	if m.Suggestion == "" {
+		return
+	}
+	m.Suggestion = ""
+	m.Input.Placeholder = ""
+}
+
+// adjustInputHeight grows/shrinks the textarea to fit the content,
+// accounting for both explicit newlines and soft-wrapping.
+func (m *Model) adjustInputHeight() {
+	w := m.Input.Width()
+	if w <= 0 {
+		w = 1
+	}
+	lines := 0
+	for _, line := range strings.Split(m.Input.Value(), "\n") {
+		visualLen := lipgloss.Width(line)
+		if visualLen == 0 {
+			lines++
+		} else {
+			lines += (visualLen + w - 1) / w
+		}
+	}
+	lines = max(lines, 1)
+	lines = min(lines, maxInputHeight)
+	m.Input.SetHeight(lines)
+}
+
+// handleCommandResult processes slash command results.
+func (m *Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Quit {
+		return m, tea.Quit
+	}
+	if msg.Clear {
+		m.TurnCount = 0
+		m.ShowWelcome = true
+		m.Images = nil
+	}
+	if msg.NewModel != "" {
+		m.ModelName = msg.NewModel
+	}
+	if msg.Text != "" {
+		var output string
+		if m.ShowWelcome {
+			output = m.renderWelcome() + "\n"
+			m.ShowWelcome = false
+		}
+		output += indentBlock(msg.Text, 2)
+		return m, printBlock(output)
+	}
+	return m, nil
+}
+
+// handlePrompt processes an injected prompt — renders as user message and sends to agent.
+func (m *Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
+	text := msg.Text
+	if text == "" {
+		return m, nil
+	}
+	m.ShowSummary = false
+
+	output := m.RenderPromptOutput(text)
+	m.ShowWelcome = false
+	if m.Driver == nil {
+		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: session driver is not configured", 2)), 2)
+	} else if err := m.promptWithImages(text, nil); err != nil {
+		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+err.Error(), 2)), 2)
+	}
+	return m, printBlock(output)
+}
+
+// promptWithImages sends user text with optional clipboard image attachments.
+// Falls back to plain text prompt when no images are present.
+func (m *Model) promptWithImages(text string, images []agentcore.ContentBlock) error {
+	if len(images) == 0 {
+		return m.Driver.Prompt(text)
+	}
+	if text == "" {
+		text = "Describe this image"
+	}
+	blocks := make([]agentcore.ContentBlock, 0, 1+len(images))
+	blocks = append(blocks, agentcore.TextBlock(text))
+	blocks = append(blocks, images...)
+	return m.Driver.PromptWithBlocks(blocks)
+}
+
+// handleRestore replays restored session messages into terminal scrollback.
+// All history is rendered as a single tea.Println to guarantee display order.
+// Renders the same way as live events: user messages, thinking, tool calls/results, assistant text.
+func (m *Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
+	m.ShowWelcome = false
+
+	var sb strings.Builder
+	sb.WriteString(m.renderWelcome())
+	sb.WriteString("\n\n")
+	sb.WriteString(MutedStyle.Render("  ── restored session ──"))
+
+	toolCallNames := buildRestoreToolIndex(msg.Msgs)
+
+	for _, am := range msg.Msgs {
+		m.appendRestoredMessage(&sb, am, toolCallNames)
+	}
+
+	sb.WriteString("\n\n")
+	sb.WriteString(MutedStyle.Render("  ── end of history ──"))
+	return m, tea.Println(sb.String())
+}
+
+func buildRestoreToolIndex(msgs []agentcore.AgentMessage) map[string]string {
+	toolCallNames := make(map[string]string)
+	for _, am := range msgs {
+		concrete, ok := am.(agentcore.Message)
+		if !ok || concrete.GetRole() != agentcore.RoleAssistant {
+			continue
+		}
+		for _, tc := range concrete.ToolCalls() {
+			toolCallNames[tc.ID] = tc.Name
+		}
+	}
+	return toolCallNames
+}
+
+func (m *Model) appendRestoredMessage(sb *strings.Builder, am agentcore.AgentMessage, toolCallNames map[string]string) {
+	switch am.GetRole() {
+	case agentcore.RoleUser:
+		m.appendRestoredUserMessage(sb, am)
+	case agentcore.RoleAssistant:
+		m.appendRestoredAssistantMessage(sb, am)
+	case agentcore.RoleTool:
+		m.appendRestoredToolMessage(sb, am, toolCallNames)
+	}
+}
+
+func (m *Model) appendRestoredUserMessage(sb *strings.Builder, am agentcore.AgentMessage) {
+	text := am.TextContent()
+	if text == "" {
+		return
+	}
+	sb.WriteString("\n\n")
+	sb.WriteString(m.renderUserMessage(text))
+}
+
+func (m *Model) appendRestoredAssistantMessage(sb *strings.Builder, am agentcore.AgentMessage) {
+	if thinkingText := strings.TrimSpace(am.ThinkingContent()); thinkingText != "" {
+		indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2)
+		sb.WriteString("\n\n")
+		sb.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+	}
+	if content := strings.TrimSpace(am.TextContent()); content != "" {
+		indented := m.renderMarkdownBlock(content, 2)
+		sb.WriteString("\n\n")
+		sb.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+	}
+	concrete, ok := am.(agentcore.Message)
+	if !ok {
+		return
+	}
+	for _, tc := range concrete.ToolCalls() {
+		header := ToolIconStyle.Render("● ") + ToolNameStyle.Render(FormatToolHeader(tc.Name, tc.Args))
+		sb.WriteString("\n")
+		sb.WriteString(header)
+	}
+}
+
+func (m *Model) appendRestoredToolMessage(sb *strings.Builder, am agentcore.AgentMessage, toolCallNames map[string]string) {
+	concrete, ok := am.(agentcore.Message)
+	if !ok {
+		return
+	}
+	toolCallID, _ := concrete.Metadata["tool_call_id"].(string)
+	isError, _ := concrete.Metadata["is_error"].(bool)
+	body := m.renderRestoredToolBody(toolCallNames[toolCallID], json.RawMessage(am.TextContent()), isError)
+	if body == "" {
+		return
+	}
+	sb.WriteString("\n")
+	sb.WriteString(body)
+}
+
+func (m *Model) renderRestoredToolBody(toolName string, raw json.RawMessage, isError bool) string {
+	switch {
+	case toolName == "subagent" && !isError:
+		content := FormatSubagentOutput(raw)
+		return indentBlock(m.renderSubagentCard(content), 2)
+	case toolName == "edit" && !isError:
+		return indentBlock(RenderEditResult(raw), 2)
+	case toolName == "write" && !isError:
+		return indentBlock(RenderWriteResult(raw), 2)
+	case (toolName == "read" || toolName == "glob") && !isError:
+		return indentBlock(RenderReadResult(raw), 2)
+	case toolName == "ls" && !isError:
+		_, lsBody := RenderLsResult(raw)
+		return indentBlock(lsBody, 2)
+	default:
+		text := FormatToolResult(raw, isError)
+		text = m.wrapTextForIndent(text, 4)
+		if isError {
+			return indentBlock(FormatToolOutput(text, 5, ErrorStyle), 2)
+		}
+		return indentBlock(FormatToolOutput(text, 5), 2)
+	}
+}
+
+// updateCompletions refreshes the completion menu based on current input.
+func (m *Model) updateCompletions() {
+	m.cmdHighlight = ""
+	if m.config.Completions == nil {
+		m.compActive = false
+		return
+	}
+	text := m.Input.Value()
+	if !strings.HasPrefix(text, "/") {
+		m.compActive = false
+		return
+	}
+
+	if strings.ContainsAny(text, " \t") {
+		m.compActive = false
+		cmd := text[1:]
+		if idx := strings.IndexAny(cmd, " \t"); idx > 0 {
+			cmd = cmd[:idx]
+		}
+		items := m.config.Completions(cmd)
+		for _, item := range items {
+			if strings.EqualFold(item.Name, cmd) {
+				m.cmdHighlight = "/" + item.Name
+				break
+			}
+		}
+		return
+	}
+
+	prefix := text[1:]
+	items := m.config.Completions(prefix)
+	m.compItems = items
+	m.compActive = len(items) > 0
+	if m.compIdx >= len(items) {
+		m.compIdx = max(len(items)-1, 0)
+	}
+	for _, item := range items {
+		if strings.EqualFold(item.Name, prefix) {
+			m.cmdHighlight = "/" + item.Name
+			break
+		}
+	}
+}
+
+// acceptCompletion fills the selected completion into the input.
+func (m *Model) acceptCompletion() CompletionItem {
+	if !m.compActive || m.compIdx < 0 || m.compIdx >= len(m.compItems) {
+		return CompletionItem{}
+	}
+	item := m.compItems[m.compIdx]
+	name := item.Name
+	m.Input.Reset()
+	m.Input.SetValue("/" + name + " ")
+	m.Input.CursorEnd()
+	m.compActive = false
+	m.cmdHighlight = "/" + name
+	return item
+}
+
+// animateStep moves current one step closer to target.
+// Uses ~8% of the remaining gap per tick (30fps), min step 1.
+func animateStep(current, target int) int {
+	if current >= target {
+		return target
+	}
+	step := max((target-current)/12, 1)
+	return min(current+step, target)
+}

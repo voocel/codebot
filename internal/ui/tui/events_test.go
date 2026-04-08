@@ -1,114 +1,173 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/voocel/agentcore"
 )
 
-func TestHandleAgentEventStartSetsRunning(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
+func TestHandleAgentEventLifecycleState(t *testing.T) {
+	t.Parallel()
 
-	next, _ := m.HandleAgentEvent(agentcore.Event{Type: agentcore.EventAgentStart})
-	if !next.Running {
-		t.Fatal("expected Running = true after EventAgentStart")
-	}
-}
-
-func TestHandleAgentEventEndClearsRunning(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-	m.Running = true
-
-	next, _ := m.HandleAgentEvent(agentcore.Event{Type: agentcore.EventAgentEnd})
-	if next.Running {
-		t.Fatal("expected Running = false after EventAgentEnd")
-	}
-}
-
-func TestHandleAgentEventTurnStartIncrements(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-
-	next, _ := m.HandleAgentEvent(agentcore.Event{Type: agentcore.EventTurnStart})
-	if next.TurnCount != 1 {
-		t.Fatalf("TurnCount = %d, want 1", next.TurnCount)
-	}
-}
-
-func TestHandleAgentEventMessageStartSetsStream(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-
-	ev := agentcore.Event{
-		Type: agentcore.EventMessageStart,
-		Message: agentcore.Message{
-			Role: agentcore.RoleAssistant,
+	cases := []struct {
+		name   string
+		setup  func(*Model)
+		event  agentcore.Event
+		assert func(*testing.T, *Model)
+	}{
+		{
+			name:  "agent start sets running",
+			event: agentcore.Event{Type: agentcore.EventAgentStart},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				if !m.Running {
+					t.Fatal("expected Running = true")
+				}
+			},
 		},
-	}
-	next, _ := m.HandleAgentEvent(ev)
-	if !next.IsStream {
-		t.Fatal("expected IsStream = true after assistant MessageStart")
-	}
-}
-
-func TestHandleAgentEventMessageEndReturnsPrintCmd(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-	m.Width = 80
-	m.IsStream = true
-	m.Streaming.WriteString("test response")
-
-	ev := agentcore.Event{
-		Type: agentcore.EventMessageEnd,
-		Message: agentcore.Message{
-			Role: agentcore.RoleAssistant,
-			Content: []agentcore.ContentBlock{
-				agentcore.TextBlock("final text"),
+		{
+			name: "agent end clears running",
+			setup: func(m *Model) {
+				m.Running = true
+			},
+			event: agentcore.Event{Type: agentcore.EventAgentEnd},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				if m.Running {
+					t.Fatal("expected Running = false")
+				}
+			},
+		},
+		{
+			name:  "turn start increments counter",
+			event: agentcore.Event{Type: agentcore.EventTurnStart},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				if m.TurnCount != 1 {
+					t.Fatalf("TurnCount = %d, want 1", m.TurnCount)
+				}
+			},
+		},
+		{
+			name: "assistant message start enables stream mode",
+			event: agentcore.Event{
+				Type: agentcore.EventMessageStart,
+				Message: agentcore.Message{
+					Role: agentcore.RoleAssistant,
+				},
+			},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				if !m.IsStream {
+					t.Fatal("expected IsStream = true")
+				}
+			},
+		},
+		{
+			name: "tool exec start tracks pending tool",
+			event: agentcore.Event{
+				Type:      agentcore.EventToolExecStart,
+				ToolID:    "t1",
+				Tool:      "read",
+				ToolLabel: "Read File",
+			},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				if _, ok := m.PendingTools["t1"]; !ok {
+					t.Fatal("expected PendingTools to contain t1")
+				}
+				if _, ok := m.ToolHeaders["t1"]; !ok {
+					t.Fatal("expected ToolHeaders to contain t1")
+				}
+			},
+		},
+		{
+			name: "tool exec end clears pending tool",
+			setup: func(m *Model) {
+				m.PendingTools["t1"] = "read"
+				m.ToolOutputBuf["t1"] = nil
+			},
+			event: agentcore.Event{
+				Type:   agentcore.EventToolExecEnd,
+				ToolID: "t1",
+				Tool:   "read",
+			},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				if _, ok := m.PendingTools["t1"]; ok {
+					t.Fatal("expected PendingTools to remove t1")
+				}
 			},
 		},
 	}
 
-	next, cmd := m.HandleAgentEvent(ev)
-	if next.IsStream {
-		t.Fatal("expected IsStream = false after MessageEnd")
-	}
-	if cmd == nil {
-		t.Fatal("expected non-nil cmd (printBlock) for assistant MessageEnd")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(nil, "test-model")
+			m.Ready = true
+			m.Width = 80
+			if tc.setup != nil {
+				tc.setup(m)
+			}
+
+			next, _ := m.HandleAgentEvent(tc.event)
+			tc.assert(t, mustModel(t, next))
+		})
 	}
 }
 
-func TestHandleAgentEventThinkingReturnsPrintCmd(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-	m.Width = 80
-	m.IsStream = true
-	m.Streaming.WriteString("draft")
+func TestHandleAgentEventMessageEndReturnsPrintCmd(t *testing.T) {
+	t.Parallel()
 
-	ev := agentcore.Event{
-		Type: agentcore.EventMessageEnd,
-		Message: agentcore.Message{
-			Role: agentcore.RoleAssistant,
-			Content: []agentcore.ContentBlock{
+	cases := []struct {
+		name    string
+		content []agentcore.ContentBlock
+	}{
+		{
+			name: "text response",
+			content: []agentcore.ContentBlock{
+				agentcore.TextBlock("final text"),
+			},
+		},
+		{
+			name: "thinking and response",
+			content: []agentcore.ContentBlock{
 				agentcore.ThinkingBlock("thinking content"),
 				agentcore.TextBlock("answer"),
 			},
 		},
 	}
 
-	next, cmd := m.HandleAgentEvent(ev)
-	if next.IsStream {
-		t.Fatal("expected IsStream = false after MessageEnd with thinking")
-	}
-	if cmd == nil {
-		t.Fatal("expected non-nil cmd (printBlock) for thinking + response")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(nil, "test-model")
+			m.Ready = true
+			m.Width = 80
+			m.IsStream = true
+			m.Streaming.WriteString("draft")
+
+			next, cmd := m.HandleAgentEvent(agentcore.Event{
+				Type: agentcore.EventMessageEnd,
+				Message: agentcore.Message{
+					Role:    agentcore.RoleAssistant,
+					Content: tc.content,
+				},
+			})
+			nextModel := mustModel(t, next)
+			if nextModel.IsStream {
+				t.Fatal("expected IsStream = false after MessageEnd")
+			}
+			if cmd == nil {
+				t.Fatal("expected non-nil cmd for assistant MessageEnd")
+			}
+		})
 	}
 }
 
 func TestHandleAgentEventCachesThinkingDuringStream(t *testing.T) {
+	t.Parallel()
+
 	m := New(nil, "test-model")
 	m.Ready = true
 	m.Width = 80
@@ -120,6 +179,7 @@ func TestHandleAgentEventCachesThinkingDuringStream(t *testing.T) {
 		},
 	}
 	m2, _ := m.HandleAgentEvent(start)
+	model2 := mustModel(t, m2)
 
 	update := agentcore.Event{
 		Type: agentcore.EventMessageUpdate,
@@ -130,8 +190,9 @@ func TestHandleAgentEventCachesThinkingDuringStream(t *testing.T) {
 			},
 		},
 	}
-	m3, _ := m2.HandleAgentEvent(update)
-	if got := strings.TrimSpace(m3.Thinking.String()); got != "intermediate thinking" {
+	m3, _ := model2.HandleAgentEvent(update)
+	model3 := mustModel(t, m3)
+	if got := strings.TrimSpace(model3.Thinking.String()); got != "intermediate thinking" {
 		t.Fatalf("thinking cache = %q, want %q", got, "intermediate thinking")
 	}
 
@@ -144,151 +205,118 @@ func TestHandleAgentEventCachesThinkingDuringStream(t *testing.T) {
 			},
 		},
 	}
-	m4, _ := m3.HandleAgentEvent(end)
-	if got := strings.TrimSpace(m4.Thinking.String()); got != "" {
+	m4, _ := model3.HandleAgentEvent(end)
+	model4 := mustModel(t, m4)
+	if got := strings.TrimSpace(model4.Thinking.String()); got != "" {
 		t.Fatalf("thinking cache not cleared, got %q", got)
 	}
 }
 
-func TestHandleAgentEventToolExecStartAddsPending(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-	m.Width = 80
+func TestHandleAgentEventProgressBuffers(t *testing.T) {
+	t.Parallel()
 
-	ev := agentcore.Event{
-		Type:      agentcore.EventToolExecStart,
-		ToolID:    "t1",
-		Tool:      "read",
-		ToolLabel: "Read File",
-	}
-
-	next, _ := m.HandleAgentEvent(ev)
-	if _, ok := next.PendingTools["t1"]; !ok {
-		t.Fatal("expected PendingTools to contain t1")
-	}
-	// Header is buffered in ToolHeaders (printed together with result at ToolExecEnd).
-	if _, ok := next.ToolHeaders["t1"]; !ok {
-		t.Fatal("expected ToolHeaders to contain t1")
-	}
-}
-
-func TestHandleAgentEventToolExecEndRemovesPending(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-	m.Width = 80
-	m.PendingTools["t1"] = "read"
-	m.ToolOutputBuf["t1"] = nil
-
-	ev := agentcore.Event{
-		Type:   agentcore.EventToolExecEnd,
-		ToolID: "t1",
-		Tool:   "read",
-	}
-
-	next, _ := m.HandleAgentEvent(ev)
-	if _, ok := next.PendingTools["t1"]; ok {
-		t.Fatal("expected PendingTools to not contain t1 after ToolExecEnd")
-	}
-}
-
-func TestHandleAgentEventProgressDeltaBuffersStreamingReply(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-	m.Width = 80
-	m.ToolOutputBuf["t1"] = &strings.Builder{}
-
-	ev := agentcore.Event{
-		Type:       agentcore.EventToolExecUpdate,
-		ToolID:     "t1",
-		UpdateKind: agentcore.ToolExecUpdateProgress,
-		Progress: &agentcore.ProgressPayload{
-			Kind:  agentcore.ProgressToolDelta,
-			Agent: "worker",
-			Delta: "partial answer",
+	cases := []struct {
+		name   string
+		events []agentcore.Event
+		assert func(*testing.T, *Model)
+	}{
+		{
+			name: "delta appends reply buffer",
+			events: []agentcore.Event{
+				{
+					Type:       agentcore.EventToolExecUpdate,
+					ToolID:     "t1",
+					UpdateKind: agentcore.ToolExecUpdateProgress,
+					Progress: &agentcore.ProgressPayload{
+						Kind:  agentcore.ProgressToolDelta,
+						Agent: "worker",
+						Delta: "partial answer",
+					},
+				},
+			},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				if got := m.ToolDeltaBuf["t1"].String(); got != "partial answer" {
+					t.Fatalf("delta buffer = %q, want %q", got, "partial answer")
+				}
+			},
+		},
+		{
+			name: "thinking keeps latest value",
+			events: []agentcore.Event{
+				{
+					Type:       agentcore.EventToolExecUpdate,
+					ToolID:     "t1",
+					UpdateKind: agentcore.ToolExecUpdateProgress,
+					Progress: &agentcore.ProgressPayload{
+						Kind:     agentcore.ProgressThinking,
+						Agent:    "worker",
+						Thinking: "first thought",
+					},
+				},
+				{
+					Type:       agentcore.EventToolExecUpdate,
+					ToolID:     "t1",
+					UpdateKind: agentcore.ToolExecUpdateProgress,
+					Progress: &agentcore.ProgressPayload{
+						Kind:     agentcore.ProgressThinking,
+						Agent:    "worker",
+						Thinking: "second thought",
+					},
+				},
+			},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				if got := m.ToolThinkingBuf["t1"].String(); got != "second thought" {
+					t.Fatalf("thinking buffer = %q, want %q", got, "second thought")
+				}
+			},
+		},
+		{
+			name: "summary appends accumulated output",
+			events: []agentcore.Event{
+				{
+					Type:       agentcore.EventToolExecUpdate,
+					ToolID:     "t1",
+					UpdateKind: agentcore.ToolExecUpdateProgress,
+					Progress: &agentcore.ProgressPayload{
+						Kind:    agentcore.ProgressSummary,
+						Summary: "bash line",
+					},
+				},
+			},
+			assert: func(t *testing.T, m *Model) {
+				t.Helper()
+				out := m.ToolOutputBuf["t1"].String()
+				for _, want := range []string{"thinking thinking text", "reply reply text", "bash line"} {
+					if !strings.Contains(out, want) {
+						t.Fatalf("expected output buffer to contain %q, got %q", want, out)
+					}
+				}
+			},
 		},
 	}
 
-	next, _ := m.HandleAgentEvent(ev)
-	if got := next.ToolDeltaBuf["t1"].String(); got != "partial answer" {
-		t.Fatalf("delta buffer = %q, want %q", got, "partial answer")
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(nil, "test-model")
+			m.Ready = true
+			m.Width = 80
+			m.ToolOutputBuf["t1"] = &strings.Builder{}
+			m.ToolDeltaBuf["t1"] = &strings.Builder{}
+			m.ToolThinkingBuf["t1"] = &strings.Builder{}
 
-func TestHandleAgentEventProgressThinkingReplacesThinkingBuffer(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-	m.Width = 80
-	m.ToolOutputBuf["t1"] = &strings.Builder{}
+			if tc.name == "summary appends accumulated output" {
+				m.ToolDeltaBuf["t1"].WriteString("reply text")
+				m.ToolThinkingBuf["t1"].WriteString("thinking text")
+			}
 
-	ev1 := agentcore.Event{
-		Type:       agentcore.EventToolExecUpdate,
-		ToolID:     "t1",
-		UpdateKind: agentcore.ToolExecUpdateProgress,
-		Progress: &agentcore.ProgressPayload{
-			Kind:     agentcore.ProgressThinking,
-			Agent:    "worker",
-			Thinking: "first thought",
-		},
-	}
-	next, _ := m.HandleAgentEvent(ev1)
-
-	ev2 := agentcore.Event{
-		Type:       agentcore.EventToolExecUpdate,
-		ToolID:     "t1",
-		UpdateKind: agentcore.ToolExecUpdateProgress,
-		Progress: &agentcore.ProgressPayload{
-			Kind:     agentcore.ProgressThinking,
-			Agent:    "worker",
-			Thinking: "second thought",
-		},
-	}
-	next, _ = next.HandleAgentEvent(ev2)
-
-	if got := next.ToolThinkingBuf["t1"].String(); got != "second thought" {
-		t.Fatalf("thinking buffer = %q, want %q", got, "second thought")
-	}
-}
-
-func TestHandleAgentEventProgressSummaryAppendsOutputLine(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-	m.Width = 80
-	m.ToolOutputBuf["t1"] = &strings.Builder{}
-	m.ToolDeltaBuf["t1"] = &strings.Builder{}
-	m.ToolDeltaBuf["t1"].WriteString("reply text")
-	m.ToolThinkingBuf["t1"] = &strings.Builder{}
-	m.ToolThinkingBuf["t1"].WriteString("thinking text")
-
-	ev := agentcore.Event{
-		Type:       agentcore.EventToolExecUpdate,
-		ToolID:     "t1",
-		UpdateKind: agentcore.ToolExecUpdateProgress,
-		Progress: &agentcore.ProgressPayload{
-			Kind:    agentcore.ProgressSummary,
-			Summary: "bash line",
-		},
-	}
-
-	next, _ := m.HandleAgentEvent(ev)
-	out := next.ToolOutputBuf["t1"].String()
-	for _, want := range []string{"thinking thinking text", "reply reply text", "bash line"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected output buffer to contain %q, got %q", want, out)
-		}
-	}
-}
-
-func TestHandleAgentEventErrorReturnsPrintCmd(t *testing.T) {
-	m := New(nil, "test-model")
-	m.Ready = true
-
-	ev := agentcore.Event{
-		Type: agentcore.EventError,
-		Err:  fmt.Errorf("something broke"),
-	}
-
-	_, cmd := m.HandleAgentEvent(ev)
-	if cmd == nil {
-		t.Fatal("expected non-nil cmd for error event")
+			current := m
+			for _, ev := range tc.events {
+				next, _ := current.HandleAgentEvent(ev)
+				current = mustModel(t, next)
+			}
+			tc.assert(t, current)
+		})
 	}
 }

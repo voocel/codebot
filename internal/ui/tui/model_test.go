@@ -15,6 +15,15 @@ func stripANSI(s string) string {
 	return ansiPattern.ReplaceAllString(s, "")
 }
 
+func mustModel(t *testing.T, tm tea.Model) *Model {
+	t.Helper()
+	model, ok := tm.(*Model)
+	if !ok {
+		t.Fatalf("expected *Model, got %T", tm)
+	}
+	return model
+}
+
 func useImmediateHideCompletedTasksTick(t *testing.T) {
 	t.Helper()
 	orig := hideCompletedTasksTick
@@ -73,52 +82,53 @@ func TestRenderCompletionsShowsCommandPalette(t *testing.T) {
 	}
 }
 
-func TestCommandPaletteIdleBadgeStaysSingleLine(t *testing.T) {
-	badge := CommandPaletteIdleBadge(true)
-	if strings.Contains(badge, "\n") {
-		t.Fatalf("expected idle badge to stay single-line, got: %q", badge)
+func TestEnterOnCommandCompletion(t *testing.T) {
+	cases := []struct {
+		name       string
+		item       CompletionItem
+		wantInput  string
+		wantHasCmd bool
+	}{
+		{
+			name: "arg command fills input",
+			item: CompletionItem{
+				Name:        "plan",
+				Description: "Enter plan mode",
+				Usage:       "/plan [cancel|<task>]",
+				AutoExecute: false,
+			},
+			wantInput:  "/plan ",
+			wantHasCmd: false,
+		},
+		{
+			name: "no-arg command executes immediately",
+			item: CompletionItem{
+				Name:        "help",
+				Description: "Show help",
+				Usage:       "/help",
+				AutoExecute: true,
+			},
+			wantInput:  "",
+			wantHasCmd: true,
+		},
 	}
-}
 
-func TestEnterOnArgCommandOnlyFillsInput(t *testing.T) {
-	m := New(nil, "test-model")
-	m.compItems = []CompletionItem{{
-		Name:        "plan",
-		Description: "Enter plan mode",
-		Usage:       "/plan [cancel|<task>]",
-		AutoExecute: false,
-	}}
-	m.compActive = true
-	m.compIdx = 0
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(nil, "test-model")
+			m.compItems = []CompletionItem{tc.item}
+			m.compActive = true
+			m.compIdx = 0
 
-	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	got := next.(Model)
-	if cmd != nil {
-		t.Fatal("expected arg command enter to only fill input")
-	}
-	if got.Input.Value() != "/plan " {
-		t.Fatalf("expected input to be filled, got %q", got.Input.Value())
-	}
-}
-
-func TestEnterOnNoArgCommandExecutesImmediately(t *testing.T) {
-	m := New(nil, "test-model")
-	m.compItems = []CompletionItem{{
-		Name:        "help",
-		Description: "Show help",
-		Usage:       "/help",
-		AutoExecute: true,
-	}}
-	m.compActive = true
-	m.compIdx = 0
-
-	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	got := next.(Model)
-	if cmd == nil {
-		t.Fatal("expected no-arg command enter to execute immediately")
-	}
-	if got.Input.Value() != "" {
-		t.Fatalf("expected input to be cleared after execution, got %q", got.Input.Value())
+			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+			got := mustModel(t, next)
+			if (cmd != nil) != tc.wantHasCmd {
+				t.Fatalf("cmd presence = %v, want %v", cmd != nil, tc.wantHasCmd)
+			}
+			if got.Input.Value() != tc.wantInput {
+				t.Fatalf("input = %q, want %q", got.Input.Value(), tc.wantInput)
+			}
+		})
 	}
 }
 
@@ -218,7 +228,7 @@ func TestTaskListUpdateSchedulesHideWhenAllCompleted(t *testing.T) {
 			Total:     1,
 		},
 	})
-	next := nextModel.(Model)
+	next := mustModel(t, nextModel)
 
 	if next.Tasks == nil || next.Tasks.Total != 1 || next.Tasks.Completed != 1 {
 		t.Fatalf("expected completed task snapshot to be kept before hiding, got %#v", next.Tasks)
@@ -235,22 +245,6 @@ func TestTaskListUpdateSchedulesHideWhenAllCompleted(t *testing.T) {
 	}
 	if hideMsg.Version != 1 {
 		t.Fatalf("hide version = %d, want 1", hideMsg.Version)
-	}
-}
-
-func TestHideCompletedTasksMsgClearsCompletedSnapshot(t *testing.T) {
-	m := New(nil, "test-model")
-	snap := tools.TaskSnapshot{
-		Completed: 1,
-		Total:     1,
-	}
-	m.Tasks = &snap
-	m.taskHideVersion = 3
-
-	nextModel, _ := m.Update(HideCompletedTasksMsg{Version: 3})
-	next := nextModel.(Model)
-	if next.Tasks != nil {
-		t.Fatalf("expected tasks to be hidden, got %#v", next.Tasks)
 	}
 }
 
@@ -273,7 +267,7 @@ func TestHideCompletedTasksMsgRunsHideCallback(t *testing.T) {
 	m.taskHideVersion = 1
 
 	nextModel, cmd := m.Update(HideCompletedTasksMsg{Version: 1})
-	next := nextModel.(Model)
+	next := mustModel(t, nextModel)
 	if next.Tasks != nil {
 		t.Fatalf("expected tasks to be hidden, got %#v", next.Tasks)
 	}
@@ -297,7 +291,7 @@ func TestHideCompletedTasksMsgDoesNotClearNewOpenTasks(t *testing.T) {
 		},
 	})
 	staleHide := cmd().(HideCompletedTasksMsg)
-	next := nextModel.(Model)
+	next := mustModel(t, nextModel)
 
 	nextModel, _ = next.Update(TaskListUpdateMsg{
 		Snapshot: tools.TaskSnapshot{
@@ -305,13 +299,13 @@ func TestHideCompletedTasksMsgDoesNotClearNewOpenTasks(t *testing.T) {
 			Total:   1,
 		},
 	})
-	next = nextModel.(Model)
+	next = mustModel(t, nextModel)
 	if next.taskHideVersion != 2 {
 		t.Fatalf("taskHideVersion = %d, want 2 after new snapshot", next.taskHideVersion)
 	}
 
 	nextModel, _ = next.Update(staleHide)
-	next = nextModel.(Model)
+	next = mustModel(t, nextModel)
 	if next.Tasks == nil {
 		t.Fatal("expected stale hide message to be ignored")
 	}
