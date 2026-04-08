@@ -49,10 +49,10 @@ func TestApplyProviderDefaultsAnthropicClamp(t *testing.T) {
 func TestApplyProviderDefaultsAnthropicClampOpus(t *testing.T) {
 	t.Parallel()
 
-	m := &cfgModel{cfg: llm.GenerationConfig{MaxTokens: 65536}}
+	m := &cfgModel{cfg: llm.GenerationConfig{MaxTokens: 200000}}
 	applyProviderDefaults("anthropic", "claude-opus-4-6", m)
-	if m.cfg.MaxTokens != 32000 {
-		t.Fatalf("max tokens = %d, want 32000", m.cfg.MaxTokens)
+	if m.cfg.MaxTokens != 128000 {
+		t.Fatalf("max tokens = %d, want 128000", m.cfg.MaxTokens)
 	}
 }
 
@@ -63,5 +63,15 @@ func TestApplyProviderDefaultsNonAnthropicUnchanged(t *testing.T) {
 	applyProviderDefaults("openai", "gpt-4.1", m)
 	if m.cfg.MaxTokens != 65536 {
 		t.Fatalf("max tokens = %d, want 65536", m.cfg.MaxTokens)
+	}
+}
+
+func TestApplyProviderDefaultsAnthropicUnknownFallback(t *testing.T) {
+	t.Parallel()
+
+	m := &cfgModel{cfg: llm.GenerationConfig{MaxTokens: 65536}}
+	applyProviderDefaults("anthropic", "claude-unknown-next", m)
+	if m.cfg.MaxTokens != 32000 {
+		t.Fatalf("max tokens = %d, want 32000", m.cfg.MaxTokens)
 	}
 }

@@ -586,6 +586,9 @@ func (m *Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 		m.ShowWelcome = true
 		m.Images = nil
 	}
+	if msg.NewProvider != "" {
+		m.Provider = msg.NewProvider
+	}
 	if msg.NewModel != "" {
 		m.ModelName = msg.NewModel
 	}

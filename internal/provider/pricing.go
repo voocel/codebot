@@ -166,6 +166,10 @@ func convertModel(m openRouterModel) (ModelEntry, bool) {
 		ContextWindow: m.ContextLength,
 		Reasoning:     inferReasoning(prov, modelID),
 	}
+	if known, ok := lookupGeneratedModel(prov, modelID); ok {
+		entry.Reasoning = known.Reasoning
+		entry.MaxTokens = known.MaxTokens
+	}
 	if m.TopProvider != nil {
 		entry.MaxTokens = m.TopProvider.MaxCompletionTokens
 	}

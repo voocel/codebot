@@ -48,13 +48,7 @@ func newSessionRuntimePolicy(session *Session) *sessionRuntimePolicy {
 }
 
 func (p *sessionRuntimePolicy) beforeUserPrompt(blocks []agentcore.ContentBlock) {
-	if reminder, ok := taskManagementReminderForPrompt(blocks, p.session.TaskSnapshot()); ok {
-		p.session.queueRuntimeReminder(
-			"task_management:pre_prompt",
-			ReminderTaskManagement,
-			reminder,
-		)
-	}
+	_ = blocks
 }
 
 func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {

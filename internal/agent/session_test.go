@@ -471,6 +471,96 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 	}
 }
 
+func TestResolveAndSetModelSupportsExplicitProviderSyntax(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		pattern      string
+		wantResolved string
+		wantProvider string
+		wantModel    string
+		wantThinking string
+	}{
+		{
+			name:         "provider slash model preserves provider-qualified return",
+			pattern:      "openrouter/openai/gpt-5",
+			wantResolved: "openrouter/openai/gpt-5",
+			wantProvider: "openrouter",
+			wantModel:    "openai/gpt-5",
+			wantThinking: "low",
+		},
+		{
+			name:         "provider colon model normalizes to slash form",
+			pattern:      "anthropic:claude-sonnet-4-5",
+			wantResolved: "anthropic/claude-sonnet-4-5",
+			wantProvider: "anthropic",
+			wantModel:    "claude-sonnet-4-5",
+			wantThinking: "low",
+		},
+		{
+			name:         "provider colon model with thinking suffix",
+			pattern:      "anthropic:claude-sonnet-4-5:high",
+			wantResolved: "anthropic/claude-sonnet-4-5",
+			wantProvider: "anthropic",
+			wantModel:    "claude-sonnet-4-5",
+			wantThinking: "high",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			s := NewSession(SessionConfig{
+				Agent: agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+				Settings: config.Resolved{
+					Provider:      "openai",
+					Model:         "gpt-4.1",
+					ThinkingLevel: "low",
+					Providers: map[string]config.ProviderConfig{
+						"openai": {
+							APIKey: "openai-key",
+							Models: []string{"gpt-4.1", "gpt-5"},
+						},
+						"anthropic": {
+							APIKey: "anthropic-key",
+							Models: []string{"claude-sonnet-4-5"},
+						},
+						"openrouter": {
+							APIKey: "openrouter-key",
+							Models: []string{"openai/gpt-5"},
+						},
+					},
+				},
+				Cwd: dir,
+				CreateModel: func(_ string, model string, _ string, _ string) (agentcore.ChatModel, error) {
+					return &namedChatModel{name: model}, nil
+				},
+			})
+			t.Cleanup(s.Close)
+
+			resolved, err := s.ResolveAndSetModel(tc.pattern)
+			if err != nil {
+				t.Fatalf("ResolveAndSetModel(%q) error: %v", tc.pattern, err)
+			}
+			if resolved != tc.wantResolved {
+				t.Fatalf("resolved = %q, want %q", resolved, tc.wantResolved)
+			}
+			if got := s.Provider(); got != tc.wantProvider {
+				t.Fatalf("provider = %q, want %q", got, tc.wantProvider)
+			}
+			if got := s.ModelName(); got != tc.wantModel {
+				t.Fatalf("model = %q, want %q", got, tc.wantModel)
+			}
+			if got := s.Settings().ThinkingLevel; got != tc.wantThinking {
+				t.Fatalf("thinking = %q, want %q", got, tc.wantThinking)
+			}
+		})
+	}
+}
+
 func TestResolveCredentialsPerProvider(t *testing.T) {
 	t.Parallel()
 
@@ -811,7 +901,7 @@ func TestContinueWithRuntimeReminderAutoContinuesWhenIdle(t *testing.T) {
 	})
 }
 
-func TestComplexPromptQueuesTaskManagementReminder(t *testing.T) {
+func TestPromptDoesNotQueueTaskManagementReminderFromUserText(t *testing.T) {
 	t.Parallel()
 
 	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
@@ -829,40 +919,11 @@ func TestComplexPromptQueuesTaskManagementReminder(t *testing.T) {
 	})
 
 	msg := s.buildUserMessage(agentcore.TextBlock("start"))
-	if len(msg.Content) != 2 {
-		t.Fatalf("expected one injected reminder plus user block, got %#v", msg.Content)
-	}
-	if !strings.Contains(msg.Content[0].Text, "<system-reminder>") {
-		t.Fatalf("expected injected system reminder, got %#v", msg.Content)
-	}
-	if msg.Content[1].Text != "start" {
-		t.Fatalf("expected task management reminder, got %#v", msg.Content)
-	}
-}
-
-func TestSimplePromptDoesNotQueueTaskManagementReminder(t *testing.T) {
-	t.Parallel()
-
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
-	s := NewSession(SessionConfig{
-		Agent:     ag,
-		Settings:  config.Resolved{MaxTurns: 30},
-		Cwd:       t.TempDir(),
-		TaskStore: localtools.NewTaskStore(),
-	})
-	t.Cleanup(s.Close)
-
-	s.beginTurn()
-	s.runtime.beforeUserPrompt([]agentcore.ContentBlock{
-		agentcore.TextBlock("How do I print hello world in Go?"),
-	})
-
-	msg := s.buildUserMessage(agentcore.TextBlock("start"))
 	if len(msg.Content) != 1 {
-		t.Fatalf("expected no task reminder blocks, got %#v", msg.Content)
+		t.Fatalf("expected no pre-prompt task reminder blocks, got %#v", msg.Content)
 	}
-	if strings.Contains(msg.Content[0].Text, "task_create") {
-		t.Fatalf("unexpected task reminder in %#v", msg.Content)
+	if msg.Content[0].Text != "start" {
+		t.Fatalf("unexpected injected prompt content: %#v", msg.Content)
 	}
 }
 

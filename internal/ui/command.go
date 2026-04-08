@@ -18,6 +18,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	"github.com/voocel/codebot/internal/plugin"
+	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
@@ -306,7 +307,7 @@ func (a *App) cmdModel(args []string) tea.Cmd {
 				sb.WriteString("\nAvailable models:\n")
 				for _, m := range models {
 					marker := "  "
-					if strings.EqualFold(m.ID, currentModel) {
+					if provider.SameModelID(m.ID, currentModel) {
 						marker = "* "
 					}
 					ctx := tui.FormatTokens(m.ContextWindow)
@@ -332,8 +333,9 @@ func (a *App) cmdModel(args []string) tea.Cmd {
 
 	return func() tea.Msg {
 		return tui.CommandResultMsg{
-			Text:     tui.SystemMsgStyle.Render(fmt.Sprintf("Switched to model: %s", resolved)),
-			NewModel: resolved,
+			Text:        tui.SystemMsgStyle.Render(fmt.Sprintf("Switched to model: %s", resolved)),
+			NewProvider: a.Session.Provider(),
+			NewModel:    a.Session.ModelName(),
 		}
 	}
 }

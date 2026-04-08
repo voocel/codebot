@@ -544,21 +544,19 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 	}
 	s.mu.Unlock()
 
-	// Explicit provider/model (e.g. "anthropic/claude-sonnet-4-5").
+	// Explicit provider/model or provider:model.
 	// Only split when the left side is a configured provider key so that
-	// model IDs containing slashes (e.g. OpenRouter's "openai/gpt-5") fall
-	// through to the search below.
-	if prov, model, ok := strings.Cut(pattern, "/"); ok {
-		if _, ok := provSnapshot[prov]; ok {
-			if err := s.SetModel(prov, model); err != nil {
-				return "", err
-			}
-			s.updateContextFromRegistry(prov, model)
-			if thinkingLevel != "" {
-				s.SetThinkingLevel(thinkingLevel)
-			}
-			return config.FormatModelID(prov, model), nil
+	// model IDs containing slashes (e.g. OpenRouter's "openai/gpt-5") still
+	// work as explicit model IDs under the chosen provider.
+	if prov, model, ok := splitExplicitModelPattern(pattern, provSnapshot); ok {
+		if err := s.SetModel(prov, model); err != nil {
+			return "", err
 		}
+		s.updateContextFromRegistry(prov, model)
+		if thinkingLevel != "" {
+			s.SetThinkingLevel(thinkingLevel)
+		}
+		return explicitModelID(prov, model), nil
 	}
 
 	// Search across all configured providers' models lists.
@@ -603,6 +601,27 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 		s.SetThinkingLevel(thinkingLevel)
 	}
 	return pattern, nil
+}
+
+func splitExplicitModelPattern(pattern string, providers map[string]config.ProviderConfig) (providerKey, model string, ok bool) {
+	if prov, model, ok := strings.Cut(pattern, "/"); ok {
+		if _, exists := providers[prov]; exists && model != "" {
+			return prov, model, true
+		}
+	}
+	if prov, model, ok := strings.Cut(pattern, ":"); ok {
+		if _, exists := providers[prov]; exists && model != "" {
+			return prov, model, true
+		}
+	}
+	return "", "", false
+}
+
+func explicitModelID(providerKey, model string) string {
+	if providerKey == "" {
+		return model
+	}
+	return providerKey + "/" + model
 }
 
 // updateContextFromRegistry updates context window from registry metadata if available.

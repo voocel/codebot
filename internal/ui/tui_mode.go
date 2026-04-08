@@ -83,6 +83,9 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 	m := tui.New(sess, modelName, cfg)
 	m.MCPLoading = mcpMgr != nil && len(mcpServers) > 0
 	p := tea.NewProgram(m)
+	sendAsync := func(msg tea.Msg) {
+		go p.Send(msg)
+	}
 
 	// Start MCP server connections in background.
 	if mcpMgr != nil && len(mcpServers) > 0 {
@@ -207,24 +210,24 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 		}
 		if text, muted, ok := formatAutoCompactionEvent(ev); ok {
 			if muted {
-				p.Send(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
+				sendAsync(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
 			} else {
-				p.Send(tui.CommandResultMsg{Text: tui.CommandStyle.Render(text)})
+				sendAsync(tui.CommandResultMsg{Text: tui.CommandStyle.Render(text)})
 			}
 			return
 		}
 		if text, ok := formatRetryEvent(ev); ok {
-			p.Send(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
+			sendAsync(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
 			return
 		}
 		if ev.Type == agent.SERuntimeReminder && ev.Reminder != "" {
-			p.Send(tui.CommandResultMsg{
+			sendAsync(tui.CommandResultMsg{
 				Text: tui.MutedStyle.Render("Runtime reminder triggered: " + formatRuntimeReminderKind(ev.ReminderKind) + "."),
 			})
 			return
 		}
 		if ev.Type == agent.SEError && ev.Error != nil {
-			p.Send(tui.CommandResultMsg{
+			sendAsync(tui.CommandResultMsg{
 				Text: tui.ErrorStyle.Render("Session error: " + ev.Error.Error()),
 			})
 		}

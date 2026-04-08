@@ -64,6 +64,10 @@ type TaskNotifyFn func(TaskSnapshot)
 // Currently session-scoped (dir = tasks/{sessionID}). TODO(team): support
 // shared task list IDs so multiple sessions/agents can collaborate on the
 // same task list, with file locking and cross-process change notification.
+// NOTE: Current ConcurrencySafe declarations for task_* tools are correct for
+// this process-local store because mutations are serialized by s.mu and writes
+// are atomic. If task lists become shared across multiple processes, add
+// Claude-Code-style file/list locking before relying on those declarations.
 type TaskStore struct {
 	mu       sync.RWMutex
 	tasks    map[string]*Task
@@ -137,8 +141,8 @@ func (s *TaskStore) Delete(id string) bool {
 		return false
 	}
 	delete(s.tasks, id)
+	s.removeFileLocked(id)
 	s.mu.Unlock()
-	s.removeFile(id)
 	s.notify()
 	return true
 }
@@ -160,13 +164,10 @@ func (s *TaskStore) Create(subject, description, activeForm string, metadata map
 	}
 	s.tasks[id] = t
 	cp := copyTask(t)
-	dir := s.dir
 	hwm := s.nextID - 1
+	s.persistLocked(cp)
+	s.writeHighWaterMarkLocked(hwm)
 	s.mu.Unlock()
-	if dir != "" {
-		s.persist(cp)
-		s.writeHighWaterMark(hwm)
-	}
 	s.notify()
 	return cp
 }
@@ -206,8 +207,8 @@ func (s *TaskStore) Update(id string, opts TaskUpdateOpts) (*Task, error) {
 	if opts.Status != nil {
 		if *opts.Status == "deleted" {
 			delete(s.tasks, id)
+			s.removeFileLocked(id)
 			s.mu.Unlock()
-			s.removeFile(id)
 			s.notify()
 			return nil, nil
 		}
@@ -263,12 +264,11 @@ func (s *TaskStore) Update(id string, opts TaskUpdateOpts) (*Task, error) {
 	for _, other := range touched {
 		touchedCopies = append(touchedCopies, copyTask(other))
 	}
-	s.mu.Unlock()
-
-	s.persist(cp)
+	s.persistLocked(cp)
 	for _, tc := range touchedCopies {
-		s.persist(tc)
+		s.persistLocked(tc)
 	}
+	s.mu.Unlock()
 	s.notify()
 	return cp, nil
 }
@@ -440,6 +440,12 @@ func (s *TaskStore) loadFromDir() error {
 }
 
 func (s *TaskStore) persist(t *Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persistLocked(t)
+}
+
+func (s *TaskStore) persistLocked(t *Task) {
 	if s.dir == "" {
 		return
 	}
@@ -453,12 +459,18 @@ func (s *TaskStore) persist(t *Task) {
 		return
 	}
 	path := filepath.Join(s.dir, t.ID+".json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeFileAtomic(path, data, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: write task %s: %v\n", t.ID, err)
 	}
 }
 
 func (s *TaskStore) removeFile(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removeFileLocked(id)
+}
+
+func (s *TaskStore) removeFileLocked(id string) {
 	if s.dir == "" {
 		return
 	}
@@ -475,6 +487,12 @@ func (s *TaskStore) readHighWaterMark() int {
 }
 
 func (s *TaskStore) writeHighWaterMark(id int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writeHighWaterMarkLocked(id)
+}
+
+func (s *TaskStore) writeHighWaterMarkLocked(id int) {
 	if s.dir == "" {
 		return
 	}
@@ -482,7 +500,39 @@ func (s *TaskStore) writeHighWaterMark(id int) {
 		fmt.Fprintf(os.Stderr, "warning: recreate task dir %s: %v\n", s.dir, err)
 		return
 	}
-	_ = os.WriteFile(filepath.Join(s.dir, taskHighWaterMarkFile), []byte(strconv.Itoa(id)), 0o644)
+	if err := writeFileAtomic(filepath.Join(s.dir, taskHighWaterMarkFile), []byte(strconv.Itoa(id)), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: write task high water mark: %v\n", err)
+	}
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".task-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -495,8 +545,9 @@ type TaskCreateTool struct {
 	hooks *hooks.Runner
 }
 
-func (t *TaskCreateTool) Name() string  { return "task_create" }
-func (t *TaskCreateTool) Label() string { return "Create Task" }
+func (t *TaskCreateTool) Name() string                           { return "task_create" }
+func (t *TaskCreateTool) Label() string                          { return "Create Task" }
+func (t *TaskCreateTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 func (t *TaskCreateTool) Description() string {
 	return `Use this tool to create a structured task list for the current coding session. This helps track progress, organize complex work, and make progress visible to the user.
 
@@ -571,8 +622,10 @@ func (t *TaskCreateTool) Execute(ctx context.Context, args json.RawMessage) (jso
 // TaskGetTool retrieves a single task by ID.
 type TaskGetTool struct{ store *TaskStore }
 
-func (t *TaskGetTool) Name() string  { return "task_get" }
-func (t *TaskGetTool) Label() string { return "Get Task" }
+func (t *TaskGetTool) Name() string                           { return "task_get" }
+func (t *TaskGetTool) Label() string                          { return "Get Task" }
+func (t *TaskGetTool) ReadOnly(_ json.RawMessage) bool        { return true }
+func (t *TaskGetTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 func (t *TaskGetTool) Description() string {
 	return `Use this tool to retrieve a task by ID from the task list.
 
@@ -613,8 +666,9 @@ type TaskUpdateTool struct {
 	hooks *hooks.Runner
 }
 
-func (t *TaskUpdateTool) Name() string  { return "task_update" }
-func (t *TaskUpdateTool) Label() string { return "Update Task" }
+func (t *TaskUpdateTool) Name() string                           { return "task_update" }
+func (t *TaskUpdateTool) Label() string                          { return "Update Task" }
+func (t *TaskUpdateTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 func (t *TaskUpdateTool) Description() string {
 	return `Use this tool to update a task in the task list.
 
@@ -778,8 +832,10 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args json.RawMessage) (jso
 // TaskListTool lists all tasks.
 type TaskListTool struct{ store *TaskStore }
 
-func (t *TaskListTool) Name() string  { return "task_list" }
-func (t *TaskListTool) Label() string { return "List Tasks" }
+func (t *TaskListTool) Name() string                           { return "task_list" }
+func (t *TaskListTool) Label() string                          { return "List Tasks" }
+func (t *TaskListTool) ReadOnly(_ json.RawMessage) bool        { return true }
+func (t *TaskListTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 func (t *TaskListTool) Description() string {
 	return `Use this tool to list all tasks in the task list.
 

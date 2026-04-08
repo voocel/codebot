@@ -92,6 +92,10 @@ func applyProviderDefaults(prov, modelName string, model agentcore.ChatModel) {
 }
 
 func anthropicMaxOutputTokens(modelName string) int {
+	if entry, ok := lookupGeneratedModel("anthropic", modelName); ok && entry.MaxTokens > 0 {
+		return entry.MaxTokens
+	}
+
 	name := strings.ToLower(strings.TrimSpace(modelName))
 	switch {
 	case strings.Contains(name, "sonnet-4-5"):
@@ -103,7 +107,7 @@ func anthropicMaxOutputTokens(modelName string) int {
 	case strings.Contains(name, "opus"):
 		return 32000
 	default:
-		// Conservative fallback to avoid provider 400s when model-specific limits are unknown.
+		// 保守兜底，避免未知模型直接触发 provider 400。
 		return 32000
 	}
 }

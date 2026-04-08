@@ -13,7 +13,7 @@ import (
 
 // Set via ldflags by GoReleaser.
 var (
-	version = "v0.0.1"
+	version = "v0.1.0"
 	commit  = "none"
 	date    = "unknown"
 )

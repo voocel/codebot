@@ -157,6 +157,23 @@ func TestCommandPaletteReplacesBottomContextArea(t *testing.T) {
 	}
 }
 
+func TestHandleCommandResultUpdatesProviderAndModel(t *testing.T) {
+	m := New(nil, "gpt-4.1")
+	m.Provider = "openai"
+
+	nextModel, _ := m.handleCommandResult(CommandResultMsg{
+		NewProvider: "openrouter",
+		NewModel:    "openai/gpt-5",
+	})
+	next := mustModel(t, nextModel)
+	if next.Provider != "openrouter" {
+		t.Fatalf("provider = %q, want %q", next.Provider, "openrouter")
+	}
+	if next.ModelName != "openai/gpt-5" {
+		t.Fatalf("model = %q, want %q", next.ModelName, "openai/gpt-5")
+	}
+}
+
 func TestOverlayAppearsBelowInput(t *testing.T) {
 	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
 		Overlay: func(*Model) *OverlayState {

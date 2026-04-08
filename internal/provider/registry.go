@@ -65,28 +65,23 @@ func (r *ModelRegistry) Resolve(pattern string) (*ModelEntry, agentcore.Thinking
 	if idx := strings.Index(pattern, "/"); idx > 0 {
 		prov := pattern[:idx]
 		modelID := pattern[idx+1:]
-		for i := range r.models {
-			if strings.EqualFold(r.models[i].Provider, prov) &&
-				strings.EqualFold(r.models[i].ID, modelID) {
-				entry := r.models[i]
-				return &entry, thinkingLevel, nil
-			}
-		}
-	}
-
-	// Try exact ID match
-	for i := range r.models {
-		if strings.EqualFold(r.models[i].ID, pattern) {
-			entry := r.models[i]
+		if entry, ok := lookupModelEntry(r.models, prov, modelID); ok {
 			return &entry, thinkingLevel, nil
 		}
 	}
 
+	// Try exact ID match
+	if entry, ok := lookupModelEntry(r.models, "", pattern); ok {
+		return &entry, thinkingLevel, nil
+	}
+
 	// Try partial match (ID or Name contains pattern)
 	lower := strings.ToLower(pattern)
+	normalizedPattern := normalizeModelLookupID(pattern)
 	var candidates []int
 	for i := range r.models {
-		if strings.Contains(strings.ToLower(r.models[i].ID), lower) ||
+		if strings.Contains(normalizeModelLookupID(r.models[i].ID), normalizedPattern) ||
+			strings.Contains(strings.ToLower(r.models[i].ID), lower) ||
 			strings.Contains(strings.ToLower(r.models[i].Name), lower) {
 			candidates = append(candidates, i)
 		}
@@ -116,9 +111,11 @@ func (r *ModelRegistry) List(filter string) []ModelEntry {
 		return append([]ModelEntry{}, r.models...)
 	}
 	lower := strings.ToLower(filter)
+	normalizedFilter := normalizeModelLookupID(filter)
 	var out []ModelEntry
 	for _, m := range r.models {
 		if strings.Contains(strings.ToLower(m.Provider), lower) ||
+			strings.Contains(normalizeModelLookupID(m.ID), normalizedFilter) ||
 			strings.Contains(strings.ToLower(m.ID), lower) ||
 			strings.Contains(strings.ToLower(m.Name), lower) {
 			out = append(out, m)
@@ -201,16 +198,7 @@ func hasDatedSuffix(id string) bool {
 	if len(id) < 9 {
 		return false
 	}
-	suffix := id[len(id)-9:]
-	if suffix[0] != '-' {
-		return false
-	}
-	for _, c := range suffix[1:] {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+	return isDatedModelSuffix(id[len(id)-9:])
 }
 
 // ThinkingLevelOrder defines the ordered progression of thinking levels.
@@ -222,13 +210,11 @@ func (r *ModelRegistry) AvailableThinkingLevels(modelID string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	for _, m := range r.models {
-		if strings.EqualFold(m.ID, modelID) {
-			if m.Reasoning {
-				return ThinkingLevelOrder
-			}
-			return []string{"off"}
+	if entry, ok := lookupModelEntry(r.models, "", modelID); ok {
+		if entry.Reasoning {
+			return ThinkingLevelOrder
 		}
+		return []string{"off"}
 	}
 	// Unknown model — assume all levels are valid.
 	return ThinkingLevelOrder

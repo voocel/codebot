@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/provider"
@@ -300,6 +301,7 @@ func AuditLogPath() string {
 }
 
 var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+var settingsWriteMu sync.Mutex
 
 // projectID returns a stable, human-readable directory name for a project path.
 // Format: non-alphanumeric characters replaced with "-" (e.g. /Users/me/proj → -Users-me-proj).
@@ -443,7 +445,9 @@ func SaveSettings(s Settings) error {
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
-	return os.WriteFile(path, data, 0o600)
+	settingsWriteMu.Lock()
+	defer settingsWriteMu.Unlock()
+	return writeFileAtomic(path, data, 0o600)
 }
 
 // PatchGlobalSettings loads the global settings, applies the patch, and saves back.
@@ -453,17 +457,25 @@ func PatchGlobalSettings(patch Settings) error {
 	if dir == "" {
 		return fmt.Errorf("cannot determine user config directory")
 	}
+	settingsWriteMu.Lock()
+	defer settingsWriteMu.Unlock()
 	existing, err := loadSettingsFileStrict(filepath.Join(dir, "settings.json"))
 	if err != nil {
 		return err
 	}
 	merged := mergeSettings(existing, patch)
-	return SaveSettings(merged)
+	data, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal settings: %w", err)
+	}
+	return writeFileAtomic(filepath.Join(dir, "settings.json"), data, 0o600)
 }
 
 // PatchProjectSettings loads project-level settings, applies the patch, and saves back.
 func PatchProjectSettings(cwd string, patch Settings) error {
 	path := SettingsPath(cwd)
+	settingsWriteMu.Lock()
+	defer settingsWriteMu.Unlock()
 	existing, err := loadSettingsFileStrict(path)
 	if err != nil {
 		return err
@@ -477,7 +489,37 @@ func PatchProjectSettings(cwd string, patch Settings) error {
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
-	return os.WriteFile(path, data, 0o600)
+	return writeFileAtomic(path, data, 0o600)
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".settings-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func loadSettingsFile(path string) Settings {
