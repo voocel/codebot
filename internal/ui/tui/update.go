@@ -706,7 +706,7 @@ func (m *Model) appendRestoredAssistantMessage(sb *strings.Builder, am agentcore
 		return
 	}
 	for _, tc := range concrete.ToolCalls() {
-		header := ToolIconStyle.Render("● ") + ToolNameStyle.Render(FormatToolHeader(tc.Name, tc.Args))
+		header := ToolIconStyle.Render("● ") + RenderToolHeader(tc.Name, tc.Args)
 		sb.WriteString("\n")
 		sb.WriteString(header)
 	}

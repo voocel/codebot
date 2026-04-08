@@ -121,6 +121,16 @@ func FormatToolHeader(tool string, args json.RawMessage) string {
 	return name
 }
 
+// RenderToolHeader styles the tool name while keeping the summary muted.
+func RenderToolHeader(tool string, args json.RawMessage) string {
+	name := toolDisplayName(tool)
+	summary := extractToolSummary(tool, args)
+	if summary == "" {
+		return ToolNameStyle.Render(name)
+	}
+	return ToolNameStyle.Render(name) + ToolArgsStyle.Render("("+truncateRunes(summary, 60)+")")
+}
+
 // FormatToolOutput formats tool result text with tree connectors.
 // First line gets "└ ", subsequent lines get "  " alignment.
 // Truncates to maxVisible lines with "… +N lines" hint.

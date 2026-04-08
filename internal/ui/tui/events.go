@@ -128,8 +128,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			m.ToolHeaders[ev.ToolID] = header
 		} else {
 			m.PendingTools[ev.ToolID] = label
-			headerText := FormatToolHeader(ev.Tool, ev.Args)
-			m.ToolHeaders[ev.ToolID] = ToolIconStyle.Render("● ") + ToolNameStyle.Render(headerText)
+			m.ToolHeaders[ev.ToolID] = ToolIconStyle.Render("● ") + RenderToolHeader(ev.Tool, ev.Args)
 		}
 
 	case agentcore.EventToolExecUpdate:
@@ -206,7 +205,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		} else if ev.Tool == "ls" && !ev.IsError {
 			dirPath, lsBody := RenderLsResult(ev.Result)
 			if dirPath != "" {
-				header = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Ls("+shortenPath(dirPath)+")")
+				header = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Ls") + ToolArgsStyle.Render("("+shortenPath(dirPath)+")")
 			}
 			body = indentBlock(lsBody, 2)
 		} else {

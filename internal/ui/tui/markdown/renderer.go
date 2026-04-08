@@ -61,7 +61,7 @@ func (r *Renderer) RenderFinal(content string) string {
 			continue
 		}
 		if inCodeBlock {
-			out = append(out, renderCode(line))
+			out = append(out, renderCodeBlock(line))
 			continue
 		}
 		if trimmed == "" {
@@ -69,7 +69,7 @@ func (r *Renderer) RenderFinal(content string) string {
 			continue
 		}
 		if isHorizontalRule(trimmed) {
-			out = append(out, renderSeparator(strings.Repeat("─", r.separatorWidth())))
+			out = append(out, "---")
 			continue
 		}
 		if m := headingRE.FindStringSubmatch(line); m != nil {
@@ -111,13 +111,6 @@ func (r *Renderer) Width() int {
 		return 0
 	}
 	return r.width
-}
-
-func (r *Renderer) separatorWidth() int {
-	if r == nil {
-		return 24
-	}
-	return min(max(r.width-6, 12), 36)
 }
 
 func isFence(line string) bool {
@@ -306,7 +299,7 @@ func formatInline(text string) string {
 	}
 
 	text = replaceAllStringSubmatchFunc(codeSpanRE, text, func(groups []string) string {
-		return nextPlaceholder(renderCode(groups[1]))
+		return nextPlaceholder(renderCodeSpan(groups[1]))
 	})
 	text = replaceAllStringSubmatchFunc(strongRE, text, func(groups []string) string {
 		value := firstNonEmpty(groups[1], groups[2])
@@ -389,11 +382,11 @@ func ansiColorPrefix(light, dark string, attrs ...string) string {
 func headingPrefix(level int) string {
 	switch level {
 	case 1:
-		return ansiColorPrefix("24", "79", "1", "4")
+		return ansiPrefix("1", "3", "4")
 	case 2:
-		return ansiColorPrefix("24", "79", "1")
-	case 3, 4:
-		return ansiColorPrefix("136", "179", "1")
+		return ansiPrefix("1")
+	case 3, 4, 5, 6:
+		return ansiPrefix("1")
 	default:
 		return ansiPrefix("1")
 	}
@@ -505,8 +498,12 @@ func textWidth(text string) int {
 	return lipgloss.Width(stripANSI(text))
 }
 
-func renderCode(text string) string {
-	return ansiWrap(ansiColorPrefix("31", "117"), text)
+func renderCodeBlock(text string) string {
+	return text
+}
+
+func renderCodeSpan(text string) string {
+	return ansiWrap(ansiColorPrefix("26", "111"), text)
 }
 
 func renderStrong(text string) string {
@@ -518,26 +515,19 @@ func renderEmphasis(text string) string {
 }
 
 func renderQuoteBar(text string) string {
-	return ansiWrap(ansiColorPrefix("29", "30"), text)
+	return ansiWrap(ansiPrefix("2"), text)
 }
 
 func renderListMarker(text string) string {
-	return ansiWrap(ansiColorPrefix("72", "152", "1"), text)
+	return text
 }
 
 func renderSeparator(text string) string {
-	return ansiWrap(ansiColorPrefix("245", "240"), text)
+	return text
 }
 
 func renderLink(text string) string {
-	return ansiWrap(ansiColorPrefix("26", "111", "4"), text)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return ansiWrap(ansiColorPrefix("26", "111"), text)
 }
 
 func max(a, b int) int {
