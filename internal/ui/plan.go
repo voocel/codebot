@@ -2,7 +2,6 @@ package ui
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -361,32 +360,4 @@ func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {
 
 func (a *App) planReviewDetails() []string {
 	return a.allowedCommandLines()
-}
-
-func (a *App) planDebugString() string {
-	if a.PlanManager == nil {
-		return "off"
-	}
-	state := a.PlanManager.Snapshot()
-	parts := []string{string(state.Phase)}
-	if state.Slug != "" {
-		parts = append(parts, state.Slug)
-	}
-	if state.Title != "" {
-		parts = append(parts, state.Title)
-	}
-	return strings.Join(parts, " | ")
-}
-
-func (a *App) planSummary() string {
-	if a.PlanManager == nil {
-		return ""
-	}
-	state := a.PlanManager.Snapshot()
-	switch state.Phase {
-	case plan.PhasePlanning, plan.PhaseReview:
-		return fmt.Sprintf("%s (%s)", a.currentPlanTitle(), state.Phase)
-	default:
-		return ""
-	}
 }

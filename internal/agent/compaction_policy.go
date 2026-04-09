@@ -29,10 +29,6 @@ func CodebotToolClassifier(name string) bool {
 	return compactableTools[name]
 }
 
-func codebotToolClassifier(name string) bool {
-	return CodebotToolClassifier(name)
-}
-
 func (s *Session) PostSummaryRecoveryHook() agentctx.PostSummaryHook {
 	return s.postCompactRecoveryMessages
 }

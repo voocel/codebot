@@ -401,7 +401,7 @@ func (a *App) cmdContext() tea.Cmd {
 }
 
 func (a *App) cmdNew() tea.Cmd {
-	if err := a.Session.NewSession(); err != nil {
+	if err := a.Session.Reset(); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to create session: " + err.Error()))
 	}
 	a.resetPlanState()

@@ -53,10 +53,6 @@ func taskManagementReminderBeforeStop(msg agentcore.Message, snap localtools.Tas
 		true
 }
 
-func allTasksCompleted(snap localtools.TaskSnapshot) bool {
-	return snap.Total > 0 && snap.Pending == 0 && snap.InProgress == 0
-}
-
 func inProgressTasks(snap localtools.TaskSnapshot) []localtools.Task {
 	if len(snap.Items) == 0 || snap.InProgress == 0 {
 		return nil

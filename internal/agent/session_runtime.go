@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -26,9 +27,7 @@ func (s *Session) Prompt(text string) error {
 	if s.beforePrompt != nil {
 		s.beforePrompt()
 	}
-	if s.runtime != nil {
-		s.runtime.beforeUserPrompt([]agentcore.ContentBlock{agentcore.TextBlock(text)})
-	}
+	s.runtime.beforeUserPrompt([]agentcore.ContentBlock{agentcore.TextBlock(text)})
 
 	var msgs []agentcore.AgentMessage
 	if !s.preambleInjected && s.deferredToolsPreamble != "" {
@@ -44,9 +43,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 	if s.beforePrompt != nil {
 		s.beforePrompt()
 	}
-	if s.runtime != nil {
-		s.runtime.beforeUserPrompt(blocks)
-	}
+	s.runtime.beforeUserPrompt(blocks)
 
 	var msgs []agentcore.AgentMessage
 	if !s.preambleInjected && s.deferredToolsPreamble != "" {
@@ -371,9 +368,7 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 	s.mu.Lock()
 	curProv := s.provider
 	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))
-	for k, v := range s.providers {
-		provSnapshot[k] = v
-	}
+	maps.Copy(provSnapshot, s.providers)
 	s.mu.Unlock()
 
 	if strings.Contains(pattern, "/") {
@@ -539,9 +534,7 @@ func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
 	// Snapshot configured providers.
 	s.mu.Lock()
 	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))
-	for k, v := range s.providers {
-		provSnapshot[k] = v
-	}
+	maps.Copy(provSnapshot, s.providers)
 	s.mu.Unlock()
 
 	// Explicit provider/model or provider:model.
@@ -743,7 +736,9 @@ func (s *Session) reclampThinking() {
 	}
 }
 
-func (s *Session) NewSession() error {
+// Reset closes the current session log and starts a fresh session in the same cwd.
+// The in-memory conversation and harness state are cleared; the previous file is flushed.
+func (s *Session) Reset() error {
 	s.mu.Lock()
 	oldStore := s.store
 	mgr := s.mgr

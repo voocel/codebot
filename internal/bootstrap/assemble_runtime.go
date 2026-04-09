@@ -41,12 +41,18 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	session := buildSession(input, services, assembly, contextEngine, agentCore, tools)
 	wireSessionRuntime(input, assembly, services, session, baseTools, tools, agentCore, taskRT, contextEngine, summaryCompact)
 
+	modelName := config.FormatModelID(assembly.settings.Provider, assembly.settings.Model)
+	if session != nil && session.ModelName() != "" {
+		modelName = session.ModelName()
+	}
+
 	return &Runtime{
 		Cwd:                 input.cwd,
 		GitBranch:           detectGitBranch(input.cwd),
 		ApprovalEngine:      services.approvalEngine,
 		TaskRuntime:         taskRT,
 		Settings:            assembly.settings,
+		ModelName:           modelName,
 		Session:             session,
 		SessionStore:        input.sessionStore,
 		PluginCatalog:       services.pluginCatalog,

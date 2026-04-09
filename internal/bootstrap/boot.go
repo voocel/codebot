@@ -37,6 +37,7 @@ type Runtime struct {
 	TaskRuntime    *agentcore.TaskRuntime
 
 	Settings            config.Resolved
+	ModelName           string // display form: "provider/model" or session-restored name
 	Session             *agent.Session
 	SessionStore        *storage.Store
 	PluginCatalog       *plugin.Catalog

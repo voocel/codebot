@@ -12,33 +12,37 @@ import (
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
+	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
-	mcpclient "github.com/voocel/codebot/internal/mcp"
 	planstate "github.com/voocel/codebot/internal/plan"
-	"github.com/voocel/codebot/internal/plugin"
-	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // RunTUI executes interactive TUI mode.
-func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, approvalEngine *approval.Engine, taskRT *agentcore.TaskRuntime, mcpMgr *mcpclient.Manager, mcpServers map[string]mcpclient.ServerConfig, pluginCatalog *plugin.Catalog, skillCatalog *skill.Catalog, envHint string, sessionStore *storage.Store, planSlug, planTitle, planPhase, planPreMode string, planAllowedCommands []storage.AllowedCommandEntry) error {
+func RunTUI(rt *bootstrap.Runtime, version string) error {
+	sess := rt.Session
+	cwd := rt.Cwd
+	approvalEngine := rt.ApprovalEngine
+	mcpMgr := rt.MCPManager
+	mcpServers := rt.MCPServers
+
 	planStore := storage.NewPlanStore(config.PlansDir(cwd))
-	planManager := planstate.NewManager(sess, approvalEngine, planStore, sessionStore)
+	planManager := planstate.NewManager(sess, approvalEngine, planStore, rt.SessionStore)
 	adapter := &App{
 		Session:        sess,
 		Cwd:            cwd,
-		GitBranch:      gitBranch,
+		GitBranch:      rt.GitBranch,
 		ApprovalEngine: approvalEngine,
-		TaskRuntime:    taskRT,
+		TaskRuntime:    rt.TaskRuntime,
 		Commands:       nil,
 		Skills:         sess.Skills(),
-		PluginCatalog:  pluginCatalog,
-		SkillCatalog:   skillCatalog,
+		PluginCatalog:  rt.PluginCatalog,
+		SkillCatalog:   rt.SkillCatalog,
 		PlanStore:      planStore,
-		SessionStore:   sessionStore,
+		SessionStore:   rt.SessionStore,
 		PlanManager:    planManager,
 		MCPManager:     mcpMgr,
 		MCPServers:     mcpServers,
@@ -48,19 +52,19 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 	adapter.installMCPRefreshHook()
 
 	_ = planManager.Restore(planstate.State{
-		Phase:           planstate.Phase(planPhase),
-		Slug:            planSlug,
-		Title:           planTitle,
-		PreMode:         planPreMode,
-		AllowedCommands: planstate.ParseAllowedCommandsFromEntries(planAllowedCommands),
+		Phase:           planstate.Phase(rt.PlanPhase),
+		Slug:            rt.PlanSlug,
+		Title:           rt.PlanTitle,
+		PreMode:         rt.PlanPreMode,
+		AllowedCommands: planstate.ParseAllowedCommandsFromEntries(rt.PlanAllowedCommands),
 	})
-	adapter.planTitle = planTitle
+	adapter.planTitle = rt.PlanTitle
 
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()
 	cfg.Version = version
 	cfg.Provider = sess.Provider()
-	cfg.EnvHint = envHint
+	cfg.EnvHint = rt.EnvHint
 	cfg.RestoredMessages = sess.Messages()
 	if snap := sess.TaskSnapshot(); snap.Total > 0 {
 		cfg.InitialTasks = &snap
@@ -80,7 +84,7 @@ func RunTUI(sess *agent.Session, cwd, gitBranch, modelName, version string, appr
 			sess.SetMCPInstructions(msg.Instructions)
 		}
 	}
-	m := tui.New(sess, modelName, cfg)
+	m := tui.New(sess, rt.ModelName, cfg)
 	m.MCPLoading = mcpMgr != nil && len(mcpServers) > 0
 	p := tea.NewProgram(m)
 	sendAsync := func(msg tea.Msg) {

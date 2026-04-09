@@ -7,7 +7,6 @@ import (
 
 	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/bootstrap"
-	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui"
 )
 
@@ -54,11 +53,7 @@ func main() {
 		return
 	}
 
-	modelName := config.FormatModelID(rt.Settings.Provider, rt.Settings.Model)
-	if rt.Session != nil && rt.Session.ModelName() != "" {
-		modelName = rt.Session.ModelName()
-	}
-	if err := ui.RunTUI(rt.Session, rt.Cwd, rt.GitBranch, modelName, version, rt.ApprovalEngine, rt.TaskRuntime, rt.MCPManager, rt.MCPServers, rt.PluginCatalog, rt.SkillCatalog, rt.EnvHint, rt.SessionStore, rt.PlanSlug, rt.PlanTitle, rt.PlanPhase, rt.PlanPreMode, rt.PlanAllowedCommands); err != nil {
+	if err := ui.RunTUI(rt, version); err != nil {
 		fmt.Fprintln(os.Stderr, formatCLIError(err))
 		os.Exit(1)
 	}

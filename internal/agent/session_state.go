@@ -40,9 +40,7 @@ func (s *Session) Subscribe(fn func(SessionEvent)) func() {
 }
 
 func (s *Session) handleAgentEvent(ev agentcore.Event) {
-	if s.runtime != nil {
-		s.runtime.handleEvent(ev)
-	}
+	s.runtime.handleEvent(ev)
 
 	if ev.Type == agentcore.EventMessageEnd {
 		if msg, ok := ev.Message.(agentcore.Message); ok {
@@ -74,12 +72,10 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 			return
 		}
 		s.finalizeTurnOutcome()
-		if s.runtime != nil && s.runtime.continuePendingReminder() {
+		if s.runtime.continuePendingReminder() {
 			return
 		}
-		if s.runtime != nil {
-			s.runtime.afterAgentEnd()
-		}
+		s.runtime.afterAgentEnd()
 		if s.hookRunner != nil {
 			s.hookRunner.RunNotification(context.Background(), "agent response complete")
 		}
@@ -189,17 +185,6 @@ func (s *Session) recordInvokedSkill(name, promptText string, paths []string) {
 	}
 }
 
-func cloneInvocationCounts(src map[string]int) map[string]int {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[string]int, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
 func invocationUsageScores(invocations map[string]int) map[string]float64 {
 	if len(invocations) == 0 {
 		return nil
@@ -233,17 +218,6 @@ func truncateRunes(s string, max int) string {
 		return string(runes[:1])
 	}
 	return string(runes[:max-1]) + "…"
-}
-
-func (s *Session) emitContinueError(err error) {
-	s.emit(SessionEvent{
-		Type:  SEError,
-		Error: fmt.Errorf("overflow auto-continue: %w", err),
-	})
-	s.emit(SessionEvent{
-		Type:       SEAgentEvent,
-		AgentEvent: &agentcore.Event{Type: agentcore.EventAgentEnd},
-	})
 }
 
 func (p *sessionPersistence) handleMessageEnd(msg agentcore.Message) {
