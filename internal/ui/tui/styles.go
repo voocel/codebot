@@ -6,7 +6,7 @@ import "github.com/charmbracelet/lipgloss"
 var (
 	ColorPrimary   = lipgloss.Color("#3FA796")                            // teal, core brand/action
 	ColorAccent    = lipgloss.Color("#D89B5B")                            // warm amber accent
-	ColorUser      = lipgloss.AdaptiveColor{Light: "25", Dark: "#8AB4F8"} // deeper blue on light theme, calm blue on dark
+	ColorUser      = lipgloss.AdaptiveColor{Light: "31", Dark: "#9CC2F9"} // softer user blue, still distinct from assistant/tool colors
 	ColorAssistant = lipgloss.Color("#B8E1DD")                            // pale teal
 	ColorTool      = lipgloss.Color("#E5B567")                            // amber/yellow
 	ColorError     = lipgloss.Color("#E06C75")                            // soft red

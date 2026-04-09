@@ -49,6 +49,7 @@ func newSessionRuntimePolicy(session *Session) *sessionRuntimePolicy {
 
 func (p *sessionRuntimePolicy) beforeUserPrompt(blocks []agentcore.ContentBlock) {
 	_ = blocks
+	p.queueTaskManagementPromptReminder()
 }
 
 func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {
@@ -178,6 +179,18 @@ func (p *sessionRuntimePolicy) handleMessageEnd(msg agentcore.Message) {
 	}
 }
 
+func (p *sessionRuntimePolicy) queueTaskManagementPromptReminder() {
+	s := p.session
+	if s.taskStore == nil || !hasToolNamed(s.activeTools, "task_update") {
+		return
+	}
+
+	snap := s.taskStore.Snapshot()
+	if key, reminder, ok := taskManagementReminderForNextPrompt(s.agent.Messages(), snap); ok {
+		s.queueRuntimeReminder(key, ReminderTaskManagement, reminder)
+	}
+}
+
 func hashToolArgs(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -198,6 +211,15 @@ func isReadOnlyExplorationTool(name string) bool {
 	default:
 		return false
 	}
+}
+
+func hasToolNamed(tools []agentcore.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool != nil && tool.Name() == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) beginTurn() {
