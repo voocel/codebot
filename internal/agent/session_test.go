@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -471,6 +473,82 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 	}
 }
 
+func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	configDir := filepath.Join(home, ".codebot")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	initial := `{
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "small_model": "gpt-5.4",
+  "providers": {
+    "openai": {"api_key": "openai-key"},
+    "anthropic": {"api_key": "anthropic-key"}
+  }
+}`
+	settingsPath := filepath.Join(configDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	dir := t.TempDir()
+	mgr := storage.NewManager(dir)
+	store, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent:   agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Store:   store,
+		Manager: mgr,
+		Settings: config.Resolved{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Providers: map[string]config.ProviderConfig{
+				"openai":    {APIKey: "openai-key"},
+				"anthropic": {APIKey: "anthropic-key"},
+			},
+			ContextWindow:  128000,
+			AutoCompaction: false,
+			MaxTurns:       30,
+		},
+		Cwd: dir,
+		CreateModel: func(_ string, _ string, _ string, _ string) (agentcore.ChatModel, error) {
+			return &stubChatModel{}, nil
+		},
+	})
+	t.Cleanup(s.Close)
+
+	if err := s.SetModel("anthropic", "claude-sonnet-4-5"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+
+	got, err := config.LoadSettingsStrict(dir)
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if got.Provider != "openai" {
+		t.Fatalf("provider rewritten: got %q want %q", got.Provider, "openai")
+	}
+	if got.Model != "gpt-5.4" {
+		t.Fatalf("model rewritten: got %q want %q", got.Model, "gpt-5.4")
+	}
+	if got.SmallModel != "gpt-5.4" {
+		t.Fatalf("small model rewritten: got %q want %q", got.SmallModel, "gpt-5.4")
+	}
+	if s.Provider() != "anthropic" {
+		t.Fatalf("session provider not switched: got %q want %q", s.Provider(), "anthropic")
+	}
+	if s.ModelName() != "claude-sonnet-4-5" {
+		t.Fatalf("session model not switched: got %q want %q", s.ModelName(), "claude-sonnet-4-5")
+	}
+}
+
 func TestResolveAndSetModelSupportsExplicitProviderSyntax(t *testing.T) {
 	t.Parallel()
 
@@ -924,68 +1002,6 @@ func TestPromptDoesNotQueueTaskManagementReminderFromUserText(t *testing.T) {
 	}
 	if msg.Content[0].Text != "start" {
 		t.Fatalf("unexpected injected prompt content: %#v", msg.Content)
-	}
-}
-
-func TestTaskManagementReminderQueuedForUntrackedOrBroadWork(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name  string
-		store *localtools.TaskStore
-		run   func(s *Session)
-	}{
-		{
-			name:  "missing task list",
-			store: localtools.NewTaskStore(),
-			run: func(s *Session) {
-				args := json.RawMessage(`{"path":"main.go"}`)
-				for i := 0; i < 3; i++ {
-					toolID := fmt.Sprintf("read-%d", i)
-					s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecStart, ToolID: toolID, Tool: "read", Args: args})
-					s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecEnd, ToolID: toolID, Tool: "read"})
-				}
-			},
-		},
-		{
-			name: "single broad task",
-			store: func() *localtools.TaskStore {
-				store := localtools.NewTaskStore()
-				store.Create("Implement the entire project", "An overly broad task", "Implementing the entire project", nil)
-				return store
-			}(),
-			run: func(s *Session) {
-				s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecStart, ToolID: "task-1", Tool: "task_create"})
-				s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecEnd, ToolID: "task-1", Tool: "task_create"})
-				editArgs := json.RawMessage(`{"file":"main.go"}`)
-				s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecStart, ToolID: "edit-1", Tool: "edit", Args: editArgs})
-				s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecEnd, ToolID: "edit-1", Tool: "edit"})
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
-			s := NewSession(SessionConfig{
-				Agent:     ag,
-				Settings:  config.Resolved{MaxTurns: 30},
-				Cwd:       t.TempDir(),
-				TaskStore: tc.store,
-			})
-			t.Cleanup(s.Close)
-
-			s.beginTurn()
-			tc.run(s)
-
-			msg := s.buildUserMessage(agentcore.TextBlock("continue"))
-			if len(msg.Content) != 2 {
-				t.Fatalf("expected one injected reminder plus user block, got %#v", msg.Content)
-			}
-			if !strings.Contains(msg.Content[0].Text, "<system-reminder>") {
-				t.Fatalf("expected injected system reminder, got %#v", msg.Content)
-			}
-		})
 	}
 }
 

@@ -114,7 +114,6 @@ func (p *sessionRuntimePolicy) trackToolEnd(ev agentcore.Event) {
 	p.session.mu.Unlock()
 
 	p.detectRepeatedCalls(record, recent)
-	p.detectTaskManagementGap()
 }
 
 func (p *sessionRuntimePolicy) detectRepeatedCalls(current toolCallFingerprint, recent []toolCallFingerprint) {
@@ -136,26 +135,6 @@ func (p *sessionRuntimePolicy) detectRepeatedCalls(current toolCallFingerprint, 
 			"repeat_tool_call:"+current.Tool+":"+current.ArgsHash,
 			ReminderRepeatToolCall,
 			"<system-reminder>\nYou are repeatedly calling the same tool with effectively the same arguments. Summarize what you already know, what is still missing, and your next hypothesis before making the same call again.\n</system-reminder>",
-		)
-	}
-}
-
-func (p *sessionRuntimePolicy) detectTaskManagementGap() {
-	s := p.session
-	if s.taskStore == nil {
-		return
-	}
-
-	s.mu.Lock()
-	turn := s.currentTurn
-	s.mu.Unlock()
-
-	snap := s.taskStore.Snapshot()
-	if key, reminder, ok := taskManagementReminderForTurn(turn, snap); ok {
-		p.session.deliverRuntimeReminder(
-			key,
-			ReminderTaskManagement,
-			reminder,
 		)
 	}
 }

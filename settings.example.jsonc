@@ -1,5 +1,5 @@
 {
-  // Current selection — updated automatically when switching via /model
+  // 默认 provider/model；运行时切换模型只影响当前会话，不会自动回写这里
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
   "small_model": "claude-haiku-4-5",  // auto-filled from provider config or main model

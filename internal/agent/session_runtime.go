@@ -485,27 +485,6 @@ func (s *Session) SetModel(prov, model string) error {
 
 	s.reclampThinking()
 
-	s.mu.Lock()
-	thinkLvl := s.settings.ThinkingLevel
-	curSmall := s.settings.SmallModel
-	cwd := s.cwd
-	s.mu.Unlock()
-
-	patch := config.Settings{
-		Provider:      &prov,
-		Model:         &model,
-		SmallModel:    &curSmall,
-		ThinkingLevel: &thinkLvl,
-	}
-	if err := config.PatchGlobalSettings(patch); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: persist global setting: %v\n", err)
-	}
-	if config.ProjectConfigExists(cwd) {
-		if err := config.PatchProjectSettings(cwd, patch); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: persist project setting: %v\n", err)
-		}
-	}
-
 	return nil
 }
 

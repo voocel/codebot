@@ -9,28 +9,11 @@ import (
 )
 
 const (
-	taskManagementMissingReminder      = "<system-reminder>\nYou are doing multi-step work without maintaining a task list. Create concrete tasks now instead of continuing without structure.\n</system-reminder>"
-	taskManagementExpandSingleReminder = "<system-reminder>\nYour task list is too broad for the current scope. Split the single broad task into multiple more specific tasks and keep their statuses up to date.\n</system-reminder>"
-	taskManagementStaleReminderTag     = "<task-management-stale-reminder>"
-	taskManagementStaleReminderLead    = "The task tools haven't been used recently."
-	taskReminderTurnsSinceWrite        = 10
-	taskReminderTurnsBetweenReminders  = 10
+	taskManagementStaleReminderTag    = "<task-management-stale-reminder>"
+	taskManagementStaleReminderLead   = "The task tools haven't been used recently."
+	taskReminderTurnsSinceWrite       = 10
+	taskReminderTurnsBetweenReminders = 10
 )
-
-func taskManagementReminderForTurn(turn TurnOutcomeSnapshot, snap localtools.TaskSnapshot) (key, reminder string, ok bool) {
-	if turn.ReadOnlyToolCalls < 3 && turn.CodeEditToolCalls == 0 {
-		return "", "", false
-	}
-
-	switch {
-	case turn.TaskMutations == 0:
-		return "task_management:missing", taskManagementMissingReminder, true
-	case snap.Total == 1 && (turn.ReadOnlyToolCalls >= 3 || turn.CodeEditToolCalls > 0):
-		return "task_management:expand_single", taskManagementExpandSingleReminder, true
-	default:
-		return "", "", false
-	}
-}
 
 func taskManagementReminderForNextPrompt(msgs []agentcore.AgentMessage, snap localtools.TaskSnapshot) (key, reminder string, ok bool) {
 	if snap.Total == 0 {
