@@ -385,7 +385,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 				"openai": {APIKey: "k"},
 			},
 			ContextWindow:  128000,
-			AutoCompaction: false,
+
 			MaxTurns:       30,
 		},
 		Cwd: dir,
@@ -445,7 +445,7 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 				"openai": {APIKey: "k"},
 			},
 			ContextWindow:  128000,
-			AutoCompaction: false,
+
 			MaxTurns:       30,
 		},
 		Cwd: dir,
@@ -514,7 +514,7 @@ func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 				"anthropic": {APIKey: "anthropic-key"},
 			},
 			ContextWindow:  128000,
-			AutoCompaction: false,
+
 			MaxTurns:       30,
 		},
 		Cwd: dir,
@@ -677,7 +677,7 @@ func TestApplySkillInvocationUsesTemporaryOverrides(t *testing.T) {
 			Model:          "base-model",
 			ThinkingLevel:  "low",
 			ContextWindow:  128000,
-			AutoCompaction: false,
+
 			MaxTurns:       30,
 			Providers: map[string]config.ProviderConfig{
 				"openai": {APIKey: "k", Models: []string{"base-model", "skill-model"}},

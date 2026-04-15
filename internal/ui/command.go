@@ -430,11 +430,6 @@ func (a *App) cmdSettings() tea.Cmd {
 	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
 	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
 
-	autoCompact := "off"
-	if s.AutoCompaction {
-		autoCompact = "on"
-	}
-
 	var sb strings.Builder
 	renderRow := func(label, value string) {
 		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-16s", label)))
@@ -456,7 +451,6 @@ func (a *App) cmdSettings() tea.Cmd {
 	sb.WriteString("\n")
 	renderRow("Thinking", thinking)
 	renderRow("Context", tui.FormatTokens(s.ContextWindow))
-	renderRow("Auto compact", autoCompact)
 	renderRow("Max turns", fmt.Sprintf("%d", s.MaxTurns))
 	renderMetaRow("Config", config.SettingsPath(a.Cwd))
 

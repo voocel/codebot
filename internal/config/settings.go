@@ -91,8 +91,6 @@ type Settings struct {
 
 	ContextWindow *int `json:"context_window,omitempty"`
 
-	AutoCompaction *bool `json:"auto_compaction,omitempty"`
-
 	ThinkingLevel *string `json:"thinking_level,omitempty"`
 
 	MaxTurns *int `json:"max_turns,omitempty"`
@@ -120,9 +118,8 @@ type Resolved struct {
 	SmallModel string                    // sub-agent model; equals Model when not configured
 	Providers  map[string]ProviderConfig // per-provider credentials
 
-	ContextWindow  int // auto-detected from model registry at boot
-	AutoCompaction bool
-	ThinkingLevel  string
+	ContextWindow int // auto-detected from model registry at boot
+	ThinkingLevel string
 	MaxTurns       int
 	SearchProvider string
 	SearchAPIKey   string
@@ -197,8 +194,7 @@ func (s Settings) Resolve() Resolved {
 	r := Resolved{
 		Provider:       "openai",
 		Providers:      make(map[string]ProviderConfig),
-		AutoCompaction: true,
-		ThinkingLevel:  "low",
+		ThinkingLevel: "low",
 		MaxTurns:       200,
 	}
 	if s.Provider != nil && *s.Provider != "" {
@@ -217,9 +213,6 @@ func (s Settings) Resolve() Resolved {
 		if v != nil {
 			r.Providers[k] = *v
 		}
-	}
-	if s.AutoCompaction != nil {
-		r.AutoCompaction = *s.AutoCompaction
 	}
 	if s.ThinkingLevel != nil {
 		r.ThinkingLevel = *s.ThinkingLevel
@@ -398,9 +391,6 @@ func mergeSettings(base, override Settings) Settings {
 			}
 			base.Providers[k] = existing
 		}
-	}
-	if override.AutoCompaction != nil {
-		base.AutoCompaction = override.AutoCompaction
 	}
 	if override.ThinkingLevel != nil {
 		base.ThinkingLevel = override.ThinkingLevel

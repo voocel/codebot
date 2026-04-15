@@ -42,7 +42,6 @@
   },
 
   "context_window": 128000,  // tokens
-  "auto_compaction": true,   // compact when context fills up
   "thinking_level": "low",   // off | low | medium | high | xhigh
   "max_turns": 30,
 
