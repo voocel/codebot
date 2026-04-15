@@ -172,9 +172,10 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, func() tea.Msg {
 			return tui.CommandResultMsg{
-				Text:        tui.SystemMsgStyle.Render("Switched to model: " + display),
-				NewProvider: entry.provider,
-				NewModel:    entry.model,
+				Text:             tui.SystemMsgStyle.Render("Switched to model: " + display),
+				NewProvider:      entry.provider,
+				NewModel:         entry.model,
+				NewContextWindow: c.app.Session.Settings().ContextWindow,
 			}
 		}
 

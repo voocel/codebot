@@ -592,6 +592,9 @@ func (m *Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 	if msg.NewModel != "" {
 		m.ModelName = msg.NewModel
 	}
+	if msg.NewContextWindow > 0 {
+		m.ContextWindow = msg.NewContextWindow
+	}
 	if msg.Text != "" {
 		var output string
 		if m.ShowWelcome {

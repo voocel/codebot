@@ -31,6 +31,7 @@ type Config struct {
 	Placeholder          string
 	Version              string
 	Provider             string
+	ContextWindow        int
 	Cwd                  string
 	GitBranch            string
 	EnvHint              string                   // shown below welcome when using env var credentials
@@ -95,11 +96,12 @@ type runStats struct {
 
 // Deps holds external dependencies and static configuration for the TUI.
 type Deps struct {
-	Driver    Driver
-	ModelName string
-	Provider  string
-	Version   string
-	config    Config
+	Driver        Driver
+	ModelName     string
+	ContextWindow int
+	Provider      string
+	Version       string
+	config        Config
 }
 
 // State holds mutable runtime state for the TUI.
@@ -225,11 +227,12 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 
 	return &Model{
 		Deps: Deps{
-			Driver:    driver,
-			ModelName: modelName,
-			Provider:  c.Provider,
-			Version:   c.Version,
-			config:    c,
+			Driver:        driver,
+			ModelName:     modelName,
+			ContextWindow: c.ContextWindow,
+			Provider:      c.Provider,
+			Version:       c.Version,
+			config:        c,
 		},
 		State: State{
 			Spinner:         sp,

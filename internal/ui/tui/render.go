@@ -133,7 +133,7 @@ func (m *Model) renderWelcome() string {
 		footerBits = append(footerBits, ContextChipAccentStyle.Render(m.Provider))
 	}
 	if m.ModelName != "" {
-		footerBits = append(footerBits, ContextChipStyle.Render(m.ModelName))
+		footerBits = append(footerBits, ContextChipStyle.Render(m.formatModelChip()))
 	}
 	if m.Cwd != "" {
 		footerBits = append(footerBits, ContextChipStyle.Render(shortenPath(m.Cwd)))
@@ -320,7 +320,7 @@ func (m *Model) RenderContextBar() string {
 	if m.Cwd != "" {
 		chips = append(chips, ContextChipStyle.Render(filepath.Base(m.Cwd)))
 	}
-	chips = append(chips, ContextChipStyle.Render("· "+m.ModelName))
+	chips = append(chips, ContextChipStyle.Render("· "+m.formatModelChip()))
 	if m.config.StatusRight != nil {
 		if extra := m.config.StatusRight(m); extra != "" {
 			chips = append(chips, ContextChipStyle.Render("· "+extra))
@@ -595,6 +595,14 @@ func openTaskBlockers(snap storage.TaskSnapshot, task storage.Task) []string {
 	}
 	sort.Strings(active)
 	return active
+}
+
+func (m *Model) formatModelChip() string {
+	s := m.ModelName
+	if m.ContextWindow > 0 {
+		s += " (" + FormatTokens(m.ContextWindow) + ")"
+	}
+	return s
 }
 
 // FormatTokens formats a token count with k/M suffix for readability.

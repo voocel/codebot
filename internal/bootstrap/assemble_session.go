@@ -89,12 +89,10 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	}
 
 	settings := input.settings
-	if settings.ContextWindow <= 0 {
-		if entry, _, err := input.registry.Resolve(activeModel); err == nil && entry.ContextWindow > 0 {
-			settings.ContextWindow = entry.ContextWindow
-		} else {
-			settings.ContextWindow = 128000
-		}
+	if entry, _, err := input.registry.Resolve(activeModel); err == nil && entry.ContextWindow > 0 {
+		settings.ContextWindow = entry.ContextWindow
+	} else if settings.ContextWindow <= 0 {
+		settings.ContextWindow = 128000
 	}
 	settings.Provider = activeProvider
 	settings.Model = activeModel

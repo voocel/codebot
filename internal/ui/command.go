@@ -333,9 +333,10 @@ func (a *App) cmdModel(args []string) tea.Cmd {
 
 	return func() tea.Msg {
 		return tui.CommandResultMsg{
-			Text:        tui.SystemMsgStyle.Render(fmt.Sprintf("Switched to model: %s", resolved)),
-			NewProvider: a.Session.Provider(),
-			NewModel:    a.Session.ModelName(),
+			Text:             tui.SystemMsgStyle.Render(fmt.Sprintf("Switched to model: %s", resolved)),
+			NewProvider:      a.Session.Provider(),
+			NewModel:         a.Session.ModelName(),
+			NewContextWindow: a.Session.Settings().ContextWindow,
 		}
 	}
 }
@@ -423,38 +424,19 @@ func (a *App) cmdSettings() tea.Cmd {
 	if thinking == "" {
 		thinking = "(unset)"
 	}
-	apiKey := a.Session.APIKey()
-	masked := maskKey(apiKey)
 
-	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
-	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
-	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
+	p := tui.NewInfoPanel("Settings")
+	p.Row("Provider", s.Provider)
+	p.Row("Model", a.Session.ModelName())
+	p.Row("API key", maskKey(a.Session.APIKey()))
+	p.Row("Base URL", baseURL)
+	p.Section("Runtime")
+	p.Row("Thinking", thinking)
+	p.Row("Context", tui.FormatTokens(s.ContextWindow))
+	p.Row("Max turns", fmt.Sprintf("%d", s.MaxTurns))
+	p.Hint("Config", config.SettingsPath(a.Cwd))
 
-	var sb strings.Builder
-	renderRow := func(label, value string) {
-		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-16s", label)))
-		sb.WriteString(" ")
-		sb.WriteString(valueStyle.Render(value))
-		sb.WriteString("\n")
-	}
-	renderMetaRow := func(label, value string) {
-		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-16s", label)))
-		sb.WriteString(" ")
-		sb.WriteString(metaStyle.Render(value))
-		sb.WriteString("\n")
-	}
-
-	renderRow("Provider", s.Provider)
-	renderRow("Model", a.Session.ModelName())
-	renderRow("API key", masked)
-	renderRow("Base URL", baseURL)
-	sb.WriteString("\n")
-	renderRow("Thinking", thinking)
-	renderRow("Context", tui.FormatTokens(s.ContextWindow))
-	renderRow("Max turns", fmt.Sprintf("%d", s.MaxTurns))
-	renderMetaRow("Config", config.SettingsPath(a.Cwd))
-
-	return tui.SendCommandResult(strings.TrimRight(sb.String(), "\n"))
+	return tui.SendCommandResult(p.Render())
 }
 
 func maskKey(key string) string {
@@ -1355,53 +1337,24 @@ func formatContextSnapshot(
 	lastCompaction agent.CompactionSnapshot,
 	hasCompaction bool,
 ) string {
-	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
-	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
-	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
-	warnStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent)
+	p := tui.NewInfoPanel("Context")
 
-	var sb strings.Builder
-	renderSection := func(title, meta string) {
-		if sb.Len() > 0 {
-			sb.WriteString("\n")
-		}
-		sb.WriteString(title)
-		sb.WriteString("\n")
-		if meta != "" {
-			sb.WriteString(metaStyle.Render(meta))
-			sb.WriteString("\n")
-		}
-	}
-	renderRow := func(label, value string) {
-		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-20s", label)))
-		sb.WriteString(" ")
-		sb.WriteString(valueStyle.Render(value))
-		sb.WriteString("\n")
-	}
-	renderMetaRow := func(label, value string) {
-		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-20s", label)))
-		sb.WriteString(" ")
-		sb.WriteString(metaStyle.Render(value))
-		sb.WriteString("\n")
-	}
-
-	sb.WriteString("Context Snapshot\n")
-	renderSection("Live usage", "")
+	// Live usage
+	p.Section("Usage")
 	usage := contextUsage
 	if ok && snapshot != nil && snapshot.Usage != nil {
 		usage = snapshot.Usage
 	}
 	if usage != nil {
-		renderRow("Context used", fmt.Sprintf("%s (%.1f%%)", tui.FormatTokens(usage.Tokens), usage.Percent))
-		renderRow("Context window", tui.FormatTokens(usage.ContextWindow))
-		renderMetaRow("Usage detail", fmt.Sprintf("usage=%s, trailing=%s", tui.FormatTokens(usage.UsageTokens), tui.FormatTokens(usage.TrailingTokens)))
+		p.Row("Used", fmt.Sprintf("%s (%.1f%%)", tui.FormatTokens(usage.Tokens), usage.Percent))
+		p.Row("Window", tui.FormatTokens(usage.ContextWindow))
+		p.Hint("Detail", fmt.Sprintf("usage=%s, trailing=%s", tui.FormatTokens(usage.UsageTokens), tui.FormatTokens(usage.TrailingTokens)))
 	} else {
-		renderMetaRow("Context used", "(unavailable)")
+		p.Hint("Used", "(unavailable)")
 	}
 
-	// Token breakdown by category
+	// Token breakdown
 	if breakdown.Total > 0 {
-		renderSection("Token breakdown", "Estimated token distribution by category.")
 		window := breakdown.ContextWindow
 		fmtPct := func(tokens int) string {
 			if window <= 0 {
@@ -1409,79 +1362,81 @@ func formatContextSnapshot(
 			}
 			return fmt.Sprintf("%s (%.0f%%)", tui.FormatTokens(tokens), float64(tokens)/float64(window)*100)
 		}
-		renderRow("User text", fmtPct(breakdown.UserText))
-		renderRow("Assistant text", fmtPct(breakdown.AssistantText))
-		renderRow("Tool calls", fmtPct(breakdown.ToolCalls))
-		renderRow("Tool results", fmtPct(breakdown.ToolResults))
+		p.Section("Breakdown")
+		p.Row("User text", fmtPct(breakdown.UserText))
+		p.Row("Assistant text", fmtPct(breakdown.AssistantText))
+		p.Row("Tool calls", fmtPct(breakdown.ToolCalls))
+		p.Row("Tool results", fmtPct(breakdown.ToolResults))
 		if breakdown.Summaries > 0 {
-			renderRow("Summaries", fmtPct(breakdown.Summaries))
+			p.Row("Summaries", fmtPct(breakdown.Summaries))
 		}
 		if breakdown.Images > 0 {
-			renderRow("Images", fmtPct(breakdown.Images))
+			p.Row("Images", fmtPct(breakdown.Images))
 		}
 
 		if len(breakdown.TopTools) > 0 {
-			renderSection("Top tools", "Heaviest tools by token consumption.")
+			p.Section("Top tools")
 			for _, t := range breakdown.TopTools {
-				detail := fmt.Sprintf("calls=%s, results=%s", tui.FormatTokens(t.CallTokens), tui.FormatTokens(t.ResultTokens))
-				renderRow(t.Name, fmt.Sprintf("%s  %s", fmtPct(t.Total), metaStyle.Render(detail)))
+				p.Row(t.Name, fmt.Sprintf("%s  calls=%s results=%s", fmtPct(t.Total), tui.FormatTokens(t.CallTokens), tui.FormatTokens(t.ResultTokens)))
 			}
 		}
 	}
 
+	// Composition
 	if ok && snapshot != nil {
-		renderSection("Composition", "")
-		renderRow("Active scope", formatContextScope(snapshot.Scope))
+		p.Section("Composition")
+		p.Row("Scope", formatContextScope(snapshot.Scope))
 		if snapshot.TranscriptMessages != snapshot.ActiveMessages {
-			renderRow("Messages", fmt.Sprintf("%d active / %d transcript", snapshot.ActiveMessages, snapshot.TranscriptMessages))
+			p.Row("Messages", fmt.Sprintf("%d active / %d transcript", snapshot.ActiveMessages, snapshot.TranscriptMessages))
 		} else {
-			renderRow("Messages", fmt.Sprintf("%d", snapshot.ActiveMessages))
+			p.Row("Messages", fmt.Sprintf("%d", snapshot.ActiveMessages))
 		}
-		renderRow("Summary checkpoints", fmt.Sprintf("%d", snapshot.SummaryMessages))
-		renderRow("Tool result msgs", fmt.Sprintf("%d", snapshot.ToolMessages))
-		renderRow("Cleared results", fmt.Sprintf("%d", snapshot.ClearedToolResults))
-		renderRow("Trimmed blocks", fmt.Sprintf("%d", snapshot.TrimmedTextBlocks))
+		p.Row("Summaries", fmt.Sprintf("%d", snapshot.SummaryMessages))
+		p.Row("Cleared results", fmt.Sprintf("%d", snapshot.ClearedToolResults))
+		p.Row("Trimmed blocks", fmt.Sprintf("%d", snapshot.TrimmedTextBlocks))
 
-		renderSection("Last rewrite", "")
+		p.Section("Last rewrite")
 		strategy := prettyCompactionStrategy(snapshot.LastStrategy)
 		if strategy == "" {
 			strategy = "(none)"
 		}
-		renderMetaRow("Strategy", strategy)
-		renderRow("Changed", formatBool(snapshot.LastChanged))
-		renderMetaRow("Details", formatContextRewriteDetails(snapshot))
+		p.Hint("Strategy", strategy)
+		p.Row("Changed", formatBool(snapshot.LastChanged))
+		p.Hint("Details", formatContextRewriteDetails(snapshot))
 	} else {
-		renderSection("Composition", "")
-		renderMetaRow("Snapshot", "(unavailable)")
+		p.Section("Composition")
+		p.Hint("Snapshot", "(unavailable)")
 	}
 
-	renderSection("Compaction totals", "")
-	renderRow("Compactions total", fmt.Sprintf("%d", metrics.CompactionTotal))
-	renderRow("Compactions changed", fmt.Sprintf("%d", metrics.CompactionChanged))
-	renderRow("Compaction saved", tui.FormatTokens(metrics.CompactionSaved))
-	renderMetaRow("By kind", formatCompactionCounts(metrics.CompactionByKind))
-	renderMetaRow("Last compaction", formatLastCompaction(lastCompaction, hasCompaction))
+	// Compaction totals
+	p.Section("Compaction")
+	p.Row("Total", fmt.Sprintf("%d", metrics.CompactionTotal))
+	p.Row("Changed", fmt.Sprintf("%d", metrics.CompactionChanged))
+	p.Row("Saved", tui.FormatTokens(metrics.CompactionSaved))
+	p.Hint("By kind", formatCompactionCounts(metrics.CompactionByKind))
+	p.Hint("Last", formatLastCompaction(lastCompaction, hasCompaction))
 
 	// Suggestions
 	if len(suggestions) > 0 {
-		renderSection("Suggestions", "")
+		p.Section("Suggestions")
 		for _, s := range suggestions {
-			prefix := "i"
-			style := metaStyle
 			if s.Severity == "warning" {
-				prefix = "!"
-				style = warnStyle
+				msg := s.Message
+				if s.Savings > 0 {
+					msg += fmt.Sprintf(" (~%s saveable)", tui.FormatTokens(s.Savings))
+				}
+				p.Warn("!", msg)
+			} else {
+				msg := s.Message
+				if s.Savings > 0 {
+					msg += fmt.Sprintf(" (~%s saveable)", tui.FormatTokens(s.Savings))
+				}
+				p.Hint("i", msg)
 			}
-			line := fmt.Sprintf("[%s] %s", prefix, s.Message)
-			if s.Savings > 0 {
-				line += fmt.Sprintf(" (~%s saveable)", tui.FormatTokens(s.Savings))
-			}
-			sb.WriteString(style.Render(line))
-			sb.WriteString("\n")
 		}
 	}
 
-	return strings.TrimRight(sb.String(), "\n")
+	return p.Render()
 }
 
 func formatRunSummary(summary agentcore.RunSummary, ok bool) string {

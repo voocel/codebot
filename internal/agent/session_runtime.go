@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
@@ -620,22 +621,26 @@ func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
 	if err == nil {
 		entry, _, err := s.registry.Resolve(provType + "/" + modelID)
 		if err == nil && entry.ContextWindow > 0 {
-			s.agent.SetContextWindow(entry.ContextWindow)
-			s.mu.Lock()
-			s.settings.ContextWindow = entry.ContextWindow
-			s.mu.Unlock()
+			s.applyContextWindow(entry.ContextWindow)
 			return
 		}
 	}
 	entry, _, err := s.registry.Resolve(modelID)
 	if err != nil || entry.ContextWindow <= 0 {
-		// Fallback to bare model ID for custom providers.
 		return
 	}
-	s.agent.SetContextWindow(entry.ContextWindow)
+	s.applyContextWindow(entry.ContextWindow)
+}
+
+func (s *Session) applyContextWindow(window int) {
+	s.agent.SetContextWindow(window)
 	s.mu.Lock()
-	s.settings.ContextWindow = entry.ContextWindow
+	s.settings.ContextWindow = window
+	cm := s.contextManager
 	s.mu.Unlock()
+	if engine, ok := cm.(*agentctx.ContextEngine); ok {
+		engine.SetContextWindow(window)
+	}
 }
 
 func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {

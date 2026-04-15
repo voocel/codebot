@@ -64,6 +64,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 	cfg := adapter.Config()
 	cfg.Version = version
 	cfg.Provider = sess.Provider()
+	cfg.ContextWindow = rt.Settings.ContextWindow
 	cfg.EnvHint = rt.EnvHint
 	cfg.RestoredMessages = sess.Messages()
 	if snap := sess.TaskSnapshot(); snap.Total > 0 {

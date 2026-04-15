@@ -866,10 +866,10 @@ func TestFormatContextSnapshot(t *testing.T) {
 	)
 
 	for _, want := range []string{
-		"Context Snapshot",
+		"Context",
 		"64.0k (50.0%)",
 		"usage=32.0k, trailing=4.0k",
-		"Token breakdown",
+		"Breakdown",
 		"User text",
 		"Tool results",
 		"Top tools",
@@ -877,7 +877,7 @@ func TestFormatContextSnapshot(t *testing.T) {
 		"bash",
 		"projected view",
 		"12 active / 18 transcript",
-		"Summary checkpoints",
+		"Summaries",
 		"Cleared results",
 		"full summary",
 		"compacted=9, kept=3, split-turn",

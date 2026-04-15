@@ -16,8 +16,9 @@ type CommandResultMsg struct {
 	Text        string
 	Quit        bool   // true for /exit
 	Clear       bool   // true for /clear
-	NewProvider string // non-empty if provider was switched
-	NewModel    string // non-empty if model was switched
+	NewProvider      string // non-empty if provider was switched
+	NewModel         string // non-empty if model was switched
+	NewContextWindow int    // non-zero if context window changed
 }
 
 // SendCommandResult is a helper that wraps text into a CommandResultMsg tea.Cmd.

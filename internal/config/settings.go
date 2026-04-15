@@ -89,8 +89,6 @@ type Settings struct {
 	SmallModel *string                    `json:"small_model,omitempty"` // sub-agent model; defaults to Model if empty
 	Providers  map[string]*ProviderConfig `json:"providers,omitempty"`
 
-	ContextWindow *int `json:"context_window,omitempty"`
-
 	ThinkingLevel *string `json:"thinking_level,omitempty"`
 
 	MaxTurns *int `json:"max_turns,omitempty"`
@@ -205,9 +203,6 @@ func (s Settings) Resolve() Resolved {
 	}
 	if s.SmallModel != nil {
 		r.SmallModel = *s.SmallModel
-	}
-	if s.ContextWindow != nil {
-		r.ContextWindow = *s.ContextWindow
 	}
 	for k, v := range s.Providers {
 		if v != nil {
@@ -356,9 +351,6 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.SmallModel != nil {
 		base.SmallModel = override.SmallModel
-	}
-	if override.ContextWindow != nil {
-		base.ContextWindow = override.ContextWindow
 	}
 	if len(override.Providers) > 0 {
 		if base.Providers == nil {
