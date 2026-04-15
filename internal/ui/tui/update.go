@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
@@ -135,7 +135,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.updateInput(msg)
 }
 
-func (m *Model) applyTaskSnapshot(snap tools.TaskSnapshot) tea.Cmd {
+func (m *Model) applyTaskSnapshot(snap storage.TaskSnapshot) tea.Cmd {
 	m.taskHideVersion++
 	if snap.Total == 0 {
 		m.Tasks = nil
@@ -149,7 +149,7 @@ func (m *Model) applyTaskSnapshot(snap tools.TaskSnapshot) tea.Cmd {
 	return nil
 }
 
-func tasksFullyCompleted(snap tools.TaskSnapshot) bool {
+func tasksFullyCompleted(snap storage.TaskSnapshot) bool {
 	return snap.Total > 0 && snap.Pending == 0 && snap.InProgress == 0
 }
 

@@ -13,7 +13,7 @@ import (
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
-	localtools "github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/storage"
 )
 
 type bootServices struct {
@@ -24,7 +24,7 @@ type bootServices struct {
 	skillUsage     *skill.UsageTracker
 	mcpManager     *mcpclient.Manager
 	mcpServers     map[string]mcpclient.ServerConfig
-	taskStore      *localtools.TaskStore
+	taskStore      *storage.TaskStore
 }
 
 func buildServices(input *resolvedInput) (*bootServices, error) {
@@ -103,8 +103,8 @@ func buildMCPServices(cwd string, contrib plugin.Contributions) (*mcpclient.Mana
 	return mcpclient.NewManager(), mcpServers
 }
 
-func newTaskStore(input *resolvedInput) *localtools.TaskStore {
-	taskStore := localtools.NewTaskStore()
+func newTaskStore(input *resolvedInput) *storage.TaskStore {
+	taskStore := storage.NewTaskStore()
 	taskDir := filepath.Join(config.TasksDir(), input.sessionStore.Header().SessionID)
 	if err := taskStore.SetDir(taskDir); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: task persistence: %v\n", err)

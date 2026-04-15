@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/truncate"
 	reflowwrap "github.com/muesli/reflow/wrap"
-	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/storage"
 )
 
 var (
@@ -579,17 +579,17 @@ func (m *Model) renderTaskList() string {
 	return TaskCardStyle.Width(max(min(m.Width-2, 96), 24)).Render(b.String())
 }
 
-func openTaskBlockers(snap tools.TaskSnapshot, task tools.Task) []string {
+func openTaskBlockers(snap storage.TaskSnapshot, task storage.Task) []string {
 	if len(task.BlockedBy) == 0 {
 		return nil
 	}
-	statusByID := make(map[string]tools.TaskStatus, len(snap.Items))
+	statusByID := make(map[string]storage.TaskStatus, len(snap.Items))
 	for _, item := range snap.Items {
 		statusByID[item.ID] = item.Status
 	}
 	var active []string
 	for _, id := range task.BlockedBy {
-		if statusByID[id] != tools.TaskCompleted {
+		if statusByID[id] != storage.TaskCompleted {
 			active = append(active, "#"+id)
 		}
 	}

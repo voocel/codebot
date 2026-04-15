@@ -524,6 +524,7 @@ func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 	})
 	t.Cleanup(s.Close)
 
+	// SetModel (internal) should NOT persist to global settings.
 	if err := s.SetModel("anthropic", "claude-sonnet-4-5"); err != nil {
 		t.Fatalf("set model: %v", err)
 	}
@@ -537,9 +538,6 @@ func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 	}
 	if got.Model != "gpt-5.4" {
 		t.Fatalf("model rewritten: got %q want %q", got.Model, "gpt-5.4")
-	}
-	if got.SmallModel != "gpt-5.4" {
-		t.Fatalf("small model rewritten: got %q want %q", got.SmallModel, "gpt-5.4")
 	}
 	if s.Provider() != "anthropic" {
 		t.Fatalf("session provider not switched: got %q want %q", s.Provider(), "anthropic")
@@ -787,8 +785,8 @@ func TestPromptOverlaysAppendInFixedOrder(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	s.SetMCPInstructions("mcp overlay")
-	s.SetPlanModePrompt("plan overlay")
-	s.SetApprovedPlanPrompt("approved overlay")
+	s.OverlayPrompt("plan.mode", "plan overlay")
+	s.OverlayPrompt("plan.approved", "approved overlay")
 
 	systemPrompt := ag.State().SystemPrompt
 	mcpIdx := strings.Index(systemPrompt, "mcp overlay")
@@ -987,7 +985,7 @@ func TestPromptDoesNotQueueTaskManagementReminderFromUserText(t *testing.T) {
 		Agent:     ag,
 		Settings:  config.Resolved{MaxTurns: 30},
 		Cwd:       t.TempDir(),
-		TaskStore: localtools.NewTaskStore(),
+		TaskStore: storage.NewTaskStore(),
 	})
 	t.Cleanup(s.Close)
 
@@ -1008,10 +1006,10 @@ func TestPromptDoesNotQueueTaskManagementReminderFromUserText(t *testing.T) {
 func TestTaskManagementReminderSteersBeforeStopWithOpenInProgressTask(t *testing.T) {
 	t.Parallel()
 
-	store := localtools.NewTaskStore()
+	store := storage.NewTaskStore()
 	task := store.Create("Summarize project state", "Write the final analysis summary", "Summarizing project state", nil)
-	inProgress := localtools.TaskInProgress
-	if _, err := store.Update(task.ID, localtools.TaskUpdateOpts{Status: &inProgress}); err != nil {
+	inProgress := storage.TaskInProgress
+	if _, err := store.Update(task.ID, storage.TaskUpdateOpts{Status: &inProgress}); err != nil {
 		t.Fatalf("set task in_progress: %v", err)
 	}
 

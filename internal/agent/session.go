@@ -10,7 +10,6 @@ import (
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
-	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 // ModelFactory creates a chat model instance for a provider/model tuple.
@@ -25,7 +24,7 @@ type SessionConfig struct {
 	Registry       *provider.ModelRegistry
 	Settings       config.Resolved
 	Cwd            string
-	TaskStore      *localtools.TaskStore
+	TaskStore      *storage.TaskStore
 	// CreateModel allows tests/integrations to override model construction.
 	// Defaults to provider.CreateModel when nil.
 	CreateModel ModelFactory
@@ -82,10 +81,10 @@ type Session struct {
 	skills            []skill.Spec
 	skillCatalog      *skill.Catalog
 	skillUsage        *skill.UsageTracker
-	overlays          promptOverlays
+	overlays          overlayStore
 	beforePrompt      func()
 	hookRunner        *hooks.Runner
-	taskStore         *localtools.TaskStore
+	taskStore         *storage.TaskStore
 	skillAllowsSetter func([]string)
 	skillRuntime      skillRuntimeState
 
@@ -145,10 +144,39 @@ type invokedSkillSnapshot struct {
 	Timestamp  time.Time
 }
 
-type promptOverlays struct {
-	MCP          string
-	PlanMode     string
-	ApprovedPlan string
+type overlayStore struct {
+	order []string
+	byKey map[string]string
+}
+
+func (o *overlayStore) set(key, text string) {
+	if o.byKey == nil {
+		o.byKey = make(map[string]string)
+	}
+	if text == "" {
+		delete(o.byKey, key)
+		for i, k := range o.order {
+			if k == key {
+				o.order = append(o.order[:i], o.order[i+1:]...)
+				break
+			}
+		}
+		return
+	}
+	if _, exists := o.byKey[key]; !exists {
+		o.order = append(o.order, key)
+	}
+	o.byKey[key] = text
+}
+
+func (o *overlayStore) texts() []string {
+	out := make([]string, 0, len(o.order))
+	for _, k := range o.order {
+		if v := o.byKey[k]; v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // NewSession creates a Session and wires auto-persist to the agent.
@@ -201,16 +229,16 @@ func NewSession(cfg SessionConfig) *Session {
 	return s
 }
 
-func (s *Session) SetTaskNotifyFn(fn localtools.TaskNotifyFn) {
+func (s *Session) SetTaskNotifyFn(fn storage.TaskNotifyFn) {
 	if s.taskStore == nil {
 		return
 	}
 	s.taskStore.SetNotifyFn(fn)
 }
 
-func (s *Session) TaskSnapshot() localtools.TaskSnapshot {
+func (s *Session) TaskSnapshot() storage.TaskSnapshot {
 	if s.taskStore == nil {
-		return localtools.TaskSnapshot{}
+		return storage.TaskSnapshot{}
 	}
 	return s.taskStore.Snapshot()
 }

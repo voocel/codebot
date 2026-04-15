@@ -190,26 +190,31 @@ func (c *Manager) applyState(state State) {
 	}
 	c.wireValidators()
 
+	const (
+		planModeOverlay     = "plan.mode"
+		planApprovedOverlay = "plan.approved"
+	)
+
 	switch state.Phase {
 	case PhasePlanning:
 		readOnly := c.session.ToolsByName("read", "glob", "grep", "ls", "ask_user")
 		c.session.SetTools(append(readOnly, c.newExitTool())...)
-		c.session.SetPlanModePrompt(modePrompt)
-		c.session.ClearApprovedPlanPrompt()
+		c.session.OverlayPrompt(planModeOverlay, modePrompt)
+		c.session.OverlayPrompt(planApprovedOverlay, "")
 		if c.approval != nil {
 			c.approval.SetPlanMode(true)
 			c.approval.SetPlanAllowedCommands(nil)
 		}
 	case PhaseReview:
-		c.session.SetPlanModePrompt(modePrompt)
-		c.session.ClearApprovedPlanPrompt()
+		c.session.OverlayPrompt(planModeOverlay, modePrompt)
+		c.session.OverlayPrompt(planApprovedOverlay, "")
 		if c.approval != nil {
 			c.approval.SetPlanMode(true)
 			c.approval.SetPlanAllowedCommands(nil)
 		}
 	default:
 		c.session.RestoreAllTools()
-		c.session.ClearPlanModePrompt()
+		c.session.OverlayPrompt(planModeOverlay, "")
 		if c.approval != nil {
 			c.approval.SetPlanMode(false)
 			if mode, err := approval.ParseMode(state.PreMode); err == nil && state.PreMode != "" {
@@ -219,11 +224,11 @@ func (c *Manager) applyState(state State) {
 		}
 		if state.Slug != "" && state.Title != "" && c.planStore != nil {
 			if content, err := c.planStore.Load(state.Slug); err == nil && strings.TrimSpace(content) != "" {
-				c.session.SetApprovedPlanPrompt(BuildApprovedPlanPrompt(state.Title, content, state.AllowedCommands))
+				c.session.OverlayPrompt(planApprovedOverlay, BuildApprovedPlanPrompt(state.Title, content, state.AllowedCommands))
 				return
 			}
 		}
-		c.session.ClearApprovedPlanPrompt()
+		c.session.OverlayPrompt(planApprovedOverlay, "")
 	}
 }
 

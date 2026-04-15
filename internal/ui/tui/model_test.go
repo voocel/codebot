@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/storage"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -240,7 +240,7 @@ func TestTaskListUpdateSchedulesHideWhenAllCompleted(t *testing.T) {
 
 	m := New(nil, "test-model")
 	nextModel, cmd := m.Update(TaskListUpdateMsg{
-		Snapshot: tools.TaskSnapshot{
+		Snapshot: storage.TaskSnapshot{
 			Completed: 1,
 			Total:     1,
 		},
@@ -267,7 +267,7 @@ func TestTaskListUpdateSchedulesHideWhenAllCompleted(t *testing.T) {
 
 func TestHideCompletedTasksMsgRunsHideCallback(t *testing.T) {
 	m := New(nil, "test-model", Config{
-		OnHideCompletedTasks: func(snap tools.TaskSnapshot) tea.Cmd {
+		OnHideCompletedTasks: func(snap storage.TaskSnapshot) tea.Cmd {
 			return func() tea.Msg {
 				if snap.Total != 1 || snap.Completed != 1 {
 					t.Fatalf("unexpected snapshot passed to hide callback: %#v", snap)
@@ -276,7 +276,7 @@ func TestHideCompletedTasksMsgRunsHideCallback(t *testing.T) {
 			}
 		},
 	})
-	snap := tools.TaskSnapshot{
+	snap := storage.TaskSnapshot{
 		Completed: 1,
 		Total:     1,
 	}
@@ -302,7 +302,7 @@ func TestHideCompletedTasksMsgDoesNotClearNewOpenTasks(t *testing.T) {
 
 	m := New(nil, "test-model")
 	nextModel, cmd := m.Update(TaskListUpdateMsg{
-		Snapshot: tools.TaskSnapshot{
+		Snapshot: storage.TaskSnapshot{
 			Completed: 1,
 			Total:     1,
 		},
@@ -311,7 +311,7 @@ func TestHideCompletedTasksMsgDoesNotClearNewOpenTasks(t *testing.T) {
 	next := mustModel(t, nextModel)
 
 	nextModel, _ = next.Update(TaskListUpdateMsg{
-		Snapshot: tools.TaskSnapshot{
+		Snapshot: storage.TaskSnapshot{
 			Pending: 1,
 			Total:   1,
 		},
@@ -334,7 +334,7 @@ func TestHideCompletedTasksMsgDoesNotClearNewOpenTasks(t *testing.T) {
 func TestInitSchedulesHideForInitiallyCompletedTasks(t *testing.T) {
 	useImmediateHideCompletedTasksTick(t)
 
-	snap := tools.TaskSnapshot{
+	snap := storage.TaskSnapshot{
 		Completed: 2,
 		Total:     2,
 	}

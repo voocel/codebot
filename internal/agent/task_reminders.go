@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
-	localtools "github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/storage"
 )
 
 const (
@@ -15,7 +15,7 @@ const (
 	taskReminderTurnsBetweenReminders = 10
 )
 
-func taskManagementReminderForNextPrompt(msgs []agentcore.AgentMessage, snap localtools.TaskSnapshot) (key, reminder string, ok bool) {
+func taskManagementReminderForNextPrompt(msgs []agentcore.AgentMessage, snap storage.TaskSnapshot) (key, reminder string, ok bool) {
 	if snap.Total == 0 {
 		return "", "", false
 	}
@@ -42,7 +42,7 @@ func taskManagementReminderForNextPrompt(msgs []agentcore.AgentMessage, snap loc
 	return "task_management:stale", sb.String(), true
 }
 
-func taskManagementReminderBeforeStop(msg agentcore.Message, snap localtools.TaskSnapshot) (key, reminder string, ok bool) {
+func taskManagementReminderBeforeStop(msg agentcore.Message, snap storage.TaskSnapshot) (key, reminder string, ok bool) {
 	if msg.Role != agentcore.RoleAssistant || msg.StopReason != agentcore.StopReasonStop {
 		return "", "", false
 	}
@@ -66,14 +66,14 @@ func taskManagementReminderBeforeStop(msg agentcore.Message, snap localtools.Tas
 	return "", "", false
 }
 
-func inProgressTasks(snap localtools.TaskSnapshot) []localtools.Task {
+func inProgressTasks(snap storage.TaskSnapshot) []storage.Task {
 	if len(snap.Items) == 0 || snap.InProgress == 0 {
 		return nil
 	}
 
-	out := make([]localtools.Task, 0, snap.InProgress)
+	out := make([]storage.Task, 0, snap.InProgress)
 	for _, task := range snap.Items {
-		if task.Status == localtools.TaskInProgress {
+		if task.Status == storage.TaskInProgress {
 			out = append(out, task)
 		}
 	}

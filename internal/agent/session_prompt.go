@@ -37,28 +37,14 @@ func (s *Session) ReplaceMCPTools(tools []agentcore.Tool) {
 	s.prompts.replaceMCPTools(tools)
 }
 
-func (s *Session) SetSystemSuffix(suffix string) {
-	s.prompts.setApprovedPlanPrompt(suffix)
-}
-
 func (s *Session) SetMCPInstructions(text string) {
-	s.prompts.setMCPInstructions(text)
+	s.prompts.overlayPrompt("mcp", text)
 }
 
-func (s *Session) SetPlanModePrompt(text string) {
-	s.prompts.setPlanModePrompt(text)
-}
-
-func (s *Session) ClearPlanModePrompt() {
-	s.prompts.setPlanModePrompt("")
-}
-
-func (s *Session) SetApprovedPlanPrompt(text string) {
-	s.prompts.setApprovedPlanPrompt(text)
-}
-
-func (s *Session) ClearApprovedPlanPrompt() {
-	s.prompts.setApprovedPlanPrompt("")
+// OverlayPrompt registers or removes a named instructions overlay.
+// Pass empty text to remove. Overlays are rendered in insertion order.
+func (s *Session) OverlayPrompt(key, text string) {
+	s.prompts.overlayPrompt(key, text)
 }
 
 func (s *Session) Skills() []skill.Spec {
@@ -152,18 +138,8 @@ func (m *sessionPromptManager) replaceMCPTools(tools []agentcore.Tool) {
 	m.rebuildPrompt()
 }
 
-func (m *sessionPromptManager) setMCPInstructions(text string) {
-	m.session.overlays.MCP = text
-	m.rebuildPrompt()
-}
-
-func (m *sessionPromptManager) setPlanModePrompt(text string) {
-	m.session.overlays.PlanMode = text
-	m.rebuildPrompt()
-}
-
-func (m *sessionPromptManager) setApprovedPlanPrompt(text string) {
-	m.session.overlays.ApprovedPlan = text
+func (m *sessionPromptManager) overlayPrompt(key, text string) {
+	m.session.overlays.set(key, text)
 	m.rebuildPrompt()
 }
 
@@ -208,14 +184,8 @@ func (m *sessionPromptManager) rebuildPrompt() {
 
 	// Build two-block system prompt (identity + instructions) for cache stability.
 	identity, instructions := config.BuildSystemBlockTexts(m.session.cwd, m.session.contextFiles, visibleInfos)
-	for _, overlay := range []string{
-		m.session.overlays.MCP,
-		m.session.overlays.PlanMode,
-		m.session.overlays.ApprovedPlan,
-	} {
-		if strings.TrimSpace(overlay) != "" {
-			instructions += "\n\n" + overlay
-		}
+	for _, overlay := range m.session.overlays.texts() {
+		instructions += "\n\n" + overlay
 	}
 	blocks := []agentcore.SystemBlock{
 		{Text: identity, CacheControl: "ephemeral"},

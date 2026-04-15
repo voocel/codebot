@@ -499,7 +499,19 @@ func (s *Session) providerType(prov string) (string, error) {
 	return config.ResolveProviderType(prov, "")
 }
 
-func (s *Session) ResolveAndSetModel(pattern string) (string, error) {
+func (s *Session) ResolveAndSetModel(pattern string) (resolved string, err error) {
+	defer func() {
+		if err == nil {
+			prov, model := s.Provider(), s.ModelName()
+			if e := config.PatchGlobalSettings(config.Settings{
+				Provider: &prov,
+				Model:    &model,
+			}); e != nil {
+				fmt.Fprintf(os.Stderr, "warning: persist model setting: %v\n", e)
+			}
+		}
+	}()
+
 	// Extract :thinking suffix (e.g. "model:high").
 	thinkingLevel := agentcore.ThinkingLevel("")
 	if idx := strings.LastIndex(pattern, ":"); idx > 0 {

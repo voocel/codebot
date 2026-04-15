@@ -3,7 +3,7 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/storage"
 )
 
 // AgentEventMsg bridges agentcore events into the bubbletea Elm loop.
@@ -47,7 +47,7 @@ type PasteErrorMsg struct {
 
 // TaskListUpdateMsg notifies the TUI that the task list has changed.
 type TaskListUpdateMsg struct {
-	Snapshot tools.TaskSnapshot
+	Snapshot storage.TaskSnapshot
 }
 
 // HideCompletedTasksMsg hides the task card after all tasks stayed completed

@@ -69,7 +69,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 	if snap := sess.TaskSnapshot(); snap.Total > 0 {
 		cfg.InitialTasks = &snap
 	}
-	cfg.OnHideCompletedTasks = func(_ tools.TaskSnapshot) tea.Cmd {
+	cfg.OnHideCompletedTasks = func(_ storage.TaskSnapshot) tea.Cmd {
 		return func() tea.Msg {
 			if err := sess.ResetTaskList(); err != nil {
 				return tui.CommandResultMsg{
@@ -131,7 +131,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 	}
 
 	// Wire Task tools to TUI — notify on every task mutation.
-	sess.SetTaskNotifyFn(func(snap tools.TaskSnapshot) {
+	sess.SetTaskNotifyFn(func(snap storage.TaskSnapshot) {
 		p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
 	})
 

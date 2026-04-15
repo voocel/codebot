@@ -9,8 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/storage" // input history
-	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
@@ -36,14 +35,14 @@ type Config struct {
 	GitBranch            string
 	EnvHint              string                   // shown below welcome when using env var credentials
 	History              *storage.History         // input history (Up/Down navigation)
-	InitialTasks         *tools.TaskSnapshot      // initial task snapshot restored before first render
+	InitialTasks         *storage.TaskSnapshot      // initial task snapshot restored before first render
 	RestoredMessages     []agentcore.AgentMessage // messages restored from a previous session (rendered on Init)
 	OnKey                func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
 	OnEvent              func(m *Model, ev agentcore.Event) tea.Cmd
 	OnPaste              func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
 	OnDrop               func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
 	OnMCPReady           func(msg MCPReadyMsg)               // called when MCP servers finish connecting
-	OnHideCompletedTasks func(snap tools.TaskSnapshot) tea.Cmd
+	OnHideCompletedTasks func(snap storage.TaskSnapshot) tea.Cmd
 	StatusRight          func(m *Model) string
 	StatusMode           func(m *Model) string // mode indicator for context bar (e.g. "⏵⏵ trust")
 	StatusPlan           func(m *Model) *PlanBarInfo
@@ -141,7 +140,7 @@ type State struct {
 	AskUser    *askUserState    // non-nil when ask-user UI is active
 	Permission *permissionState // non-nil when permission prompt is active
 
-	Tasks *tools.TaskSnapshot // non-nil when task items exist; displayed above input
+	Tasks *storage.TaskSnapshot // non-nil when task items exist; displayed above input
 
 	taskHideVersion uint64
 
@@ -178,7 +177,7 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 		c = cfg[0]
 	}
 
-	var initialTasks *tools.TaskSnapshot
+	var initialTasks *storage.TaskSnapshot
 	var taskHideVersion uint64
 	if c.InitialTasks != nil && c.InitialTasks.Total > 0 {
 		snap := *c.InitialTasks
