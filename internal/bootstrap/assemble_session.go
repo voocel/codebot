@@ -173,9 +173,31 @@ func buildHookSupport(input *resolvedInput, services *bootServices, settings con
 }
 
 // coreToolNames are tools that remain always visible to the LLM.
-// When tool search is enabled, all tools except tool_search itself are deferred.
-// tool_search is added separately and never appears in the deferred set.
-var coreToolNames = map[string]bool{}
+// Tools NOT in this set are deferred behind tool_search when the model
+// supports it. The default is opt-in: frequently used core tools stay
+// in the main prompt so the model can call them turn 1 without a
+// tool_search round-trip; rarely used or schema-heavy tools defer to
+// keep the base prompt compact.
+var coreToolNames = map[string]bool{
+	// Filesystem + shell — used in virtually every turn.
+	"read": true,
+	"write": true,
+	"edit": true,
+	"bash": true,
+	"grep": true,
+	"glob": true,
+	"ls":   true,
+	// Task management — if present, should be immediately callable
+	// (the system prompt tells the model to use them proactively).
+	"task_create": true,
+	"task_update": true,
+	"task_list":   true,
+	"task_get":    true,
+	// Interaction / plan mode — turn-1 UX primitives.
+	"ask_user":        true,
+	"enter_plan_mode": true,
+	"exit_plan_mode":  true,
+}
 
 // supportsToolSearch reports whether the given provider/model combination
 // supports deferred tool search. Currently only Claude models and GPT-5.4+

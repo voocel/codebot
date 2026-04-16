@@ -13,9 +13,13 @@ type AgentEventMsg struct {
 
 // CommandResultMsg carries the result of a slash command back to the model.
 type CommandResultMsg struct {
-	Text        string
-	Quit        bool   // true for /exit
-	Clear       bool   // true for /clear
+	Text string
+	// Inline prints the result flush against the previous scrollback block
+	// (no leading blank line). Use for output that should feel like a direct
+	// continuation — e.g. shell command output under its echoed prompt.
+	Inline           bool
+	Quit             bool   // true for /exit
+	Clear            bool   // true for /clear
 	NewProvider      string // non-empty if provider was switched
 	NewModel         string // non-empty if model was switched
 	NewContextWindow int    // non-zero if context window changed

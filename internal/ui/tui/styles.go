@@ -207,6 +207,21 @@ var (
 			BorderForeground(ColorInputChrome).
 			Padding(0, 1)
 
+	ShellInputPanelStyle = lipgloss.NewStyle().
+			Border(lipgloss.Border{Top: "─", Bottom: "─"}).
+			BorderTop(true).
+			BorderBottom(true).
+			BorderLeft(false).
+			BorderRight(false).
+			BorderForeground(ColorShell).
+			Padding(0, 1)
+
+	// ShellAccentStyle is used for both the prompt caret ("❯") and the "!" prefix
+	// when the input is in shell mode — they share the same foreground/weight by design.
+	ShellAccentStyle = lipgloss.NewStyle().
+				Foreground(ColorShell).
+				Bold(true)
+
 	InputHintStyle = lipgloss.NewStyle().
 			Foreground(ColorMuted)
 

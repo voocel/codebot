@@ -107,6 +107,10 @@ func (m *Model) RenderPromptOutput(text string) string {
 	return userLine
 }
 
+func (m *Model) shellInputActive() bool {
+	return strings.HasPrefix(strings.TrimSpace(m.Input.Value()), "!")
+}
+
 // overlayView returns the rendered overlay content and whether it replaces the input area.
 func (m *Model) overlayView() (string, bool) {
 	if m.config.Overlay == nil {
@@ -131,6 +135,11 @@ func (m *Model) renderCompletions() string {
 // When cmdHighlight is set, the command text in the view is colorized.
 func (m *Model) styledInputView() string {
 	view := m.Input.View()
+	if m.shellInputActive() {
+		view = strings.Replace(view, "❯", ShellAccentStyle.Render("❯"), 1)
+		view = strings.Replace(view, "!", ShellAccentStyle.Render("!"), 1)
+		return view
+	}
 	if m.cmdHighlight == "" {
 		return view
 	}

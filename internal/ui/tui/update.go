@@ -602,6 +602,9 @@ func (m *Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 			m.ShowWelcome = false
 		}
 		output += indentBlock(msg.Text, 2)
+		if msg.Inline {
+			return m, printInline(output)
+		}
 		return m, printBlock(output)
 	}
 	return m, nil

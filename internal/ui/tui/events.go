@@ -10,13 +10,31 @@ import (
 	"github.com/voocel/agentcore"
 )
 
+// formatScrollbackBlock applies the project's standard spacing rules to a
+// block of scrollback output: trailing newlines stripped, and optionally a
+// leading blank line so the block is visually separated from what came
+// before. Kept pure so the two print helpers and the tests can share it.
+func formatScrollbackBlock(content string, inline bool) string {
+	content = strings.TrimRight(content, "\n")
+	if inline {
+		return content
+	}
+	return "\n" + content
+}
+
 // printBlock prints content to terminal scrollback with a leading blank line.
 // Every top-level output block (assistant reply, tool result, error) should
 // use this instead of raw tea.Println so blocks are visually separated by
-// exactly one blank line. Trailing newlines are stripped so that spacing
-// between blocks is always consistent regardless of content construction.
+// exactly one blank line.
 func printBlock(content string) tea.Cmd {
-	return tea.Println("\n" + strings.TrimRight(content, "\n"))
+	return tea.Println(formatScrollbackBlock(content, false))
+}
+
+// printInline prints content flush against the previous block (no leading
+// blank line). Use for output that should feel like a direct continuation
+// of what came before — e.g. shell command output under its echoed prompt.
+func printInline(content string) tea.Cmd {
+	return tea.Println(formatScrollbackBlock(content, true))
 }
 
 // HandleAgentEvent processes agent events.

@@ -174,6 +174,30 @@ func TestHandleCommandResultUpdatesProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestFormatScrollbackBlock(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		content string
+		inline  bool
+		want    string
+	}{
+		{name: "block adds leading blank line", content: "  ok", inline: false, want: "\n  ok"},
+		{name: "inline stays flush", content: "  ok", inline: true, want: "  ok"},
+		{name: "block strips trailing newlines", content: "hello\n\n", inline: false, want: "\nhello"},
+		{name: "inline strips trailing newlines", content: "hello\n\n", inline: true, want: "hello"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := formatScrollbackBlock(tc.content, tc.inline); got != tc.want {
+				t.Fatalf("formatScrollbackBlock(%q, %v) = %q, want %q", tc.content, tc.inline, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestOverlayAppearsBelowInput(t *testing.T) {
 	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
 		Overlay: func(*Model) *OverlayState {

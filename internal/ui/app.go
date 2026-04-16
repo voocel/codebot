@@ -433,6 +433,6 @@ func (a *App) execShell(cmd string) tea.Cmd {
 		} else if err != nil {
 			result = err.Error()
 		}
-		return tui.CommandResultMsg{Text: tui.CommandStyle.Render(result)}
+		return tui.CommandResultMsg{Text: tui.CommandStyle.Render(result), Inline: true}
 	}
 }

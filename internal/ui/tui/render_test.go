@@ -63,6 +63,28 @@ func TestRenderContextBarShowsModeIndicator(t *testing.T) {
 	}
 }
 
+func TestRenderInputPanelHighlightsShellMode(t *testing.T) {
+	m := New(nil, "anthropic/claude-sonnet-4.6")
+	m.Ready = true
+	m.Width = 80
+	m.Input.SetValue("!git status")
+
+	if !m.shellInputActive() {
+		t.Fatal("expected shell input mode to activate for !-prefixed input")
+	}
+}
+
+func TestRenderInputPanelUsesDefaultStyleWithoutShellPrefix(t *testing.T) {
+	m := New(nil, "anthropic/claude-sonnet-4.6")
+	m.Ready = true
+	m.Width = 80
+	m.Input.SetValue("git status")
+
+	if m.shellInputActive() {
+		t.Fatal("did not expect shell input mode without ! prefix")
+	}
+}
+
 func TestIndentBlock(t *testing.T) {
 	cases := []struct {
 		name   string

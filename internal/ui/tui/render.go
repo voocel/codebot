@@ -203,7 +203,11 @@ func (m *Model) renderInputPanel() string {
 	sections = append(sections, inputView)
 
 	content := strings.Join(sections, "\n\n")
-	return InputPanelStyle.Width(max(width-2, 20)).Render(content)
+	panelStyle := InputPanelStyle
+	if m.shellInputActive() {
+		panelStyle = ShellInputPanelStyle
+	}
+	return panelStyle.Width(max(width-2, 20)).Render(content)
 }
 
 // RenderStatusBar renders the status line above the input.

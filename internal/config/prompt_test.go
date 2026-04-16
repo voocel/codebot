@@ -43,6 +43,30 @@ func TestBuildSystemBlockTextsNoTools(t *testing.T) {
 	}
 }
 
+func TestBuildSystemBlockTextsIncludesDoingTasksGuardrails(t *testing.T) {
+	t.Parallel()
+
+	_, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}})
+
+	for _, marker := range []string{
+		"## Doing tasks",
+		`"improvements" beyond what was asked`,
+		"scenarios that can't happen",
+		"premature abstraction",
+		"diagnose why before switching tactics",
+		"OWASP top 10",
+		"backwards-compatibility hacks",
+		"## Using your tools",
+		"Maximize use of parallel tool calls",
+		"## Output efficiency",
+		"Go straight to the point",
+	} {
+		if !strings.Contains(instructions, marker) {
+			t.Errorf("instructions missing guardrail %q", marker)
+		}
+	}
+}
+
 func TestBuildSystemBlockTextsAddsTaskManagementSection(t *testing.T) {
 	t.Parallel()
 
