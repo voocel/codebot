@@ -17,7 +17,6 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
 	"github.com/voocel/codebot/internal/plugin"
-	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
@@ -186,50 +185,6 @@ func (a *App) builtinCommands() []Command {
 		}, func(_ *CommandContext, _ CommandInvocation) tea.Cmd {
 			return func() tea.Msg { return tui.CommandResultMsg{Quit: true} }
 		}),
-	}
-}
-
-func (a *App) cmdModel(args []string) tea.Cmd {
-	currentModel := a.Session.ModelName()
-	if len(args) == 0 {
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "Current model: %s\n", currentModel)
-		if reg := a.Session.Registry(); reg != nil {
-			if models := reg.List(""); len(models) > 0 {
-				sb.WriteString("\nAvailable models:\n")
-				for _, m := range models {
-					marker := "  "
-					if provider.SameModelID(m.ID, currentModel) {
-						marker = "* "
-					}
-					ctx := tui.FormatTokens(m.ContextWindow)
-					reasoning := ""
-					if m.Reasoning {
-						reasoning = "  reasoning"
-					}
-					fmt.Fprintf(&sb, "%s%-12s/%-30s %-20s %6s%s\n",
-						marker, m.Provider, m.ID, m.Name, ctx, reasoning)
-				}
-			}
-		}
-		sb.WriteString("\nUsage: /model <name>")
-		return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
-	}
-
-	pattern := strings.Join(args, " ")
-	resolved, err := a.Session.ResolveAndSetModel(pattern)
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(
-			fmt.Sprintf("Failed to switch model: %v", err)))
-	}
-
-	return func() tea.Msg {
-		return tui.CommandResultMsg{
-			Text:             tui.SystemMsgStyle.Render(fmt.Sprintf("Switched to model: %s", resolved)),
-			NewProvider:      a.Session.Provider(),
-			NewModel:         a.Session.ModelName(),
-			NewContextWindow: a.Session.Settings().ContextWindow,
-		}
 	}
 }
 

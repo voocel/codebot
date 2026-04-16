@@ -485,6 +485,7 @@ func (s *Session) SetModel(prov, model string) error {
 	})
 
 	s.reclampThinking()
+	s.updateContextFromRegistry(prov, model)
 
 	return nil
 }
@@ -498,115 +499,6 @@ func (s *Session) providerType(prov string) (string, error) {
 		return pc.ProviderType(prov)
 	}
 	return config.ResolveProviderType(prov, "")
-}
-
-func (s *Session) ResolveAndSetModel(pattern string) (resolved string, err error) {
-	defer func() {
-		if err == nil {
-			prov, model := s.Provider(), s.ModelName()
-			if e := config.PatchGlobalSettings(config.Settings{
-				Provider: &prov,
-				Model:    &model,
-			}); e != nil {
-				fmt.Fprintf(os.Stderr, "warning: persist model setting: %v\n", e)
-			}
-		}
-	}()
-
-	// Extract :thinking suffix (e.g. "model:high").
-	thinkingLevel := agentcore.ThinkingLevel("")
-	if idx := strings.LastIndex(pattern, ":"); idx > 0 {
-		suffix := pattern[idx+1:]
-		if provider.IsValidThinkingLevel(suffix) {
-			thinkingLevel = agentcore.ThinkingLevel(suffix)
-			pattern = pattern[:idx]
-		}
-	}
-
-	// Snapshot configured providers.
-	s.mu.Lock()
-	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))
-	maps.Copy(provSnapshot, s.providers)
-	s.mu.Unlock()
-
-	// Explicit provider/model or provider:model.
-	// Only split when the left side is a configured provider key so that
-	// model IDs containing slashes (e.g. OpenRouter's "openai/gpt-5") still
-	// work as explicit model IDs under the chosen provider.
-	if prov, model, ok := splitExplicitModelPattern(pattern, provSnapshot); ok {
-		if err := s.SetModel(prov, model); err != nil {
-			return "", err
-		}
-		s.updateContextFromRegistry(prov, model)
-		if thinkingLevel != "" {
-			s.SetThinkingLevel(thinkingLevel)
-		}
-		return explicitModelID(prov, model), nil
-	}
-
-	// Search across all configured providers' models lists.
-	type match struct {
-		provider string
-		model    string
-	}
-	var matches []match
-	for provName, pc := range provSnapshot {
-		for _, m := range pc.Models {
-			if strings.EqualFold(m, pattern) {
-				matches = append(matches, match{provider: provName, model: m})
-			}
-		}
-	}
-	if len(matches) == 1 {
-		m := matches[0]
-		if err := s.SetModel(m.provider, m.model); err != nil {
-			return "", err
-		}
-		s.updateContextFromRegistry(m.provider, m.model)
-		if thinkingLevel != "" {
-			s.SetThinkingLevel(thinkingLevel)
-		}
-		return m.model, nil
-	}
-	if len(matches) > 1 {
-		provs := make([]string, len(matches))
-		for i, m := range matches {
-			provs[i] = config.FormatModelID(m.provider, m.model)
-		}
-		return "", fmt.Errorf("model %q is ambiguous, found in: %s; use provider/model format", pattern, strings.Join(provs, ", "))
-	}
-
-	// Fallback: try current provider with the pattern as model name.
-	curProv := s.Provider()
-	if err := s.SetModel(curProv, pattern); err != nil {
-		return "", fmt.Errorf("model %q not found in any configured provider", pattern)
-	}
-	s.updateContextFromRegistry(curProv, pattern)
-	if thinkingLevel != "" {
-		s.SetThinkingLevel(thinkingLevel)
-	}
-	return pattern, nil
-}
-
-func splitExplicitModelPattern(pattern string, providers map[string]config.ProviderConfig) (providerKey, model string, ok bool) {
-	if prov, model, ok := strings.Cut(pattern, "/"); ok {
-		if _, exists := providers[prov]; exists && model != "" {
-			return prov, model, true
-		}
-	}
-	if prov, model, ok := strings.Cut(pattern, ":"); ok {
-		if _, exists := providers[prov]; exists && model != "" {
-			return prov, model, true
-		}
-	}
-	return "", "", false
-}
-
-func explicitModelID(providerKey, model string) string {
-	if providerKey == "" {
-		return model
-	}
-	return providerKey + "/" + model
 }
 
 // updateContextFromRegistry updates context window from registry metadata if available.
@@ -633,6 +525,15 @@ func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
 }
 
 func (s *Session) applyContextWindow(window int) {
+	// Re-apply user-configured compaction caps to the new model window so that
+	// mid-session model switches honor compact_window / compact_ratio.
+	if cap := s.settings.CompactWindow; cap > 0 && cap < window {
+		window = cap
+	}
+	reserve := 0
+	if r := s.settings.CompactRatio; r > 0 && r < 1 {
+		reserve = window - int(float64(window)*r)
+	}
 	s.agent.SetContextWindow(window)
 	s.mu.Lock()
 	s.settings.ContextWindow = window
@@ -640,6 +541,7 @@ func (s *Session) applyContextWindow(window int) {
 	s.mu.Unlock()
 	if engine, ok := cm.(*agentctx.ContextEngine); ok {
 		engine.SetContextWindow(window)
+		engine.SetReserveTokens(reserve)
 	}
 }
 

@@ -94,6 +94,11 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	} else if settings.ContextWindow <= 0 {
 		settings.ContextWindow = 128000
 	}
+	// Apply user cap: effective = min(detected, CompactWindow). Never raise above
+	// the model's real window — that would trigger API errors.
+	if cap := settings.CompactWindow; cap > 0 && cap < settings.ContextWindow {
+		settings.ContextWindow = cap
+	}
 	settings.Provider = activeProvider
 	settings.Model = activeModel
 

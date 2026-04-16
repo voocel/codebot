@@ -124,6 +124,12 @@ func (c *SettingsCommand) renderRuntime() string {
 	p := tui.NewInfoPanel("")
 	p.Row("Thinking", thinking)
 	p.Row("Context", tui.FormatTokens(s.ContextWindow))
+	if s.CompactWindow > 0 {
+		p.Hint("Compact Cap", tui.FormatTokens(s.CompactWindow))
+	}
+	if s.CompactRatio > 0 {
+		p.Hint("Compact At", fmt.Sprintf("%.0f%%", s.CompactRatio*100))
+	}
 	p.Row("Max Turns", fmt.Sprintf("%d", s.MaxTurns))
 	p.Row("Mode", mode)
 	if s.SmallModel != "" && s.SmallModel != c.app.Session.ModelName() {

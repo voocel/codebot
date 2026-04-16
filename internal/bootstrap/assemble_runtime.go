@@ -28,7 +28,11 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	baseTools = append(baseTools, assembly.baseTools...)
 	baseTools = append(baseTools, taskTools...)
 
-	contextEngine, summaryCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow)
+	reserveTokens := 0 // 0 = engine default (fixed buffer)
+	if r := assembly.settings.CompactRatio; r > 0 && r < 1 {
+		reserveTokens = assembly.settings.ContextWindow - int(float64(assembly.settings.ContextWindow)*r)
+	}
+	contextEngine, summaryCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens)
 	agentCore, err := buildAgent(assembly, services, contextEngine, taskRT, tools)
 	if err != nil {
 		return nil, err
@@ -69,7 +73,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	}, nil
 }
 
-func buildContextEngine(chatModel agentcore.ChatModel, contextWindow int) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy) {
+func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy) {
 	toolCompact := agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
 		Classifier: agent.CodebotToolClassifier,
 		KeepRecent: 5,
@@ -80,6 +84,7 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow int) (*agen
 	})
 	engine := agentctx.NewEngine(agentctx.EngineConfig{
 		ContextWindow: contextWindow,
+		ReserveTokens: reserveTokens,
 		Strategies: []agentctx.Strategy{
 			toolCompact,
 			trimCompact,

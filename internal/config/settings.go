@@ -93,6 +93,13 @@ type Settings struct {
 
 	MaxTurns *int `json:"max_turns,omitempty"`
 
+	// CompactWindow caps the effective context window used for compaction.
+	// Effective = min(model's detected window, CompactWindow). 0 = disabled.
+	CompactWindow *int `json:"compact_window,omitempty"`
+	// CompactRatio triggers compaction when usage >= effective * ratio.
+	// Range (0, 1). 0 = engine default (fixed headroom buffer).
+	CompactRatio *float64 `json:"compact_ratio,omitempty"`
+
 	SearchProvider *string `json:"search_provider,omitempty"`
 	SearchAPIKey   *string `json:"search_api_key,omitempty"`
 
@@ -116,7 +123,9 @@ type Resolved struct {
 	SmallModel string                    // sub-agent model; equals Model when not configured
 	Providers  map[string]ProviderConfig // per-provider credentials
 
-	ContextWindow int // auto-detected from model registry at boot
+	ContextWindow int // effective window after applying CompactWindow cap
+	CompactWindow int // user-configured cap on effective window; 0 = disabled
+	CompactRatio  float64 // usage ratio that triggers compaction; 0 = engine default
 	ThinkingLevel string
 	MaxTurns       int
 	SearchProvider string
@@ -215,6 +224,15 @@ func (s Settings) Resolve() Resolved {
 	if s.MaxTurns != nil {
 		r.MaxTurns = *s.MaxTurns
 	}
+	if s.CompactWindow != nil && *s.CompactWindow > 0 {
+		r.CompactWindow = *s.CompactWindow
+	}
+	if s.CompactRatio != nil {
+		ratio := *s.CompactRatio
+		if ratio > 0 && ratio < 1 {
+			r.CompactRatio = ratio
+		}
+	}
 	if s.SearchProvider != nil {
 		r.SearchProvider = *s.SearchProvider
 	}
@@ -239,6 +257,15 @@ func SettingsPath(cwd string) string {
 func ProjectConfigExists(cwd string) bool {
 	_, err := os.Stat(SettingsPath(cwd))
 	return err == nil
+}
+
+// ProjectSettingsDefinesModel reports whether the project settings file
+// exists and explicitly sets provider or model. Callers use this to decide
+// whether /model persistence should target the project file (so the choice
+// sticks across restarts) or the global file.
+func ProjectSettingsDefinesModel(cwd string) bool {
+	s := loadSettingsFile(SettingsPath(cwd))
+	return s.Provider != nil || s.Model != nil
 }
 
 // GlobalSettingsPath returns ~/.codebot/settings.json.
@@ -389,6 +416,12 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.MaxTurns != nil {
 		base.MaxTurns = override.MaxTurns
+	}
+	if override.CompactWindow != nil {
+		base.CompactWindow = override.CompactWindow
+	}
+	if override.CompactRatio != nil {
+		base.CompactRatio = override.CompactRatio
 	}
 	if override.SearchProvider != nil {
 		base.SearchProvider = override.SearchProvider

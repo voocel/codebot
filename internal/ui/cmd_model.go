@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -13,8 +14,10 @@ import (
 )
 
 // ModelCommand implements InteractiveCommand for /model.
-// Without arguments it opens an interactive selector overlay;
-// with arguments it switches directly.
+// Always opens an interactive selector overlay; any arguments are ignored.
+// Selection is persisted to whichever settings file already owns the model
+// setting (project if it defines provider/model, otherwise global), so that
+// manual edits and /model stay in sync.
 type ModelCommand struct {
 	app   *App
 	state *modelSelectState // non-nil when interactive overlay is active
@@ -59,11 +62,7 @@ func (c *ModelCommand) Spec() CommandSpec {
 	}
 }
 
-func (c *ModelCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
-	if len(inv.Args) > 0 {
-		return ctx.App.cmdModel(inv.Args)
-	}
-
+func (c *ModelCommand) Run(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 	// Build model list from all configured providers.
 	settings := ctx.App.Session.Settings()
 	entries, groups := buildModelList(settings.Providers)
@@ -164,6 +163,29 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 		if thinkLevel != "" && thinkLevel != "off" {
 			c.app.Session.SetThinkingLevel(agentcore.ThinkingLevel(thinkLevel))
+		}
+
+		// Persist selection so manual edits and /model share one source of
+		// truth. SmallModel is written alongside to avoid leaving a stale
+		// value from a previous provider. Target whichever file already
+		// owns the model setting: project if it declares provider/model,
+		// otherwise global.
+		prov := entry.provider
+		model := entry.model
+		small := c.app.Session.Settings().SmallModel
+		patch := config.Settings{
+			Provider:   &prov,
+			Model:      &model,
+			SmallModel: &small,
+		}
+		var perr error
+		if config.ProjectSettingsDefinesModel(c.app.Cwd) {
+			perr = config.PatchProjectSettings(c.app.Cwd, patch)
+		} else {
+			perr = config.PatchGlobalSettings(patch)
+		}
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "warning: persist model setting: %v\n", perr)
 		}
 
 		display := config.FormatModelID(entry.provider, entry.model)
