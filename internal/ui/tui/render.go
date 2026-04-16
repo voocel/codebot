@@ -606,12 +606,14 @@ func (m *Model) formatModelChip() string {
 }
 
 // FormatTokens formats a token count with k/M suffix for readability.
+// Uses floor truncation at 0.1 precision so the displayed number never
+// overstates the real value (e.g. 1,050,000 → "1.0M", not "1.1M").
 func FormatTokens(n int) string {
 	switch {
 	case n >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+		return fmt.Sprintf("%.1fM", math.Floor(float64(n)/100_000)/10)
 	case n >= 1_000:
-		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+		return fmt.Sprintf("%.1fk", math.Floor(float64(n)/100)/10)
 	default:
 		return fmt.Sprintf("%d", n)
 	}

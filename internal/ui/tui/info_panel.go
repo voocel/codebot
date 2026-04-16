@@ -93,8 +93,10 @@ func (p *InfoPanel) Render() string {
 	titleStyle := CardTitleStyle
 
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(p.title))
-	sb.WriteString("\n")
+	if p.title != "" {
+		sb.WriteString(titleStyle.Render(p.title))
+		sb.WriteString("\n")
+	}
 
 	for _, r := range p.rows {
 		switch r.kind {

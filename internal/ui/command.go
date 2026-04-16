@@ -10,7 +10,6 @@ import (
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/apperr"
@@ -98,12 +97,7 @@ func parseCommandInvocation(input string) (CommandInvocation, bool) {
 // builtinCommands returns all built-in slash commands.
 func (a *App) builtinCommands() []Command {
 	return []Command{
-		NewSimple(CommandSpec{
-			Name: "help", Usage: "/help", Description: "Show this help",
-			Category: "info", Kind: CommandKindBuiltin,
-		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
-			return tui.SendCommandResult(ctx.App.helpText())
-		}),
+		NewHelpCommand(a),
 		NewSimple(CommandSpec{
 			Name: "clear", Usage: "/clear", Description: "Clear current context (memory only)",
 			Category: "session", NeedsIdle: true, Kind: CommandKindBuiltin,
@@ -130,12 +124,7 @@ func (a *App) builtinCommands() []Command {
 		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 			return ctx.App.cmdSession()
 		}),
-		NewSimple(CommandSpec{
-			Name: "context", Usage: "/context", Description: "Show current context snapshot",
-			Category: "info", Kind: CommandKindBuiltin,
-		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
-			return ctx.App.cmdContext()
-		}),
+		NewContextCommand(a),
 		NewSimple(CommandSpec{
 			Name: "new", Usage: "/new", Description: "Start new session",
 			Category: "session", NeedsIdle: true, Kind: CommandKindBuiltin,
@@ -145,12 +134,7 @@ func (a *App) builtinCommands() []Command {
 		NewResumeCommand(a),
 		NewTasksCommand(a),
 		NewBtwCommand(a),
-		NewSimple(CommandSpec{
-			Name: "settings", Usage: "/settings", Description: "Show current settings",
-			Category: "info", Kind: CommandKindBuiltin,
-		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
-			return ctx.App.cmdSettings()
-		}),
+		NewSettingsCommand(a),
 		NewSimple(CommandSpec{
 			Name: "mcp", Usage: "/mcp", Description: "Show MCP server status",
 			Category: "info", Kind: CommandKindBuiltin,
@@ -163,12 +147,7 @@ func (a *App) builtinCommands() []Command {
 		}, func(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
 			return ctx.App.cmdPlugins(inv.Args)
 		}),
-		NewSimple(CommandSpec{
-			Name: "debug-harness", Usage: "/debug-harness", Description: "Show harness runtime diagnostics",
-			Category: "info", Kind: CommandKindBuiltin,
-		}, func(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
-			return ctx.App.cmdDebugHarness()
-		}),
+		NewDebugHarnessCommand(a),
 		NewSimple(CommandSpec{
 			Name: "copy", Usage: "/copy", Description: "Copy last response to clipboard",
 			Category: "info", Kind: CommandKindBuiltin,
@@ -207,93 +186,6 @@ func (a *App) builtinCommands() []Command {
 		}, func(_ *CommandContext, _ CommandInvocation) tea.Cmd {
 			return func() tea.Msg { return tui.CommandResultMsg{Quit: true} }
 		}),
-	}
-}
-
-func (a *App) helpText() string {
-	groups := map[CommandKind][]Command{
-		CommandKindBuiltin: nil,
-		CommandKindCustom:  nil,
-		CommandKindSkill:   nil,
-	}
-	for _, cmd := range a.registry.All() {
-		spec := a.registry.EffectiveSpec(cmd)
-		if spec.Hidden {
-			continue
-		}
-		groups[spec.Kind] = append(groups[spec.Kind], cmd)
-	}
-
-	headerStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
-	sectionStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
-	var sb strings.Builder
-	sb.WriteString(headerStyle.Render("Available commands (/ opens the command palette):"))
-	a.renderCommandGroup(&sb, "Built-in", groups[CommandKindBuiltin])
-	a.renderCommandGroup(&sb, "Custom commands", groups[CommandKindCustom])
-	a.renderCommandGroup(&sb, "Skills", groups[CommandKindSkill])
-
-	sb.WriteString("\n\n")
-	sb.WriteString(sectionStyle.Render("Keyboard shortcuts:"))
-	sb.WriteString("\n")
-	sb.WriteString(tui.MutedStyle.Render(strings.TrimSpace(`
-
-  Enter             Send message
-  Esc               Abort running agent
-  Ctrl+C            Quit
-`)))
-
-	return sb.String()
-}
-
-func (a *App) renderCommandGroup(sb *strings.Builder, title string, commands []Command) {
-	if len(commands) == 0 {
-		return
-	}
-
-	sectionStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
-	usageStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
-	descStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
-	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
-
-	sb.WriteString("\n\n")
-	sb.WriteString(sectionStyle.Render(title + ":"))
-	sb.WriteString("\n")
-
-	for _, cmd := range commands {
-		spec := a.registry.EffectiveSpec(cmd)
-		category := strings.TrimSpace(spec.Category)
-		if category == "" {
-			category = "prompt"
-		}
-
-		usage := spec.Usage
-		if usage == "" {
-			usage = "/" + spec.Name
-		}
-
-		desc := spec.Description
-		if desc == "" {
-			desc = "(no description)"
-		}
-		if spec.Source != "" {
-			desc += " (" + spec.Source + ")"
-		}
-
-		tags := []string{category}
-		if spec.NeedsIdle {
-			tags = append(tags, "idle")
-		}
-		if len(spec.Aliases) > 0 {
-			tags = append(tags, "aliases: "+strings.Join(spec.Aliases, ","))
-		}
-
-		sb.WriteString("  ")
-		sb.WriteString(usageStyle.Render(fmt.Sprintf("%-24s", usage)))
-		sb.WriteString(" ")
-		sb.WriteString(descStyle.Render(desc))
-		sb.WriteString(" ")
-		sb.WriteString(metaStyle.Render("[" + strings.Join(tags, ", ") + "]"))
-		sb.WriteString("\n")
 	}
 }
 
@@ -391,16 +283,6 @@ func (a *App) cmdSession() tea.Cmd {
 	return tui.SendCommandResult(tui.CommandStyle.Render(text))
 }
 
-func (a *App) cmdContext() tea.Cmd {
-	snapshot, ok := a.Session.ContextSnapshot()
-	metrics := a.Session.RuntimeMetrics()
-	lastCompaction, hasCompaction := a.Session.LastCompaction()
-	contextUsage := a.Session.ContextUsage()
-	breakdown := a.Session.ContextBreakdown()
-	suggestions := a.Session.ContextSuggestions()
-	return tui.SendCommandResult(tui.CommandStyle.Render(formatContextSnapshot(snapshot, ok, contextUsage, breakdown, suggestions, metrics, lastCompaction, hasCompaction)))
-}
-
 func (a *App) cmdNew() tea.Cmd {
 	if err := a.Session.Reset(); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to create session: " + err.Error()))
@@ -412,31 +294,6 @@ func (a *App) cmdNew() tea.Cmd {
 			Clear: true,
 		}
 	}
-}
-
-func (a *App) cmdSettings() tea.Cmd {
-	s := a.Session.Settings()
-	baseURL := a.Session.BaseURL()
-	if baseURL == "" {
-		baseURL = "(default)"
-	}
-	thinking := s.ThinkingLevel
-	if thinking == "" {
-		thinking = "(unset)"
-	}
-
-	p := tui.NewInfoPanel("Settings")
-	p.Row("Provider", s.Provider)
-	p.Row("Model", a.Session.ModelName())
-	p.Row("API key", maskKey(a.Session.APIKey()))
-	p.Row("Base URL", baseURL)
-	p.Section("Runtime")
-	p.Row("Thinking", thinking)
-	p.Row("Context", tui.FormatTokens(s.ContextWindow))
-	p.Row("Max turns", fmt.Sprintf("%d", s.MaxTurns))
-	p.Hint("Config", config.SettingsPath(a.Cwd))
-
-	return tui.SendCommandResult(p.Render())
 }
 
 func maskKey(key string) string {
@@ -873,100 +730,6 @@ func (a *App) findPlugin(id string) (plugin.Loaded, bool) {
 	return plugin.Loaded{}, false
 }
 
-func (a *App) cmdDebugHarness() tea.Cmd {
-	metrics := a.Session.RuntimeMetrics()
-	lastTurn := a.Session.LastTurnOutcome()
-	lastRunSummary, hasRunSummary := a.Session.LastRunSummary()
-	recentTools := a.Session.RecentToolCalls(5)
-	recentErrors := a.Session.RecentErrors(5)
-	lastReminder, hasReminder := a.Session.LastReminder()
-	lastCompaction, hasCompaction := a.Session.LastCompaction()
-	contextUsage := a.Session.ContextUsage()
-	toolCalls := 0
-	if hasRunSummary {
-		toolCalls = lastRunSummary.ToolCalls
-	}
-
-	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
-	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
-	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
-
-	var sb strings.Builder
-	renderSection := func(title, meta string) {
-		if sb.Len() > 0 {
-			sb.WriteString("\n")
-		}
-		sb.WriteString(title)
-		sb.WriteString("\n")
-		if meta != "" {
-			sb.WriteString(metaStyle.Render(meta))
-			sb.WriteString("\n")
-		}
-	}
-	renderRow := func(label, value string) {
-		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-22s", label)))
-		sb.WriteString(" ")
-		sb.WriteString(valueStyle.Render(value))
-		sb.WriteString("\n")
-	}
-	renderMetaRow := func(label, value string) {
-		sb.WriteString(labelStyle.Render(fmt.Sprintf("%-22s", label)))
-		sb.WriteString(" ")
-		sb.WriteString(metaStyle.Render(value))
-		sb.WriteString("\n")
-	}
-	renderBlock := func(label string, lines []string) {
-		if len(lines) == 0 {
-			renderMetaRow(label, "(none)")
-			return
-		}
-		for i, line := range lines {
-			currentLabel := ""
-			if i == 0 {
-				currentLabel = label
-			}
-			sb.WriteString(labelStyle.Render(fmt.Sprintf("%-22s", currentLabel)))
-			sb.WriteString(" ")
-			sb.WriteString(valueStyle.Render(line))
-			sb.WriteString("\n")
-		}
-	}
-
-	sb.WriteString("Harness Debug\n")
-	renderSection("Last turn", "Only the most recent completed agent run. If the last run was just a final reply, tool calls can be 0.")
-	renderRow("Assistant responded", formatBool(lastTurn.AssistantResponded))
-	renderRow("Tool calls", fmt.Sprintf("%d", toolCalls))
-	renderRow("Read-only tools", fmt.Sprintf("%d", lastTurn.ReadOnlyToolCalls))
-	renderRow("Write-like tools", fmt.Sprintf("%d", lastTurn.WriteLikeToolCalls))
-	renderRow("Task mutations", fmt.Sprintf("%d", lastTurn.TaskMutations))
-	renderMetaRow("Run summary", formatRunSummary(lastRunSummary, hasRunSummary))
-
-	renderSection("Recent activity", "Recent runtime events inside the current loaded session.")
-	renderBlock("Recent tool calls", formatRecentToolCalls(recentTools))
-	renderBlock("Recent errors", formatRecentErrors(recentErrors))
-	renderMetaRow("Last reminder", formatLastReminder(lastReminder, hasReminder))
-	renderMetaRow("Last compaction", formatLastCompaction(lastCompaction, hasCompaction))
-
-	renderSection("Session metrics", "Accumulates since this session was created or loaded in the current process.")
-	renderRow("Reminders total", fmt.Sprintf("%d", metrics.ReminderTotal))
-	renderMetaRow("Reminder kinds", formatReminderCounts(metrics.ReminderByKind))
-	renderRow("Compactions total", fmt.Sprintf("%d", metrics.CompactionTotal))
-	renderRow("Compactions changed", fmt.Sprintf("%d", metrics.CompactionChanged))
-	renderRow("Compaction saved", tui.FormatTokens(metrics.CompactionSaved))
-	renderMetaRow("Compaction kinds", formatCompactionCounts(metrics.CompactionByKind))
-	renderMetaRow("Saved by compaction", formatCompactionSavings(metrics.CompactionSavedByKind))
-	renderRow("Errors total", fmt.Sprintf("%d", metrics.ErrorTotal))
-	renderMetaRow("Error kinds", formatErrorCounts(metrics.ErrorByKind))
-
-	if contextUsage != nil {
-		renderSection("Current context", "Live context window usage for the current agent state.")
-		renderRow("Context used", fmt.Sprintf("%s (%.1f%%)", tui.FormatTokens(contextUsage.Tokens), contextUsage.Percent))
-		renderRow("Context window", tui.FormatTokens(contextUsage.ContextWindow))
-	}
-
-	return tui.SendCommandResult(tui.CommandStyle.Render(strings.TrimRight(sb.String(), "\n")))
-}
-
 func (a *App) cmdReload() tea.Cmd {
 	if err := a.reloadPluginState(); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Reload failed: " + err.Error()))
@@ -1325,118 +1088,6 @@ func formatLastCompaction(snapshot agent.CompactionSnapshot, ok bool) string {
 		status,
 		snapshot.Timestamp.Format("15:04:05"),
 	)
-}
-
-func formatContextSnapshot(
-	snapshot *agentcore.ContextSnapshot,
-	ok bool,
-	contextUsage *agentcore.ContextUsage,
-	breakdown agent.ContextBreakdown,
-	suggestions []agent.ContextSuggestion,
-	metrics agent.RuntimeMetricsSnapshot,
-	lastCompaction agent.CompactionSnapshot,
-	hasCompaction bool,
-) string {
-	p := tui.NewInfoPanel("Context")
-
-	// Live usage
-	p.Section("Usage")
-	usage := contextUsage
-	if ok && snapshot != nil && snapshot.Usage != nil {
-		usage = snapshot.Usage
-	}
-	if usage != nil {
-		p.Row("Used", fmt.Sprintf("%s (%.1f%%)", tui.FormatTokens(usage.Tokens), usage.Percent))
-		p.Row("Window", tui.FormatTokens(usage.ContextWindow))
-		p.Hint("Detail", fmt.Sprintf("usage=%s, trailing=%s", tui.FormatTokens(usage.UsageTokens), tui.FormatTokens(usage.TrailingTokens)))
-	} else {
-		p.Hint("Used", "(unavailable)")
-	}
-
-	// Token breakdown
-	if breakdown.Total > 0 {
-		window := breakdown.ContextWindow
-		fmtPct := func(tokens int) string {
-			if window <= 0 {
-				return tui.FormatTokens(tokens)
-			}
-			return fmt.Sprintf("%s (%.0f%%)", tui.FormatTokens(tokens), float64(tokens)/float64(window)*100)
-		}
-		p.Section("Breakdown")
-		p.Row("User text", fmtPct(breakdown.UserText))
-		p.Row("Assistant text", fmtPct(breakdown.AssistantText))
-		p.Row("Tool calls", fmtPct(breakdown.ToolCalls))
-		p.Row("Tool results", fmtPct(breakdown.ToolResults))
-		if breakdown.Summaries > 0 {
-			p.Row("Summaries", fmtPct(breakdown.Summaries))
-		}
-		if breakdown.Images > 0 {
-			p.Row("Images", fmtPct(breakdown.Images))
-		}
-
-		if len(breakdown.TopTools) > 0 {
-			p.Section("Top tools")
-			for _, t := range breakdown.TopTools {
-				p.Row(t.Name, fmt.Sprintf("%s  calls=%s results=%s", fmtPct(t.Total), tui.FormatTokens(t.CallTokens), tui.FormatTokens(t.ResultTokens)))
-			}
-		}
-	}
-
-	// Composition
-	if ok && snapshot != nil {
-		p.Section("Composition")
-		p.Row("Scope", formatContextScope(snapshot.Scope))
-		if snapshot.TranscriptMessages != snapshot.ActiveMessages {
-			p.Row("Messages", fmt.Sprintf("%d active / %d transcript", snapshot.ActiveMessages, snapshot.TranscriptMessages))
-		} else {
-			p.Row("Messages", fmt.Sprintf("%d", snapshot.ActiveMessages))
-		}
-		p.Row("Summaries", fmt.Sprintf("%d", snapshot.SummaryMessages))
-		p.Row("Cleared results", fmt.Sprintf("%d", snapshot.ClearedToolResults))
-		p.Row("Trimmed blocks", fmt.Sprintf("%d", snapshot.TrimmedTextBlocks))
-
-		p.Section("Last rewrite")
-		strategy := prettyCompactionStrategy(snapshot.LastStrategy)
-		if strategy == "" {
-			strategy = "(none)"
-		}
-		p.Hint("Strategy", strategy)
-		p.Row("Changed", formatBool(snapshot.LastChanged))
-		p.Hint("Details", formatContextRewriteDetails(snapshot))
-	} else {
-		p.Section("Composition")
-		p.Hint("Snapshot", "(unavailable)")
-	}
-
-	// Compaction totals
-	p.Section("Compaction")
-	p.Row("Total", fmt.Sprintf("%d", metrics.CompactionTotal))
-	p.Row("Changed", fmt.Sprintf("%d", metrics.CompactionChanged))
-	p.Row("Saved", tui.FormatTokens(metrics.CompactionSaved))
-	p.Hint("By kind", formatCompactionCounts(metrics.CompactionByKind))
-	p.Hint("Last", formatLastCompaction(lastCompaction, hasCompaction))
-
-	// Suggestions
-	if len(suggestions) > 0 {
-		p.Section("Suggestions")
-		for _, s := range suggestions {
-			if s.Severity == "warning" {
-				msg := s.Message
-				if s.Savings > 0 {
-					msg += fmt.Sprintf(" (~%s saveable)", tui.FormatTokens(s.Savings))
-				}
-				p.Warn("!", msg)
-			} else {
-				msg := s.Message
-				if s.Savings > 0 {
-					msg += fmt.Sprintf(" (~%s saveable)", tui.FormatTokens(s.Savings))
-				}
-				p.Hint("i", msg)
-			}
-		}
-	}
-
-	return p.Render()
 }
 
 func formatRunSummary(summary agentcore.RunSummary, ok bool) string {
