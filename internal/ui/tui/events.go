@@ -230,9 +230,9 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			text := FormatToolResult(ev.Result, ev.IsError)
 			text = m.wrapTextForIndent(text, 4)
 			if ev.IsError {
-				body = indentBlock(FormatToolOutput(text, 5, ErrorStyle), 2)
+				body = indentBlock(FormatToolOutput(text, ToolResultMaxLines, ErrorStyle), 2)
 			} else {
-				body = indentBlock(FormatToolOutput(text, 5), 2)
+				body = indentBlock(FormatToolOutput(text, ToolResultMaxLines), 2)
 			}
 		}
 

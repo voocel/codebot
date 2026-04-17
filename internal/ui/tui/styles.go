@@ -9,6 +9,8 @@ var (
 	ColorUser      = lipgloss.AdaptiveColor{Light: "31", Dark: "#9CC2F9"} // softer user blue, still distinct from assistant/tool colors
 	ColorAssistant = lipgloss.Color("#B8E1DD")                            // pale teal
 	ColorTool      = lipgloss.Color("#E5B567")                            // amber/yellow
+	ColorToolDim   = lipgloss.AdaptiveColor{Light: "94", Dark: "137"}     // dimmed amber — same hue, lower weight (for tool args)
+	ColorToolInk   = lipgloss.Color("#1C1C1C")                            // near-black for text on amber chip
 	ColorError     = lipgloss.Color("#E06C75")                            // soft red
 	ColorSuccess   = lipgloss.Color("#98C379")                            // green
 	ColorCommand   = lipgloss.Color("#78C6E7")                            // cool cyan
@@ -30,27 +32,56 @@ var (
 	ColorStatusBg    = lipgloss.AdaptiveColor{Light: "254", Dark: "236"} // soft strip behind user echoes
 	ColorSeparator   = ColorChrome
 	ColorBorder      = lipgloss.AdaptiveColor{Light: "247", Dark: "241"}
-	ColorPanelBg     = lipgloss.AdaptiveColor{Light: "255", Dark: "235"}
 	ColorPanelEdge   = lipgloss.AdaptiveColor{Light: "248", Dark: "241"}
-	ColorSubtleBg    = lipgloss.AdaptiveColor{Light: "254", Dark: "237"}
 	ColorTitle       = lipgloss.AdaptiveColor{Light: "235", Dark: "255"}
 	ColorSoftText    = ColorText
 	ColorInputChrome = lipgloss.AdaptiveColor{Light: "245", Dark: "244"}
 	ColorPlaceholder = ColorTextSubtle
-	ColorPath        = lipgloss.AdaptiveColor{Light: "26", Dark: "111"}  // path / file highlight
-	ColorToolOutput  = lipgloss.AdaptiveColor{Light: "239", Dark: "250"} // tool body text
+	ColorPath        = lipgloss.AdaptiveColor{Light: "26", Dark: "111"} // path / file highlight
 	ColorToolMeta    = lipgloss.AdaptiveColor{Light: "243", Dark: "246"} // tool line numbers / tails
 )
+
+// ---------------------------------------------------------------------------
+// Shared frame builders
+// ---------------------------------------------------------------------------
+// card is the common "rounded border + padding" envelope used by every
+// panel / card / dialog surface. Only the border color varies across callers.
+func card(borderColor lipgloss.TerminalColor) lipgloss.Style {
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1)
+}
+
+// inputPanel is the top+bottom-rule frame used by the input textarea.
+// Only the border color varies (chrome vs shell accent).
+func inputPanel(borderColor lipgloss.TerminalColor) lipgloss.Style {
+	return lipgloss.NewStyle().
+		Border(lipgloss.Border{Top: "─", Bottom: "─"}).
+		BorderTop(true).
+		BorderBottom(true).
+		BorderLeft(false).
+		BorderRight(false).
+		BorderForeground(borderColor).
+		Padding(0, 1)
+}
 
 // Tool blocks
 var (
 	ToolIconStyle = lipgloss.NewStyle().Foreground(ColorTool)
 
-	ToolNameStyle = lipgloss.NewStyle().Foreground(ColorTool).Bold(true)
+	// Tool name chip — amber background with near-black ink, à la Claude Code.
+	// No padding: keeps the chip flush with trailing args like "Bash(cmd)".
+	ToolNameStyle = lipgloss.NewStyle().
+			Background(ColorTool).
+			Foreground(ColorToolInk).
+			Bold(true)
 
-	ToolArgsStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+	// Tool args — dimmed amber, same hue as the name for visual cohesion.
+	ToolArgsStyle = lipgloss.NewStyle().Foreground(ColorToolDim)
 
-	ToolResultStyle = lipgloss.NewStyle().Foreground(ColorToolOutput)
+	// Tool result body — normal text brightness, content is the focus.
+	ToolResultStyle = lipgloss.NewStyle().Foreground(ColorText)
 
 	ToolPathStyle = lipgloss.NewStyle().Foreground(ColorPath)
 )
@@ -86,35 +117,15 @@ var ImageSelectedStyle = lipgloss.NewStyle().Reverse(true)
 var SeparatorStyle = lipgloss.NewStyle().
 	Foreground(ColorSeparator)
 
-// Shell mode separator
-var ShellSeparatorStyle = lipgloss.NewStyle().
-	Foreground(ColorShell)
-
 // Welcome banner
-var (
-	WelcomeTitleStyle = lipgloss.NewStyle().Foreground(ColorTitle).Bold(true)
+var WelcomeTitleStyle = lipgloss.NewStyle().Foreground(ColorTitle).Bold(true)
 
-	WelcomeDetailStyle = lipgloss.NewStyle().Foreground(ColorMuted)
-)
-
-// Footer
-var FooterStyle = lipgloss.NewStyle().
-	Foreground(ColorThinking).
-	Background(lipgloss.Color("#b5e6b5")).
-	Padding(0, 1)
-
-// Selection menu (plan approval, etc.)
-var (
-	ChoiceActiveStyle   = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
-	ChoiceInactiveStyle = lipgloss.NewStyle().Foreground(ColorMuted)
-)
+// Selection highlight for plan approval and similar pickers.
+var ChoiceActiveStyle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 
 // Command palette
 var (
-	CommandPaletteStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(ColorPrimarySoft).
-				Padding(0, 1)
+	CommandPaletteStyle = card(ColorPrimarySoft)
 
 	CommandPaletteTitleStyle = lipgloss.NewStyle().
 					Foreground(ColorTitle).
@@ -142,26 +153,10 @@ var (
 )
 
 // Plan box
-var PlanBoxStyle = lipgloss.NewStyle().
-	Border(lipgloss.RoundedBorder()).
-	BorderForeground(ColorAccent).
-	Padding(0, 1)
+var PlanBoxStyle = card(ColorAccent)
 
 // Subagent result card
-var SubagentCardStyle = lipgloss.NewStyle().
-	Border(lipgloss.RoundedBorder()).
-	BorderForeground(ColorTool).
-	Padding(0, 1)
-
-// Plan mode tag
-var PlanTagStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
-
-// Assistant markdown container
-var AssistantMarkdownBlockStyle = lipgloss.NewStyle().
-	BorderLeft(true).
-	BorderForeground(ColorPrimarySoft).
-	Padding(0, 1).
-	MarginLeft(1)
+var SubagentCardStyle = card(ColorTool)
 
 // General purpose
 var (
@@ -185,11 +180,6 @@ var (
 )
 
 var (
-	CardStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(ColorPanelEdge).
-			Padding(0, 1)
-
 	CardTitleStyle = lipgloss.NewStyle().
 			Foreground(ColorTitle).
 			Bold(true)
@@ -198,23 +188,8 @@ var (
 				Foreground(ColorPrimarySoft).
 				Bold(true)
 
-	InputPanelStyle = lipgloss.NewStyle().
-			Border(lipgloss.Border{Top: "─", Bottom: "─"}).
-			BorderTop(true).
-			BorderBottom(true).
-			BorderLeft(false).
-			BorderRight(false).
-			BorderForeground(ColorInputChrome).
-			Padding(0, 1)
-
-	ShellInputPanelStyle = lipgloss.NewStyle().
-			Border(lipgloss.Border{Top: "─", Bottom: "─"}).
-			BorderTop(true).
-			BorderBottom(true).
-			BorderLeft(false).
-			BorderRight(false).
-			BorderForeground(ColorShell).
-			Padding(0, 1)
+	InputPanelStyle      = inputPanel(ColorInputChrome)
+	ShellInputPanelStyle = inputPanel(ColorShell)
 
 	// ShellAccentStyle is used for both the prompt caret ("❯") and the "!" prefix
 	// when the input is in shell mode — they share the same foreground/weight by design.
@@ -236,11 +211,6 @@ var (
 				Foreground(ColorAccent).
 				Bold(true)
 
-	WelcomeFrameStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(ColorPrimarySoft).
-				Padding(0, 1)
-
 	WelcomeKickerStyle = lipgloss.NewStyle().
 				Foreground(ColorPrimary).
 				Bold(true)
@@ -251,20 +221,13 @@ var (
 	WelcomeMutedStyle = lipgloss.NewStyle().
 				Foreground(ColorMuted)
 
-	TagStyle = lipgloss.NewStyle().
-			Foreground(ColorPrimary).
-			Bold(true)
-
 	TagSubtleStyle = lipgloss.NewStyle().
 			Foreground(ColorSoftText)
 
 	ImageTagStyle = lipgloss.NewStyle().
 			Foreground(ColorPrimary)
 
-	TaskCardStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(ColorPanelEdge).
-			Padding(0, 1)
+	TaskCardStyle = card(ColorPanelEdge)
 
 	TaskProgressStyle = lipgloss.NewStyle().
 				Foreground(ColorTitle)
@@ -273,10 +236,7 @@ var (
 				Foreground(ColorAccent).
 				Bold(true)
 
-	AskCardStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(ColorPrimarySoft).
-			Padding(0, 1)
+	AskCardStyle = card(ColorPrimarySoft)
 )
 
 func CommandPaletteKindBadge(kind string) string {

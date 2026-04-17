@@ -1,9 +1,9 @@
 package tui
 
+// Model.View — composes the live bottom-pinned area from render_*.go helpers.
+
 import (
 	"strings"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // View renders the live area pinned at the bottom of the terminal.
@@ -35,7 +35,7 @@ func (m *Model) View() string {
 	for id, name := range m.PendingTools {
 		line := m.ToolSpinner.View() + " " + ToolNameStyle.Render(name)
 		if buf, ok := m.ToolOutputBuf[id]; ok && buf.Len() > 0 {
-			output := RenderStreamingOutput(buf.String(), 8)
+			output := RenderStreamingOutput(buf.String(), ToolStreamTailLines)
 			line += "\n" + indentBlock(m.wrapTextForIndent(output, 2), 2)
 		}
 		if tbuf, ok := m.ToolThinkingBuf[id]; ok && tbuf.Len() > 0 {
@@ -96,53 +96,4 @@ func (m *Model) View() string {
 	}
 
 	return strings.Join(parts, "\n")
-}
-
-// RenderPromptOutput renders a user message with optional welcome banner for scrollback.
-func (m *Model) RenderPromptOutput(text string) string {
-	userLine := "\n" + m.renderUserMessage(text)
-	if m.ShowWelcome {
-		return m.renderWelcome() + "\n" + userLine
-	}
-	return userLine
-}
-
-func (m *Model) shellInputActive() bool {
-	return strings.HasPrefix(strings.TrimSpace(m.Input.Value()), "!")
-}
-
-// overlayView returns the rendered overlay content and whether it replaces the input area.
-func (m *Model) overlayView() (string, bool) {
-	if m.config.Overlay == nil {
-		return "", false
-	}
-	ov := m.config.Overlay(m)
-	if ov == nil {
-		return "", false
-	}
-	return ov.View(m.Width), ov.ReplacesInput
-}
-
-// renderCompletions renders the completion menu.
-func (m *Model) renderCompletions() string {
-	if !m.compActive || len(m.compItems) == 0 {
-		return ""
-	}
-	return m.renderCommandPalette()
-}
-
-// styledInputView renders the textarea with optional command highlighting.
-// When cmdHighlight is set, the command text in the view is colorized.
-func (m *Model) styledInputView() string {
-	view := m.Input.View()
-	if m.shellInputActive() {
-		view = strings.Replace(view, "❯", ShellAccentStyle.Render("❯"), 1)
-		view = strings.Replace(view, "!", ShellAccentStyle.Render("!"), 1)
-		return view
-	}
-	if m.cmdHighlight == "" {
-		return view
-	}
-	colored := lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.cmdHighlight)
-	return strings.Replace(view, m.cmdHighlight, colored, 1)
 }

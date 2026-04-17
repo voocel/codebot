@@ -21,8 +21,6 @@ type quitResetMsg struct{}
 
 const completedTasksHideDelay = 5 * time.Second
 
-const maxInputHeight = 8
-
 const defaultPlaceholder = "Ask anything... (Enter send, Ctrl+J newline, Esc abort)"
 
 var hideCompletedTasksTick = func(version uint64) tea.Cmd {
@@ -202,7 +200,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "alt+enter", "ctrl+j":
-		m.Input.SetHeight(maxInputHeight)
+		m.Input.SetHeight(MaxInputLines)
 		m.Input.InsertString("\n")
 		m.adjustInputHeight()
 		return m, nil
@@ -214,7 +212,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.config.OnPaste(m)
 		}
 		var cmd tea.Cmd
-		m.Input.SetHeight(maxInputHeight)
+		m.Input.SetHeight(MaxInputLines)
 		m.Input, cmd = m.Input.Update(msg)
 		m.adjustInputHeight()
 		return m, cmd
@@ -231,7 +229,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	m.Input.SetHeight(maxInputHeight)
+	m.Input.SetHeight(MaxInputLines)
 	m.Input, cmd = m.Input.Update(msg)
 	m.adjustInputHeight()
 	m.updateCompletions()
@@ -481,7 +479,7 @@ func (m *Model) handleMCPReady(msg MCPReadyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	m.Input.SetHeight(maxInputHeight)
+	m.Input.SetHeight(MaxInputLines)
 	m.Input, cmd = m.Input.Update(msg)
 	m.adjustInputHeight()
 	return m, cmd
@@ -572,7 +570,7 @@ func (m *Model) adjustInputHeight() {
 		}
 	}
 	lines = max(lines, 1)
-	lines = min(lines, maxInputHeight)
+	lines = min(lines, MaxInputLines)
 	m.Input.SetHeight(lines)
 }
 
@@ -754,9 +752,9 @@ func (m *Model) renderRestoredToolBody(toolName string, raw json.RawMessage, isE
 		text := FormatToolResult(raw, isError)
 		text = m.wrapTextForIndent(text, 4)
 		if isError {
-			return indentBlock(FormatToolOutput(text, 5, ErrorStyle), 2)
+			return indentBlock(FormatToolOutput(text, ToolResultMaxLines, ErrorStyle), 2)
 		}
-		return indentBlock(FormatToolOutput(text, 5), 2)
+		return indentBlock(FormatToolOutput(text, ToolResultMaxLines), 2)
 	}
 }
 
