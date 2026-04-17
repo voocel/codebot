@@ -106,8 +106,9 @@ type Session struct {
 	lazyPersist             bool
 	pendingUserMsg          []agentcore.Message
 	autoNamed               bool
-	lastAssistantStart      time.Time     // set at EventMessageStart (assistant), consumed at EventMessageEnd for latency_ms
-	cacheSnap               cacheSnapshot // previous turn's system/tools fingerprint + cache_read, updated after every LLM call
+	lastAssistantStart      time.Time          // set at EventMessageStart (assistant), consumed at EventMessageEnd for latency_ms
+	cacheSnap               cacheSnapshot      // previous turn's system/tools fingerprint + cache_read, updated after every LLM call
+	sessionMemory           sessionMemoryState // background extraction bookkeeping — see session_memory.go
 	pendingToolCalls        map[string]pendingToolCall
 	recentToolCalls         []toolCallFingerprint
 	pendingReminderContinue bool

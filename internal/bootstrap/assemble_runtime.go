@@ -32,7 +32,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	if r := assembly.settings.CompactRatio; r > 0 && r < 1 {
 		reserveTokens = assembly.settings.ContextWindow - int(float64(assembly.settings.ContextWindow)*r)
 	}
-	contextEngine, summaryCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens)
+	contextEngine, summaryCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens, input.cwd)
 	agentCore, err := buildAgent(assembly, services, contextEngine, taskRT, tools)
 	if err != nil {
 		return nil, err
@@ -73,12 +73,19 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	}, nil
 }
 
-func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy) {
+func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int, cwd string) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy) {
 	toolCompact := agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
 		Classifier: agent.CodebotToolClassifier,
 		KeepRecent: 5,
 	})
 	trimCompact := agentctx.NewLightTrim(agentctx.LightTrimConfig{})
+	// SessionMemory-backed compaction runs ahead of the LLM summary path so
+	// that a populated session-memory.md reuses the living document instead of
+	// triggering a synchronous summarization call. Empty / template-only
+	// memory files fall through to FullSummary automatically.
+	memoryCompact := agentctx.NewSessionMemory(agentctx.SessionMemoryConfig{
+		SeedFn: agent.SessionMemorySeedFn(cwd),
+	})
 	summaryCompact := agentctx.NewFullSummary(agentctx.FullSummaryConfig{
 		Model: chatModel,
 	})
@@ -88,6 +95,7 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 		Strategies: []agentctx.Strategy{
 			toolCompact,
 			trimCompact,
+			memoryCompact,
 			summaryCompact,
 		},
 	})
