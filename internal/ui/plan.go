@@ -223,7 +223,7 @@ func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
 	return a.sendAsPrompt(prompt)
 }
 
-func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
+func (a *App) planOnEvent(m *tui.Model, ev agentcore.Event) tea.Cmd {
 	switch ev.Type {
 	case agentcore.EventToolExecEnd:
 		if ev.IsError {
@@ -231,9 +231,9 @@ func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
 		}
 		switch ev.Tool {
 		case "enter_plan_mode":
-			return a.onEnterPlanMode(ev.Result)
+			return a.onEnterPlanMode(m, ev.Result)
 		case "exit_plan_mode":
-			return a.onExitPlanMode(ev.Result)
+			return a.onExitPlanMode(m, ev.Result)
 		}
 	case agentcore.EventAgentEnd:
 		if a.planPhase() == plan.PhaseReview {
@@ -244,13 +244,13 @@ func (a *App) planOnEvent(_ *tui.Model, ev agentcore.Event) tea.Cmd {
 			}
 			lines = append(lines, tui.MutedStyle.Render("Select an action below."))
 			box := tui.PlanBoxStyle.Render(strings.Join(lines, "\n"))
-			return tea.Println("\n" + box)
+			return m.Emit("\n" + box)
 		}
 	}
 	return nil
 }
 
-func (a *App) onEnterPlanMode(result json.RawMessage) tea.Cmd {
+func (a *App) onEnterPlanMode(m *tui.Model, result json.RawMessage) tea.Cmd {
 	if a.planPhase() != plan.PhaseOff {
 		return nil
 	}
@@ -262,13 +262,13 @@ func (a *App) onEnterPlanMode(result json.RawMessage) tea.Cmd {
 	}
 	_ = json.Unmarshal(result, &resp)
 	if _, err := a.PlanManager.Enter(strings.TrimSpace(resp.Task)); err != nil {
-		return tea.Println(tui.ErrorStyle.Render("Plan mode error: " + err.Error()))
+		return m.Emit(tui.ErrorStyle.Render("Plan mode error: " + err.Error()))
 	}
 	a.planTitle = ""
 	return nil
 }
 
-func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
+func (a *App) onExitPlanMode(m *tui.Model, result json.RawMessage) tea.Cmd {
 	if a.planPhase() != plan.PhasePlanning || a.PlanManager == nil {
 		return nil
 	}
@@ -290,7 +290,7 @@ func (a *App) onExitPlanMode(result json.RawMessage) tea.Cmd {
 	}
 	commands := plan.ParseAllowedCommands(resp.AllowedCommands)
 	if err := a.PlanManager.Submit(title, content, commands); err != nil {
-		return tea.Println(tui.ErrorStyle.Render("Plan submit error: " + err.Error()))
+		return m.Emit(tui.ErrorStyle.Render("Plan submit error: " + err.Error()))
 	}
 
 	a.planTitle = title

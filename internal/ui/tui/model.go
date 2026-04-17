@@ -149,6 +149,37 @@ type State struct {
 
 	MCPLoading bool // true while MCP servers are connecting in background
 
+	// Scrollback mirrors the stream of pre-formatted bodies sent to
+	// tea.Println. It exists solely to cure the terminal-resize ghost /
+	// reflow duplication problem (重影).
+	//
+	// Precise cause: Println content, once written, is inert — bubbletea
+	// never redraws it, so reflow at worst re-wraps it in place without
+	// duplicating. The ghosts come exclusively from the live View()
+	// (status bar, input panel borders, streaming area). On resize the
+	// terminal pushes those rows up into OS scrollback to make room for
+	// the new viewport, but bubbletea's `linesRendered` cursor tracking
+	// still points at the old position — its next frame's "erase previous
+	// frame" sequence misses, and the pushed-up copy is marooned in
+	// scrollback as a ghost.
+	//
+	// Fix: on WindowSizeMsg we wipe viewport + OS scrollback (`\x1b[2J`
+	// + `\x1b[3J` + `\x1b[H`) to evict the ghosts, then replay this cache
+	// so legitimate Println history survives the nuke. Without the cache
+	// we'd be trading ghosts for lost conversation history. See
+	// handleResize for the replay path, Emit for the write path,
+	// handleCommandResult (msg.Clear) for the reset path.
+	//
+	// Entries are the exact string passed to tea.Println (as returned by
+	// formatScrollbackBlock), so joining them with "\n" and Println'ing
+	// once is byte-for-byte equivalent to the original per-block Println
+	// sequence — tea.Println splits on "\n" internally. Bounded by
+	// scrollbackCacheLimit; entries beyond the cap are dropped FIFO,
+	// which only materialises as lost history after a resize (the live
+	// terminal scrollback remains complete until the next resize clears
+	// it).
+	Scrollback []string
+
 	Suggestion string // prompt suggestion shown as placeholder after agent completes
 
 	compItems    []CompletionItem // current completion candidates

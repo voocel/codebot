@@ -22,19 +22,41 @@ func formatScrollbackBlock(content string, inline bool) string {
 	return "\n" + content
 }
 
-// printBlock prints content to terminal scrollback with a leading blank line.
-// Every top-level output block (assistant reply, tool result, error) should
-// use this instead of raw tea.Println so blocks are visually separated by
-// exactly one blank line.
-func printBlock(content string) tea.Cmd {
-	return tea.Println(formatScrollbackBlock(content, false))
+// scrollbackCacheLimit caps the replay cache. Beyond this we drop the
+// oldest entries (FIFO). Only matters after a resize: the terminal's own
+// scrollback is authoritative until handleResize wipes it with `\x1b[3J`
+// and replays the cache. Sized generously so casual sessions never
+// truncate — 5000 blocks at a few KB each is a few-MB ceiling.
+const scrollbackCacheLimit = 5000
+
+// Emit is the single entry point for writing content to terminal scrollback.
+// It caches the exact body given to tea.Println so handleResize can replay
+// the entire stream after a clear. All pre-formatted paths — printBlock,
+// printInline, and direct tea.Println calls that used to exist — funnel
+// through here so the cache stays authoritative. Exported so the outer
+// ui package (app.go, plan.go) can push external scrollback writes
+// through the same cache.
+func (m *Model) Emit(body string) tea.Cmd {
+	m.Scrollback = append(m.Scrollback, body)
+	if overflow := len(m.Scrollback) - scrollbackCacheLimit; overflow > 0 {
+		m.Scrollback = append(m.Scrollback[:0:0], m.Scrollback[overflow:]...)
+	}
+	return tea.Println(body)
+}
+
+// printBlock prints content to terminal scrollback with a leading blank
+// line. Every top-level output block (assistant reply, tool result, error)
+// should use this so blocks are visually separated by exactly one blank
+// line.
+func (m *Model) printBlock(content string) tea.Cmd {
+	return m.Emit(formatScrollbackBlock(content, false))
 }
 
 // printInline prints content flush against the previous block (no leading
 // blank line). Use for output that should feel like a direct continuation
 // of what came before — e.g. shell command output under its echoed prompt.
-func printInline(content string) tea.Cmd {
-	return tea.Println(formatScrollbackBlock(content, true))
+func (m *Model) printInline(content string) tea.Cmd {
+	return m.Emit(formatScrollbackBlock(content, true))
 }
 
 // HandleAgentEvent processes agent events.
@@ -54,7 +76,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		m.RunStats.Duration = time.Since(m.RunStats.StartedAt)
 		m.RunStats.DisplayInput = m.RunStats.Input
 		m.RunStats.DisplayOutput = m.RunStats.Output
-		cmds = append(cmds, printBlock(m.renderRunSummary()))
+		cmds = append(cmds, m.printBlock(m.renderRunSummary()))
 		m.QueuedMsgs = nil
 		clear(m.PendingTools)
 		clear(m.ToolHeaders)
@@ -121,7 +143,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 				block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 			}
 			if block.Len() > 0 {
-				cmds = append(cmds, printBlock(block.String()))
+				cmds = append(cmds, m.printBlock(block.String()))
 			}
 		}
 
@@ -156,9 +178,9 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 				// Flush buffered header with the first preview.
 				if header, ok := m.ToolHeaders[ev.ToolID]; ok {
 					delete(m.ToolHeaders, ev.ToolID)
-					cmds = append(cmds, printBlock(header+"\n"+indentBlock(rendered, 2)))
+					cmds = append(cmds, m.printBlock(header+"\n"+indentBlock(rendered, 2)))
 				} else {
-					cmds = append(cmds, printBlock(indentBlock(rendered, 2)))
+					cmds = append(cmds, m.printBlock(indentBlock(rendered, 2)))
 				}
 			}
 		case agentcore.ToolExecUpdateProgress:
@@ -247,7 +269,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		} else {
 			block = header
 		}
-		cmds = append(cmds, printBlock(block))
+		cmds = append(cmds, m.printBlock(block))
 
 	case agentcore.EventError:
 		// Context cancellation is a normal operation (user Esc, plan submission stop).
@@ -259,7 +281,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			errMsg = ev.Err.Error()
 		}
 		wrapped := indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+errMsg, 2)), 2)
-		cmds = append(cmds, printBlock(wrapped))
+		cmds = append(cmds, m.printBlock(wrapped))
 	}
 
 	if m.config.OnEvent != nil {

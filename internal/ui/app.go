@@ -264,7 +264,7 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 				return false, nil
 			}
 			m.Input.Reset()
-			echo := tea.Println(m.RenderPromptOutput(text))
+			echo := m.Emit(m.RenderPromptOutput(text))
 			m.ShowWelcome = false
 			return true, tea.Sequence(echo, a.execShell(shellCmd))
 		}
@@ -282,7 +282,7 @@ func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 			return false, nil
 		}
 		m.Input.Reset()
-		echo := tea.Println(m.RenderPromptOutput(text))
+		echo := m.Emit(m.RenderPromptOutput(text))
 		m.ShowWelcome = false
 		return true, tea.Sequence(echo, a.handleCommand(text))
 	}

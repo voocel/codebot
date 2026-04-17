@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -76,7 +77,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, textarea.Paste
 	case PasteErrorMsg:
 		m.Pasting--
-		return m, tea.Println(indentBlock(msg.Text, 2))
+		return m, m.Emit(indentBlock(msg.Text, 2))
 	case AskUserMsg:
 		m.AskUser = initAskUser(msg, m.Width, m.Height)
 		return m, nil
@@ -397,7 +398,7 @@ func (m *Model) handleSubmitKey() (tea.Model, tea.Cmd) {
 	} else if err := m.promptWithImages(req.text, req.images); err != nil {
 		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+err.Error(), 2)), 2)
 	}
-	return m, printBlock(output)
+	return m, m.printBlock(output)
 }
 
 type submitRequest struct {
@@ -473,7 +474,7 @@ func (m *Model) handleMCPReady(msg MCPReadyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	text := MutedStyle.Render("  mcp: ") + strings.Join(parts, MutedStyle.Render(", "))
-	return m, tea.Println(text)
+	return m, m.Emit(text)
 }
 
 func (m *Model) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -525,7 +526,35 @@ func (m *Model) handleDownKey() (tea.Model, tea.Cmd, bool) {
 }
 
 // handleResize processes terminal resize events.
+//
+// On width change or height shrink we wipe the viewport *and* the OS
+// scrollback (`\x1b[2J\x1b[3J\x1b[H`) and then replay every cached
+// scrollback body via a single tea.Println. This mirrors Claude Code's
+// Ink-based behaviour (log-update.ts:142-147 →
+// fullResetSequence_CAUSES_FLICKER) and exterminates resize ghosts at the
+// source: bubbletea's line-based cursor tracking cannot untangle terminal
+// reflow, so instead of patching the delta we rebuild the whole stream.
+//
+// Why this works where tea.ClearScreen did not:
+//
+//   - Direct stdout write is synchronous with Update — no race with the
+//     ticker flushing a stale frame between WindowSizeMsg and the async
+//     clearScreenMsg.
+//   - `\x1b[3J` wipes the OS scrollback copy that terminals populate when
+//     reflow pushes old wide lines upward; without it every resize left
+//     duplicates stacked in scrollback.
+//   - The replayed bodies are byte-identical to the originals. Joining
+//     with "\n" is equivalent to the original per-block Println sequence
+//     because tea.Println splits on "\n" internally (see
+//     standard_renderer.go printLineMessage). Content that overflows the
+//     viewport scrolls into the newly-empty OS scrollback naturally — so
+//     mouse-wheel history survives the resize (it is just rewritten).
+//
+// Skipped on the first WindowSizeMsg (prev width == 0) — nothing to clear
+// and the scrollback cache is empty anyway.
 func (m *Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	prevWidth, prevHeight := m.Width, m.Height
+
 	m.Width = msg.Width
 	m.Height = msg.Height
 	m.Ready = true
@@ -540,7 +569,17 @@ func (m *Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		m.AskUser.width = m.Width
 		m.AskUser.height = m.Height
 	}
-	return m, nil
+
+	needsReplay := prevWidth != 0 && (prevWidth != m.Width || m.Height < prevHeight)
+	if !needsReplay {
+		return m, nil
+	}
+
+	_, _ = os.Stdout.WriteString("\x1b[2J\x1b[3J\x1b[H")
+	if len(m.Scrollback) == 0 {
+		return m, nil
+	}
+	return m, tea.Println(strings.Join(m.Scrollback, "\n"))
 }
 
 // clearSuggestion removes the current prompt suggestion and clears the placeholder.
@@ -582,6 +621,10 @@ func (m *Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 		m.TurnCount = 0
 		m.ShowWelcome = true
 		m.Images = nil
+		// Drop the scrollback cache so a subsequent resize doesn't replay
+		// content the user just asked to clear. The terminal viewport is
+		// cleared by the command itself; this keeps the model consistent.
+		m.Scrollback = nil
 	}
 	if msg.NewProvider != "" {
 		m.Provider = msg.NewProvider
@@ -600,9 +643,9 @@ func (m *Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 		}
 		output += indentBlock(msg.Text, 2)
 		if msg.Inline {
-			return m, printInline(output)
+			return m, m.printInline(output)
 		}
-		return m, printBlock(output)
+		return m, m.printBlock(output)
 	}
 	return m, nil
 }
@@ -621,7 +664,7 @@ func (m *Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	} else if err := m.promptWithImages(text, nil); err != nil {
 		output += "\n" + indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+err.Error(), 2)), 2)
 	}
-	return m, printBlock(output)
+	return m, m.printBlock(output)
 }
 
 // promptWithImages sends user text with optional clipboard image attachments.
@@ -658,7 +701,7 @@ func (m *Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 
 	sb.WriteString("\n\n")
 	sb.WriteString(MutedStyle.Render("  ── end of history ──"))
-	return m, tea.Println(sb.String())
+	return m, m.Emit(sb.String())
 }
 
 func buildRestoreToolIndex(msgs []agentcore.AgentMessage) map[string]string {
