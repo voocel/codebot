@@ -375,12 +375,10 @@ func taskAppendUnique(base []string, vals ...string) []string {
 
 const taskHighWaterMarkFile = ".highwatermark"
 
-// SetDir enables file persistence. It creates the directory if needed and
-// loads any existing tasks from disk. Call before the store is used.
+// SetDir enables file persistence. The directory is created lazily on the
+// first write (persistLocked / writeHighWaterMarkLocked) — sessions that
+// never create a task leave nothing behind on disk.
 func (s *TaskStore) SetDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create task dir: %w", err)
-	}
 	s.mu.Lock()
 	s.dir = dir
 	s.mu.Unlock()
@@ -390,6 +388,9 @@ func (s *TaskStore) SetDir(dir string) error {
 func (s *TaskStore) loadFromDir() error {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // dir not created yet — no prior tasks to load
+		}
 		return fmt.Errorf("read task dir: %w", err)
 	}
 

@@ -338,6 +338,7 @@ func (s *Store) scheduleDurableWrite() {
 // flushDurable serializes under RLock and writes outside the lock.
 func (s *Store) flushDurable() {
 	s.mu.RLock()
+	jobCount := len(s.durableJobs)
 	data := s.marshalDurableJobs()
 	dir := s.configDir
 	s.mu.RUnlock()
@@ -345,8 +346,19 @@ func (s *Store) flushDurable() {
 	if dir == "" || data == nil {
 		return
 	}
+	filePath := filepath.Join(dir, scheduledTasksFile)
+	// Skip persisting an empty job list when no file exists yet: StopWriter
+	// calls this unconditionally on shutdown, and without this guard every
+	// session that never scheduled a cron task would leave behind an empty
+	// <sessionID>/scheduled_tasks.json. When the file already exists the
+	// empty list is still written so that deleting the last job persists.
+	if jobCount == 0 {
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			return
+		}
+	}
 	_ = os.MkdirAll(dir, 0o755)
-	_ = os.WriteFile(filepath.Join(dir, scheduledTasksFile), data, 0o644)
+	_ = os.WriteFile(filePath, data, 0o644)
 }
 
 // marshalDurableJobs serializes durable jobs to JSON. Must hold at least RLock.
