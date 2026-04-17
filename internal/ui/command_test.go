@@ -623,7 +623,7 @@ func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
 	if muted {
 		t.Fatal("expected changed compaction result to use emphasized tone")
 	}
-	for _, want := range []string{"Context trimmed automatically", "light trim", "128.0k", "64.0k"} {
+	for _, want := range []string{"Context trimmed automatically", "light trim", "128k", "64k"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}
@@ -781,7 +781,7 @@ func TestFormatLastCompaction(t *testing.T) {
 		SplitTurn:      true,
 		Timestamp:      time.Date(2026, 3, 27, 15, 4, 8, 0, time.Local),
 	}, true)
-	for _, want := range []string{"trim", "threshold", "light trim", "compacted=12", "kept=3", "split-turn", "changed", "128.0k", "64.0k", "15:04:08"} {
+	for _, want := range []string{"trim", "threshold", "light trim", "compacted=12", "kept=3", "split-turn", "changed", "128k", "64k", "15:04:08"} {
 		if !strings.Contains(changed, want) {
 			t.Fatalf("expected %q in %q", want, changed)
 		}
@@ -844,7 +844,7 @@ func TestFormatCompactionSavings(t *testing.T) {
 		agent.CompactionKindTrim: 1200,
 		agent.CompactionKindFull: 32000,
 	})
-	want := "trim=1.2k, full=32.0k"
+	want := "trim=1.2k, full=32k"
 	if got != want {
 		t.Fatalf("formatCompactionSavings() = %q, want %q", got, want)
 	}

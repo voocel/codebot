@@ -32,13 +32,15 @@ func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (iden
 	}
 
 	var identityBody strings.Builder
+	// Date intentionally excluded from identity: it changes daily and would
+	// invalidate the cached prompt prefix. It is surfaced via BuildReminders
+	// as a per-turn <system-reminder> instead.
 	fmt.Fprintf(&identityBody, `You are an expert coding assistant with direct access to the filesystem and shell.
 
 ## Environment
 - Working directory: %s
 - OS: %s/%s
-- Date: %s
-`, cwd, runtime.GOOS, runtime.GOARCH, time.Now().Format("2006-01-02"))
+`, cwd, runtime.GOOS, runtime.GOARCH)
 	identity = identityBody.String()
 
 	var toolsBody strings.Builder
@@ -87,6 +89,23 @@ Break down and manage your work with task_create, task_update, and task_list.
 - Don't create helpers, utilities, or abstractions for one-time operations. Don't design for hypothetical future requirements. The right amount of complexity is what the task actually requires—no speculative abstractions, but no half-finished implementations either. Three similar lines of code is better than a premature abstraction.
 - Avoid backwards-compatibility hacks like renaming unused _vars, re-exporting types, adding // removed comments for removed code, etc. If you are certain that something is unused, you can delete it completely.`
 
+	parallelExecutionInstructions := `## Parallel tool execution (CRITICAL)
+
+When you need multiple pieces of information that do not depend on each other, you MUST dispatch the tool calls in the SAME response — not sequentially across turns.
+
+- Default: parallel. Only go sequential when a later call genuinely needs the output of an earlier one.
+- Exploring an unfamiliar area? Fire 2–4 reads/greps/globs together.
+- Verifying a hypothesis? Check all the suspects in one shot.
+- Failing to parallelize wastes turns, tokens, and cache warmth. It is a correctness issue, not a style preference.
+
+Examples of calls that should be parallel:
+- Reading several suspected files
+- Running grep on multiple patterns
+- Read + grep + ls on the same exploration step
+- Running a build and checking git status
+
+Only serialize when the next argument literally depends on the previous result (e.g. read a path returned by grep).`
+
 	usingYourToolsInstructions := `## Using your tools
 - Do NOT use bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:
   - To read files use read instead of cat, head, tail, or sed
@@ -94,8 +113,7 @@ Break down and manage your work with task_create, task_update, and task_list.
   - To create files use write instead of cat with heredoc or echo redirection
   - To search for files use glob instead of find or ls
   - To search the content of files, use grep instead of grep or rg
-  - Reserve using bash exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using bash for these if it is absolutely necessary.
-- You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.`
+  - Reserve using bash exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using bash for these if it is absolutely necessary.`
 
 	outputEfficiencyInstructions := `## Output efficiency
 
@@ -114,7 +132,7 @@ If you can say it in one sentence, don't use three. Prefer short, direct sentenc
 	if toolsBody.Len() > 0 {
 		instructionParts = append(instructionParts, toolsBody.String())
 	}
-	instructionParts = append(instructionParts, doingTasksInstructions, usingYourToolsInstructions, outputEfficiencyInstructions)
+	instructionParts = append(instructionParts, parallelExecutionInstructions, doingTasksInstructions, usingYourToolsInstructions, outputEfficiencyInstructions)
 	if taskManagementInstructions != "" {
 		instructionParts = append(instructionParts, taskManagementInstructions)
 	}
@@ -128,8 +146,13 @@ If you can say it in one sentence, don't use three. Prefer short, direct sentenc
 // BuildReminders extracts skills and context files into <system-reminder>
 // wrapped text fragments for injection into user messages.
 // Returns nil when there are no reminders to inject.
+//
+// Today's date is surfaced here (not in the system prompt) so that the
+// system prefix stays identical across days and prompt cache can hit.
 func BuildReminders(ctx ContextFiles, skills []skill.Spec) []string {
-	var reminders []string
+	reminders := []string{
+		"<system-reminder>\nToday's date is " + time.Now().Format("2006-01-02") + ".\n</system-reminder>",
+	}
 	if skillBlock := skill.RenderListing(skills, skill.DefaultListingOptions()); skillBlock != "" {
 		reminders = append(reminders, "<system-reminder>\n## Skills\n"+skillBlock+"\n</system-reminder>")
 	}
@@ -142,9 +165,6 @@ func BuildReminders(ctx ContextFiles, skills []skill.Spec) []string {
 	if ctx.Memory != "" {
 		memPath := filepath.Join(ctx.MemoryDir, "MEMORY.md")
 		reminders = append(reminders, "<system-reminder>\nContents of "+memPath+" (auto-memory, persists across conversations):\n\n"+ctx.Memory+"\n</system-reminder>")
-	}
-	if len(reminders) == 0 {
-		return nil
 	}
 	return reminders
 }

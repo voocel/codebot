@@ -9,6 +9,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/skill"
+	"github.com/voocel/codebot/internal/storage"
 )
 
 type sessionPersistence struct {
@@ -41,6 +42,14 @@ func (s *Session) Subscribe(fn func(SessionEvent)) func() {
 
 func (s *Session) handleAgentEvent(ev agentcore.Event) {
 	s.runtime.handleEvent(ev)
+
+	if ev.Type == agentcore.EventMessageStart {
+		if msg, ok := ev.Message.(agentcore.Message); ok && msg.Role == agentcore.RoleAssistant {
+			s.mu.Lock()
+			s.lastAssistantStart = time.Now()
+			s.mu.Unlock()
+		}
+	}
 
 	if ev.Type == agentcore.EventMessageEnd {
 		if msg, ok := ev.Message.(agentcore.Message); ok {
@@ -95,6 +104,16 @@ func (s *Session) emit(ev SessionEvent) {
 	case SEAgentEvent:
 		if ev.AgentEvent != nil && ev.AgentEvent.Type == agentcore.EventError {
 			s.recordErrorDiagnostic(ev.AgentEvent.Err)
+		}
+	case SEAutoCompactionEnd:
+		if ev.CompactionChanged {
+			// A compaction rewrites the prompt prefix: the next turn's
+			// cache_read drop is expected, not a bug. Invalidate the cache
+			// baseline so detectCacheBreak does not flag it as a break.
+			s.mu.Lock()
+			s.cacheSnap.CacheReadTokens = 0
+			s.cacheSnap.Valid = false
+			s.mu.Unlock()
 		}
 	}
 
@@ -238,7 +257,66 @@ func (p *sessionPersistence) handleMessageEnd(msg agentcore.Message) {
 	p.persistMessage(msg)
 
 	if msg.Role == agentcore.RoleAssistant {
+		p.persistLLMCall(msg)
 		p.tryAutoName()
+	}
+}
+
+// persistLLMCall writes a per-turn observability record for the just-finished
+// assistant response. Non-fatal: logging failures are surfaced via SEError but
+// never block the session. Skipped when usage is empty (e.g. recovered message).
+func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
+	if msg.Usage == nil {
+		return
+	}
+	u := msg.Usage
+	if u.Input == 0 && u.Output == 0 && u.TotalTokens == 0 {
+		return
+	}
+
+	p.session.mu.Lock()
+	store := p.session.store
+	start := p.session.lastAssistantStart
+	p.session.lastAssistantStart = time.Time{}
+	provider := p.session.provider
+	model := p.session.modelName
+	thinking := p.session.settings.ThinkingLevel
+	prevSnap := p.session.cacheSnap
+	currSnap := cacheSnapshot{
+		SystemHash:      p.session.cacheSnap.SystemHash,
+		ToolsHash:       p.session.cacheSnap.ToolsHash,
+		CacheReadTokens: u.CacheRead,
+		Valid:           true,
+	}
+	p.session.cacheSnap = currSnap
+	p.session.mu.Unlock()
+
+	if store == nil {
+		return
+	}
+
+	var latencyMs int64
+	if !start.IsZero() {
+		latencyMs = time.Since(start).Milliseconds()
+	}
+	entry := storage.LLMCallEntry{
+		Provider:            provider,
+		Model:               model,
+		InputTokens:         u.Input,
+		OutputTokens:        u.Output,
+		CacheReadTokens:     u.CacheRead,
+		CacheCreationTokens: u.CacheWrite,
+		TotalTokens:         u.TotalTokens,
+		LatencyMs:           latencyMs,
+		StopReason:          string(msg.StopReason),
+		ThinkingLevel:       thinking,
+		CacheBreak:          detectCacheBreak(prevSnap, currSnap),
+	}
+	if err := store.AppendLLMCall(entry); err != nil {
+		p.session.emit(SessionEvent{
+			Type:  SEError,
+			Error: fmt.Errorf("persist llm_call: %w", err),
+		})
 	}
 }
 

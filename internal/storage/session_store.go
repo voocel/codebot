@@ -102,13 +102,52 @@ func open(path string) (*Store, error) {
 }
 
 // AppendMessage serializes and appends an agentcore.Message.
+//
+// Thinking blocks are truncated to maxStoredThinkingRunes before write to
+// keep session files compact. Truncation is storage-only — the in-memory
+// message retains full thinking for this turn, since agentcore may still
+// need it during the same agent_end lifecycle.
 func (s *Store) AppendMessage(msg agentcore.Message) error {
-	data, err := json.Marshal(msg)
+	stored := trimThinkingForStorage(msg)
+	data, err := json.Marshal(stored)
 	if err != nil {
 		return fmt.Errorf("marshal message: %w", err)
 	}
 	return s.appendChained(EntryMessage, data)
 }
+
+const maxStoredThinkingRunes = 200
+
+// trimThinkingForStorage returns a copy of msg with each thinking block
+// truncated to maxStoredThinkingRunes. Other content blocks are unchanged.
+// When no trimming is needed the input is returned as-is (no allocation).
+func trimThinkingForStorage(msg agentcore.Message) agentcore.Message {
+	needClone := false
+	for _, b := range msg.Content {
+		if b.Type == agentcore.ContentThinking && utf8RuneCount(b.Thinking) > maxStoredThinkingRunes {
+			needClone = true
+			break
+		}
+	}
+	if !needClone {
+		return msg
+	}
+	cloned := make([]agentcore.ContentBlock, len(msg.Content))
+	copy(cloned, msg.Content)
+	for i := range cloned {
+		if cloned[i].Type != agentcore.ContentThinking {
+			continue
+		}
+		runes := []rune(cloned[i].Thinking)
+		if len(runes) > maxStoredThinkingRunes {
+			cloned[i].Thinking = string(runes[:maxStoredThinkingRunes-1]) + "…"
+		}
+	}
+	msg.Content = cloned
+	return msg
+}
+
+func utf8RuneCount(s string) int { return len([]rune(s)) }
 
 // AppendModelChange records a model switch.
 func (s *Store) AppendModelChange(provider, model string) error {
@@ -135,6 +174,18 @@ func (s *Store) AppendCompaction(summary string, keptMessages []json.RawMessage)
 		return fmt.Errorf("marshal compaction: %w", err)
 	}
 	return s.appendChained(EntryCompaction, data)
+}
+
+// AppendLLMCall records a single LLM response's observability metadata.
+// This is written alongside the assistant message itself, so the message
+// payload stays minimal while diagnostics (cache/latency/provider) stay
+// queryable without replaying the whole message.
+func (s *Store) AppendLLMCall(entry LLMCallEntry) error {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal llm_call: %w", err)
+	}
+	return s.appendChained(EntryLLMCall, data)
 }
 
 // AppendPlanSlug records the plan file slug associated with this session.

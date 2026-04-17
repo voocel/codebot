@@ -207,6 +207,12 @@ func (m *sessionPromptManager) rebuildPrompt() {
 	m.session.mu.Lock()
 	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, m.session.skillUsageScoresLocked())
 	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
+	// Refresh cache-break fingerprints. CacheReadTokens / Valid are owned by
+	// persistLLMCall — only the input hashes are updated here, so a prompt
+	// rebuild mid-session leaves the "previous observed cache_read" intact
+	// and the next turn can still detect a drop.
+	m.session.cacheSnap.SystemHash = hashSystemBlocks(blocks)
+	m.session.cacheSnap.ToolsHash = hashTools(m.session.activeTools)
 	m.session.mu.Unlock()
 }
 

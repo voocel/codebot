@@ -57,7 +57,7 @@ func TestBuildSystemBlockTextsIncludesDoingTasksGuardrails(t *testing.T) {
 		"OWASP top 10",
 		"backwards-compatibility hacks",
 		"## Using your tools",
-		"Maximize use of parallel tool calls",
+		"## Parallel tool execution (CRITICAL)",
 		"## Output efficiency",
 		"Go straight to the point",
 	} {
@@ -139,8 +139,13 @@ func TestBuildReminders(t *testing.T) {
 func TestBuildRemindersEmpty(t *testing.T) {
 	t.Parallel()
 
+	// Date is always surfaced as a reminder for cache-stable system prompts;
+	// an otherwise-empty context should yield exactly the date reminder.
 	reminders := BuildReminders(ContextFiles{}, nil)
-	if len(reminders) != 0 {
-		t.Errorf("expected no reminders, got %d", len(reminders))
+	if len(reminders) != 1 {
+		t.Fatalf("expected 1 reminder (date only), got %d", len(reminders))
+	}
+	if !strings.Contains(reminders[0], "Today's date is") {
+		t.Errorf("expected date reminder, got %q", reminders[0])
 	}
 }

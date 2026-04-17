@@ -200,8 +200,29 @@ var coreToolNames = map[string]bool{
 }
 
 // supportsToolSearch reports whether the given provider/model combination
-// supports deferred tool search. Currently only Claude models and GPT-5.4+
-// are known to handle tool search reliably.
+// supports deferred tool search.
+//
+// Only Anthropic-family models are enabled today. OpenAI-family paths are
+// intentionally excluded — see the note below.
+//
+// OpenAI caveat (2026-04):
+//   The deferred-tool-search protocol relies on two mechanisms that today are
+//   Anthropic-specific in our stack:
+//     1. defer_loading: true on the tool spec      (litellm/anthropic.go:223)
+//     2. tool_reference content blocks expanded    (litellm/anthropic.go:825)
+//        server-side into the real tool schema
+//
+//   The OpenAI / OpenAI-compat providers in litellm do NOT honor either. On
+//   those paths, "activating" a deferred tool simply re-adds its schema to
+//   the tools[] array mid-session, which invalidates OpenAI's 24h prefix
+//   cache every time the set changes — costing far more tokens than deferring
+//   ever saved. So we opt OpenAI out and send every tool up-front, keeping
+//   the prefix identical across turns.
+//
+//   GPT-5.4 reportedly has native tool-search support on the official
+//   endpoint, but we have not wired litellm's openai provider to emit the
+//   right request shape yet. Revisit here when that support lands —
+//   the block below is the single switch to flip.
 func supportsToolSearch(provider, model string) bool {
 	p := strings.ToLower(provider)
 	m := strings.ToLower(model)
@@ -217,9 +238,12 @@ func supportsToolSearch(provider, model string) bool {
 		return claudeVersionAtLeast(m, 4, 5)
 	}
 
-	if p == "openai" || strings.HasPrefix(m, "gpt-") {
-		return modelVersionAtLeast(strings.TrimPrefix(m, "gpt-"), 5, 4)
-	}
+	// OpenAI-family: intentionally disabled. See header comment for rationale.
+	// When litellm's openai provider grows native tool_reference / deferred
+	// loading support, re-enable here:
+	//   if p == "openai" || strings.HasPrefix(m, "gpt-") {
+	//       return modelVersionAtLeast(strings.TrimPrefix(m, "gpt-"), 5, 4)
+	//   }
 
 	return false
 }

@@ -17,6 +17,7 @@ const (
 	EntrySessionInfo    EntryKind = "session_info"
 	EntryPlanSlug       EntryKind = "plan_slug"
 	EntryPlanState      EntryKind = "plan_state"
+	EntryLLMCall        EntryKind = "llm_call"
 )
 
 // Entry is a single JSONL line in the session file.
@@ -71,6 +72,38 @@ type PlanStateEntry struct {
 	Title           string                `json:"title,omitempty"`
 	PreMode         string                `json:"pre_mode,omitempty"`
 	AllowedCommands []AllowedCommandEntry `json:"allowed_commands,omitempty"`
+}
+
+// LLMCallEntry is a per-turn observability record for a single LLM response.
+// Emitted once per assistant message_end, independent of the message itself
+// so that downstream can diagnose cache hits, latency, and provider without
+// re-parsing the message payload.
+type LLMCallEntry struct {
+	Provider            string          `json:"provider"`
+	Model               string          `json:"model"`
+	InputTokens         int             `json:"input_tokens"`
+	OutputTokens        int             `json:"output_tokens"`
+	CacheReadTokens     int             `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int             `json:"cache_creation_tokens,omitempty"`
+	TotalTokens         int             `json:"total_tokens,omitempty"`
+	LatencyMs           int64           `json:"latency_ms,omitempty"`
+	StopReason          string          `json:"stop_reason,omitempty"`
+	ThinkingLevel       string          `json:"thinking_level,omitempty"`
+	CacheBreak          *CacheBreakInfo `json:"cache_break,omitempty"`
+}
+
+// CacheBreakInfo is attached to an LLMCallEntry when the prompt cache hit
+// rate unexpectedly dropped relative to the previous turn. It captures why
+// the cache likely invalidated so the session can be diagnosed after-the-
+// fact without replaying the full request.
+type CacheBreakInfo struct {
+	PrevCacheReadTokens int     `json:"prev_cache_read_tokens"`
+	CurrCacheReadTokens int     `json:"curr_cache_read_tokens"`
+	DropAbsolute        int     `json:"drop_absolute"`
+	DropFraction        float64 `json:"drop_fraction"`
+	SystemChanged       bool    `json:"system_changed,omitempty"`
+	ToolsChanged        bool    `json:"tools_changed,omitempty"`
+	Note                string  `json:"note,omitempty"`
 }
 
 // SessionInfo is a summary of a session for listing.
