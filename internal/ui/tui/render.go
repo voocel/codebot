@@ -60,7 +60,7 @@ func (m *Model) styledInputView() string {
 	if m.cmdHighlight == "" {
 		return view
 	}
-	colored := lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.cmdHighlight)
+	colored := lipgloss.NewStyle().Foreground(Brand).Render(m.cmdHighlight)
 	return strings.Replace(view, m.cmdHighlight, colored, 1)
 }
 
@@ -121,10 +121,10 @@ func (m *Model) renderInputPanel() string {
 func (m *Model) renderUserMessage(text string) string {
 	wrapped := m.wrapTextForIndent(text, 2)
 	lines := strings.Split(wrapped, "\n")
-	bgStyle := lipgloss.NewStyle().Background(ColorStatusBg)
-	prefixStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(ColorStatusBg).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(ColorUser).Background(ColorStatusBg).Bold(true)
-	padStyle := lipgloss.NewStyle().Background(ColorStatusBg)
+	bgStyle := lipgloss.NewStyle().Background(SurfaceAccent)
+	prefixStyle := lipgloss.NewStyle().Foreground(RoleUser).Background(SurfaceAccent).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(RoleUser).Background(SurfaceAccent).Bold(true)
+	padStyle := lipgloss.NewStyle().Background(SurfaceAccent)
 	var out []string
 	for i, line := range lines {
 		prefix := "  "

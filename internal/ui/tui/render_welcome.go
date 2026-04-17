@@ -73,15 +73,15 @@ func (m *Model) renderWelcome() string {
 		ver = "dev"
 	}
 
-	bc := lipgloss.NewStyle().Foreground(ColorPrimarySoft)
+	bc := lipgloss.NewStyle().Foreground(BrandSoft)
 	edge := WelcomeKickerStyle
 	title := WelcomeTitleStyle
 
 	// Terminal window logo with drop shadow
-	dotR := lipgloss.NewStyle().Foreground(ColorError)
-	dotY := lipgloss.NewStyle().Foreground(ColorTool)
-	dotG := lipgloss.NewStyle().Foreground(ColorSuccess)
-	cursor := lipgloss.NewStyle().Foreground(ColorAccent)
+	dotR := lipgloss.NewStyle().Foreground(Danger)
+	dotY := lipgloss.NewStyle().Foreground(Accent)
+	dotG := lipgloss.NewStyle().Foreground(Success)
+	cursor := lipgloss.NewStyle().Foreground(Accent)
 	shadow := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "249", Dark: "238"})
 
 	logoLines := []string{

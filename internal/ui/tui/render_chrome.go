@@ -131,7 +131,7 @@ func (m *Model) RenderContextBar() string {
 		}
 	}
 	if m.Cwd != "" {
-		chips = append(chips, ContextChipStyle.Render(filepath.Base(m.Cwd)))
+		chips = append(chips, ContextChipPathStyle.Render(filepath.Base(m.Cwd)))
 	}
 	chips = append(chips, ContextChipStyle.Render("· "+m.formatModelChip()))
 	if m.config.StatusRight != nil {
@@ -297,9 +297,10 @@ func commandPaletteWindow(total, cursor, limit int) (start, end int) {
 // ---------------------------------------------------------------------------
 
 // renderRunSummary renders per-run stats shown after agent completion.
+// Kept at Subtle weight — peripheral metadata should recede, not announce.
 func (m *Model) renderRunSummary() string {
 	s := m.RunStats
-	style := MutedStyle
+	style := lipgloss.NewStyle().Foreground(Subtle)
 	return strings.Join([]string{
 		style.Render(fmt.Sprintf("%d turns", s.Turns)),
 		style.Render("· " + fmt.Sprintf("%d tools", s.ToolCalls)),
@@ -334,7 +335,7 @@ func (m *Model) renderTaskList() string {
 	if snap.Total > 0 {
 		filled = snap.Completed * barWidth / snap.Total
 	}
-	bar := lipgloss.NewStyle().Foreground(ColorPrimary).Render(strings.Repeat("█", filled)) +
+	bar := lipgloss.NewStyle().Foreground(Brand).Render(strings.Repeat("█", filled)) +
 		MutedStyle.Render(strings.Repeat("░", barWidth-filled))
 	b.WriteString(CardTitleStyle.Render("Task Progress"))
 	b.WriteString("\n")
@@ -349,23 +350,23 @@ func (m *Model) renderTaskList() string {
 		switch t.Status {
 		case "pending":
 			icon = "○"
-			color = ColorMuted
+			color = Muted
 		case "in_progress":
 			icon = "◐"
-			color = ColorTool
+			color = Accent
 		case "completed":
 			icon = "●"
-			color = ColorSuccess
+			color = Success
 		default:
 			icon = "○"
-			color = ColorMuted
+			color = Muted
 		}
 		text := t.Subject
 		if t.Status == "in_progress" && t.ActiveForm != "" {
 			text = t.ActiveForm
 		}
 		style := lipgloss.NewStyle().Foreground(color)
-		line := style.Render(fmt.Sprintf("%s #%s", icon, t.ID)) + " " + lipgloss.NewStyle().Foreground(ColorSoftText).Render(text)
+		line := style.Render(fmt.Sprintf("%s #%s", icon, t.ID)) + " " + lipgloss.NewStyle().Foreground(Text).Render(text)
 		if t.Owner != "" {
 			line += " " + TagSubtleStyle.Render("· "+t.Owner)
 		}

@@ -439,7 +439,6 @@ func (m *Model) prepareSubmission() (submitRequest, bool) {
 	m.Input.Reset()
 	m.Input.SetHeight(1)
 	m.Input.Placeholder = ""
-	m.ShowSummary = false
 
 	return req, true
 }
@@ -614,7 +613,6 @@ func (m *Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	if text == "" {
 		return m, nil
 	}
-	m.ShowSummary = false
 
 	output := m.RenderPromptOutput(text)
 	m.ShowWelcome = false

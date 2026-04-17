@@ -41,29 +41,29 @@ type askUserState struct {
 // AskUser styles.
 var (
 	askQuestionStyle = lipgloss.NewStyle().
-				Foreground(ColorTitle).
+				Foreground(Title).
 				Bold(true)
 
 	askOptionActiveStyle = lipgloss.NewStyle().
-				Foreground(ColorAccent).
+				Foreground(Accent).
 				Bold(true)
 
 	askOptionInactiveStyle = lipgloss.NewStyle().
-				Foreground(ColorSoftText)
+				Foreground(Text)
 
 	askDescStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted)
+			Foreground(Muted)
 
 	askHintStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted).
+			Foreground(Muted).
 			Italic(true)
 
 	askNotesLabelStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(ColorSoftText)
+				Foreground(Text)
 
 	askCollapsedStyle = lipgloss.NewStyle().
-				Foreground(ColorMuted).
+				Foreground(Muted).
 				Italic(true)
 )
 
@@ -300,10 +300,10 @@ func renderAskUser(s *askUserState) string {
 	var header string
 	if q.Header != "" {
 		headerStyle := lipgloss.NewStyle().
-			Foreground(ColorAccent).
+			Foreground(Accent).
 			Bold(true).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(ColorAccent).
+			BorderForeground(Accent).
 			Padding(0, 1)
 		header = headerStyle.Render(q.Header) + "\n"
 	}

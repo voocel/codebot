@@ -26,7 +26,7 @@ func (m *Model) View() string {
 	if m.IsStream {
 		if thinking := strings.TrimSpace(m.Thinking.String()); thinking != "" {
 			indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
-			parts = append(parts, "", ThinkingBodyStyle.Render("● ")+strings.TrimPrefix(indented, "  "))
+			parts = append(parts, "", ThinkingIconStyle.Render("● ")+strings.TrimPrefix(indented, "  "))
 		}
 		indented := m.renderMarkdownBlock(m.Streaming.String(), 2)
 		parts = append(parts, "", AssistantIconStyle.Render("● ")+strings.TrimPrefix(indented, "  ")+m.Spinner.View())
@@ -54,9 +54,6 @@ func (m *Model) View() string {
 
 	parts = append(parts, "")
 
-	if m.ShowSummary {
-		parts = append(parts, m.renderRunSummary(), "")
-	}
 	if m.Tasks != nil && m.Tasks.Total > 0 {
 		parts = append(parts, m.renderTaskList(), "")
 	}

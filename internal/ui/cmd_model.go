@@ -220,8 +220,8 @@ func (c *ModelCommand) View(width int) string {
 	sb.WriteString(hint)
 	sb.WriteString("\n")
 
-	selectedStyle := lipgloss.NewStyle().Foreground(tui.ColorPrimary).Bold(true)
-	currentMark := lipgloss.NewStyle().Foreground(tui.ColorSuccess)
+	selectedStyle := lipgloss.NewStyle().Foreground(tui.Brand).Bold(true)
+	currentMark := lipgloss.NewStyle().Foreground(tui.Success)
 	dimStyle := tui.MutedStyle
 	headerStyle := tui.MutedStyle
 

@@ -66,15 +66,15 @@ func (f InfoOverlayFrame) Render() string {
 }
 
 func renderInfoOverlayHeader(f InfoOverlayFrame) string {
-	titleStyle := lipgloss.NewStyle().Foreground(ColorTitle).Bold(true)
+	titleStyle := lipgloss.NewStyle().Foreground(Title).Bold(true)
 	subtitleStyle := MutedStyle
 	activeTabStyle := lipgloss.NewStyle().
-		Foreground(ColorTitle).
-		Background(ColorPanelEdge).
+		Foreground(Title).
+		Background(Border).
 		Bold(true).
 		Padding(0, 1)
 	inactiveTabStyle := lipgloss.NewStyle().
-		Foreground(ColorMuted).
+		Foreground(Muted).
 		Padding(0, 1)
 
 	var parts []string

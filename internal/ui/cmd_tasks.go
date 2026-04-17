@@ -212,10 +212,10 @@ func (c *TasksCommand) stopTask(id string) {
 func (c *TasksCommand) viewList(_ int) string {
 	s := c.state
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorSoftText)
-	activeStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent).Bold(true)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.Text)
+	activeStyle := lipgloss.NewStyle().Foreground(tui.Accent).Bold(true)
 	inactiveStyle := tui.MutedStyle
-	groupStyle := lipgloss.NewStyle().Foreground(tui.ColorToken)
+	groupStyle := lipgloss.NewStyle().Foreground(tui.Muted)
 
 	// Separate by type.
 	var shellEntries, agentEntries []int
@@ -323,9 +323,9 @@ func (c *TasksCommand) viewDetail(width int) string {
 }
 
 func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width int) string {
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorSoftText)
-	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
-	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.Text)
+	labelStyle := lipgloss.NewStyle().Foreground(tui.Muted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.Text)
 
 	var sb strings.Builder
 
@@ -391,9 +391,9 @@ func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width in
 }
 
 func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width int) string {
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.ColorSoftText)
-	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
-	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.Text)
+	labelStyle := lipgloss.NewStyle().Foreground(tui.Muted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.Text)
 
 	var sb strings.Builder
 
@@ -474,9 +474,9 @@ func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width in
 func renderTaskStatus(status agentcore.TaskStatus) string {
 	switch status {
 	case agentcore.TaskRunning:
-		return lipgloss.NewStyle().Foreground(tui.ColorPrimary).Render("(running)")
+		return lipgloss.NewStyle().Foreground(tui.Brand).Render("(running)")
 	case agentcore.TaskCompleted:
-		return lipgloss.NewStyle().Foreground(tui.ColorSuccess).Render("(completed)")
+		return lipgloss.NewStyle().Foreground(tui.Success).Render("(completed)")
 	case agentcore.TaskFailed:
 		return tui.ErrorStyle.Render("(failed)")
 	default:

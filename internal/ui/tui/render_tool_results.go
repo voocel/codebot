@@ -19,28 +19,35 @@ import (
 // ---------------------------------------------------------------------------
 
 // RenderEditResult renders the edit tool result with colored diff output.
+// Leads with a "⎿  Added N lines, removed M lines" summary, à la Claude Code.
 // Single-line changes (1 removed + 1 added) get intra-line highlighting
 // where only the changed portion is rendered in inverse color.
 func RenderEditResult(result json.RawMessage) string {
+	connector := ConnectorStyle.Render(TreeConnector)
 	if len(result) == 0 {
-		return "(edit completed)"
+		return connector + MutedStyle.Render("(edit completed)")
 	}
 
 	var parsed map[string]any
 	if err := json.Unmarshal(result, &parsed); err != nil {
-		return TruncateLines(string(result), 10)
+		return connector + TruncateLines(string(result), 10)
 	}
 
 	msg, _ := parsed["message"].(string)
 	diff, _ := parsed["diff"].(string)
 	if diff == "" {
-		return msg
+		if msg == "" {
+			msg = "(edit completed)"
+		}
+		return connector + MutedStyle.Render(msg)
 	}
 
 	lines := strings.Split(diff, "\n")
+	added, removed := countDiffLines(lines)
+	stats := fmt.Sprintf("Added %d lines, removed %d lines", added, removed)
 
 	var sb strings.Builder
-	sb.WriteString(msg + "\n")
+	sb.WriteString(connector + MutedStyle.Render(stats) + "\n")
 
 	i := 0
 	for i < len(lines) {
@@ -169,24 +176,31 @@ func expandTabs(s string) string {
 
 // RenderWriteResult renders the write tool result with a green preview of the written content.
 func RenderWriteResult(result json.RawMessage) string {
+	connector := ConnectorStyle.Render(TreeConnector)
 	if len(result) == 0 {
-		return "(file written)"
+		return connector + MutedStyle.Render("(file written)")
 	}
 
 	var parsed map[string]any
 	if err := json.Unmarshal(result, &parsed); err != nil {
-		return TruncateLines(string(result), 10)
+		return connector + TruncateLines(string(result), 10)
 	}
 
 	msg, _ := parsed["message"].(string)
 	preview, _ := parsed["preview"].(string)
 	if preview == "" {
-		return msg
+		if msg == "" {
+			msg = "(file written)"
+		}
+		return connector + MutedStyle.Render(msg)
 	}
 
+	previewLines := strings.Split(strings.TrimRight(preview, "\n"), "\n")
+	stats := fmt.Sprintf("Wrote %d lines", len(previewLines))
+
 	var sb strings.Builder
-	sb.WriteString(msg + "\n")
-	for _, line := range strings.Split(strings.TrimRight(preview, "\n"), "\n") {
+	sb.WriteString(connector + MutedStyle.Render(stats) + "\n")
+	for _, line := range previewLines {
 		if strings.HasPrefix(line, "+") {
 			sb.WriteString(DiffAddStyle.Render(line) + "\n")
 		} else {
@@ -194,6 +208,22 @@ func RenderWriteResult(result json.RawMessage) string {
 		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// countDiffLines counts +/- prefixed lines in a diff, ignoring +++ and ---
+// header markers if present.
+func countDiffLines(lines []string) (added, removed int) {
+	for _, ln := range lines {
+		if strings.HasPrefix(ln, "+++") || strings.HasPrefix(ln, "---") {
+			continue
+		}
+		if strings.HasPrefix(ln, "+") {
+			added++
+		} else if strings.HasPrefix(ln, "-") {
+			removed++
+		}
+	}
+	return added, removed
 }
 
 // RenderLsResult renders ls tool results with tree structure.
@@ -222,28 +252,43 @@ func RenderLsResult(result json.RawMessage) (dirPath string, body string) {
 		remaining = remaining[:maxVisible]
 	}
 
-	connector := MutedStyle.Render("└ ")
-	padding := "  "
-	contentStyle := lipgloss.NewStyle().Foreground(ColorText)
+	connector := ConnectorStyle.Render(TreeConnector)
+	contentStyle := lipgloss.NewStyle()
 
 	var sb strings.Builder
 	for i, line := range remaining {
 		if i == 0 {
 			sb.WriteString(connector)
 		} else {
-			sb.WriteString(padding)
+			sb.WriteString(ConnectorPad)
 		}
 		sb.WriteString(renderToolOutputLine(line, contentStyle))
 		sb.WriteByte('\n')
 	}
 	if hidden > 0 {
-		sb.WriteString(MutedStyle.Render(fmt.Sprintf("  … +%d lines", hidden)))
+		sb.WriteString(MutedStyle.Render(fmt.Sprintf("%s… +%d lines", ConnectorPad, hidden)))
 		sb.WriteByte('\n')
 	}
 	return dirPath, strings.TrimRight(sb.String(), "\n")
 }
 
-// RenderReadResult renders read/glob tool results with colored line numbers.
+// RenderReadSummary renders a one-line summary for the read tool ("Read N lines"),
+// matching Claude Code's convention of not dumping file contents into the log.
+func RenderReadSummary(result json.RawMessage) string {
+	connector := ConnectorStyle.Render(TreeConnector)
+	text := FormatToolResult(result, false)
+	if text == "" {
+		return connector + MutedStyle.Render("(empty)")
+	}
+	n := strings.Count(text, "\n") + 1
+	noun := "lines"
+	if n == 1 {
+		noun = "line"
+	}
+	return connector + MutedStyle.Render(fmt.Sprintf("Read %d %s", n, noun))
+}
+
+// RenderReadResult renders glob tool results as a path list with colored line numbers.
 // Handles both numbered lines ("  123\tcontent") and plain path lists.
 func RenderReadResult(result json.RawMessage) string {
 	text := FormatToolResult(result, false)
@@ -258,17 +303,16 @@ func RenderReadResult(result json.RawMessage) string {
 		lines = lines[:maxVisible]
 	}
 
-	connector := MutedStyle.Render("└ ")
-	padding := "  "
-	lineNumStyle := lipgloss.NewStyle().Foreground(ColorToolMeta)
-	contentStyle := lipgloss.NewStyle().Foreground(ColorText)
+	connector := ConnectorStyle.Render(TreeConnector)
+	lineNumStyle := lipgloss.NewStyle().Foreground(Meta)
+	contentStyle := lipgloss.NewStyle()
 
 	var sb strings.Builder
 	for i, line := range lines {
 		if i == 0 {
 			sb.WriteString(connector)
 		} else {
-			sb.WriteString(padding)
+			sb.WriteString(ConnectorPad)
 		}
 		// Split "  123\tcontent" into line number and content.
 		if idx := strings.IndexByte(line, '\t'); idx >= 0 {
@@ -280,7 +324,7 @@ func RenderReadResult(result json.RawMessage) string {
 		sb.WriteByte('\n')
 	}
 	if hidden > 0 {
-		sb.WriteString(MutedStyle.Render(fmt.Sprintf("  … +%d lines", hidden)))
+		sb.WriteString(MutedStyle.Render(fmt.Sprintf("%s… +%d lines", ConnectorPad, hidden)))
 		sb.WriteByte('\n')
 	}
 	return strings.TrimRight(sb.String(), "\n")

@@ -1,51 +1,16 @@
 package tui
 
+// styles.go — component styles. All colors come from theme.go tokens.
+// Keep styles free of raw hex/ANSI values; change the theme, not the component.
+
 import "github.com/charmbracelet/lipgloss"
 
-// Color palette — terminal-friendly, restrained, and readable.
-var (
-	ColorPrimary   = lipgloss.Color("#3FA796")                            // teal, core brand/action
-	ColorAccent    = lipgloss.Color("#D89B5B")                            // warm amber accent
-	ColorUser      = lipgloss.AdaptiveColor{Light: "31", Dark: "#9CC2F9"} // softer user blue, still distinct from assistant/tool colors
-	ColorAssistant = lipgloss.Color("#B8E1DD")                            // pale teal
-	ColorTool      = lipgloss.Color("#E5B567")                            // amber/yellow
-	ColorToolDim   = lipgloss.AdaptiveColor{Light: "94", Dark: "137"}     // dimmed amber — same hue, lower weight (for tool args)
-	ColorToolInk   = lipgloss.Color("#1C1C1C")                            // near-black for text on amber chip
-	ColorError     = lipgloss.Color("#E06C75")                            // soft red
-	ColorSuccess   = lipgloss.Color("#98C379")                            // green
-	ColorCommand   = lipgloss.Color("#78C6E7")                            // cool cyan
-	ColorShell     = lipgloss.Color("#D16D9E")                            // shell hint
-
-	// Claude Code 也是先走语义色，再让组件消费语义：
-	// text / inactive / subtle / promptBorder / suggestion。
-	// 这里保持同样的思路，只保留一条中性色阶，避免每块 UI 自己挑灰度。
-	ColorText       = lipgloss.AdaptiveColor{Light: "236", Dark: "252"} // 默认正文
-	ColorTextMuted  = lipgloss.AdaptiveColor{Light: "242", Dark: "247"} // 次级信息 / 状态
-	ColorTextSubtle = lipgloss.AdaptiveColor{Light: "246", Dark: "243"} // placeholder / thinking / 弱提示
-	ColorChrome     = lipgloss.AdaptiveColor{Light: "248", Dark: "242"} // 分隔线 / 边框 / 输入框 chrome
-
-	ColorPrimarySoft = lipgloss.AdaptiveColor{Light: "30", Dark: "72"} // muted teal for borders/labels
-	ColorMuted       = ColorTextMuted
-	ColorThinking    = ColorTextSubtle
-	ColorToken       = lipgloss.AdaptiveColor{Light: "244", Dark: "245"} // neutral metadata
-	ColorRunning     = lipgloss.AdaptiveColor{Light: "31", Dark: "153"}  // live-status spinner / strong live chrome
-	ColorStatusBg    = lipgloss.AdaptiveColor{Light: "254", Dark: "236"} // soft strip behind user echoes
-	ColorSeparator   = ColorChrome
-	ColorBorder      = lipgloss.AdaptiveColor{Light: "247", Dark: "241"}
-	ColorPanelEdge   = lipgloss.AdaptiveColor{Light: "248", Dark: "241"}
-	ColorTitle       = lipgloss.AdaptiveColor{Light: "235", Dark: "255"}
-	ColorSoftText    = ColorText
-	ColorInputChrome = lipgloss.AdaptiveColor{Light: "245", Dark: "244"}
-	ColorPlaceholder = ColorTextSubtle
-	ColorPath        = lipgloss.AdaptiveColor{Light: "26", Dark: "111"} // path / file highlight
-	ColorToolMeta    = lipgloss.AdaptiveColor{Light: "243", Dark: "246"} // tool line numbers / tails
-)
-
 // ---------------------------------------------------------------------------
-// Shared frame builders
+// Frame builders
 // ---------------------------------------------------------------------------
-// card is the common "rounded border + padding" envelope used by every
-// panel / card / dialog surface. Only the border color varies across callers.
+
+// card is the common "rounded border + padding" envelope used by panels,
+// dialogs, and cards. Only the border color varies across callers.
 func card(borderColor lipgloss.TerminalColor) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -53,220 +18,201 @@ func card(borderColor lipgloss.TerminalColor) lipgloss.Style {
 		Padding(0, 1)
 }
 
-// inputPanel is the top+bottom-rule frame used by the input textarea.
-// Only the border color varies (chrome vs shell accent).
+// inputPanel wraps the textarea with top+bottom horizontal rules — mirroring
+// Claude Code's visual (thin ─ separators hugging the prompt, no side borders
+// so the input flows edge-to-edge). Left/right are omitted to keep the caret
+// anchored flush-left without a surrounding box.
 func inputPanel(borderColor lipgloss.TerminalColor) lipgloss.Style {
 	return lipgloss.NewStyle().
-		Border(lipgloss.Border{Top: "─", Bottom: "─"}).
-		BorderTop(true).
-		BorderBottom(true).
-		BorderLeft(false).
-		BorderRight(false).
+		Border(lipgloss.NormalBorder(), true, false, true, false).
 		BorderForeground(borderColor).
-		Padding(0, 1)
+		Padding(0, 1, 0, 0)
 }
 
+// ---------------------------------------------------------------------------
 // Tool blocks
+// ---------------------------------------------------------------------------
+
 var (
-	ToolIconStyle = lipgloss.NewStyle().Foreground(ColorTool)
+	// Bullet — green for successful tool call, red for failure, à la Claude Code.
+	ToolIconStyle  = lipgloss.NewStyle().Foreground(Success)
+	ErrorIconStyle = lipgloss.NewStyle().Foreground(Danger)
 
-	// Tool name chip — amber background with near-black ink, à la Claude Code.
-	// No padding: keeps the chip flush with trailing args like "Bash(cmd)".
-	ToolNameStyle = lipgloss.NewStyle().
-			Background(ColorTool).
-			Foreground(ColorToolInk).
-			Bold(true)
+	// Tool name — bold only, default foreground. Lets terminal theme show through.
+	ToolNameStyle = lipgloss.NewStyle().Bold(true)
 
-	// Tool args — dimmed amber, same hue as the name for visual cohesion.
-	ToolArgsStyle = lipgloss.NewStyle().Foreground(ColorToolDim)
+	// Tool args and result body intentionally carry no color — they inherit the
+	// terminal's default foreground so the user's theme stays in charge.
+	ToolArgsStyle   = lipgloss.NewStyle()
+	ToolResultStyle = lipgloss.NewStyle()
 
-	// Tool result body — normal text brightness, content is the focus.
-	ToolResultStyle = lipgloss.NewStyle().Foreground(ColorText)
-
-	ToolPathStyle = lipgloss.NewStyle().Foreground(ColorPath)
+	ToolPathStyle = lipgloss.NewStyle().Foreground(Path)
 )
 
-// Thinking body
-var ThinkingBodyStyle = lipgloss.NewStyle().
-	Foreground(ColorThinking).
-	Italic(true)
+// ---------------------------------------------------------------------------
+// Messages / thinking / roles
+// ---------------------------------------------------------------------------
 
-// Assistant icon
-var AssistantIconStyle = lipgloss.NewStyle().
-	Foreground(ColorAssistant).
-	Bold(true)
+var (
+	// Assistant bullet — pure white on dark / pure black on light, bold.
+	// Uses Strong rather than the terminal default so contrast against the
+	// Subtle-gray thinking bullet is guaranteed under any terminal palette.
+	AssistantIconStyle = lipgloss.NewStyle().Foreground(Strong).Bold(true)
 
-// Error
-var ErrorStyle = lipgloss.NewStyle().
-	Foreground(ColorError).
-	Bold(true)
+	// Thinking bullet — dim gray, same family as the italic thinking body.
+	ThinkingIconStyle = lipgloss.NewStyle().Foreground(Subtle)
+	ThinkingBodyStyle = lipgloss.NewStyle().Foreground(Subtle).Italic(true)
 
-// Command / system output
-var CommandStyle = lipgloss.NewStyle().
-	Foreground(ColorCommand)
+	ReplyLabelStyle = lipgloss.NewStyle().Foreground(RoleAssistant)
 
-// Short system notifications (e.g. "Switched to model", "Session cleared")
-var SystemMsgStyle = lipgloss.NewStyle().
-	Foreground(ColorMuted).
-	Italic(true)
+	SystemMsgStyle = lipgloss.NewStyle().Foreground(Muted).Italic(true)
 
-// Image tag selected (reverse video highlight)
-var ImageSelectedStyle = lipgloss.NewStyle().Reverse(true)
+	QueuedMsgStyle = lipgloss.NewStyle().Foreground(Muted).Italic(true)
+)
 
-// Separator
-var SeparatorStyle = lipgloss.NewStyle().
-	Foreground(ColorSeparator)
+// ---------------------------------------------------------------------------
+// Status / feedback
+// ---------------------------------------------------------------------------
 
+var (
+	ErrorStyle   = lipgloss.NewStyle().Foreground(Danger).Bold(true)
+	CommandStyle = lipgloss.NewStyle().Foreground(Info)
+	MutedStyle   = lipgloss.NewStyle().Foreground(Muted)
+	TokenStyle   = lipgloss.NewStyle().Foreground(Muted)
+)
+
+// ---------------------------------------------------------------------------
+// Diff (edit result)
+// ---------------------------------------------------------------------------
+
+var (
+	DiffAddStyle           = lipgloss.NewStyle().Foreground(Success)
+	DiffRemoveStyle        = lipgloss.NewStyle().Foreground(Danger)
+	DiffInverseAddStyle    = lipgloss.NewStyle().Foreground(Success).Reverse(true)
+	DiffInverseRemoveStyle = lipgloss.NewStyle().Foreground(Danger).Reverse(true)
+)
+
+// ---------------------------------------------------------------------------
+// Chrome / separators
+// ---------------------------------------------------------------------------
+
+var (
+	SeparatorStyle = lipgloss.NewStyle().Foreground(Separator)
+	BoxBorderStyle = lipgloss.NewStyle().Foreground(Border)
+
+	CardTitleStyle   = lipgloss.NewStyle().Foreground(Title).Bold(true)
+	CardSectionStyle = lipgloss.NewStyle().Foreground(BrandSoft).Bold(true)
+
+	// ConnectorStyle dims the tree connector "⎿  " so it recedes visually.
+	ConnectorStyle = lipgloss.NewStyle().Foreground(Subtle)
+)
+
+// TreeConnector is the Claude-Code-style result connector: U+23BF (⎿) plus
+// two spaces for wide, legible alignment under the tool header.
+const TreeConnector = "⎿  "
+
+// ConnectorPad matches TreeConnector's width (3 cells) for continuation lines.
+const ConnectorPad = "   "
+
+// ---------------------------------------------------------------------------
+// Input area
+// ---------------------------------------------------------------------------
+
+var (
+	InputPanelStyle      = inputPanel(InputRule)
+	ShellInputPanelStyle = inputPanel(RoleShell)
+
+	// ShellAccentStyle colors both the prompt caret "❯" and the "!" prefix
+	// when the input is in shell mode — they share the same style by design.
+	ShellAccentStyle = lipgloss.NewStyle().Foreground(RoleShell).Bold(true)
+
+	InputHintStyle = lipgloss.NewStyle().Foreground(Muted)
+
+	ImageSelectedStyle = lipgloss.NewStyle().Reverse(true)
+	ImageTagStyle      = lipgloss.NewStyle().Foreground(Brand)
+)
+
+// ---------------------------------------------------------------------------
 // Welcome banner
-var WelcomeTitleStyle = lipgloss.NewStyle().Foreground(ColorTitle).Bold(true)
+// ---------------------------------------------------------------------------
 
-// Selection highlight for plan approval and similar pickers.
-var ChoiceActiveStyle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+var (
+	WelcomeTitleStyle  = lipgloss.NewStyle().Foreground(Title).Bold(true)
+	WelcomeKickerStyle = lipgloss.NewStyle().Foreground(Brand).Bold(true)
+	WelcomeBodyStyle   = lipgloss.NewStyle().Foreground(Text)
+	WelcomeMutedStyle  = lipgloss.NewStyle().Foreground(Muted)
+)
 
+// ---------------------------------------------------------------------------
 // Command palette
-var (
-	CommandPaletteStyle = card(ColorPrimarySoft)
-
-	CommandPaletteTitleStyle = lipgloss.NewStyle().
-					Foreground(ColorTitle).
-					Bold(true)
-
-	CommandPaletteSectionStyle = lipgloss.NewStyle().
-					Foreground(ColorPrimarySoft).
-					Bold(true)
-
-	CommandPaletteSelectedStyle = lipgloss.NewStyle().
-					Foreground(ColorPrimary).
-					Bold(true)
-
-	CommandPaletteItemStyle = lipgloss.NewStyle().
-				Foreground(ColorSoftText)
-
-	CommandPaletteDescStyle = lipgloss.NewStyle().
-				Foreground(ColorToken)
-
-	CommandPaletteSelectedDescStyle = lipgloss.NewStyle().
-					Foreground(ColorAssistant)
-
-	CommandPaletteHintStyle = lipgloss.NewStyle().
-				Foreground(ColorBorder)
-)
-
-// Plan box
-var PlanBoxStyle = card(ColorAccent)
-
-// Subagent result card
-var SubagentCardStyle = card(ColorTool)
-
-// General purpose
-var (
-	MutedStyle = lipgloss.NewStyle().Foreground(ColorMuted)
-
-	BoxBorderStyle = lipgloss.NewStyle().Foreground(ColorBorder)
-
-	QueuedMsgStyle = lipgloss.NewStyle().Foreground(ColorMuted).Italic(true)
-
-	TokenStyle = lipgloss.NewStyle().Foreground(ColorToken)
-
-	DiffAddStyle = lipgloss.NewStyle().Foreground(ColorSuccess)
-
-	DiffRemoveStyle = lipgloss.NewStyle().Foreground(ColorError)
-
-	DiffInverseAddStyle = lipgloss.NewStyle().Foreground(ColorSuccess).Reverse(true)
-
-	DiffInverseRemoveStyle = lipgloss.NewStyle().Foreground(ColorError).Reverse(true)
-
-	ReplyLabelStyle = lipgloss.NewStyle().Foreground(ColorAssistant)
-)
+// ---------------------------------------------------------------------------
 
 var (
-	CardTitleStyle = lipgloss.NewStyle().
-			Foreground(ColorTitle).
-			Bold(true)
+	CommandPaletteStyle = card(BrandSoft)
 
-	CardSectionStyle = lipgloss.NewStyle().
-				Foreground(ColorPrimarySoft).
-				Bold(true)
-
-	InputPanelStyle      = inputPanel(ColorInputChrome)
-	ShellInputPanelStyle = inputPanel(ColorShell)
-
-	// ShellAccentStyle is used for both the prompt caret ("❯") and the "!" prefix
-	// when the input is in shell mode — they share the same foreground/weight by design.
-	ShellAccentStyle = lipgloss.NewStyle().
-				Foreground(ColorShell).
-				Bold(true)
-
-	InputHintStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted)
-
-	ContextChipStyle = lipgloss.NewStyle().
-				Foreground(ColorSoftText)
-
-	ContextChipAccentStyle = lipgloss.NewStyle().
-				Foreground(ColorPrimary).
-				Bold(true)
-
-	ContextChipWarnStyle = lipgloss.NewStyle().
-				Foreground(ColorAccent).
-				Bold(true)
-
-	WelcomeKickerStyle = lipgloss.NewStyle().
-				Foreground(ColorPrimary).
-				Bold(true)
-
-	WelcomeBodyStyle = lipgloss.NewStyle().
-				Foreground(ColorSoftText)
-
-	WelcomeMutedStyle = lipgloss.NewStyle().
-				Foreground(ColorMuted)
-
-	TagSubtleStyle = lipgloss.NewStyle().
-			Foreground(ColorSoftText)
-
-	ImageTagStyle = lipgloss.NewStyle().
-			Foreground(ColorPrimary)
-
-	TaskCardStyle = card(ColorPanelEdge)
-
-	TaskProgressStyle = lipgloss.NewStyle().
-				Foreground(ColorTitle)
-
-	PermissionTitleStyle = lipgloss.NewStyle().
-				Foreground(ColorAccent).
-				Bold(true)
-
-	AskCardStyle = card(ColorPrimarySoft)
+	CommandPaletteTitleStyle        = lipgloss.NewStyle().Foreground(Title).Bold(true)
+	CommandPaletteSectionStyle      = lipgloss.NewStyle().Foreground(BrandSoft).Bold(true)
+	CommandPaletteSelectedStyle     = lipgloss.NewStyle().Foreground(Brand).Bold(true)
+	CommandPaletteItemStyle         = lipgloss.NewStyle().Foreground(Text)
+	CommandPaletteDescStyle         = lipgloss.NewStyle().Foreground(Muted)
+	CommandPaletteSelectedDescStyle = lipgloss.NewStyle().Foreground(RoleAssistant)
+	CommandPaletteHintStyle         = lipgloss.NewStyle().Foreground(Border)
 )
+
+// ---------------------------------------------------------------------------
+// Context bar / plan / permission / tasks
+// ---------------------------------------------------------------------------
+
+var (
+	ContextChipStyle       = lipgloss.NewStyle().Foreground(Muted)
+	ContextChipAccentStyle = lipgloss.NewStyle().Foreground(Brand)
+	ContextChipPathStyle   = lipgloss.NewStyle().Foreground(Path)
+	// Transient hints like "Press Ctrl+C again to exit" or "bash mode" — muted
+	// gray, not a loud warning. Claude Code keeps these understated.
+	ContextChipWarnStyle = lipgloss.NewStyle().Foreground(Muted)
+
+	ChoiceActiveStyle = lipgloss.NewStyle().Foreground(Accent).Bold(true)
+
+	PlanBoxStyle      = card(Accent)
+	SubagentCardStyle = card(Accent)
+
+	TaskCardStyle     = card(Border)
+	TaskProgressStyle = lipgloss.NewStyle().Foreground(Title)
+
+	PermissionTitleStyle = lipgloss.NewStyle().Foreground(Accent).Bold(true)
+	AskCardStyle         = card(BrandSoft)
+
+	TagSubtleStyle = lipgloss.NewStyle().Foreground(Text)
+)
+
+// ---------------------------------------------------------------------------
+// Palette badges (functions because color depends on kind/category)
+// ---------------------------------------------------------------------------
 
 func CommandPaletteKindBadge(kind string) string {
 	label := "[" + kind + "]"
-	style := lipgloss.NewStyle().Foreground(ColorMuted)
-
+	style := lipgloss.NewStyle().Foreground(Muted)
 	switch kind {
 	case "builtin":
-		style = style.Foreground(ColorCommand)
+		style = style.Foreground(Info)
 	case "custom":
-		style = style.Foreground(ColorTool)
+		style = style.Foreground(Accent)
 	case "skill":
-		style = style.Foreground(ColorSuccess)
+		style = style.Foreground(Success)
 	}
 	return style.Render(label)
 }
 
 func CommandPaletteCategoryBadge(category string) string {
 	label := "[" + category + "]"
-	style := lipgloss.NewStyle().Foreground(ColorMuted)
-
+	style := lipgloss.NewStyle().Foreground(Muted)
 	switch category {
 	case "session", "config":
-		style = style.Foreground(ColorTool)
+		style = style.Foreground(Accent)
 	case "plan":
-		style = style.Foreground(ColorAccent)
+		style = style.Foreground(Accent)
 	case "exit":
-		style = style.Foreground(ColorError)
-	default:
-		style = style.Foreground(ColorMuted)
+		style = style.Foreground(Danger)
 	}
 	return style.Render(label)
 }
@@ -275,7 +221,5 @@ func CommandPaletteIdleBadge(needsIdle bool) string {
 	if !needsIdle {
 		return ""
 	}
-	return lipgloss.NewStyle().
-		Foreground(ColorMuted).
-		Render("[idle]")
+	return lipgloss.NewStyle().Foreground(Muted).Render("[idle]")
 }

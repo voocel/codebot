@@ -73,7 +73,7 @@ func (c *BtwCommand) View(width int) string {
 	var sb strings.Builder
 
 	// Question header
-	qStyle := lipgloss.NewStyle().Foreground(tui.ColorUser).Bold(true)
+	qStyle := lipgloss.NewStyle().Foreground(tui.RoleUser).Bold(true)
 	sb.WriteString(qStyle.Render("btw: ") + c.question)
 
 	// Blank line before answer body
@@ -92,13 +92,13 @@ func (c *BtwCommand) View(width int) string {
 	sb.WriteString("\n\n")
 
 	hintStyle := lipgloss.NewStyle().
-		Foreground(tui.ColorThinking).
+		Foreground(tui.Subtle).
 		Italic(true)
 	sb.WriteString(hintStyle.Render("Press Space, Enter, or Esc to dismiss"))
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(tui.ColorAccent).
+		BorderForeground(tui.Accent).
 		Padding(0, 1).
 		MaxWidth(maxWidth).
 		Render(sb.String())

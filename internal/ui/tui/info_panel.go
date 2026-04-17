@@ -85,10 +85,10 @@ func (p *InfoPanel) Render() string {
 	}
 	colWidth := maxLabel + 2 // padding
 
-	labelStyle := lipgloss.NewStyle().Foreground(ColorMuted)
-	valueStyle := lipgloss.NewStyle().Foreground(ColorSoftText)
-	hintStyle := lipgloss.NewStyle().Foreground(ColorToken)
-	warnStyle := lipgloss.NewStyle().Foreground(ColorAccent)
+	labelStyle := lipgloss.NewStyle().Foreground(Muted)
+	valueStyle := lipgloss.NewStyle().Foreground(Text)
+	hintStyle := lipgloss.NewStyle().Foreground(Muted)
+	warnStyle := lipgloss.NewStyle().Foreground(Accent)
 	sectionStyle := CardSectionStyle
 	titleStyle := CardTitleStyle
 

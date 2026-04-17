@@ -114,7 +114,7 @@ func renderPermission(s *permissionState) string {
 	var b strings.Builder
 	labelStyle := askDescStyle
 	valueStyle := askOptionInactiveStyle
-	activeOptionStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	activeOptionStyle := lipgloss.NewStyle().Foreground(Accent).Bold(true)
 	inactiveOptionStyle := askOptionInactiveStyle
 
 	b.WriteString(PermissionTitleStyle.Render("Permission Required"))

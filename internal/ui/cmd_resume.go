@@ -133,8 +133,8 @@ func (c *ResumeCommand) View(width int) string {
 	sb.WriteString(tui.MutedStyle.Render("Select session (↑↓ navigate · Enter select · Esc cancel):"))
 	sb.WriteString("\n")
 
-	selectedStyle := lipgloss.NewStyle().Foreground(tui.ColorAccent).Bold(true)
-	currentMark := lipgloss.NewStyle().Foreground(tui.ColorSuccess)
+	selectedStyle := lipgloss.NewStyle().Foreground(tui.Accent).Bold(true)
+	currentMark := lipgloss.NewStyle().Foreground(tui.Success)
 
 	limit := min(len(s.sessions), 15)
 	for i := range limit {

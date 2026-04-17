@@ -131,7 +131,6 @@ type State struct {
 	GitBranch   string
 	ShowWelcome bool
 	EnvHint     string // env var hint shown below welcome
-	ShowSummary bool
 	RunStats    runStats
 	Images      []agentcore.ContentBlock // attached images (from Ctrl+V clipboard paste)
 	ImageCursor int                      // -1 = not selecting; 0+ = selected image index
@@ -194,14 +193,14 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 		Frames: []string{"·", "✢", "✶", "✽", "✶", "✢", "·"},
 		FPS:    time.Second / 30, // 30fps for smooth shimmer
 	}
-	sp.Style = lipgloss.NewStyle().Foreground(ColorRunning)
+	sp.Style = lipgloss.NewStyle().Foreground(Live)
 
 	tsp := spinner.New()
 	tsp.Spinner = spinner.Spinner{
 		Frames: []string{"●", "◉", "○", "◉"},
 		FPS:    time.Second / 4,
 	}
-	tsp.Style = lipgloss.NewStyle().Foreground(ColorTool)
+	tsp.Style = lipgloss.NewStyle().Foreground(Accent)
 
 	ta := textarea.New()
 	placeholder := defaultPlaceholder
@@ -216,10 +215,10 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 		return "  "
 	})
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(ColorInputChrome)
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(ColorPlaceholder)
-	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(ColorInputChrome)
-	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(ColorPlaceholder)
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(InputRule)
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(Subtle)
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(InputRule)
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(Subtle)
 	ta.Focus()
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false

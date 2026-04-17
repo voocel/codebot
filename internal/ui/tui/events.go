@@ -47,7 +47,6 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 	case agentcore.EventAgentStart:
 		m.Running = true
 		m.RunStats = runStats{StartedAt: time.Now()}
-		m.ShowSummary = false
 		m.clearSuggestion()
 
 	case agentcore.EventAgentEnd:
@@ -55,7 +54,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		m.RunStats.Duration = time.Since(m.RunStats.StartedAt)
 		m.RunStats.DisplayInput = m.RunStats.Input
 		m.RunStats.DisplayOutput = m.RunStats.Output
-		m.ShowSummary = true
+		cmds = append(cmds, printBlock(m.renderRunSummary()))
 		m.QueuedMsgs = nil
 		clear(m.PendingTools)
 		clear(m.ToolHeaders)
@@ -209,6 +208,10 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		// Build header + result as a single block so they stay grouped.
 		header := m.ToolHeaders[ev.ToolID]
 		delete(m.ToolHeaders, ev.ToolID)
+		if ev.IsError {
+			// Retint the bullet red now that we know the call failed.
+			header = ErrorIconStyle.Render("● ") + RenderToolHeader(ev.Tool, ev.Args)
+		}
 
 		var body string
 		if ev.Tool == "subagent" && !ev.IsError {
@@ -218,7 +221,9 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			body = indentBlock(RenderEditResult(ev.Result), 2)
 		} else if ev.Tool == "write" && !ev.IsError {
 			body = indentBlock(RenderWriteResult(ev.Result), 2)
-		} else if (ev.Tool == "read" || ev.Tool == "glob") && !ev.IsError {
+		} else if ev.Tool == "read" && !ev.IsError {
+			body = indentBlock(RenderReadSummary(ev.Result), 2)
+		} else if ev.Tool == "glob" && !ev.IsError {
 			body = indentBlock(RenderReadResult(ev.Result), 2)
 		} else if ev.Tool == "ls" && !ev.IsError {
 			dirPath, lsBody := RenderLsResult(ev.Result)

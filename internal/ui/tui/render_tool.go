@@ -142,7 +142,7 @@ func RenderToolHeader(tool string, args json.RawMessage) string {
 // ---------------------------------------------------------------------------
 
 // FormatToolOutput formats tool result text with tree connectors.
-// First line gets "└ ", subsequent lines get "  " alignment.
+// First line gets the TreeConnector, subsequent lines get ConnectorPad alignment.
 // Truncates to maxVisible lines with "… +N lines" hint.
 // Optional styles override the default ToolResultStyle for line content.
 func FormatToolOutput(text string, maxVisible int, styles ...lipgloss.Style) string {
@@ -160,20 +160,19 @@ func FormatToolOutput(text string, maxVisible int, styles ...lipgloss.Style) str
 		hidden = len(lines) - maxVisible
 		lines = lines[:maxVisible]
 	}
-	connector := MutedStyle.Render("└ ")
-	padding := "  "
+	connector := ConnectorStyle.Render(TreeConnector)
 	var sb strings.Builder
 	for i, line := range lines {
 		if i == 0 {
 			sb.WriteString(connector)
 		} else {
-			sb.WriteString(padding)
+			sb.WriteString(ConnectorPad)
 		}
 		sb.WriteString(renderToolOutputLine(line, lineStyle))
 		sb.WriteByte('\n')
 	}
 	if hidden > 0 {
-		sb.WriteString(MutedStyle.Render(fmt.Sprintf("  … +%d lines", hidden)))
+		sb.WriteString(MutedStyle.Render(fmt.Sprintf("%s… +%d lines", ConnectorPad, hidden)))
 		sb.WriteByte('\n')
 	}
 	return strings.TrimRight(sb.String(), "\n")
@@ -313,24 +312,23 @@ func TruncateLines(s string, maxLines int) string {
 }
 
 // RenderStreamingOutput shows the last N lines of streaming tool output
-// with tree connectors (└ on first line, spaces for alignment).
+// with tree connectors (TreeConnector on first line, ConnectorPad for alignment).
 func RenderStreamingOutput(full string, maxLines int) string {
 	all := strings.TrimRight(full, "\n")
 	lines := strings.Split(all, "\n")
 	start := max(len(lines)-maxLines, 0)
 	visible := lines[start:]
-	connector := MutedStyle.Render("└ ")
-	padding := "  "
+	connector := ConnectorStyle.Render(TreeConnector)
 	var sb strings.Builder
 	if start > 0 {
-		sb.WriteString(MutedStyle.Render(fmt.Sprintf("└ … +%d lines above", start)))
+		sb.WriteString(connector + MutedStyle.Render(fmt.Sprintf("… +%d lines above", start)))
 		sb.WriteByte('\n')
 	}
 	for i, line := range visible {
 		if i == 0 && start == 0 {
 			sb.WriteString(connector)
 		} else {
-			sb.WriteString(padding)
+			sb.WriteString(ConnectorPad)
 		}
 		sb.WriteString(MutedStyle.Render(line))
 		sb.WriteByte('\n')

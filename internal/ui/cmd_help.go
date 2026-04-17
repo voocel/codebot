@@ -91,9 +91,9 @@ func (c *HelpCommand) View(width int) string {
 }
 
 func (c *HelpCommand) renderGeneral() string {
-	labelStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
-	valueStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
-	sectionStyle := lipgloss.NewStyle().Foreground(tui.ColorPrimarySoft).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(tui.Muted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.Text)
+	sectionStyle := lipgloss.NewStyle().Foreground(tui.BrandSoft).Bold(true)
 
 	var sb strings.Builder
 	sb.WriteString("  ")
@@ -160,9 +160,9 @@ func (c *HelpCommand) renderCommandGroup(kind CommandKind, emptyMsg string) stri
 		return cmds[i].Spec().Name < cmds[j].Spec().Name
 	})
 
-	usageStyle := lipgloss.NewStyle().Foreground(tui.ColorCommand)
-	descStyle := lipgloss.NewStyle().Foreground(tui.ColorSoftText)
-	metaStyle := lipgloss.NewStyle().Foreground(tui.ColorMuted)
+	usageStyle := lipgloss.NewStyle().Foreground(tui.Info)
+	descStyle := lipgloss.NewStyle().Foreground(tui.Text)
+	metaStyle := lipgloss.NewStyle().Foreground(tui.Muted)
 
 	var sb strings.Builder
 	for _, cmd := range cmds {
