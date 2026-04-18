@@ -18,12 +18,25 @@ import (
 	"time"
 )
 
-const openRouterURL = "https://openrouter.ai/api/v1/models"
+const (
+	openRouterURL = "https://openrouter.ai/api/v1/models"
+	// maxModelAgeDays decides how old a baseline entry can be. Anything older is
+	// treated as obsolete (e.g. GPT-3.5, GPT-4-0314, Claude 2) and skipped to keep
+	// the binary lean and lookups low-noise. Kept in sync with pricing.go.
+	maxModelAgeDays = 730
+)
 
 var providerMap = map[string]string{
-	"anthropic": "anthropic",
-	"openai":    "openai",
-	"google":    "gemini",
+	"anthropic":  "anthropic",
+	"openai":     "openai",
+	"google":     "gemini",
+	"deepseek":   "deepseek",
+	"qwen":       "qwen",
+	"x-ai":       "grok",
+	"z-ai":       "glm",
+	"meta-llama": "meta-llama",
+	"mistralai":  "mistral",
+	"moonshotai": "moonshot",
 }
 
 type apiResponse struct {
@@ -34,6 +47,7 @@ type apiModel struct {
 	ID            string       `json:"id"`
 	Name          string       `json:"name"`
 	ContextLength int          `json:"context_length"`
+	Created       int64        `json:"created"`
 	Pricing       *apiPricing  `json:"pricing"`
 	TopProvider   *apiProvider `json:"top_provider"`
 }
@@ -112,6 +126,9 @@ func convert(m apiModel) (entry, bool) {
 	if strings.Contains(modelID, ":") {
 		return entry{}, false
 	}
+	if isTooOld(m.Created) {
+		return entry{}, false
+	}
 
 	e := entry{
 		Provider:      prov,
@@ -135,6 +152,17 @@ func convert(m apiModel) (entry, bool) {
 // NOTE: inferReasoning, toMillion, cleanName are intentionally duplicated from
 // pricing.go because this file compiles as a standalone program (package main).
 // Keep them in sync when editing.
+
+// isTooOld reports whether a model's Created timestamp is older than
+// maxModelAgeDays. Zero or negative values are treated as missing data and
+// dropped as well.
+func isTooOld(created int64) bool {
+	if created <= 0 {
+		return true
+	}
+	age := time.Since(time.Unix(created, 0)).Hours() / 24
+	return age > maxModelAgeDays
+}
 
 func toMillion(s string) float64 {
 	if s == "" {

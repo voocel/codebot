@@ -18,12 +18,22 @@ const (
 	cacheTTL      = 24 * time.Hour
 	fetchTimeout  = 10 * time.Second
 	cacheFileName = "models-cache.json"
+	// maxModelAgeDays mirrors gen_models.go: entries older than this are treated
+	// as obsolete and dropped from runtime refresh as well.
+	maxModelAgeDays = 730
 )
 
 var providerMap = map[string]string{
-	"anthropic": "anthropic",
-	"openai":    "openai",
-	"google":    "gemini",
+	"anthropic":  "anthropic",
+	"openai":     "openai",
+	"google":     "gemini",
+	"deepseek":   "deepseek",
+	"qwen":       "qwen",
+	"x-ai":       "grok",
+	"z-ai":       "glm",
+	"meta-llama": "meta-llama",
+	"mistralai":  "mistral",
+	"moonshotai": "moonshot",
 }
 
 type openRouterResponse struct {
@@ -34,6 +44,7 @@ type openRouterModel struct {
 	ID            string                 `json:"id"`
 	Name          string                 `json:"name"`
 	ContextLength int                    `json:"context_length"`
+	Created       int64                  `json:"created"`
 	Pricing       *openRouterPricing     `json:"pricing"`
 	TopProvider   *openRouterTopProvider `json:"top_provider"`
 }
@@ -158,6 +169,9 @@ func convertModel(m openRouterModel) (ModelEntry, bool) {
 	if strings.Contains(modelID, ":") {
 		return ModelEntry{}, false
 	}
+	if isStaleModel(m.Created) {
+		return ModelEntry{}, false
+	}
 
 	entry := ModelEntry{
 		Provider:      prov,
@@ -180,6 +194,17 @@ func convertModel(m openRouterModel) (ModelEntry, bool) {
 		entry.CacheWriteCostPer1M = tokenToMillion(m.Pricing.InputCacheWrite)
 	}
 	return entry, true
+}
+
+// isStaleModel drops entries whose Created timestamp is older than
+// maxModelAgeDays. Zero or negative values are treated as missing data and
+// dropped as well.
+func isStaleModel(created int64) bool {
+	if created <= 0 {
+		return true
+	}
+	age := time.Since(time.Unix(created, 0)).Hours() / 24
+	return age > maxModelAgeDays
 }
 
 func tokenToMillion(s string) float64 {
