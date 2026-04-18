@@ -62,10 +62,61 @@ func scanStepColor(idx int) lipgloss.TerminalColor {
 	return lipgloss.Color(scanStepsLight[idx])
 }
 
+// wordmarkGlyphs defines 3-row compact block letters for the welcome logo.
+// Each glyph is 5 cols wide × 3 rows tall, built from half-block chars
+// (▀▄█) so row-by-row color gradients read as top-lit → mid → bottom-shaded.
+var wordmarkGlyphs = map[rune][3]string{
+	'C': {"▄████", "█    ", "▀████"},
+	'O': {"▄███▄", "█   █", "▀███▀"},
+	'D': {"████▄", "█   █", "████▀"},
+	'E': {"█████", "████ ", "█████"},
+	'B': {"████▄", "███▀▄", "████▀"},
+	'T': {"█████", "  █  ", "  █  "},
+}
+
+// renderWordmark composes "CODEBOT" as a 3-row 3D wordmark:
+//
+//	row 1 — top highlight (brightest, Title color)
+//	row 2 — mid body      (Brand color, solid)
+//	row 3 — bottom shade  (BrandSoft, simulates ambient shadow)
+//
+// Total glyph width: 7 letters × 5 cols + 6 single-col gaps = 41 cols.
+func renderWordmark() string {
+	const word = "CODEBOT"
+
+	var r1, r2, r3 strings.Builder
+	for i, c := range word {
+		if i > 0 {
+			r1.WriteByte(' ')
+			r2.WriteByte(' ')
+			r3.WriteByte(' ')
+		}
+		g := wordmarkGlyphs[c]
+		r1.WriteString(g[0])
+		r2.WriteString(g[1])
+		r3.WriteString(g[2])
+	}
+
+	topStyle := lipgloss.NewStyle().Foreground(Title)
+	midStyle := lipgloss.NewStyle().Foreground(Brand).Bold(true)
+	botStyle := lipgloss.NewStyle().Foreground(BrandSoft)
+
+	return strings.Join([]string{
+		topStyle.Render(r1.String()),
+		midStyle.Render(r2.String()),
+		botStyle.Render(r3.String()),
+	}, "\n")
+}
+
+const wordmarkWidth = 41 // see renderWordmark — must match the glyph layout
+
 func (m *Model) renderWelcome() string {
-	width := 84
+	// Sized to hug the widest content (wordmark 41 + tagline 44 + subline 48)
+	// plus light breathing padding. Capped tighter than before so the card
+	// feels like a focused splash rather than a stretched banner.
+	width := 64
 	if m.Width > 0 {
-		width = min(max(m.Width-4, 56), 96)
+		width = min(max(m.Width-4, 52), 68)
 	}
 
 	ver := m.Version
@@ -74,50 +125,41 @@ func (m *Model) renderWelcome() string {
 	}
 
 	bc := lipgloss.NewStyle().Foreground(BrandSoft)
-	edge := WelcomeKickerStyle
-	title := WelcomeTitleStyle
+	innerW := width - 4
 
-	// Terminal window logo with drop shadow
-	dotR := lipgloss.NewStyle().Foreground(Danger)
-	dotY := lipgloss.NewStyle().Foreground(Accent)
-	dotG := lipgloss.NewStyle().Foreground(Success)
-	cursor := lipgloss.NewStyle().Foreground(Accent)
-	shadow := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "249", Dark: "238"})
-
-	logoLines := []string{
-		edge.Render("╭──────────────────────╮"),
-		edge.Render("│") + " " + dotR.Render("●") + " " + dotY.Render("●") + " " + dotG.Render("●") + "    " + title.Render("CODEBOT") + "     " + edge.Render("│"),
-		edge.Render("├──────────────────────┤") + shadow.Render("░"),
-		edge.Render("│") + "                      " + edge.Render("│") + shadow.Render("░"),
-		edge.Render("│") + "       " + edge.Render("❯_") + " " + cursor.Render("█") + "           " + edge.Render("│") + shadow.Render("░"),
-		edge.Render("│") + "                      " + edge.Render("│") + shadow.Render("░"),
-		edge.Render("╰──────────────────────╯") + shadow.Render("░"),
-		" " + shadow.Render(strings.Repeat("░", 23)),
+	// Center a line of measured visible width within innerW.
+	center := func(visibleW int, line string) string {
+		pad := max((innerW-visibleW)/2, 0)
+		return strings.Repeat(" ", pad) + line
 	}
-	logo := lipgloss.NewStyle().Width(27).Render(strings.Join(logoLines, "\n"))
 
-	// Vertical separator (match logo height)
-	const logoHeight = 8
-	sepParts := make([]string, logoHeight)
-	for i := range sepParts {
-		sepParts[i] = bc.Render("│")
+	// --- logo ---
+	var logoLines []string
+	if innerW >= wordmarkWidth {
+		for _, line := range strings.Split(renderWordmark(), "\n") {
+			logoLines = append(logoLines, center(wordmarkWidth, line))
+		}
+	} else {
+		// Narrow fallback: stylised inline wordmark.
+		fallback := WelcomeTitleStyle.Render("CODEBOT")
+		logoLines = append(logoLines, center(lipgloss.Width(fallback), fallback))
 	}
-	sep := strings.Join(sepParts, "\n")
 
-	// Right panel
-	rightWidth := max(width-34, 20)
-	rightLines := []string{
-		WelcomeTitleStyle.Render("Long-running coding agent for the terminal."),
-		"",
-		WelcomeBodyStyle.Render("Small execution kernel. Strong runtime harness."),
-		bc.Render(strings.Repeat("─", min(rightWidth, 44))),
-		WelcomeMutedStyle.Render("/ commands · Enter send · Esc abort"),
+	// --- tagline block ---
+	tagline := WelcomeTitleStyle.Render("Long-running coding agent for the terminal.")
+	subline := WelcomeBodyStyle.Render("Small execution kernel. Strong runtime harness.")
+	ruleLen := min(wordmarkWidth, innerW-4)
+	rule := bc.Render(strings.Repeat("─", ruleLen))
+	hint := WelcomeMutedStyle.Render("/  commands     ⏎  send     esc  abort")
+
+	taglineLines := []string{
+		center(lipgloss.Width(tagline), tagline),
+		center(lipgloss.Width(subline), subline),
+		center(ruleLen, rule),
+		center(lipgloss.Width(hint), hint),
 	}
-	right := lipgloss.NewStyle().Width(rightWidth).Render(strings.Join(rightLines, "\n"))
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, logo, " ", sep, " ", right)
-
-	// Footer: provider · model · path · branch (version in top border)
+	// --- footer chips (provider · model · path · branch) ---
 	var footerBits []string
 	if m.Provider != "" {
 		footerBits = append(footerBits, ContextChipAccentStyle.Render(m.Provider))
@@ -133,21 +175,28 @@ func (m *Model) renderWelcome() string {
 	}
 	footer := strings.Join(footerBits, ContextChipStyle.Render(" · "))
 
-	// Assemble inner content
-	content := strings.Join([]string{"", body, "", footer}, "\n")
+	// --- assemble ---
+	var body []string
+	body = append(body, "")
+	body = append(body, logoLines...)
+	body = append(body, "")
+	body = append(body, taglineLines...)
+	if footer != "" {
+		body = append(body, "")
+		body = append(body, center(lipgloss.Width(footer), footer))
+	}
+	body = append(body, "")
 
-	// Manual frame with title embedded in top border
-	innerW := width - 4
-	titleTag := WelcomeKickerStyle.Render("Codebot") + " " + ContextChipAccentStyle.Render(ver)
+	// Framed rounded box with embedded title tag.
+	titleTag := WelcomeKickerStyle.Render("codebot") + " " + ContextChipAccentStyle.Render(ver)
 	titleW := lipgloss.Width(titleTag)
 	topDash := max(width-titleW-5, 1)
 	topLine := bc.Render("╭─ ") + titleTag + " " + bc.Render(strings.Repeat("─", topDash)+"╮")
 	botLine := bc.Render("╰" + strings.Repeat("─", width-2) + "╯")
 
-	lines := strings.Split(content, "\n")
-	framed := make([]string, 0, len(lines)+2)
+	framed := make([]string, 0, len(body)+2)
 	framed = append(framed, topLine)
-	for _, line := range lines {
+	for _, line := range body {
 		pad := max(innerW-lipgloss.Width(line), 0)
 		framed = append(framed, bc.Render("│ ")+line+strings.Repeat(" ", pad)+bc.Render(" │"))
 	}
