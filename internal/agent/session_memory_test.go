@@ -8,6 +8,11 @@ import (
 	"github.com/voocel/agentcore"
 )
 
+func isolateUserConfigHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func TestIsSafeSummaryBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -45,9 +50,9 @@ func TestStripCodeFence(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"plain body":                            "plain body",
-		"```\nfenced body\n```":                 "fenced body",
-		"```markdown\n# Session Memory\n```":    "# Session Memory",
+		"plain body":                           "plain body",
+		"```\nfenced body\n```":                "fenced body",
+		"```markdown\n# Session Memory\n```":   "# Session Memory",
 		"   ```\nleading whitespace body\n```": "leading whitespace body",
 	}
 	for in, want := range cases {
@@ -58,7 +63,7 @@ func TestStripCodeFence(t *testing.T) {
 }
 
 func TestSessionMemoryRoundtrip(t *testing.T) {
-	t.Parallel()
+	isolateUserConfigHome(t)
 
 	s := &Session{cwd: t.TempDir()}
 	body := "# Session Memory\n\n## Current State\nPhase 4.1 in progress.\n"
@@ -81,7 +86,7 @@ func TestSessionMemoryRoundtrip(t *testing.T) {
 }
 
 func TestLoadSessionMemoryMissing(t *testing.T) {
-	t.Parallel()
+	isolateUserConfigHome(t)
 
 	s := &Session{cwd: t.TempDir()}
 	mem, err := s.loadSessionMemory()
@@ -94,7 +99,7 @@ func TestLoadSessionMemoryMissing(t *testing.T) {
 }
 
 func TestSessionMemorySeedFnTemplateYieldsEmpty(t *testing.T) {
-	t.Parallel()
+	isolateUserConfigHome(t)
 
 	s := &Session{cwd: t.TempDir()}
 	if err := s.saveSessionMemory(sessionMemoryTemplate); err != nil {
@@ -110,7 +115,7 @@ func TestSessionMemorySeedFnTemplateYieldsEmpty(t *testing.T) {
 }
 
 func TestSessionMemorySeedFnMissingYieldsEmpty(t *testing.T) {
-	t.Parallel()
+	isolateUserConfigHome(t)
 
 	seed, err := SessionMemorySeedFn(t.TempDir())()
 	if err != nil {
@@ -122,7 +127,7 @@ func TestSessionMemorySeedFnMissingYieldsEmpty(t *testing.T) {
 }
 
 func TestSessionMemorySeedFnReturnsBodyOnce(t *testing.T) {
-	t.Parallel()
+	isolateUserConfigHome(t)
 
 	s := &Session{cwd: t.TempDir()}
 	body := "# Session Memory\n\n## Current State\nUser is wiring Phase 4.1-B.\n"
