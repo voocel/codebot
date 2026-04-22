@@ -36,7 +36,7 @@ type Config struct {
 	GitBranch            string
 	EnvHint              string                   // shown below welcome when using env var credentials
 	History              *storage.History         // input history (Up/Down navigation)
-	InitialTasks         *storage.TaskSnapshot      // initial task snapshot restored before first render
+	InitialTasks         *storage.TaskSnapshot    // initial task snapshot restored before first render
 	RestoredMessages     []agentcore.AgentMessage // messages restored from a previous session (rendered on Init)
 	OnKey                func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
 	OnEvent              func(m *Model, ev agentcore.Event) tea.Cmd
@@ -145,7 +145,8 @@ type State struct {
 
 	taskHideVersion uint64
 
-	QueuedMsgs []string // messages queued while agent is running (display only)
+	QueuedMsgs  []string // messages queued while agent is running (display only)
+	RetryStatus string   // single in-place retry status shown while auto-retrying
 
 	MCPLoading bool // true while MCP servers are connecting in background
 

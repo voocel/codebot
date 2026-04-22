@@ -222,7 +222,11 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 			return
 		}
 		if text, ok := formatRetryEvent(ev); ok {
-			sendAsync(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
+			p.Send(tui.RetryStatusMsg{Text: text})
+			return
+		}
+		if ev.Type == agent.SEAutoRetryEnd {
+			p.Send(tui.RetryStatusMsg{})
 			return
 		}
 		if ev.Type == agent.SERuntimeReminder && ev.Reminder != "" {
@@ -232,6 +236,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 			return
 		}
 		if ev.Type == agent.SEError && ev.Error != nil {
+			p.Send(tui.RetryStatusMsg{})
 			sendAsync(tui.CommandResultMsg{
 				Text: tui.ErrorStyle.Render("Session error: " + ev.Error.Error()),
 			})

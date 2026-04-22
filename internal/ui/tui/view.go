@@ -52,6 +52,10 @@ func (m *Model) View() string {
 		parts = append(parts, "", line)
 	}
 
+	if m.RetryStatus != "" {
+		parts = append(parts, "", MutedStyle.Render(m.RetryStatus))
+	}
+
 	parts = append(parts, "")
 
 	if m.Tasks != nil && m.Tasks.Total > 0 {

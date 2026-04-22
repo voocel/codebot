@@ -110,6 +110,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Input.Placeholder = msg.Text
 		}
 		return m, nil
+	case RetryStatusMsg:
+		m.RetryStatus = msg.Text
+		return m, nil
 	case BtwResultMsg:
 		if m.config.OnBtwResult != nil {
 			m.config.OnBtwResult(msg)

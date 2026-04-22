@@ -76,6 +76,12 @@ type SuggestionMsg struct {
 	Text string
 }
 
+// RetryStatusMsg updates the single in-place retry status shown in the live area.
+// Empty Text clears the current retry status.
+type RetryStatusMsg struct {
+	Text string
+}
+
 // BtwResultMsg carries the result of a /btw side question back to the overlay.
 type BtwResultMsg struct {
 	Answer string
