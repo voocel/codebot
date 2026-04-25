@@ -112,16 +112,20 @@ func fitBody(body string, targetLines int) string {
 }
 
 func renderInfoOverlayHeader(f InfoOverlayFrame) string {
-	titleStyle := lipgloss.NewStyle().Foreground(Title).Bold(true)
+	titleStyle := lipgloss.NewStyle().Foreground(Brand).Bold(true)
 	subtitleStyle := MutedStyle
+	// Filled pill on the active tab — Brand teal background with a Strong
+	// (white-on-dark / black-on-light) foreground gives strong contrast that
+	// the previous Border-on-Title combo lacked.
 	activeTabStyle := lipgloss.NewStyle().
-		Foreground(Title).
-		Background(Border).
+		Foreground(Strong).
+		Background(Brand).
 		Bold(true).
 		Padding(0, 1)
 	inactiveTabStyle := lipgloss.NewStyle().
 		Foreground(Muted).
 		Padding(0, 1)
+	dividerStyle := lipgloss.NewStyle().Foreground(Subtle)
 
 	var parts []string
 	parts = append(parts, "  "+titleStyle.Render(f.Title))
@@ -129,11 +133,14 @@ func renderInfoOverlayHeader(f InfoOverlayFrame) string {
 		parts = append(parts, subtitleStyle.Render(f.Subtitle))
 	}
 
-	for i, t := range f.Tabs {
-		if i == f.Active {
-			parts = append(parts, activeTabStyle.Render(t.Name))
-		} else {
-			parts = append(parts, inactiveTabStyle.Render(t.Name))
+	if len(f.Tabs) > 0 {
+		parts = append(parts, dividerStyle.Render("│"))
+		for i, t := range f.Tabs {
+			if i == f.Active {
+				parts = append(parts, activeTabStyle.Render(t.Name))
+			} else {
+				parts = append(parts, inactiveTabStyle.Render(t.Name))
+			}
 		}
 	}
 

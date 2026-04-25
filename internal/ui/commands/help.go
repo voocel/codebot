@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -20,6 +21,7 @@ type HelpCommand struct {
 
 type helpState struct {
 	active int
+	width  int // captured from View() so body renderers can wrap long lines
 }
 
 var helpTabs = []string{"general", "built-in", "custom", "skills"}
@@ -78,6 +80,7 @@ func (c *HelpCommand) View(width, height int) string {
 	if c.state == nil {
 		return ""
 	}
+	c.state.width = width
 	frame := tui.InfoOverlayFrame{
 		Title: "Codebot",
 		Tabs: []tui.InfoOverlayTab{
@@ -95,7 +98,10 @@ func (c *HelpCommand) View(width, height int) string {
 }
 
 func (c *HelpCommand) renderGeneral() string {
-	labelStyle := lipgloss.NewStyle().Foreground(tui.Muted)
+	// labelStyle uses Info to keep the left "key" column visually aligned
+	// with the usage column in renderCommandGroup — same blue-teal accent
+	// across every tab gives the help overlay one cohesive palette.
+	labelStyle := lipgloss.NewStyle().Foreground(tui.Info)
 	valueStyle := lipgloss.NewStyle().Foreground(tui.Text)
 	sectionStyle := lipgloss.NewStyle().Foreground(tui.BrandSoft).Bold(true)
 
@@ -168,14 +174,30 @@ func (c *HelpCommand) renderCommandGroup(kind Kind, emptyMsg string) string {
 	descStyle := lipgloss.NewStyle().Foreground(tui.Text)
 	metaStyle := lipgloss.NewStyle().Foreground(tui.Muted)
 
+	const (
+		leftPad     = "  " // 2-space gutter
+		usageColumn = 22   // padding target for the usage cell
+		colGap      = " "  // separator between usage and desc
+	)
+	// descIndent aligns the wrapped desc/tags row under the desc column on
+	// the previous line (gutter + usage column + gap).
+	descIndent := strings.Repeat(" ", len(leftPad)+usageColumn+len(colGap))
+
+	// availWidth is the printable width inside the overlay frame; falls back
+	// to 80 when the host hasn't reported a width yet (early renders).
+	availWidth := c.state.width - 4 // matches inner = max(width-4,20) in InfoOverlayFrame
+	if availWidth <= 0 {
+		availWidth = 80
+	}
+
 	var sb strings.Builder
 	for _, cmd := range cmds {
 		spec := c.registry.EffectiveSpec(cmd)
 
-		usage := spec.Usage
-		if usage == "" {
-			usage = "/" + spec.Name
-		}
+		// Strip argument hints — /help is for browsing, the full syntax
+		// (e.g. "/plugins [list|show|...] ...") belongs in the command
+		// palette tooltip where the user is actually about to type.
+		usage := "/" + spec.Name
 		desc := spec.Description
 		if desc == "" {
 			desc = "(no description)"
@@ -191,16 +213,56 @@ func (c *HelpCommand) renderCommandGroup(kind Kind, emptyMsg string) string {
 		if spec.Source != "" {
 			tags = append(tags, spec.Source)
 		}
-
-		sb.WriteString("  ")
-		sb.WriteString(usageStyle.Render(fmt.Sprintf("%-22s", usage)))
-		sb.WriteString(" ")
-		sb.WriteString(descStyle.Render(desc))
+		tagText := ""
 		if len(tags) > 0 {
-			sb.WriteString(" ")
-			sb.WriteString(metaStyle.Render("[" + strings.Join(tags, " · ") + "]"))
+			tagText = " [" + strings.Join(tags, " · ") + "]"
 		}
-		sb.WriteString("\n")
+
+		// writeDescBlock word-wraps desc to descMaxWidth, prefixing the first
+		// line with initialPrefix and continuation lines with descIndent.
+		// Tags glue onto the last desc line when they fit; otherwise spill to
+		// their own continuation line. All desc/tag wrapping happens via
+		// explicit "\n" so InfoOverlayFrame's line budget stays accurate.
+		writeDescBlock := func(initialPrefix string, descMaxWidth int) {
+			if descMaxWidth < 20 {
+				descMaxWidth = 20
+			}
+			lines := strings.Split(strings.TrimRight(
+				wordwrap.String(desc, descMaxWidth), "\n"), "\n")
+			pendingTag := tagText
+			for i, line := range lines {
+				if i == 0 {
+					sb.WriteString(initialPrefix)
+				} else {
+					sb.WriteString(descIndent)
+				}
+				sb.WriteString(descStyle.Render(line))
+				if i == len(lines)-1 && pendingTag != "" &&
+					len(line)+len(pendingTag) <= descMaxWidth {
+					sb.WriteString(metaStyle.Render(pendingTag))
+					pendingTag = ""
+				}
+				sb.WriteString("\n")
+			}
+			if pendingTag != "" {
+				sb.WriteString(descIndent)
+				sb.WriteString(metaStyle.Render(strings.TrimLeft(pendingTag, " ")))
+				sb.WriteString("\n")
+			}
+		}
+
+		if len(usage) > usageColumn {
+			// Long usage gets its own line; desc wraps below at descIndent.
+			sb.WriteString(leftPad)
+			sb.WriteString(usageStyle.Render(usage))
+			sb.WriteString("\n")
+			writeDescBlock(descIndent, availWidth-len(descIndent))
+			continue
+		}
+
+		// Standard layout: usage in left column, desc wraps in right column.
+		initial := leftPad + usageStyle.Render(fmt.Sprintf("%-*s", usageColumn, usage)) + colGap
+		writeDescBlock(initial, availWidth-len(leftPad)-usageColumn-len(colGap))
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
