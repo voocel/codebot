@@ -145,8 +145,13 @@ type State struct {
 
 	taskHideVersion uint64
 
-	QueuedMsgs  []string // messages queued while agent is running (display only)
-	RetryStatus string   // single in-place retry status shown while auto-retrying
+	QueuedMsgs []string // messages queued while agent is running (display only)
+
+	// Retry countdown shown in the live area while auto-retrying.
+	// RetryPrefix is the static text (e.g. "Request failed, retrying (1/3)");
+	// RetryDeadline is when the retry will fire — View() computes remaining seconds.
+	RetryPrefix   string
+	RetryDeadline time.Time
 
 	MCPLoading bool // true while MCP servers are connecting in background
 

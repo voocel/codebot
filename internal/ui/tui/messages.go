@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/storage"
@@ -77,10 +79,14 @@ type SuggestionMsg struct {
 }
 
 // RetryStatusMsg updates the single in-place retry status shown in the live area.
-// Empty Text clears the current retry status.
+// Empty Prefix clears the current retry status; Deadline drives the live countdown.
 type RetryStatusMsg struct {
-	Text string
+	Prefix   string
+	Deadline time.Time
 }
+
+// retryTickMsg drives the per-second countdown re-render.
+type retryTickMsg struct{}
 
 // BtwResultMsg carries the result of a /btw side question back to the overlay.
 type BtwResultMsg struct {

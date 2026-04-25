@@ -3,7 +3,9 @@ package tui
 // Model.View — composes the live bottom-pinned area from render_*.go helpers.
 
 import (
+	"fmt"
 	"strings"
+	"time"
 )
 
 // View renders the live area pinned at the bottom of the terminal.
@@ -52,8 +54,8 @@ func (m *Model) View() string {
 		parts = append(parts, "", line)
 	}
 
-	if m.RetryStatus != "" {
-		parts = append(parts, "", MutedStyle.Render(m.RetryStatus))
+	if status := m.renderRetryStatus(); status != "" {
+		parts = append(parts, "", MutedStyle.Render(status))
 	}
 
 	parts = append(parts, "")
@@ -97,4 +99,21 @@ func (m *Model) View() string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+// renderRetryStatus formats the live retry line with an integer-second countdown.
+// Returns empty when no retry is in progress.
+func (m *Model) renderRetryStatus() string {
+	if m.RetryPrefix == "" {
+		return ""
+	}
+	if m.RetryDeadline.IsZero() {
+		return m.RetryPrefix + "..."
+	}
+	remain := time.Until(m.RetryDeadline)
+	if remain <= 0 {
+		return m.RetryPrefix + "..."
+	}
+	secs := int((remain + time.Second - 1) / time.Second)
+	return fmt.Sprintf("%s in %ds...", m.RetryPrefix, secs)
 }

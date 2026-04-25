@@ -37,6 +37,15 @@ func TasksTickCmd() tea.Cmd {
 	})
 }
 
+// retryCountdownTick schedules the next retry-countdown re-render.
+// 500ms keeps the integer-second display visually responsive without
+// per-frame churn (View() ceil-rounds the remaining duration).
+func retryCountdownTick() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return retryTickMsg{}
+	})
+}
+
 // RestoreMsg is sent to replay restored session messages into scrollback.
 type RestoreMsg struct{ Msgs []agentcore.AgentMessage }
 
@@ -111,8 +120,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case RetryStatusMsg:
-		m.RetryStatus = msg.Text
-		return m, nil
+		m.RetryPrefix = msg.Prefix
+		m.RetryDeadline = msg.Deadline
+		if msg.Prefix == "" {
+			return m, nil
+		}
+		return m, retryCountdownTick()
+	case retryTickMsg:
+		if m.RetryPrefix == "" || m.RetryDeadline.IsZero() {
+			return m, nil
+		}
+		if !time.Now().Before(m.RetryDeadline) {
+			return m, nil
+		}
+		return m, retryCountdownTick()
 	case BtwResultMsg:
 		if m.config.OnBtwResult != nil {
 			m.config.OnBtwResult(msg)

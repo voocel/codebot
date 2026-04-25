@@ -221,8 +221,11 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 			}
 			return
 		}
-		if text, ok := formatRetryEvent(ev); ok {
-			p.Send(tui.RetryStatusMsg{Text: text})
+		if prefix, delay, ok := formatRetryEvent(ev); ok {
+			p.Send(tui.RetryStatusMsg{
+				Prefix:   prefix,
+				Deadline: time.Now().Add(delay),
+			})
 			return
 		}
 		if ev.Type == agent.SEAutoRetryEnd {
@@ -263,18 +266,17 @@ func newInputHistory(sess *agent.Session, cwd string) *storage.History {
 	)
 }
 
-func formatRetryEvent(ev agent.SessionEvent) (text string, ok bool) {
-	switch ev.Type {
-	case agent.SEAutoRetryStart:
-		if ev.RetryMax > 0 {
-			return fmt.Sprintf("Request failed, retrying (%d/%d) in %s...",
-				ev.RetryAttempt, ev.RetryMax, ev.RetryDelay.Truncate(time.Millisecond)), true
-		}
-		return fmt.Sprintf("Request failed, retrying in %s...",
-			ev.RetryDelay.Truncate(time.Millisecond)), true
-	default:
-		return "", false
+// formatRetryEvent extracts the static prefix and remaining delay from a
+// retry-start event. Returned values feed RetryStatusMsg; the TUI renders
+// the live countdown from Deadline = now + delay.
+func formatRetryEvent(ev agent.SessionEvent) (prefix string, delay time.Duration, ok bool) {
+	if ev.Type != agent.SEAutoRetryStart {
+		return "", 0, false
 	}
+	if ev.RetryMax > 0 {
+		return fmt.Sprintf("Request failed, retrying (%d/%d)", ev.RetryAttempt, ev.RetryMax), ev.RetryDelay, true
+	}
+	return "Request failed, retrying", ev.RetryDelay, true
 }
 
 func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, ok bool) {

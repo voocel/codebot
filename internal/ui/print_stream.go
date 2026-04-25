@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
@@ -67,9 +68,9 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 			}
 			return
 		}
-		if text, ok := formatRetryEvent(ev); ok {
+		if prefix, delay, ok := formatRetryEvent(ev); ok {
 			if !jsonMode {
-				fmt.Fprintln(os.Stderr, text)
+				fmt.Fprintf(os.Stderr, "%s in %s...\n", prefix, delay.Truncate(time.Millisecond))
 			}
 			return
 		}

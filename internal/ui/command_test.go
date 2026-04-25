@@ -633,7 +633,7 @@ func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
 func TestFormatRetryEvent(t *testing.T) {
 	t.Parallel()
 
-	text, ok := formatRetryEvent(agent.SessionEvent{
+	prefix, delay, ok := formatRetryEvent(agent.SessionEvent{
 		Type:         agent.SEAutoRetryStart,
 		RetryAttempt: 2,
 		RetryMax:     3,
@@ -642,23 +642,26 @@ func TestFormatRetryEvent(t *testing.T) {
 	if !ok {
 		t.Fatal("expected retry start event to be formatted")
 	}
-	for _, want := range []string{"retrying", "2/3", "3.5s"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("expected %q in %q", want, text)
+	for _, want := range []string{"retrying", "2/3"} {
+		if !strings.Contains(prefix, want) {
+			t.Fatalf("expected %q in %q", want, prefix)
 		}
+	}
+	if delay != 3500*time.Millisecond {
+		t.Fatalf("expected delay 3.5s, got %s", delay)
 	}
 }
 
 func TestFormatRetryEventIgnoresOtherEvents(t *testing.T) {
 	t.Parallel()
 
-	if _, ok := formatRetryEvent(agent.SessionEvent{
+	if _, _, ok := formatRetryEvent(agent.SessionEvent{
 		Type: agent.SEAutoRetryEnd,
 	}); ok {
 		t.Fatal("expected retry end event to be ignored")
 	}
 
-	if _, ok := formatRetryEvent(agent.SessionEvent{
+	if _, _, ok := formatRetryEvent(agent.SessionEvent{
 		Type: agent.SEAutoCompactionStart,
 	}); ok {
 		t.Fatal("expected compaction event to be ignored by retry formatter")

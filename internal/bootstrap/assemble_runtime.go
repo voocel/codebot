@@ -108,6 +108,7 @@ func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine
 		agentcore.WithSystemBlocks(assembly.systemBlocks),
 		agentcore.WithTools(tools...),
 		agentcore.WithMaxTurns(assembly.settings.MaxTurns),
+		agentcore.WithMaxRetries(5),
 		agentcore.WithMaxToolErrors(3),
 		agentcore.WithMaxToolConcurrency(4),
 		agentcore.WithContextManager(contextEngine),
