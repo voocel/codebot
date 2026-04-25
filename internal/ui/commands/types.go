@@ -65,11 +65,16 @@ func (c *simpleCmd) Run(inv Invocation) tea.Cmd { return c.run(inv) }
 // InteractiveCommand extends Command with modal keyboard interception and
 // custom rendering. When Active() returns true the host TUI routes all
 // keyboard events through HandleKey and replaces the input area with View.
+//
+// View receives the available width AND height of the terminal viewport so
+// implementations can clip or paginate their content. A height of 0 means
+// "unconstrained" (legacy callers); implementations should treat any positive
+// value as a hard upper bound to avoid having their headers scroll out of view.
 type InteractiveCommand interface {
 	Command
 	Active() bool
 	HandleKey(msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
-	View(width int) string
+	View(width, height int) string
 	Dismiss()
 }
 

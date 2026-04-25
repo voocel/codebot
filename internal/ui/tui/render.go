@@ -37,7 +37,7 @@ func (m *Model) overlayView() (string, bool) {
 	if ov == nil {
 		return "", false
 	}
-	return ov.View(m.Width), ov.ReplacesInput
+	return ov.View(m.Width, m.Height), ov.ReplacesInput
 }
 
 // renderCompletions renders the completion menu.

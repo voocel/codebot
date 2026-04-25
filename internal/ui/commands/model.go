@@ -206,7 +206,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return true, nil
 }
 
-func (c *ModelCommand) View(width int) string {
+func (c *ModelCommand) View(width, _ int) string {
 	if c.state == nil {
 		return ""
 	}

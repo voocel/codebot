@@ -77,7 +77,7 @@ func (c *TasksCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return true, nil
 }
 
-func (c *TasksCommand) View(width int) string {
+func (c *TasksCommand) View(width, _ int) string {
 	if c.state == nil {
 		return ""
 	}

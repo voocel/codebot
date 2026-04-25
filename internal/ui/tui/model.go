@@ -68,7 +68,7 @@ type CompletionItem struct {
 // OverlayState bridges an interactive command overlay to the TUI.
 type OverlayState struct {
 	HandleKey     func(msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
-	View          func(width int) string
+	View          func(width, height int) string
 	ReplacesInput bool // when true, overlay replaces the input area instead of appearing below it
 }
 

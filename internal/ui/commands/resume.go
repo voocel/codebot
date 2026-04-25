@@ -127,7 +127,7 @@ func (c *ResumeCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return true, nil
 }
 
-func (c *ResumeCommand) View(width int) string {
+func (c *ResumeCommand) View(width, _ int) string {
 	if c.state == nil {
 		return ""
 	}

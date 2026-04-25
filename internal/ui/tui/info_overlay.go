@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -31,6 +32,12 @@ type InfoOverlayFrame struct {
 	Active   int
 	Hint     string
 	Width    int
+	// Height is the terminal viewport height. When > 0, every tab body is
+	// normalised to the same number of rows: long bodies are clipped so the
+	// header stays on screen, short bodies are padded so switching tabs does
+	// not change the overlay's total height (which would scroll the header
+	// up/down in inline render mode).
+	Height int
 }
 
 // Render produces the full styled overlay body.
@@ -51,6 +58,7 @@ func (f InfoOverlayFrame) Render() string {
 	if len(f.Tabs) > 0 && f.Active >= 0 && f.Active < len(f.Tabs) {
 		body := strings.TrimRight(f.Tabs[f.Active].Body(), "\n")
 		if body != "" {
+			body = fitBody(body, f.bodyBudget())
 			sb.WriteString("\n")
 			sb.WriteString(body)
 			sb.WriteString("\n")
@@ -63,6 +71,44 @@ func (f InfoOverlayFrame) Render() string {
 	}
 
 	return sb.String()
+}
+
+// bodyBudget returns the maximum number of body lines that fit without
+// pushing the header out of view. Returns 0 (= unlimited) when Height is
+// unknown. The constants below mirror the surrounding scaffolding rendered
+// in Render(): header(1) + separator(1) + leading blank(1) + trailing
+// blank(1) + hint blank+line(2) = 6 reserved rows.
+func (f InfoOverlayFrame) bodyBudget() int {
+	if f.Height <= 0 {
+		return 0
+	}
+	const reserved = 6
+	return max(f.Height-reserved, 3)
+}
+
+// fitBody normalises body to exactly targetLines rows. Long bodies are
+// clipped with a muted "(N more lines...)" tail; short bodies are padded
+// with blank lines. The constant height keeps the overlay's total render
+// height stable across tab switches so the header doesn't shift vertically
+// in inline (non-altscreen) mode. targetLines <= 0 disables both effects.
+func fitBody(body string, targetLines int) string {
+	if targetLines <= 0 {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	switch {
+	case len(lines) > targetLines:
+		hidden := len(lines) - (targetLines - 1)
+		kept := append([]string(nil), lines[:targetLines-1]...)
+		kept = append(kept, MutedStyle.Italic(true).Render(
+			fmt.Sprintf("  ... %d more lines (resize terminal to see all)", hidden)))
+		return strings.Join(kept, "\n")
+	case len(lines) < targetLines:
+		pad := make([]string, targetLines-len(lines))
+		return strings.Join(append(lines, pad...), "\n")
+	default:
+		return body
+	}
 }
 
 func renderInfoOverlayHeader(f InfoOverlayFrame) string {

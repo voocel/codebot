@@ -72,7 +72,7 @@ func (c *BtwCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return true, nil
 }
 
-func (c *BtwCommand) View(width int) string {
+func (c *BtwCommand) View(width, _ int) string {
 	maxWidth := max(width-4, 20)
 
 	var sb strings.Builder

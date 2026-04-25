@@ -202,7 +202,7 @@ func TestOverlayAppearsBelowInput(t *testing.T) {
 	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
 		Overlay: func(*Model) *OverlayState {
 			return &OverlayState{
-				View: func(width int) string {
+				View: func(width, height int) string {
 					return "overlay-body"
 				},
 			}

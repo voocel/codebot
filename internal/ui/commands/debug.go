@@ -102,7 +102,7 @@ func (c *DebugHarnessCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return true, nil
 }
 
-func (c *DebugHarnessCommand) View(width int) string {
+func (c *DebugHarnessCommand) View(width, height int) string {
 	if c.state == nil {
 		return ""
 	}
@@ -117,6 +117,7 @@ func (c *DebugHarnessCommand) View(width int) string {
 		Active: c.state.active,
 		Hint:   "Tab / ←→ switch · 1-4 jump · Esc close",
 		Width:  width,
+		Height: height,
 	}
 	return frame.Render()
 }

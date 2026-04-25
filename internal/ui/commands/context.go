@@ -95,7 +95,7 @@ func (c *ContextCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	return true, nil
 }
 
-func (c *ContextCommand) View(width int) string {
+func (c *ContextCommand) View(width, height int) string {
 	if c.state == nil {
 		return ""
 	}
@@ -109,6 +109,7 @@ func (c *ContextCommand) View(width int) string {
 		Active: c.state.active,
 		Hint:   "Tab / ←→ switch · 1-3 jump · Esc close",
 		Width:  width,
+		Height: height,
 	}
 	return frame.Render()
 }
