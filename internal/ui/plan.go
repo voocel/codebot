@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/plan"
+	"github.com/voocel/codebot/internal/ui/commands"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -46,33 +47,6 @@ func (a *App) allowedCommandLines() []string {
 		lines = append(lines, "- "+label)
 	}
 	return lines
-}
-
-func (a *App) cmdPlan(args []string) tea.Cmd {
-	if len(args) == 0 {
-		switch a.planPhase() {
-		case plan.PhaseOff:
-			return a.enterPlanMode("")
-		case plan.PhasePlanning:
-			return a.showCurrentPlan()
-		case plan.PhaseReview:
-			return a.showCurrentPlan()
-		}
-	}
-
-	sub := strings.ToLower(strings.TrimSpace(args[0]))
-	switch sub {
-	case "cancel":
-		return a.cancelPlanMode()
-	case "open":
-		return a.openCurrentPlan()
-	default:
-		if a.planPhase() != plan.PhaseOff {
-			return tui.SendCommandResult(tui.ErrorStyle.Render(
-				"Already in plan mode. Use /plan open to inspect the plan, or /plan cancel to exit first."))
-		}
-		return a.enterPlanMode(strings.Join(args, " "))
-	}
 }
 
 func (a *App) enterPlanMode(task string) tea.Cmd {
@@ -341,7 +315,7 @@ func (a *App) openCurrentPlan() tea.Cmd {
 	if path == "" {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("No active plan file."))
 	}
-	return a.openEditor(path, "Plan reloaded.")
+	return commands.OpenEditor(path, "Plan reloaded.", func() { a.Session.Reload() })
 }
 
 func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {

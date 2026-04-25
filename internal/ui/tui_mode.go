@@ -18,6 +18,7 @@ import (
 	planstate "github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/ui/commands"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -284,7 +285,7 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 		return "", false, false
 	}
 	strategySuffix := ""
-	if label := prettyCompactionStrategy(ev.CompactionStrategy); label != "" {
+	if label := commands.PrettyCompactionStrategy(ev.CompactionStrategy); label != "" {
 		strategySuffix = " via " + label
 	}
 
@@ -327,19 +328,6 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 		return "Auto compaction finished; context unchanged.", true, true
 	default:
 		return "", false, false
-	}
-}
-
-func prettyCompactionStrategy(name string) string {
-	switch name {
-	case "tool_result_microcompact":
-		return "tool-result microcompact"
-	case "light_trim":
-		return "light trim"
-	case "full_summary":
-		return "full summary"
-	default:
-		return ""
 	}
 }
 

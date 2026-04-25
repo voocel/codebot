@@ -1,4 +1,4 @@
-package ui
+package commands
 
 import (
 	"fmt"
@@ -6,40 +6,46 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// ResumeCommand implements InteractiveCommand for /resume.
-// Opens an interactive overlay to select and switch sessions.
+// ResumeCommand drives /resume — an interactive overlay listing recent
+// sessions and switching to the chosen one.
 type ResumeCommand struct {
-	app   *App
+	session   *agent.Session
+	registry  Registry
+	resetPlan func()
+
 	state *resumeSelectState
 }
 
 type resumeSelectState struct {
 	sessions []storage.SessionInfo
 	cursor   int
-	current  string // current session ID
+	current  string
 }
 
-func NewResumeCommand(app *App) *ResumeCommand {
-	return &ResumeCommand{app: app}
+// Resume constructs the /resume command. resetPlan tears down any active
+// plan-mode UI when switching sessions, mirroring /clear and /new.
+func Resume(session *agent.Session, registry Registry, resetPlan func()) *ResumeCommand {
+	return &ResumeCommand{session: session, registry: registry, resetPlan: resetPlan}
 }
 
-func (c *ResumeCommand) Spec() CommandSpec {
-	return CommandSpec{
+func (c *ResumeCommand) Spec() Spec {
+	return Spec{
 		Name:        "resume",
 		Usage:       "/resume",
 		Description: "Switch to another session",
 		Category:    "session",
 		NeedsIdle:   true,
-		Kind:        CommandKindBuiltin,
+		Kind:        KindBuiltin,
 	}
 }
 
-func (c *ResumeCommand) Run(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
-	sessions, err := ctx.App.Session.ListSessions()
+func (c *ResumeCommand) Run(_ Invocation) tea.Cmd {
+	sessions, err := c.session.ListSessions()
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to list sessions: " + err.Error()))
 	}
@@ -48,11 +54,10 @@ func (c *ResumeCommand) Run(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 	}
 
 	var currentID string
-	if info, err := ctx.App.Session.CurrentSessionInfo(); err == nil {
+	if info, err := c.session.CurrentSessionInfo(); err == nil {
 		currentID = info.ID
 	}
 
-	// Position cursor on current session.
 	cursor := 0
 	for i, s := range sessions {
 		if s.ID == currentID {
@@ -66,7 +71,7 @@ func (c *ResumeCommand) Run(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
 		cursor:   cursor,
 		current:  currentID,
 	}
-	ctx.App.registry.SetOverlay(c)
+	c.registry.SetOverlay(c)
 	return nil
 }
 
@@ -94,29 +99,28 @@ func (c *ResumeCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 	case "enter":
 		selected := s.sessions[s.cursor]
-		c.app.registry.ClearOverlay()
+		c.registry.ClearOverlay()
 
 		if selected.ID == s.current {
 			return true, tui.SendCommandResult(tui.CommandStyle.Render("Already in this session."))
 		}
-
-		if c.app.Session.IsRunning() {
+		if c.session.IsRunning() {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Agent is running; press Esc to abort first."))
 		}
-
-		if err := c.app.Session.SwitchSession(selected.ID); err != nil {
+		if err := c.session.SwitchSession(selected.ID); err != nil {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch session: " + err.Error()))
 		}
-		c.app.resetPlanState()
+		if c.resetPlan != nil {
+			c.resetPlan()
+		}
 
-		// Return RestoreMsg directly as a cmd instead of relying on
-		// the SESessionSwitched event via p.Send (which deadlocks because
-		// p.Send blocks when called synchronously inside bubbletea's Update).
-		msgs := c.app.Session.Messages()
+		// Send RestoreMsg directly because p.Send deadlocks when called
+		// synchronously inside bubbletea's Update loop.
+		msgs := c.session.Messages()
 		return true, func() tea.Msg { return tui.RestoreMsg{Msgs: msgs} }
 
 	case "esc", "ctrl+c":
-		c.app.registry.ClearOverlay()
+		c.registry.ClearOverlay()
 		return true, nil
 	}
 

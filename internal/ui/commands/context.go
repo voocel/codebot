@@ -1,4 +1,4 @@
-package ui
+package commands
 
 import (
 	"fmt"
@@ -10,10 +10,12 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// ContextCommand implements InteractiveCommand for /context.
-// Opens a modal overlay with tabbed sections (usage / composition / suggestions).
+// ContextCommand drives /context — a tabbed modal overlay reporting current
+// context window usage, message composition, and runtime suggestions.
 type ContextCommand struct {
-	app   *App
+	session  *agent.Session
+	registry Registry
+
 	state *contextState
 }
 
@@ -32,35 +34,36 @@ type contextState struct {
 
 var contextTabs = []string{"usage", "composition", "suggestions"}
 
-func NewContextCommand(app *App) *ContextCommand {
-	return &ContextCommand{app: app}
+// Context constructs the /context command.
+func Context(session *agent.Session, registry Registry) *ContextCommand {
+	return &ContextCommand{session: session, registry: registry}
 }
 
-func (c *ContextCommand) Spec() CommandSpec {
-	return CommandSpec{
+func (c *ContextCommand) Spec() Spec {
+	return Spec{
 		Name:        "context",
 		Usage:       "/context",
 		Description: "Show current context snapshot",
 		Category:    "info",
-		Kind:        CommandKindBuiltin,
+		Kind:        KindBuiltin,
 	}
 }
 
-func (c *ContextCommand) Run(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
-	snapshot, ok := ctx.App.Session.ContextSnapshot()
-	lastCompaction, hasCompaction := ctx.App.Session.LastCompaction()
+func (c *ContextCommand) Run(_ Invocation) tea.Cmd {
+	snapshot, ok := c.session.ContextSnapshot()
+	lastCompaction, hasCompaction := c.session.LastCompaction()
 	c.state = &contextState{
 		active:         0,
 		snapshot:       snapshot,
 		snapshotOK:     ok,
-		contextUsage:   ctx.App.Session.ContextUsage(),
-		breakdown:      ctx.App.Session.ContextBreakdown(),
-		suggestions:    ctx.App.Session.ContextSuggestions(),
-		metrics:        ctx.App.Session.RuntimeMetrics(),
+		contextUsage:   c.session.ContextUsage(),
+		breakdown:      c.session.ContextBreakdown(),
+		suggestions:    c.session.ContextSuggestions(),
+		metrics:        c.session.RuntimeMetrics(),
 		lastCompaction: lastCompaction,
 		hasCompaction:  hasCompaction,
 	}
-	ctx.App.registry.SetOverlay(c)
+	c.registry.SetOverlay(c)
 	return nil
 }
 
@@ -86,7 +89,7 @@ func (c *ContextCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "esc", "ctrl+c", "q":
-		c.app.registry.ClearOverlay()
+		c.registry.ClearOverlay()
 		return true, nil
 	}
 	return true, nil
@@ -164,7 +167,7 @@ func (c *ContextCommand) renderComposition() string {
 	p := tui.NewInfoPanel("")
 
 	if s.snapshotOK && s.snapshot != nil {
-		p.Row("Scope", formatContextScope(s.snapshot.Scope))
+		p.Row("Scope", FormatContextScope(s.snapshot.Scope))
 		if s.snapshot.TranscriptMessages != s.snapshot.ActiveMessages {
 			p.Row("Messages", fmt.Sprintf("%d active / %d transcript",
 				s.snapshot.ActiveMessages, s.snapshot.TranscriptMessages))
@@ -176,13 +179,13 @@ func (c *ContextCommand) renderComposition() string {
 		p.Row("Trimmed blocks", fmt.Sprintf("%d", s.snapshot.TrimmedTextBlocks))
 
 		p.Section("Last rewrite")
-		strategy := prettyCompactionStrategy(s.snapshot.LastStrategy)
+		strategy := PrettyCompactionStrategy(s.snapshot.LastStrategy)
 		if strategy == "" {
 			strategy = "(none)"
 		}
 		p.Hint("Strategy", strategy)
-		p.Row("Changed", formatBool(s.snapshot.LastChanged))
-		p.Hint("Details", formatContextRewriteDetails(s.snapshot))
+		p.Row("Changed", FormatBool(s.snapshot.LastChanged))
+		p.Hint("Details", FormatContextRewriteDetails(s.snapshot))
 	} else {
 		p.Hint("Snapshot", "(unavailable)")
 	}
@@ -191,8 +194,8 @@ func (c *ContextCommand) renderComposition() string {
 	p.Row("Total", fmt.Sprintf("%d", s.metrics.CompactionTotal))
 	p.Row("Changed", fmt.Sprintf("%d", s.metrics.CompactionChanged))
 	p.Row("Saved", tui.FormatTokens(s.metrics.CompactionSaved))
-	p.Hint("By kind", formatCompactionCounts(s.metrics.CompactionByKind))
-	p.Hint("Last", formatLastCompaction(s.lastCompaction, s.hasCompaction))
+	p.Hint("By kind", FormatCompactionCounts(s.metrics.CompactionByKind))
+	p.Hint("Last", FormatLastCompaction(s.lastCompaction, s.hasCompaction))
 
 	return p.Render()
 }

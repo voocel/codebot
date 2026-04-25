@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/apperr"
@@ -17,6 +18,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
+	"github.com/voocel/codebot/internal/ui/commands"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -70,7 +72,7 @@ func (t *uiExecTool) Execute(ctx context.Context, args json.RawMessage) (json.Ra
 func TestValidateCommandRequiresIdleWhenRunning(t *testing.T) {
 	t.Parallel()
 
-	spec := CommandSpec{
+	spec := commands.Spec{
 		Category:  "info",
 		NeedsIdle: true,
 	}
@@ -82,7 +84,7 @@ func TestValidateCommandRequiresIdleWhenRunning(t *testing.T) {
 func TestValidateCommandAllowsInfoCommandWhenRunning(t *testing.T) {
 	t.Parallel()
 
-	spec := CommandSpec{
+	spec := commands.Spec{
 		Category:  "info",
 		NeedsIdle: false,
 	}
@@ -100,7 +102,7 @@ func TestValidateCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	}
 	engine.SetPlanMode(true)
 
-	spec := CommandSpec{
+	spec := commands.Spec{
 		Name:      "new",
 		Category:  "session",
 		NeedsIdle: false,
@@ -110,21 +112,23 @@ func TestValidateCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 	}
 }
 
-func TestValidatePluginMutationRequiresIdle(t *testing.T) {
-	t.Parallel()
-
-	if err := validatePluginMutation(true); err == nil {
-		t.Fatal("expected running agent mutation to be denied")
-	}
-	if err := validatePluginMutation(false); err != nil {
-		t.Fatalf("expected idle mutation to pass: %v", err)
-	}
+// runPlugins drives the /plugins command via its subpackage constructor so
+// tests can exercise the full handler against a stub App.
+func runPlugins(app *App, args []string) tea.Msg {
+	cmd := commands.Plugins(commands.PluginsDeps{
+		Catalog:        app.PluginCatalog,
+		Session:        app.Session,
+		Cwd:            app.Cwd,
+		ReloadState:    func() error { return nil },
+		RefreshRuntime: func() (commands.MCPReloadResult, error) { return commands.MCPReloadResult{}, nil },
+	})
+	return cmd.Run(commands.Invocation{Name: "plugins", Args: args})()
 }
 
 func TestParseCommandInvocationRespectsQuotes(t *testing.T) {
 	t.Parallel()
 
-	inv, ok := parseCommandInvocation(`/commit "feat scope" --amend`)
+	inv, ok := commands.ParseInvocation(`/commit "feat scope" --amend`)
 	if !ok {
 		t.Fatal("expected command to parse")
 	}
@@ -137,6 +141,35 @@ func TestParseCommandInvocationRespectsQuotes(t *testing.T) {
 	want := []string{"feat scope", "--amend"}
 	if !slices.Equal(inv.Args, want) {
 		t.Fatalf("unexpected args: %v", inv.Args)
+	}
+}
+
+// Regression: builtin overlay commands (Btw/Help/Context/...) capture
+// a.registry at construction time. rebuildRegistry must keep that pointer
+// stable across rebuilds, otherwise overlay-installing commands run on a
+// stale or nil registry and either NPE or render to a detached overlay.
+func TestRebuildRegistryKeepsRegistryPointerStable(t *testing.T) {
+	t.Parallel()
+
+	app := &App{}
+	app.rebuildRegistry()
+
+	first := app.registry
+	helpCmd, ok := app.registry.Lookup("help")
+	if !ok {
+		t.Fatal("expected help command after first rebuild")
+	}
+	helpCmd.Run(commands.Invocation{Name: "help"})
+	if app.registry.Overlay() == nil {
+		t.Fatal("expected /help to install overlay on app.registry")
+	}
+
+	app.rebuildRegistry()
+	if app.registry != first {
+		t.Fatal("rebuildRegistry must reuse the existing registry pointer")
+	}
+	if app.registry.Overlay() == nil {
+		t.Fatal("rebuildRegistry must preserve the active overlay")
 	}
 }
 
@@ -196,8 +229,8 @@ func TestRegistryPreservesCanonicalNameOverConflictingAlias(t *testing.T) {
 	t.Parallel()
 
 	reg := NewRegistry()
-	custom := NewSimple(CommandSpec{Name: "q", Kind: CommandKindCustom}, nil)
-	builtin := NewSimple(CommandSpec{Name: "exit", Aliases: []string{"q"}, Kind: CommandKindBuiltin}, nil)
+	custom := commands.NewSimple(commands.Spec{Name: "q", Kind: commands.KindCustom}, nil)
+	builtin := commands.NewSimple(commands.Spec{Name: "exit", Aliases: []string{"q"}, Kind: commands.KindBuiltin}, nil)
 
 	reg.Register(custom)
 	reg.Register(builtin)
@@ -219,7 +252,7 @@ func TestCmdPluginsShowsLoadedPlugins(t *testing.T) {
 	app := &App{
 		PluginCatalog: &plugin.Catalog{},
 	}
-	if msg := app.cmdPlugins(nil)(); msg == nil {
+	if msg := runPlugins(app, nil); msg == nil {
 		t.Fatal("expected plugin command to return a message")
 	}
 }
@@ -243,7 +276,7 @@ func TestCmdPluginsDisableWritesStateAndReloadsCatalog(t *testing.T) {
 	}
 	app := &App{Cwd: cwd, PluginCatalog: catalog}
 
-	if msg := app.cmdPlugins([]string{"disable", "docs"})(); msg == nil {
+	if msg := runPlugins(app, []string{"disable", "docs"}); msg == nil {
 		t.Fatal("expected command result")
 	}
 
@@ -284,7 +317,7 @@ func TestCmdPluginsTrustWritesStateAndReloadsCatalog(t *testing.T) {
 	}
 	app := &App{Cwd: cwd, PluginCatalog: catalog}
 
-	if msg := app.cmdPlugins([]string{"trust", "ops", "untrusted"})(); msg == nil {
+	if msg := runPlugins(app, []string{"trust", "ops", "untrusted"}); msg == nil {
 		t.Fatal("expected command result")
 	}
 
@@ -312,7 +345,7 @@ func TestCmdPluginsShowRejectsUnknownPlugin(t *testing.T) {
 	app := &App{
 		PluginCatalog: &plugin.Catalog{},
 	}
-	if msg := app.cmdPlugins([]string{"show", "missing"})(); msg == nil {
+	if msg := runPlugins(app, []string{"show", "missing"}); msg == nil {
 		t.Fatal("expected command result")
 	}
 }
@@ -321,7 +354,7 @@ func TestCmdPluginsCreateScaffoldsProjectPlugin(t *testing.T) {
 	cwd := t.TempDir()
 	app := &App{Cwd: cwd, PluginCatalog: &plugin.Catalog{}}
 
-	msg := app.cmdPlugins([]string{"create", "review-helper"})()
+	msg := runPlugins(app, []string{"create", "review-helper"})
 	if msg == nil {
 		t.Fatal("expected command result")
 	}
@@ -334,7 +367,7 @@ func TestCmdPluginsCreateRejectsBadScope(t *testing.T) {
 	t.Parallel()
 
 	app := &App{Cwd: t.TempDir(), PluginCatalog: &plugin.Catalog{}}
-	if msg := app.cmdPlugins([]string{"create", "review-helper", "team"})(); msg == nil {
+	if msg := runPlugins(app, []string{"create", "review-helper", "team"}); msg == nil {
 		t.Fatal("expected command result")
 	}
 }
@@ -353,7 +386,7 @@ func TestCmdPluginsValidatePath(t *testing.T) {
 	}
 
 	app := &App{Cwd: cwd, PluginCatalog: &plugin.Catalog{}}
-	if msg := app.cmdPlugins([]string{"validate", root})(); msg == nil {
+	if msg := runPlugins(app, []string{"validate", root}); msg == nil {
 		t.Fatal("expected command result")
 	}
 }
@@ -369,7 +402,7 @@ func TestCmdPluginsInstallCopiesPluginIntoProjectScope(t *testing.T) {
 	}
 
 	app := &App{Cwd: cwd, PluginCatalog: &plugin.Catalog{}}
-	if msg := app.cmdPlugins([]string{"install", src})(); msg == nil {
+	if msg := runPlugins(app, []string{"install", src}); msg == nil {
 		t.Fatal("expected command result")
 	}
 	if _, err := os.Stat(filepath.Join(cwd, ".codebot", "plugins", "ops-kit", "plugin.json")); err != nil {
@@ -395,7 +428,7 @@ func TestCmdPluginsRemoveDeletesPlugin(t *testing.T) {
 	}
 	app := &App{Cwd: cwd, PluginCatalog: catalog}
 
-	if msg := app.cmdPlugins([]string{"remove", "docs"})(); msg == nil {
+	if msg := runPlugins(app, []string{"remove", "docs"}); msg == nil {
 		t.Fatal("expected command result")
 	}
 	if _, err := os.Stat(pluginRoot); !os.IsNotExist(err) {
@@ -409,7 +442,7 @@ func TestCmdPluginsListSubcommand(t *testing.T) {
 	app := &App{
 		PluginCatalog: &plugin.Catalog{},
 	}
-	if msg := app.cmdPlugins([]string{"list"})(); msg == nil {
+	if msg := runPlugins(app, []string{"list"}); msg == nil {
 		t.Fatal("expected command result")
 	}
 }
@@ -418,8 +451,8 @@ func TestRegistryReassignsAliasAndHidesOldOwnerAlias(t *testing.T) {
 	t.Parallel()
 
 	reg := NewRegistry()
-	first := NewSimple(CommandSpec{Name: "deploy", Aliases: []string{"ship"}, Kind: CommandKindCustom}, nil)
-	second := NewSimple(CommandSpec{Name: "release", Aliases: []string{"ship"}, Kind: CommandKindCustom}, nil)
+	first := commands.NewSimple(commands.Spec{Name: "deploy", Aliases: []string{"ship"}, Kind: commands.KindCustom}, nil)
+	second := commands.NewSimple(commands.Spec{Name: "release", Aliases: []string{"ship"}, Kind: commands.KindCustom}, nil)
 
 	reg.Register(first)
 	reg.Register(second)
@@ -470,7 +503,7 @@ func TestCommandPaletteMatchesAliasAndDescription(t *testing.T) {
 func TestCommandPaletteAutoExecuteDependsOnUsage(t *testing.T) {
 	t.Parallel()
 
-	noArgs, _, _ := buildCommandPaletteItem(CommandSpec{
+	noArgs, _, _ := buildCommandPaletteItem(commands.Spec{
 		Name:  "help",
 		Usage: "/help",
 	}, "")
@@ -478,7 +511,7 @@ func TestCommandPaletteAutoExecuteDependsOnUsage(t *testing.T) {
 		t.Fatal("expected no-arg command to auto execute")
 	}
 
-	withArgs, _, _ := buildCommandPaletteItem(CommandSpec{
+	withArgs, _, _ := buildCommandPaletteItem(commands.Spec{
 		Name:  "model",
 		Usage: "/model [name]",
 	}, "")
@@ -530,7 +563,7 @@ func TestSkillCommandRunsForkedSkillDirectlyForUserInvocation(t *testing.T) {
 		}),
 	}
 
-	cmd := (&SkillCommand{skill: skill.Spec{Name: "deep-review"}}).Run(&CommandContext{App: app}, CommandInvocation{
+	cmd := (&skillCommand{app: app, skill: skill.Spec{Name: "deep-review"}}).Run(commands.Invocation{
 		Name:    "deep-review",
 		RawArgs: "audit auth flow",
 	})
@@ -579,7 +612,7 @@ func TestSkillCommandRunsInlineSkillThroughUnifiedExecutor(t *testing.T) {
 		}),
 	}
 
-	cmd := (&SkillCommand{skill: skill.Spec{Name: "review"}}).Run(&CommandContext{App: app}, CommandInvocation{
+	cmd := (&skillCommand{app: app, skill: skill.Spec{Name: "review"}}).Run(commands.Invocation{
 		Name:    "review",
 		RawArgs: "auth flow",
 	})
@@ -671,7 +704,7 @@ func TestFormatRetryEventIgnoresOtherEvents(t *testing.T) {
 func TestFormatRecentToolCalls(t *testing.T) {
 	t.Parallel()
 
-	lines := formatRecentToolCalls([]agent.ToolCallSnapshot{
+	lines := commands.FormatRecentToolCalls([]agent.ToolCallSnapshot{
 		{
 			Tool:      "read",
 			ArgsHash:  "abc12345",
@@ -704,7 +737,7 @@ func TestFormatRecentToolCalls(t *testing.T) {
 func TestFormatErrorCounts(t *testing.T) {
 	t.Parallel()
 
-	text := formatErrorCounts(map[apperr.Kind]int{
+	text := commands.FormatErrorCounts(map[apperr.Kind]int{
 		apperr.KindCanceled: 2,
 		apperr.KindProvider: 1,
 		apperr.KindUnknown:  3,
@@ -720,7 +753,7 @@ func TestFormatErrorCounts(t *testing.T) {
 func TestFormatRecentErrors(t *testing.T) {
 	t.Parallel()
 
-	lines := formatRecentErrors([]agent.ErrorSnapshot{
+	lines := commands.FormatRecentErrors([]agent.ErrorSnapshot{
 		{
 			Kind:      apperr.KindProvider,
 			Message:   "provider unavailable",
@@ -752,7 +785,7 @@ func TestFormatRecentErrors(t *testing.T) {
 func TestFormatLastReminder(t *testing.T) {
 	t.Parallel()
 
-	text := formatLastReminder(agent.ReminderSnapshot{
+	text := commands.FormatLastReminder(agent.ReminderSnapshot{
 		Kind:      agent.ReminderRepeatToolCall,
 		Mode:      "steer",
 		Timestamp: time.Date(2026, 3, 27, 15, 4, 7, 0, time.Local),
@@ -764,7 +797,7 @@ func TestFormatLastReminder(t *testing.T) {
 		}
 	}
 
-	if got := formatLastReminder(agent.ReminderSnapshot{}, false); got != "(none)" {
+	if got := commands.FormatLastReminder(agent.ReminderSnapshot{}, false); got != "(none)" {
 		t.Fatalf("expected empty reminder placeholder, got %q", got)
 	}
 }
@@ -772,7 +805,7 @@ func TestFormatLastReminder(t *testing.T) {
 func TestFormatLastCompaction(t *testing.T) {
 	t.Parallel()
 
-	changed := formatLastCompaction(agent.CompactionSnapshot{
+	changed := commands.FormatLastCompaction(agent.CompactionSnapshot{
 		Kind:           agent.CompactionKindTrim,
 		Strategy:       "light_trim",
 		Reason:         "threshold",
@@ -790,7 +823,7 @@ func TestFormatLastCompaction(t *testing.T) {
 		}
 	}
 
-	noop := formatLastCompaction(agent.CompactionSnapshot{
+	noop := commands.FormatLastCompaction(agent.CompactionSnapshot{
 		Kind:      agent.CompactionKindMicro,
 		Reason:    "threshold",
 		Changed:   false,
@@ -802,7 +835,7 @@ func TestFormatLastCompaction(t *testing.T) {
 		}
 	}
 
-	if got := formatLastCompaction(agent.CompactionSnapshot{}, false); got != "(none)" {
+	if got := commands.FormatLastCompaction(agent.CompactionSnapshot{}, false); got != "(none)" {
 		t.Fatalf("expected empty compaction placeholder, got %q", got)
 	}
 }
@@ -810,7 +843,7 @@ func TestFormatLastCompaction(t *testing.T) {
 func TestFormatRunSummary(t *testing.T) {
 	t.Parallel()
 
-	text := formatRunSummary(agentcore.RunSummary{
+	text := commands.FormatRunSummary(agentcore.RunSummary{
 		TurnCount:  3,
 		ToolCalls:  5,
 		ToolErrors: 1,
@@ -822,7 +855,7 @@ func TestFormatRunSummary(t *testing.T) {
 		}
 	}
 
-	if got := formatRunSummary(agentcore.RunSummary{}, false); got != "(none)" {
+	if got := commands.FormatRunSummary(agentcore.RunSummary{}, false); got != "(none)" {
 		t.Fatalf("expected empty run summary placeholder, got %q", got)
 	}
 }
@@ -830,25 +863,25 @@ func TestFormatRunSummary(t *testing.T) {
 func TestFormatReminderCounts(t *testing.T) {
 	t.Parallel()
 
-	got := formatReminderCounts(map[agent.RuntimeReminderKind]int{
+	got := commands.FormatReminderCounts(map[agent.RuntimeReminderKind]int{
 		agent.ReminderRepeatToolCall:     1,
 		agent.ReminderPostStopValidation: 2,
 	})
 	want := "repeat_tool_call=1, post_stop_validation=2"
 	if got != want {
-		t.Fatalf("formatReminderCounts() = %q, want %q", got, want)
+		t.Fatalf("commands.FormatReminderCounts() = %q, want %q", got, want)
 	}
 }
 
 func TestFormatCompactionSavings(t *testing.T) {
 	t.Parallel()
 
-	got := formatCompactionSavings(map[agent.CompactionKind]int{
+	got := commands.FormatCompactionSavings(map[agent.CompactionKind]int{
 		agent.CompactionKindTrim: 1200,
 		agent.CompactionKindFull: 32000,
 	})
 	want := "trim=1.2k, full=32k"
 	if got != want {
-		t.Fatalf("formatCompactionSavings() = %q, want %q", got, want)
+		t.Fatalf("commands.FormatCompactionSavings() = %q, want %q", got, want)
 	}
 }

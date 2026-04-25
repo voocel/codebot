@@ -1,4 +1,4 @@
-package ui
+package commands
 
 import (
 	"fmt"
@@ -10,10 +10,11 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// HelpCommand implements InteractiveCommand for /help.
-// Opens a modal overlay with tabbed sections (general / built-in / custom / skills).
+// HelpCommand drives /help — a tabbed modal overlay listing general intro,
+// built-in commands, custom (file/plugin) commands, and skills.
 type HelpCommand struct {
-	app   *App
+	registry Registry
+
 	state *helpState
 }
 
@@ -23,23 +24,25 @@ type helpState struct {
 
 var helpTabs = []string{"general", "built-in", "custom", "skills"}
 
-func NewHelpCommand(app *App) *HelpCommand {
-	return &HelpCommand{app: app}
+// Help constructs the /help command. The registry is consumed both for
+// listing peer commands and for installing the modal overlay.
+func Help(registry Registry) *HelpCommand {
+	return &HelpCommand{registry: registry}
 }
 
-func (c *HelpCommand) Spec() CommandSpec {
-	return CommandSpec{
+func (c *HelpCommand) Spec() Spec {
+	return Spec{
 		Name:        "help",
 		Usage:       "/help",
 		Description: "Show this help",
 		Category:    "info",
-		Kind:        CommandKindBuiltin,
+		Kind:        KindBuiltin,
 	}
 }
 
-func (c *HelpCommand) Run(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
+func (c *HelpCommand) Run(_ Invocation) tea.Cmd {
 	c.state = &helpState{active: 0}
-	ctx.App.registry.SetOverlay(c)
+	c.registry.SetOverlay(c)
 	return nil
 }
 
@@ -65,7 +68,7 @@ func (c *HelpCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "esc", "ctrl+c", "q":
-		c.app.registry.ClearOverlay()
+		c.registry.ClearOverlay()
 		return true, nil
 	}
 	return true, nil
@@ -129,24 +132,24 @@ func (c *HelpCommand) renderGeneral() string {
 }
 
 func (c *HelpCommand) renderBuiltin() string {
-	return c.renderCommandGroup(CommandKindBuiltin,
+	return c.renderCommandGroup(KindBuiltin,
 		"No built-in commands registered.")
 }
 
 func (c *HelpCommand) renderCustom() string {
-	return c.renderCommandGroup(CommandKindCustom,
+	return c.renderCommandGroup(KindCustom,
 		"No custom commands. Add Markdown files under .codebot/commands/ to register slash commands.")
 }
 
 func (c *HelpCommand) renderSkills() string {
-	return c.renderCommandGroup(CommandKindSkill,
+	return c.renderCommandGroup(KindSkill,
 		"No skills loaded. Drop skill bundles into .codebot/skills/ or install via /plugins install.")
 }
 
-func (c *HelpCommand) renderCommandGroup(kind CommandKind, emptyMsg string) string {
+func (c *HelpCommand) renderCommandGroup(kind Kind, emptyMsg string) string {
 	var cmds []Command
-	for _, cmd := range c.app.registry.All() {
-		spec := c.app.registry.EffectiveSpec(cmd)
+	for _, cmd := range c.registry.All() {
+		spec := c.registry.EffectiveSpec(cmd)
 		if spec.Hidden || spec.Kind != kind {
 			continue
 		}
@@ -166,7 +169,7 @@ func (c *HelpCommand) renderCommandGroup(kind CommandKind, emptyMsg string) stri
 
 	var sb strings.Builder
 	for _, cmd := range cmds {
-		spec := c.app.registry.EffectiveSpec(cmd)
+		spec := c.registry.EffectiveSpec(cmd)
 
 		usage := spec.Usage
 		if usage == "" {

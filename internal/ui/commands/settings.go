@@ -1,4 +1,4 @@
-package ui
+package commands
 
 import (
 	"fmt"
@@ -6,15 +6,20 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// SettingsCommand implements InteractiveCommand for /settings.
-// Opens a modal overlay with tabbed sections (general / runtime / providers).
+// SettingsCommand drives /settings — a tabbed modal overlay reporting the
+// current general / runtime / providers configuration.
 type SettingsCommand struct {
-	app   *App
+	session  *agent.Session
+	registry Registry
+	approval *approval.Engine
+	cwd      string
+
 	state *settingsState
 }
 
@@ -24,23 +29,29 @@ type settingsState struct {
 
 var settingsTabs = []string{"general", "runtime", "providers"}
 
-func NewSettingsCommand(app *App) *SettingsCommand {
-	return &SettingsCommand{app: app}
+// Settings constructs the /settings command.
+func Settings(session *agent.Session, registry Registry, approvalEngine *approval.Engine, cwd string) *SettingsCommand {
+	return &SettingsCommand{
+		session:  session,
+		registry: registry,
+		approval: approvalEngine,
+		cwd:      cwd,
+	}
 }
 
-func (c *SettingsCommand) Spec() CommandSpec {
-	return CommandSpec{
+func (c *SettingsCommand) Spec() Spec {
+	return Spec{
 		Name:        "settings",
 		Usage:       "/settings",
 		Description: "Show current settings",
 		Category:    "info",
-		Kind:        CommandKindBuiltin,
+		Kind:        KindBuiltin,
 	}
 }
 
-func (c *SettingsCommand) Run(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
+func (c *SettingsCommand) Run(_ Invocation) tea.Cmd {
 	c.state = &settingsState{active: 0}
-	ctx.App.registry.SetOverlay(c)
+	c.registry.SetOverlay(c)
 	return nil
 }
 
@@ -66,7 +77,7 @@ func (c *SettingsCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "esc", "ctrl+c", "q":
-		c.app.registry.ClearOverlay()
+		c.registry.ClearOverlay()
 		return true, nil
 	}
 	return true, nil
@@ -91,33 +102,33 @@ func (c *SettingsCommand) View(width int) string {
 }
 
 func (c *SettingsCommand) renderGeneral() string {
-	s := c.app.Session.Settings()
-	baseURL := c.app.Session.BaseURL()
+	s := c.session.Settings()
+	baseURL := c.session.BaseURL()
 	if baseURL == "" {
 		baseURL = "(default)"
 	}
 	p := tui.NewInfoPanel("")
 	p.Row("Provider", s.Provider)
-	p.Row("Model", c.app.Session.ModelName())
-	p.Row("API Key", maskKey(c.app.Session.APIKey()))
+	p.Row("Model", c.session.ModelName())
+	p.Row("API Key", maskAPIKey(c.session.APIKey()))
 	p.Row("Base URL", baseURL)
-	p.Hint("Config", config.SettingsPath(c.app.Cwd))
+	p.Hint("Config", config.SettingsPath(c.cwd))
 	return p.Render()
 }
 
 func (c *SettingsCommand) renderRuntime() string {
-	s := c.app.Session.Settings()
+	s := c.session.Settings()
 	thinking := s.ThinkingLevel
 	if thinking == "" {
 		thinking = "(unset)"
 	}
 
 	mode := "(unset)"
-	if c.app.ApprovalEngine != nil {
-		if c.app.ApprovalEngine.PlanMode() {
+	if c.approval != nil {
+		if c.approval.PlanMode() {
 			mode = "plan"
 		} else {
-			mode = formatApprovalMode(c.app.ApprovalEngine.Mode())
+			mode = formatApprovalMode(c.approval.Mode())
 		}
 	}
 
@@ -132,14 +143,14 @@ func (c *SettingsCommand) renderRuntime() string {
 	}
 	p.Row("Max Turns", fmt.Sprintf("%d", s.MaxTurns))
 	p.Row("Mode", mode)
-	if s.SmallModel != "" && s.SmallModel != c.app.Session.ModelName() {
+	if s.SmallModel != "" && s.SmallModel != c.session.ModelName() {
 		p.Hint("SubAgent", s.SmallModel)
 	}
 	return p.Render()
 }
 
 func (c *SettingsCommand) renderProviders() string {
-	s := c.app.Session.Settings()
+	s := c.session.Settings()
 	if len(s.Providers) == 0 {
 		return tui.MutedStyle.Render("  No providers configured.")
 	}
@@ -165,6 +176,13 @@ func (c *SettingsCommand) renderProviders() string {
 		p.Row(marker+n, strings.Join(parts, " · "))
 	}
 	return p.Render()
+}
+
+func maskAPIKey(key string) string {
+	if len(key) <= 8 {
+		return "****"
+	}
+	return key[:4] + "..." + key[len(key)-4:]
 }
 
 func formatApprovalMode(m approval.Mode) string {

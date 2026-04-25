@@ -1,4 +1,4 @@
-package ui
+package commands
 
 import (
 	"bufio"
@@ -14,10 +14,12 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// TasksCommand implements InteractiveCommand for /tasks.
-// Shows background bash commands and agent tasks in a grouped overlay.
+// TasksCommand drives /tasks — an interactive overlay listing background
+// shells and forked sub-agents, with detail and stop controls.
 type TasksCommand struct {
-	app   *App
+	runtime  *agentcore.TaskRuntime
+	registry Registry
+
 	state *tasksState
 }
 
@@ -34,28 +36,29 @@ type tasksState struct {
 	view    tasksView
 }
 
-func NewTasksCommand(app *App) *TasksCommand {
-	return &TasksCommand{app: app}
+// Tasks constructs the /tasks command.
+func Tasks(runtime *agentcore.TaskRuntime, registry Registry) *TasksCommand {
+	return &TasksCommand{runtime: runtime, registry: registry}
 }
 
-func (c *TasksCommand) Spec() CommandSpec {
-	return CommandSpec{
+func (c *TasksCommand) Spec() Spec {
+	return Spec{
 		Name:        "tasks",
 		Usage:       "/tasks",
 		Description: "View and manage background tasks",
 		Category:    "info",
-		Kind:        CommandKindBuiltin,
+		Kind:        KindBuiltin,
 	}
 }
 
-func (c *TasksCommand) Run(ctx *CommandContext, _ CommandInvocation) tea.Cmd {
+func (c *TasksCommand) Run(_ Invocation) tea.Cmd {
 	entries := c.listTasks()
 	if len(entries) == 0 {
 		return tui.SendCommandResult(tui.MutedStyle.Render("No background tasks."))
 	}
 
 	c.state = &tasksState{entries: entries}
-	ctx.App.registry.SetOverlay(c)
+	c.registry.SetOverlay(c)
 	return nil
 }
 
@@ -89,13 +92,11 @@ func (c *TasksCommand) View(width int) string {
 
 func (c *TasksCommand) Dismiss() { c.state = nil }
 
-// --- Data collection ---
-
 func (c *TasksCommand) listTasks() []agentcore.BackgroundTaskEntry {
-	if c.app.TaskRuntime == nil {
+	if c.runtime == nil {
 		return nil
 	}
-	return c.app.TaskRuntime.List()
+	return c.runtime.List()
 }
 
 func (c *TasksCommand) refresh() {
@@ -104,7 +105,6 @@ func (c *TasksCommand) refresh() {
 		prevID = c.state.entries[c.state.cursor].ID
 	}
 	c.state.entries = c.listTasks()
-	// Restore cursor to the previously selected task by ID.
 	if prevID != "" {
 		for i, e := range c.state.entries {
 			if e.ID == prevID {
@@ -118,17 +118,14 @@ func (c *TasksCommand) refresh() {
 	}
 }
 
-// refreshEntry updates a single entry in-place with latest data from TaskRuntime.
 func (c *TasksCommand) refreshEntry(idx int) {
-	if idx >= len(c.state.entries) || c.app.TaskRuntime == nil {
+	if idx >= len(c.state.entries) || c.runtime == nil {
 		return
 	}
-	if latest := c.app.TaskRuntime.Get(c.state.entries[idx].ID); latest != nil {
+	if latest := c.runtime.Get(c.state.entries[idx].ID); latest != nil {
 		c.state.entries[idx] = *latest
 	}
 }
-
-// --- List key handling ---
 
 func (c *TasksCommand) handleListKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	s := c.state
@@ -148,9 +145,8 @@ func (c *TasksCommand) handleListKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 	case "enter":
 		if len(s.entries) > 0 {
-			c.refresh() // get latest data before entering detail
+			c.refresh()
 			s.view = tasksViewDetail
-			// Start live refresh if the selected task is running.
 			if s.cursor < len(s.entries) && s.entries[s.cursor].Status == agentcore.TaskRunning {
 				return true, tui.TasksTickCmd()
 			}
@@ -169,14 +165,14 @@ func (c *TasksCommand) handleListKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 
 	case "ctrl+f":
-		if c.app.TaskRuntime != nil {
-			c.app.TaskRuntime.StopAll()
+		if c.runtime != nil {
+			c.runtime.StopAll()
 		}
 		c.refresh()
 		return true, nil
 
 	case "esc", "ctrl+c":
-		c.app.registry.ClearOverlay()
+		c.registry.ClearOverlay()
 		return true, nil
 	}
 	return true, nil
@@ -202,12 +198,10 @@ func (c *TasksCommand) handleDetailKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 }
 
 func (c *TasksCommand) stopTask(id string) {
-	if c.app.TaskRuntime != nil {
-		c.app.TaskRuntime.Stop(id)
+	if c.runtime != nil {
+		c.runtime.Stop(id)
 	}
 }
-
-// --- List View ---
 
 func (c *TasksCommand) viewList(_ int) string {
 	s := c.state
@@ -217,7 +211,6 @@ func (c *TasksCommand) viewList(_ int) string {
 	inactiveStyle := tui.MutedStyle
 	groupStyle := lipgloss.NewStyle().Foreground(tui.Muted)
 
-	// Separate by type.
 	var shellEntries, agentEntries []int
 	var shellRunning, agentRunning int
 	for i := range s.entries {
@@ -255,7 +248,6 @@ func (c *TasksCommand) viewList(_ int) string {
 	}
 	sb.WriteString("\n")
 
-	// Shell group.
 	if len(shellEntries) > 0 {
 		sb.WriteString("\n")
 		sb.WriteString(groupStyle.Render(fmt.Sprintf("    Shells (%d)", len(shellEntries))))
@@ -265,7 +257,6 @@ func (c *TasksCommand) viewList(_ int) string {
 		}
 	}
 
-	// Agent group.
 	if len(agentEntries) > 0 {
 		sb.WriteString("\n")
 		sb.WriteString(groupStyle.Render(fmt.Sprintf("    Local agents (%d)", len(agentEntries))))
@@ -301,15 +292,12 @@ func (c *TasksCommand) renderListEntry(sb *strings.Builder, idx int, activeStyle
 	sb.WriteByte('\n')
 }
 
-// --- Detail View ---
-
 func (c *TasksCommand) viewDetail(width int) string {
 	s := c.state
 	if s.cursor >= len(s.entries) {
 		return ""
 	}
 
-	// Refresh entry data for live output during rendering.
 	c.refreshEntry(s.cursor)
 	e := s.entries[s.cursor]
 
@@ -337,7 +325,7 @@ func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width in
 	sb.WriteString("\n")
 
 	sb.WriteString(labelStyle.Render("  Runtime: "))
-	sb.WriteString(valueStyle.Render(formatDuration(e.StartedAt, e.EndedAt)))
+	sb.WriteString(valueStyle.Render(formatTaskDuration(e.StartedAt, e.EndedAt)))
 	sb.WriteString("\n")
 
 	sb.WriteString(labelStyle.Render("  Command: "))
@@ -397,7 +385,6 @@ func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width in
 
 	var sb strings.Builder
 
-	// Header: agent > description
 	header := e.Agent
 	if e.Description != "" {
 		header += " > " + e.Description
@@ -405,14 +392,12 @@ func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width in
 	sb.WriteString(titleStyle.Render("  " + header))
 	sb.WriteString("\n")
 
-	// Stats line.
-	runtime := formatDuration(e.StartedAt, e.EndedAt)
-	tokens := formatTokenCount(e.TokensIn + e.TokensOut)
+	runtime := formatTaskDuration(e.StartedAt, e.EndedAt)
+	tokens := formatTaskTokens(e.TokensIn + e.TokensOut)
 	stats := fmt.Sprintf("  %s · %s tokens · %d tools", runtime, tokens, e.ToolCount)
 	sb.WriteString(labelStyle.Render(stats))
 	sb.WriteString("\n\n")
 
-	// Prompt.
 	if e.Prompt != "" {
 		sb.WriteString(labelStyle.Render("  Prompt"))
 		sb.WriteString("\n")
@@ -423,7 +408,6 @@ func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width in
 		sb.WriteString("\n")
 	}
 
-	// Output.
 	if e.OutputFile != "" {
 		output := readLastAssistantFromJSONL(e.OutputFile)
 		if output != "" {
@@ -469,8 +453,6 @@ func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width in
 	return sb.String()
 }
 
-// --- Helpers ---
-
 func renderTaskStatus(status agentcore.TaskStatus) string {
 	switch status {
 	case agentcore.TaskRunning:
@@ -484,7 +466,7 @@ func renderTaskStatus(status agentcore.TaskStatus) string {
 	}
 }
 
-func formatDuration(start, end time.Time) string {
+func formatTaskDuration(start, end time.Time) string {
 	if end.IsZero() {
 		end = time.Now()
 	}
@@ -495,7 +477,7 @@ func formatDuration(start, end time.Time) string {
 	return fmt.Sprintf("%.1fm", d.Minutes())
 }
 
-func formatTokenCount(n int) string {
+func formatTaskTokens(n int) string {
 	if n >= 1000 {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
 	}
@@ -510,8 +492,8 @@ func truncateStr(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
-// readFileTail reads up to the last maxBytes of a file.
-// Sufficient for displaying the tail in the UI without OOM risk on large outputs.
+// readFileTail reads up to maxBytes from the end of the file, used to keep
+// large background-task output from blowing up the overlay render.
 func readFileTail(path string, maxBytes int64) string {
 	if path == "" {
 		return ""
@@ -539,8 +521,8 @@ func readFileTail(path string, maxBytes int64) string {
 	return string(data[:n])
 }
 
-// readLastAssistantFromJSONL reads a jsonl file (one agentcore.Message per line)
-// and returns the TextContent of the last assistant message.
+// readLastAssistantFromJSONL parses a jsonl transcript (one agentcore.Message
+// per line) and returns the text of the last assistant message.
 func readLastAssistantFromJSONL(path string) string {
 	f, err := os.Open(path)
 	if err != nil {

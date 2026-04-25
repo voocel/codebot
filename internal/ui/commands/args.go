@@ -1,4 +1,4 @@
-package ui
+package commands
 
 import (
 	"regexp"
@@ -91,10 +91,7 @@ func Expand(template string, args []string) string {
 			return strings.Join(args[idx:], " ")
 		}
 		length, _ := strconv.Atoi(sub[2])
-		end := idx + length
-		if end > len(args) {
-			end = len(args)
-		}
+		end := min(idx+length, len(args))
 		return strings.Join(args[idx:end], " ")
 	})
 
@@ -103,4 +100,32 @@ func Expand(template string, args []string) string {
 	result = strings.ReplaceAll(result, "$@", allArgs)
 
 	return result
+}
+
+// ParseInvocation parses a slash-command input like "/foo bar baz" into an Invocation.
+// Returns ok=false for non-command input (empty, no leading "/", or only "/").
+func ParseInvocation(input string) (Invocation, bool) {
+	input = strings.TrimSpace(input)
+	if input == "" || !strings.HasPrefix(input, "/") {
+		return Invocation{}, false
+	}
+
+	body := strings.TrimSpace(strings.TrimPrefix(input, "/"))
+	if body == "" {
+		return Invocation{}, false
+	}
+
+	name := body
+	rawArgs := ""
+	if idx := strings.IndexAny(body, " \t"); idx >= 0 {
+		name = body[:idx]
+		rawArgs = strings.TrimSpace(body[idx+1:])
+	}
+
+	return Invocation{
+		Input:   input,
+		Name:    strings.ToLower(name),
+		RawArgs: rawArgs,
+		Args:    ParseArgs(rawArgs),
+	}, true
 }

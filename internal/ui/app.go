@@ -19,6 +19,7 @@ import (
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/ui/commands"
 	"github.com/voocel/codebot/internal/ui/imageinput"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
@@ -415,8 +416,7 @@ func (a *App) onDrop(m *tui.Model, text string) tea.Cmd {
 
 // onBtwResult forwards BtwResultMsg to the active BtwCommand overlay.
 func (a *App) onBtwResult(msg tui.BtwResultMsg) {
-	ov := a.registry.Overlay()
-	if btw, ok := ov.(*BtwCommand); ok {
+	if btw, ok := a.registry.Overlay().(*commands.BtwCommand); ok {
 		btw.SetResult(msg)
 	}
 }

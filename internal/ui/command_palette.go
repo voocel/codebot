@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/voocel/codebot/internal/ui/commands"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -32,8 +33,8 @@ func (a *App) completions(prefix string) []tui.CompletionItem {
 		if matches[i].score != matches[j].score {
 			return matches[i].score > matches[j].score
 		}
-		kindI := commandKindOrder[CommandKind(matches[i].item.Kind)]
-		kindJ := commandKindOrder[CommandKind(matches[j].item.Kind)]
+		kindI := commandKindOrder[commands.Kind(matches[i].item.Kind)]
+		kindJ := commandKindOrder[commands.Kind(matches[j].item.Kind)]
 		if kindI != kindJ {
 			return kindI < kindJ
 		}
@@ -47,7 +48,7 @@ func (a *App) completions(prefix string) []tui.CompletionItem {
 	return items
 }
 
-func buildCommandPaletteItem(spec CommandSpec, query string) (tui.CompletionItem, int, bool) {
+func buildCommandPaletteItem(spec commands.Spec, query string) (tui.CompletionItem, int, bool) {
 	item := tui.CompletionItem{
 		Name:        spec.Name,
 		Description: spec.Description,
@@ -74,7 +75,7 @@ func buildCommandPaletteItem(spec CommandSpec, query string) (tui.CompletionItem
 	return item, score, ok
 }
 
-func scoreCommandPaletteItem(spec CommandSpec, query string) (int, bool) {
+func scoreCommandPaletteItem(spec commands.Spec, query string) (int, bool) {
 	if query == "" {
 		return 100, true
 	}
@@ -110,7 +111,7 @@ func scorePaletteField(field, query string, exact, prefix, contains int) int {
 	}
 }
 
-func commandPaletteAutoExecute(spec CommandSpec) bool {
+func commandPaletteAutoExecute(spec commands.Spec) bool {
 	usage := strings.TrimSpace(spec.Usage)
 	if usage == "" {
 		return true

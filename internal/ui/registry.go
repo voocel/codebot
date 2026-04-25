@@ -4,108 +4,51 @@ import (
 	"slices"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/codebot/internal/ui/commands"
 )
 
-type CommandKind string
-
-const (
-	CommandKindBuiltin CommandKind = "builtin"
-	CommandKindCustom  CommandKind = "custom"
-	CommandKindSkill   CommandKind = "skill"
-)
-
-var commandKindOrder = map[CommandKind]int{
-	CommandKindBuiltin: 0,
-	CommandKindCustom:  1,
-	CommandKindSkill:   2,
+var commandKindOrder = map[commands.Kind]int{
+	commands.KindBuiltin: 0,
+	commands.KindCustom:  1,
+	commands.KindSkill:   2,
 }
 
-// CommandInvocation is the parsed slash-command input passed to command handlers.
-type CommandInvocation struct {
-	Input   string
-	Name    string
-	RawArgs string
-	Args    []string
-}
-
-// Command is the unified abstraction for all slash commands.
-type Command interface {
-	Spec() CommandSpec
-	Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd
-}
-
-// InteractiveCommand extends Command with modal keyboard interception
-// and custom rendering. When Active() returns true the TUI routes all
-// keyboard events through HandleKey and replaces the input area with View.
-type InteractiveCommand interface {
-	Command
-	Active() bool
-	HandleKey(msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
-	View(width int) string
-	Dismiss()
-}
-
-// CommandLoader discovers a family of commands and contributes them to the registry.
-type CommandLoader interface {
-	Load(app *App) []Command
-}
-
-// CommandSpec describes command metadata.
-type CommandSpec struct {
-	Name        string
-	Aliases     []string
-	Usage       string
-	Description string
-	Category    string
-	NeedsIdle   bool
-	Hidden      bool
-	Kind        CommandKind
-	Source      string
-}
-
-// CommandContext provides runtime dependencies to commands.
-type CommandContext struct {
-	App *App
-}
-
-// SimpleCommand wraps a plain function as a Command.
-type SimpleCommand struct {
-	spec CommandSpec
-	run  func(ctx *CommandContext, inv CommandInvocation) tea.Cmd
-}
-
-// NewSimple creates a SimpleCommand.
-func NewSimple(spec CommandSpec, run func(*CommandContext, CommandInvocation) tea.Cmd) *SimpleCommand {
-	return &SimpleCommand{spec: spec, run: run}
-}
-
-func (c *SimpleCommand) Spec() CommandSpec { return c.spec }
-func (c *SimpleCommand) Run(ctx *CommandContext, inv CommandInvocation) tea.Cmd {
-	return c.run(ctx, inv)
-}
+// Compile-time assertion that *Registry satisfies commands.Registry. Without
+// this, a method-signature drift in the interface would only surface when a
+// command tries to call the missing method, far from the root cause.
+var _ commands.Registry = (*Registry)(nil)
 
 // Registry manages command registration, lookup by name/alias, and the
 // active interactive overlay.
 type Registry struct {
-	aliases       map[string]Command  // name + alias -> command
-	entries       map[string]Command  // canonical name -> command
-	ordered       []string            // canonical names, registration order
-	activeAliases map[string][]string // canonical name -> effective aliases
-	overlay       InteractiveCommand  // active interactive command (nil = none)
+	aliases       map[string]commands.Command  // name + alias -> command
+	entries       map[string]commands.Command  // canonical name -> command
+	ordered       []string                     // canonical names, registration order
+	activeAliases map[string][]string          // canonical name -> effective aliases
+	overlay       commands.InteractiveCommand  // active interactive command (nil = none)
 }
 
 // NewRegistry creates an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		aliases:       make(map[string]Command),
-		entries:       make(map[string]Command),
+		aliases:       make(map[string]commands.Command),
+		entries:       make(map[string]commands.Command),
 		activeAliases: make(map[string][]string),
 	}
 }
 
+// Reset clears all registered commands and aliases. The active overlay is
+// preserved because rebuilds (e.g. on /reload) should not dismiss an open
+// modal that the user is interacting with.
+func (r *Registry) Reset() {
+	r.aliases = make(map[string]commands.Command)
+	r.entries = make(map[string]commands.Command)
+	r.activeAliases = make(map[string][]string)
+	r.ordered = r.ordered[:0]
+}
+
 // Register adds or replaces a command and its aliases in the registry.
-func (r *Registry) Register(cmd Command) {
+func (r *Registry) Register(cmd commands.Command) {
 	spec := cmd.Spec()
 	canonical := strings.ToLower(spec.Name)
 
@@ -133,13 +76,13 @@ func (r *Registry) Register(cmd Command) {
 }
 
 // RegisterAll adds a batch of commands to the registry.
-func (r *Registry) RegisterAll(commands []Command) {
-	for _, cmd := range commands {
+func (r *Registry) RegisterAll(cmds []commands.Command) {
+	for _, cmd := range cmds {
 		r.Register(cmd)
 	}
 }
 
-func (r *Registry) unregister(cmd Command) {
+func (r *Registry) unregister(cmd commands.Command) {
 	canonical := strings.ToLower(cmd.Spec().Name)
 	delete(r.aliases, canonical)
 	for _, alias := range r.activeAliases[canonical] {
@@ -172,7 +115,7 @@ func removeAlias(aliases []string, target string) []string {
 }
 
 // EffectiveSpec returns the command metadata with only active aliases included.
-func (r *Registry) EffectiveSpec(cmd Command) CommandSpec {
+func (r *Registry) EffectiveSpec(cmd commands.Command) commands.Spec {
 	spec := cmd.Spec()
 	canonical := strings.ToLower(spec.Name)
 	spec.Aliases = append([]string(nil), r.activeAliases[canonical]...)
@@ -180,21 +123,21 @@ func (r *Registry) EffectiveSpec(cmd Command) CommandSpec {
 }
 
 // Lookup finds a command by name or alias (case-insensitive).
-func (r *Registry) Lookup(name string) (Command, bool) {
+func (r *Registry) Lookup(name string) (commands.Command, bool) {
 	cmd, ok := r.aliases[strings.ToLower(name)]
 	return cmd, ok
 }
 
 // All returns all registered commands sorted by kind and then by name.
-func (r *Registry) All() []Command {
-	commands := make([]Command, 0, len(r.entries))
+func (r *Registry) All() []commands.Command {
+	cmds := make([]commands.Command, 0, len(r.entries))
 	for _, canonical := range r.ordered {
 		if cmd, ok := r.entries[canonical]; ok {
-			commands = append(commands, cmd)
+			cmds = append(cmds, cmd)
 		}
 	}
 
-	slices.SortFunc(commands, func(a, b Command) int {
+	slices.SortFunc(cmds, func(a, b commands.Command) int {
 		specA := a.Spec()
 		specB := b.Spec()
 		if rank := compareCommandKinds(specA.Kind, specB.Kind); rank != 0 {
@@ -202,20 +145,20 @@ func (r *Registry) All() []Command {
 		}
 		return strings.Compare(specA.Name, specB.Name)
 	})
-	return commands
+	return cmds
 }
 
-func compareCommandKinds(a, b CommandKind) int {
+func compareCommandKinds(a, b commands.Kind) int {
 	return commandKindOrder[a] - commandKindOrder[b]
 }
 
 // Overlay returns the currently active interactive command, or nil.
-func (r *Registry) Overlay() InteractiveCommand {
+func (r *Registry) Overlay() commands.InteractiveCommand {
 	return r.overlay
 }
 
 // SetOverlay sets the active interactive overlay.
-func (r *Registry) SetOverlay(ic InteractiveCommand) {
+func (r *Registry) SetOverlay(ic commands.InteractiveCommand) {
 	r.overlay = ic
 }
 
