@@ -17,6 +17,22 @@ import (
 	"github.com/voocel/agentcore"
 )
 
+// IsHiddenTool reports whether a tool's invocation should be omitted from
+// the visible TUI stream (live events and session restore alike).
+//
+// Mirrors Claude Code's policy where TodoWrite/TaskCreate/TaskUpdate/TaskGet/
+// TaskList all return null from renderToolUseMessage: these tools manage
+// shared coordination state for the agent's own bookkeeping, not work the
+// user wants to follow turn-by-turn. SubAgent dispatch and other execution-
+// unit tools stay visible because they signal real progress.
+func IsHiddenTool(tool string) bool {
+	switch tool {
+	case "task_create", "task_update", "task_get", "task_list":
+		return true
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------

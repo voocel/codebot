@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // RunPrint executes non-interactive print/json mode.
@@ -104,9 +105,18 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 			}
 
 		case agentcore.EventToolExecStart:
+			// Mirror TUI: hide AI bookkeeping tools (task_create/update/get/list)
+			// from text mode stderr too. JSON mode above stays unfiltered so
+			// scripts that consume the JSONL stream still get full audit data.
+			if tui.IsHiddenTool(ae.Tool) {
+				return
+			}
 			fmt.Fprintf(os.Stderr, "[tool] %s\n", ae.Tool)
 
 		case agentcore.EventToolExecEnd:
+			if tui.IsHiddenTool(ae.Tool) {
+				return
+			}
 			if ae.IsError {
 				fmt.Fprintf(os.Stderr, "[tool] %s error\n", ae.Tool)
 			}

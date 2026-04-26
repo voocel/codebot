@@ -150,6 +150,12 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case agentcore.EventToolExecStart:
+		// Hidden tools (Claude Code's TodoWrite/Task* policy) skip the visible
+		// pipeline entirely: no header, no output buffer, no tool count. The
+		// call still happens in the agent loop — only the TUI side is silent.
+		if IsHiddenTool(ev.Tool) {
+			break
+		}
 		label := ev.Tool
 		if ev.ToolLabel != "" {
 			label = ev.ToolLabel
@@ -173,6 +179,9 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case agentcore.EventToolExecUpdate:
+		if IsHiddenTool(ev.Tool) {
+			break
+		}
 		switch ev.UpdateKind {
 		case agentcore.ToolExecUpdatePreview:
 			rendered := RenderEditResult(ev.Result)
@@ -224,6 +233,9 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case agentcore.EventToolExecEnd:
+		if IsHiddenTool(ev.Tool) {
+			break
+		}
 		delete(m.PendingTools, ev.ToolID)
 		delete(m.ToolOutputBuf, ev.ToolID)
 		delete(m.ToolDeltaBuf, ev.ToolID)

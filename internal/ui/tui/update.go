@@ -778,6 +778,9 @@ func (m *Model) appendRestoredAssistantMessage(sb *strings.Builder, am agentcore
 		return
 	}
 	for _, tc := range concrete.ToolCalls() {
+		if IsHiddenTool(tc.Name) {
+			continue
+		}
 		header := ToolIconStyle.Render("● ") + RenderToolHeader(tc.Name, tc.Args)
 		sb.WriteString("\n")
 		sb.WriteString(header)
@@ -790,6 +793,9 @@ func (m *Model) appendRestoredToolMessage(sb *strings.Builder, am agentcore.Agen
 		return
 	}
 	toolCallID, _ := concrete.Metadata["tool_call_id"].(string)
+	if IsHiddenTool(toolCallNames[toolCallID]) {
+		return
+	}
 	isError, _ := concrete.Metadata["is_error"].(bool)
 	body := m.renderRestoredToolBody(toolCallNames[toolCallID], json.RawMessage(am.TextContent()), isError)
 	if body == "" {
