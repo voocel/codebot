@@ -13,8 +13,8 @@ import (
 // ContextCommand drives /context — a tabbed modal overlay reporting current
 // context window usage, message composition, and runtime suggestions.
 type ContextCommand struct {
-	session  *agent.Session
-	registry Registry
+	session *agent.Session
+	overlay OverlayController
 
 	state *contextState
 }
@@ -35,8 +35,8 @@ type contextState struct {
 var contextTabs = []string{"usage", "composition", "suggestions"}
 
 // Context constructs the /context command.
-func Context(session *agent.Session, registry Registry) *ContextCommand {
-	return &ContextCommand{session: session, registry: registry}
+func Context(session *agent.Session, overlay OverlayController) *ContextCommand {
+	return &ContextCommand{session: session, overlay: overlay}
 }
 
 func (c *ContextCommand) Spec() Spec {
@@ -63,7 +63,7 @@ func (c *ContextCommand) Run(_ Invocation) tea.Cmd {
 		lastCompaction: lastCompaction,
 		hasCompaction:  hasCompaction,
 	}
-	c.registry.SetOverlay(c)
+	c.overlay.SetOverlay(c)
 	return nil
 }
 
@@ -89,7 +89,7 @@ func (c *ContextCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "esc", "ctrl+c", "q":
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 		return true, nil
 	}
 	return true, nil

@@ -16,8 +16,8 @@ import (
 // It is exported so the host can route the async tui.BtwResultMsg back to
 // the active overlay via SetResult.
 type BtwCommand struct {
-	session  *agent.Session
-	registry Registry
+	session *agent.Session
+	overlay OverlayController
 
 	active   bool
 	question string
@@ -26,9 +26,10 @@ type BtwCommand struct {
 	err      error
 }
 
-// Btw constructs the /btw command bound to the given session and registry.
-func Btw(session *agent.Session, registry Registry) *BtwCommand {
-	return &BtwCommand{session: session, registry: registry}
+// Btw constructs the /btw command. overlay is used to install and dismiss
+// the question/answer modal.
+func Btw(session *agent.Session, overlay OverlayController) *BtwCommand {
+	return &BtwCommand{session: session, overlay: overlay}
 }
 
 func (c *BtwCommand) Spec() Spec {
@@ -52,7 +53,7 @@ func (c *BtwCommand) Run(inv Invocation) tea.Cmd {
 	c.loading = true
 	c.err = nil
 	c.active = true
-	c.registry.SetOverlay(c)
+	c.overlay.SetOverlay(c)
 
 	return func() tea.Msg {
 		answer, err := c.session.SideQuestion(context.Background(), question)
@@ -66,7 +67,7 @@ func (c *BtwCommand) IsModal() bool { return true }
 func (c *BtwCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
 	case " ", "enter", "esc", "ctrl+c":
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 		return true, nil
 	}
 	return true, nil

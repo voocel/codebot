@@ -72,22 +72,22 @@ func (a *App) builtinCommands() []commands.Command {
 		commands.Btw(a.Session, a.registry),
 		commands.Settings(a.Session, a.registry, a.ApprovalEngine, a.Cwd),
 		commands.MCP(a.MCPManager),
-		commands.Plugins(commands.PluginsDeps{
+		&commands.PluginsCommand{
 			Catalog:        a.PluginCatalog,
 			Session:        a.Session,
 			Cwd:            a.Cwd,
 			ReloadState:    a.reloadPluginState,
 			RefreshRuntime: a.refreshRuntimeForCommands,
-		}),
+		},
 		commands.DebugHarness(a.Session, a.registry),
 		commands.Copy(a.Session),
-		commands.Plan(commands.PlanDeps{
+		&commands.PlanCommand{
 			Phase:  a.planPhase,
 			Enter:  a.enterPlanMode,
 			Show:   a.showCurrentPlan,
 			Cancel: a.cancelPlanMode,
 			Open:   a.openCurrentPlan,
-		}),
+		},
 		commands.Reload(a.reloadAll),
 		commands.Memory(a.Cwd, func() { a.Session.Reload() }),
 		commands.Loop(a.CronStore),

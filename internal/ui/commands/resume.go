@@ -15,7 +15,7 @@ import (
 // sessions and switching to the chosen one.
 type ResumeCommand struct {
 	session   *agent.Session
-	registry  Registry
+	overlay   OverlayController
 	resetPlan func()
 
 	state *resumeSelectState
@@ -29,8 +29,8 @@ type resumeSelectState struct {
 
 // Resume constructs the /resume command. resetPlan tears down any active
 // plan-mode UI when switching sessions, mirroring /clear and /new.
-func Resume(session *agent.Session, registry Registry, resetPlan func()) *ResumeCommand {
-	return &ResumeCommand{session: session, registry: registry, resetPlan: resetPlan}
+func Resume(session *agent.Session, overlay OverlayController, resetPlan func()) *ResumeCommand {
+	return &ResumeCommand{session: session, overlay: overlay, resetPlan: resetPlan}
 }
 
 func (c *ResumeCommand) Spec() Spec {
@@ -71,7 +71,7 @@ func (c *ResumeCommand) Run(_ Invocation) tea.Cmd {
 		cursor:   cursor,
 		current:  currentID,
 	}
-	c.registry.SetOverlay(c)
+	c.overlay.SetOverlay(c)
 	return nil
 }
 
@@ -99,7 +99,7 @@ func (c *ResumeCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 	case "enter":
 		selected := s.sessions[s.cursor]
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 
 		if selected.ID == s.current {
 			return true, tui.SendCommandResult(tui.CommandStyle.Render("Already in this session."))
@@ -120,7 +120,7 @@ func (c *ResumeCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, func() tea.Msg { return tui.RestoreMsg{Msgs: msgs} }
 
 	case "esc", "ctrl+c":
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 		return true, nil
 	}
 

@@ -1,8 +1,9 @@
 // Package commands holds the slash-command implementations and the abstractions
 // required to register them with the host UI.
 //
-// Design: each command's New* constructor explicitly declares the dependencies
-// it needs (Session, Catalog, callbacks, ...). There is no shared "Deps"
+// Design: each command declares its dependencies explicitly — either via a
+// New* constructor's parameters, or as exported fields on a command struct
+// constructed with a literal at registration. There is no shared "Deps"
 // interface — the registration site doubles as the dependency graph.
 package commands
 
@@ -83,12 +84,19 @@ type ModalOverlay interface {
 	IsModal() bool
 }
 
-// Registry is the surface a command needs from the host to enumerate its
-// peers (e.g. /help listing all commands) and to install/dismiss the active
-// modal overlay. Implemented by ui.Registry.
-type Registry interface {
-	All() []Command
-	EffectiveSpec(cmd Command) Spec
+// OverlayController is the surface needed to install or dismiss the active
+// modal overlay. Most interactive commands (/btw, /context, /tasks, ...)
+// take this directly because they never enumerate peers.
+type OverlayController interface {
 	SetOverlay(InteractiveCommand)
 	ClearOverlay()
+}
+
+// Registry extends OverlayController with peer-enumeration methods used by
+// /help. ui.Registry is the only implementation; everywhere except /help
+// takes OverlayController directly so its dependency surface stays narrow.
+type Registry interface {
+	OverlayController
+	All() []Command
+	EffectiveSpec(cmd Command) Spec
 }

@@ -16,7 +16,7 @@ import (
 // current general / runtime / providers configuration.
 type SettingsCommand struct {
 	session  *agent.Session
-	registry Registry
+	overlay  OverlayController
 	approval *approval.Engine
 	cwd      string
 
@@ -30,10 +30,10 @@ type settingsState struct {
 var settingsTabs = []string{"general", "runtime", "providers"}
 
 // Settings constructs the /settings command.
-func Settings(session *agent.Session, registry Registry, approvalEngine *approval.Engine, cwd string) *SettingsCommand {
+func Settings(session *agent.Session, overlay OverlayController, approvalEngine *approval.Engine, cwd string) *SettingsCommand {
 	return &SettingsCommand{
 		session:  session,
-		registry: registry,
+		overlay:  overlay,
 		approval: approvalEngine,
 		cwd:      cwd,
 	}
@@ -51,7 +51,7 @@ func (c *SettingsCommand) Spec() Spec {
 
 func (c *SettingsCommand) Run(_ Invocation) tea.Cmd {
 	c.state = &settingsState{active: 0}
-	c.registry.SetOverlay(c)
+	c.overlay.SetOverlay(c)
 	return nil
 }
 
@@ -77,7 +77,7 @@ func (c *SettingsCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "esc", "ctrl+c", "q":
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 		return true, nil
 	}
 	return true, nil

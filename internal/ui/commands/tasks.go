@@ -17,8 +17,8 @@ import (
 // TasksCommand drives /tasks — an interactive overlay listing background
 // shells and forked sub-agents, with detail and stop controls.
 type TasksCommand struct {
-	runtime  *agentcore.TaskRuntime
-	registry Registry
+	runtime *agentcore.TaskRuntime
+	overlay OverlayController
 
 	state *tasksState
 }
@@ -37,8 +37,8 @@ type tasksState struct {
 }
 
 // Tasks constructs the /tasks command.
-func Tasks(runtime *agentcore.TaskRuntime, registry Registry) *TasksCommand {
-	return &TasksCommand{runtime: runtime, registry: registry}
+func Tasks(runtime *agentcore.TaskRuntime, overlay OverlayController) *TasksCommand {
+	return &TasksCommand{runtime: runtime, overlay: overlay}
 }
 
 func (c *TasksCommand) Spec() Spec {
@@ -58,7 +58,7 @@ func (c *TasksCommand) Run(_ Invocation) tea.Cmd {
 	}
 
 	c.state = &tasksState{entries: entries}
-	c.registry.SetOverlay(c)
+	c.overlay.SetOverlay(c)
 	return nil
 }
 
@@ -172,7 +172,7 @@ func (c *TasksCommand) handleListKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 
 	case "esc", "ctrl+c":
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 		return true, nil
 	}
 	return true, nil

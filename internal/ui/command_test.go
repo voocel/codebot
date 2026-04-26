@@ -115,13 +115,13 @@ func TestValidateCommandBlocksSessionCommandInPlanMode(t *testing.T) {
 // runPlugins drives the /plugins command via its subpackage constructor so
 // tests can exercise the full handler against a stub App.
 func runPlugins(app *App, args []string) tea.Msg {
-	cmd := commands.Plugins(commands.PluginsDeps{
+	cmd := &commands.PluginsCommand{
 		Catalog:        app.PluginCatalog,
 		Session:        app.Session,
 		Cwd:            app.Cwd,
 		ReloadState:    func() error { return nil },
 		RefreshRuntime: func() (commands.MCPReloadResult, error) { return commands.MCPReloadResult{}, nil },
-	})
+	}
 	return cmd.Run(commands.Invocation{Name: "plugins", Args: args})()
 }
 

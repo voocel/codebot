@@ -18,9 +18,9 @@ import (
 // current chat model and persists the choice to whichever settings file
 // already owns the model setting (project if present, otherwise global).
 type ModelCommand struct {
-	session  *agent.Session
-	registry Registry
-	cwd      string
+	session *agent.Session
+	overlay OverlayController
+	cwd     string
 
 	state *modelSelectState
 }
@@ -47,8 +47,8 @@ type modelSelectState struct {
 }
 
 // Model constructs the /model command.
-func Model(session *agent.Session, registry Registry, cwd string) *ModelCommand {
-	return &ModelCommand{session: session, registry: registry, cwd: cwd}
+func Model(session *agent.Session, overlay OverlayController, cwd string) *ModelCommand {
+	return &ModelCommand{session: session, overlay: overlay, cwd: cwd}
 }
 
 func (c *ModelCommand) Spec() Spec {
@@ -100,7 +100,7 @@ func (c *ModelCommand) Run(_ Invocation) tea.Cmd {
 		thinkLevels: thinkLevels,
 		thinkIdx:    thinkIdx,
 	}
-	c.registry.SetOverlay(c)
+	c.overlay.SetOverlay(c)
 	return nil
 }
 
@@ -154,7 +154,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			thinkLevel = s.thinkLevels[s.thinkIdx]
 		}
 
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 
 		if err := c.session.SetModel(entry.provider, entry.model); err != nil {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch model: " + err.Error()))
@@ -199,7 +199,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 
 	case "esc", "ctrl+c":
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 		return true, nil
 	}
 

@@ -13,8 +13,8 @@ import (
 // surfacing harness runtime diagnostics (last turn, recent activity,
 // metrics, context).
 type DebugHarnessCommand struct {
-	session  *agent.Session
-	registry Registry
+	session *agent.Session
+	overlay OverlayController
 
 	state *debugState
 }
@@ -38,8 +38,8 @@ type debugState struct {
 var debugTabs = []string{"turn", "activity", "metrics", "context"}
 
 // DebugHarness constructs the /debug-harness command.
-func DebugHarness(session *agent.Session, registry Registry) *DebugHarnessCommand {
-	return &DebugHarnessCommand{session: session, registry: registry}
+func DebugHarness(session *agent.Session, overlay OverlayController) *DebugHarnessCommand {
+	return &DebugHarnessCommand{session: session, overlay: overlay}
 }
 
 func (c *DebugHarnessCommand) Spec() Spec {
@@ -70,7 +70,7 @@ func (c *DebugHarnessCommand) Run(_ Invocation) tea.Cmd {
 		hasCompaction:  hasCompaction,
 		contextUsage:   c.session.ContextUsage(),
 	}
-	c.registry.SetOverlay(c)
+	c.overlay.SetOverlay(c)
 	return nil
 }
 
@@ -96,7 +96,7 @@ func (c *DebugHarnessCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case "esc", "ctrl+c", "q":
-		c.registry.ClearOverlay()
+		c.overlay.ClearOverlay()
 		return true, nil
 	}
 	return true, nil
