@@ -232,7 +232,7 @@ func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
 		StatusMode: func(*Model) string { return "◇ plan mode" },
 		StatusPlan: func(*Model) *PlanBarInfo {
 			return &PlanBarInfo{
-				Prompt:  "Would you like to proceed?",
+				Title:   "Refactor session manager",
 				Details: []string{"Allowed command prefixes:", "- go test — run tests"},
 				Choices: []string{"Execute plan", "Cancel"},
 			}
@@ -243,10 +243,10 @@ func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
 	m.Cwd = "/tmp/project"
 
 	view := m.View()
-	promptIdx := strings.Index(view, "Would you like to proceed?")
+	promptIdx := strings.Index(view, "Ready to code?")
 	modeIdx := strings.Index(view, "◇ plan mode")
 	if promptIdx < 0 || modeIdx < 0 {
-		t.Fatalf("expected plan review prompt and bottom mode indicator, got: %q", view)
+		t.Fatalf("expected plan review heading and bottom mode indicator, got: %q", view)
 	}
 	if !strings.Contains(view, "Allowed command prefixes:") || !strings.Contains(view, "go test") {
 		t.Fatalf("expected allowed command details, got: %q", view)

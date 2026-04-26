@@ -68,7 +68,6 @@ type App struct {
 	// CommandLoaders allow alternative command sources to be injected at app construction time.
 	CommandLoaders []CommandLoader
 
-	planTitle     string // short title extracted from plan content
 	planChoice    int    // selected option in planReview menu
 	planOtherMode bool   // typing custom feedback
 	planOtherBuf  string // custom feedback buffer

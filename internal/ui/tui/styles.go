@@ -171,8 +171,6 @@ var (
 	// gray, not a loud warning. Claude Code keeps these understated.
 	ContextChipWarnStyle = lipgloss.NewStyle().Foreground(Muted)
 
-	ChoiceActiveStyle = lipgloss.NewStyle().Foreground(Accent).Bold(true)
-
 	PlanBoxStyle      = card(Accent)
 	SubagentCardStyle = card(Accent)
 

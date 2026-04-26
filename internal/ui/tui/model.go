@@ -19,11 +19,16 @@ type PlanBarInfo struct {
 	Choices []string // selectable options
 	Active  int      // active choice index
 
-	// Plan review card fields.
-	Prompt    string // e.g., "Would you like to proceed?"
-	Details   []string
-	OtherMode bool   // typing custom feedback
-	OtherBuf  string // custom feedback buffer
+	// Plan review card fields. Title + PlanContent + PlanFilePath drive the
+	// CC-style review dialog: a "Ready to code?" heading, the plan markdown
+	// rendered in-line with dashed top/bottom rules, and a footer hint with
+	// the on-disk path.
+	Title        string
+	PlanContent  string
+	PlanFilePath string
+	Details      []string
+	OtherMode    bool   // typing custom feedback
+	OtherBuf     string // custom feedback buffer
 }
 
 // Config provides hooks for extending the base TUI behavior.

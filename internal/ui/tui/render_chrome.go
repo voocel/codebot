@@ -59,7 +59,40 @@ func (m *Model) RenderStatusBar() string {
 	}
 }
 
-// RenderPlanBar renders the plan review card (AskUser-style). Empty when inactive.
+// planContentHardCap is a generous safety net to keep the card from
+// becoming absurdly tall on pathological 200+ line plans. We deliberately
+// do NOT clip content to the terminal viewport — Claude Code renders the
+// full plan markdown and lets the top of the dialog scroll off-screen
+// naturally on small terminals (the user scrolls up to see it). Aggressive
+// height-based truncation hides the very thing the user opened the dialog
+// to read; the previous attempt at it produced "the card looks fine but
+// the plan is invisible" complaints. Beyond this cap we still emit
+// "+N more lines · Ctrl+E to view full plan" so extreme cases stay
+// addressable.
+const planContentHardCap = 80
+
+// RenderPlanBar renders the plan review card. Mirrors Claude Code's
+// ExitPlanModePermissionRequest layout:
+//
+//	┌─ "Ready to code?" (Accent border) ────────────┐
+//	│ Here is the plan:                             │
+//	│ ─────────────────────────────────             │
+//	│ <plan markdown>                               │
+//	│ ─────────────────────────────────             │
+//	│                                               │
+//	│ Allowed command prefixes:                     │
+//	│ - <cmd>                                       │
+//	│                                               │
+//	│   1. Execute plan                             │
+//	│   2. Cancel                                   │
+//	│   ───                                         │
+//	│   3. Type here to request changes             │
+//	│                                               │
+//	│ Enter · ↑↓ · 1-3 · Esc cancel                 │
+//	│ Ctrl+E to edit · ~/.codebot/plans/foo.md      │
+//	└───────────────────────────────────────────────┘
+//
+// Empty when no review is in progress.
 func (m *Model) RenderPlanBar() string {
 	if m.config.StatusPlan == nil {
 		return ""
@@ -71,13 +104,66 @@ func (m *Model) RenderPlanBar() string {
 
 	optionCount := len(plan.Choices) + 1 // +1 for "Type here"
 
+	// Rule width must match the markdown wrap width (`m.Width - 6`, set in
+	// handleResize) so the dashed top/bottom rules visually align with the
+	// widest plan-content line. If we cap the rule narrower than markdown,
+	// long plan lines push the box out wider than the rule and the layout
+	// breaks. Floored at 20 so a tiny terminal still produces a visible rule.
+	ruleWidth := max(m.Width-6, 20)
+	rule := MutedStyle.Render(strings.Repeat("─", ruleWidth))
+
+	// Pre-render the footer so long paths wrap inside the card (set the
+	// width on askHintStyle so lipgloss soft-wraps at ruleWidth instead of
+	// pushing the right border past m.Width).
+	var renderedFooter string
+	if !plan.OtherMode && plan.PlanFilePath != "" {
+		footer := "Ctrl+E to edit in $EDITOR · " + plan.PlanFilePath
+		renderedFooter = askHintStyle.Width(ruleWidth).Render(footer)
+	}
+
 	var b strings.Builder
 
-	// Prompt text.
-	if plan.Prompt != "" {
-		b.WriteString(askQuestionStyle.Render(plan.Prompt))
+	// Card title.
+	b.WriteString(askQuestionStyle.Render("Ready to code?"))
+	b.WriteString("\n\n")
+
+	// Plan content section — header, dashed top rule, markdown, dashed
+	// bottom rule. Skipped if there's literally nothing to show, so the
+	// dialog still works for empty plans.
+	planSrc := strings.TrimSpace(plan.PlanContent)
+	if planSrc == "" && plan.Title != "" {
+		planSrc = "# " + plan.Title
+	}
+	if planSrc != "" {
+		b.WriteString(askDescStyle.Render("Here is the plan:"))
+		b.WriteByte('\n')
+		b.WriteString(rule)
+		b.WriteByte('\n')
+
+		// Render the full plan in-line. We deliberately don't clip to
+		// terminal height — Claude Code shows the full plan and lets the
+		// top of the dialog scroll into OS scrollback on small terminals.
+		// Only pathological plans (>planContentHardCap rendered lines)
+		// get truncated, with a "+N more · Ctrl+E" hint pointing the
+		// user at the editor to view the rest.
+		rendered := strings.TrimRight(m.renderMarkdownBlock(planSrc, 0), "\n")
+		renderedLines := strings.Split(rendered, "\n")
+		hidden := 0
+		if len(renderedLines) > planContentHardCap {
+			hidden = len(renderedLines) - planContentHardCap
+			rendered = strings.Join(renderedLines[:planContentHardCap], "\n")
+		}
+		b.WriteString(rendered)
+		b.WriteByte('\n')
+		if hidden > 0 {
+			b.WriteString(askHintStyle.Render(fmt.Sprintf("… %d more lines · press Ctrl+E to view full plan", hidden)))
+			b.WriteByte('\n')
+		}
+		b.WriteString(rule)
 		b.WriteString("\n\n")
 	}
+
+	// Allowed command prefixes (and any other plan review details).
 	for _, detail := range plan.Details {
 		detail = strings.TrimSpace(detail)
 		if detail == "" {
@@ -105,28 +191,37 @@ func (m *Model) RenderPlanBar() string {
 	b.WriteString(askDescStyle.Render("  ───"))
 	b.WriteByte('\n')
 
-	// "Type here" option.
+	// "Type here" option — agent-neutral wording, no provider name.
+	const otherLabel = "Type here to request changes"
 	otherIdx := len(plan.Choices)
 	otherNum := fmt.Sprintf("%d. ", otherIdx+1)
 	if plan.Active == otherIdx {
 		if plan.OtherMode {
 			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + plan.OtherBuf + "█"))
 		} else {
-			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + "Type here to tell Claude what to change"))
+			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + otherLabel))
 		}
 	} else {
-		b.WriteString(askOptionInactiveStyle.Render("  " + otherNum + "Type here to tell Claude what to change"))
+		b.WriteString(askOptionInactiveStyle.Render("  " + otherNum + otherLabel))
 	}
 	b.WriteString("\n\n")
 
-	// Hint line.
+	// Hint line — keys.
 	if plan.OtherMode {
 		b.WriteString(askHintStyle.Render("Enter to confirm · Esc to go back"))
 	} else {
 		b.WriteString(askHintStyle.Render(fmt.Sprintf("Enter to select · ↑↓ Navigate · 1-%d Shortcut · Esc to cancel", optionCount)))
 	}
 
-	return AskCardStyle.Render(b.String())
+	// Footer — Ctrl+E + plan file path, pre-rendered above with
+	// askHintStyle.Width(ruleWidth) so long paths wrap inside the card
+	// instead of pushing the right border off-screen.
+	if renderedFooter != "" {
+		b.WriteByte('\n')
+		b.WriteString(renderedFooter)
+	}
+
+	return PlanBoxStyle.Render(b.String())
 }
 
 // RenderContextBar renders the context line below the input (env info).
@@ -315,6 +410,7 @@ func (m *Model) renderRunSummary() string {
 	s := m.RunStats
 	style := lipgloss.NewStyle().Foreground(Subtle)
 	return strings.Join([]string{
+		style.Render("※"),
 		style.Render(fmt.Sprintf("%d turns", s.Turns)),
 		style.Render("· " + fmt.Sprintf("%d tools", s.ToolCalls)),
 		style.Render("· ↑" + FormatTokens(s.Input)),

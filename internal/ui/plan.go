@@ -57,7 +57,6 @@ func (a *App) enterPlanMode(task string) tea.Cmd {
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-	a.planTitle = ""
 	return a.sendAsPrompt(prompt)
 }
 
@@ -65,11 +64,9 @@ func (a *App) executePlan() tea.Cmd {
 	if a.PlanManager == nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
-	title, _, _, err := a.PlanManager.Approve()
-	if err != nil {
+	if _, _, _, err := a.PlanManager.Approve(); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-	a.planTitle = title
 	a.planOtherMode = false
 	a.planOtherBuf = ""
 	a.planChoice = 0
@@ -98,7 +95,6 @@ func (a *App) resetPlanState() {
 }
 
 func (a *App) resetPlanUI() {
-	a.planTitle = ""
 	a.planChoice = 0
 	a.planOtherMode = false
 	a.planOtherBuf = ""
@@ -116,6 +112,11 @@ func (a *App) handlePlanReviewKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, a.cancelPlanMode()
 	case "ctrl+c":
 		return true, a.cancelPlanMode()
+	case "ctrl+e":
+		// Open the plan in $EDITOR. Mirrors Claude Code's Ctrl+G shortcut on
+		// the Exit-Plan-Mode dialog. Reusing /plan open gives us the session
+		// reload after the editor exits, so user edits land before approval.
+		return true, a.openCurrentPlan()
 	case "up", "k":
 		if a.planChoice > 0 {
 			a.planChoice--
@@ -193,7 +194,6 @@ func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-	a.planTitle = ""
 	return a.sendAsPrompt(prompt)
 }
 
@@ -209,18 +209,11 @@ func (a *App) planOnEvent(m *tui.Model, ev agentcore.Event) tea.Cmd {
 		case "exit_plan_mode":
 			return a.onExitPlanMode(m, ev.Result)
 		}
-	case agentcore.EventAgentEnd:
-		if a.planPhase() == plan.PhaseReview {
-			title := tui.ChoiceActiveStyle.Render("Plan: " + a.currentPlanTitle())
-			lines := []string{title}
-			for _, detail := range a.allowedCommandLines() {
-				lines = append(lines, tui.MutedStyle.Render(detail))
-			}
-			lines = append(lines, tui.MutedStyle.Render("Select an action below."))
-			box := tui.PlanBoxStyle.Render(strings.Join(lines, "\n"))
-			return m.Emit("\n" + box)
-		}
 	}
+	// Plan review state is rendered live by RenderPlanBar (driven by
+	// planStatus). We deliberately don't emit a scrollback summary on
+	// EventAgentEnd anymore — the plan card already shows title, content,
+	// allowed commands, and choices in one place.
 	return nil
 }
 
@@ -238,7 +231,6 @@ func (a *App) onEnterPlanMode(m *tui.Model, result json.RawMessage) tea.Cmd {
 	if _, err := a.PlanManager.Enter(strings.TrimSpace(resp.Task)); err != nil {
 		return m.Emit(tui.ErrorStyle.Render("Plan mode error: " + err.Error()))
 	}
-	a.planTitle = ""
 	return nil
 }
 
@@ -267,7 +259,6 @@ func (a *App) onExitPlanMode(m *tui.Model, result json.RawMessage) tea.Cmd {
 		return m.Emit(tui.ErrorStyle.Render("Plan submit error: " + err.Error()))
 	}
 
-	a.planTitle = title
 	a.planChoice = 0
 	a.planOtherMode = false
 	a.planOtherBuf = ""
@@ -322,13 +313,25 @@ func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {
 	if a.planPhase() != plan.PhaseReview || m.Running {
 		return nil
 	}
+	var content string
+	if a.PlanManager != nil {
+		if c, err := a.PlanManager.CurrentPlan(); err == nil {
+			content = c
+		}
+	}
+	var filePath string
+	if a.PlanManager != nil {
+		filePath = a.PlanManager.CurrentPlanPath()
+	}
 	return &tui.PlanBarInfo{
-		Prompt:    "Would you like to proceed?",
-		Details:   a.planReviewDetails(),
-		Choices:   []string{"Execute plan", "Cancel"},
-		Active:    a.planChoice,
-		OtherMode: a.planOtherMode,
-		OtherBuf:  a.planOtherBuf,
+		Title:        a.currentPlanTitle(),
+		PlanContent:  content,
+		PlanFilePath: filePath,
+		Details:      a.planReviewDetails(),
+		Choices:      []string{"Execute plan", "Cancel"},
+		Active:       a.planChoice,
+		OtherMode:    a.planOtherMode,
+		OtherBuf:     a.planOtherBuf,
 	}
 }
 

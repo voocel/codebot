@@ -85,6 +85,16 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		clear(m.ToolOutputBuf)
 		clear(m.ToolDeltaBuf)
 		clear(m.ToolThinkingBuf)
+		// Defensive stream cleanup: normally EventMessageEnd clears these,
+		// but a mid-message abort (e.g. exit_plan_mode → Session.AbortSilent())
+		// fires AgentEnd without ever firing MessageEnd, leaving IsStream=true
+		// and a populated Streaming buffer behind. View() then keeps painting
+		// the assistant bullet + spinner forever, even after the plan card is
+		// dismissed. Reset here so the live area returns to a clean state on
+		// any agent termination — completion OR abort.
+		m.IsStream = false
+		m.Streaming.Reset()
+		m.Thinking.Reset()
 		if m.AskUser != nil {
 			close(m.AskUser.respCh)
 			m.AskUser = nil

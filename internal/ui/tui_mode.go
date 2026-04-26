@@ -59,7 +59,6 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		PreMode:         rt.PlanPreMode,
 		AllowedCommands: planstate.ParseAllowedCommandsFromEntries(rt.PlanAllowedCommands),
 	})
-	adapter.planTitle = rt.PlanTitle
 
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()
