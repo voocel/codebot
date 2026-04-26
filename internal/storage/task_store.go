@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,12 @@ type Task struct {
 	Blocks      []string       `json:"blocks"`
 	BlockedBy   []string       `json:"blockedBy"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
+	// CompletedAt is set when the task transitions into TaskCompleted and
+	// cleared if it ever reverts to a non-completed state. Pointer + omitempty
+	// keeps older persisted JSON files (without this field) loading cleanly.
+	// The TUI uses it to keep recently-completed tasks pinned to the top of
+	// the truncated task tree for ~30s before they sink to the bottom.
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
 // TaskSnapshot is a read-only snapshot of all tasks sent to the TUI.
@@ -199,7 +206,15 @@ func (s *TaskStore) Update(id string, opts TaskUpdateOpts) (*Task, error) {
 			s.notify()
 			return nil, nil
 		}
+		prev := t.Status
 		t.Status = *opts.Status
+		switch {
+		case t.Status == TaskCompleted && prev != TaskCompleted:
+			now := time.Now()
+			t.CompletedAt = &now
+		case t.Status != TaskCompleted && prev == TaskCompleted:
+			t.CompletedAt = nil
+		}
 	}
 	if opts.Subject != nil {
 		t.Subject = *opts.Subject

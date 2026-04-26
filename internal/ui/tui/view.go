@@ -30,8 +30,17 @@ func (m *Model) View() string {
 			indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
 			parts = append(parts, "", ThinkingIconStyle.Render("● ")+strings.TrimPrefix(indented, "  "))
 		}
-		indented := m.renderMarkdownBlock(m.Streaming.String(), 2)
-		parts = append(parts, "", AssistantIconStyle.Render("● ")+strings.TrimPrefix(indented, "  ")+m.Spinner.View())
+		// Only show the assistant bullet when there's actual streamed text.
+		// An "empty bullet" frame appears when the assistant message contains
+		// only tool_use blocks (e.g. hidden task_* calls) — IsStream goes
+		// true at MessageStart, no text deltas arrive, then IsStream clears
+		// at MessageEnd. The Running spinner in the status bar already
+		// signals "agent is working", so we drop the bare bullet to avoid
+		// the flash.
+		if streamed := m.Streaming.String(); strings.TrimSpace(streamed) != "" {
+			indented := m.renderMarkdownBlock(streamed, 2)
+			parts = append(parts, "", AssistantIconStyle.Render("● ")+strings.TrimPrefix(indented, "  ")+m.Spinner.View())
+		}
 	}
 
 	for id, name := range m.PendingTools {
@@ -59,10 +68,6 @@ func (m *Model) View() string {
 	}
 
 	parts = append(parts, "")
-
-	if m.Tasks != nil && m.Tasks.Total > 0 {
-		parts = append(parts, m.renderTaskList(), "")
-	}
 
 	if overlay != "" && overlayReplacesInput {
 		parts = append(parts, overlay)

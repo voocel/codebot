@@ -176,9 +176,6 @@ var (
 	PlanBoxStyle      = card(Accent)
 	SubagentCardStyle = card(Accent)
 
-	TaskCardStyle     = card(Border)
-	TaskProgressStyle = lipgloss.NewStyle().Foreground(Title)
-
 	PermissionTitleStyle = lipgloss.NewStyle().Foreground(Accent).Bold(true)
 	AskCardStyle         = card(BrandSoft)
 

@@ -146,6 +146,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case taskRecencyTickMsg:
+		if m.Tasks == nil {
+			return m, nil
+		}
+		// Returning the snapshot scheduler hands us either a follow-up tick
+		// (more recent completes still pending expiry) or nil; either way
+		// the View re-renders this frame because we returned via Update.
+		return m, scheduleRecencyTick(*m.Tasks)
 	case spinner.TickMsg:
 		var cmd1, cmd2 tea.Cmd
 		m.Spinner, cmd1 = m.Spinner.Update(msg)
@@ -169,7 +177,41 @@ func (m *Model) applyTaskSnapshot(snap storage.TaskSnapshot) tea.Cmd {
 	if tasksFullyCompleted(snap) {
 		return hideCompletedTasksTick(m.taskHideVersion)
 	}
+	if cmd := scheduleRecencyTick(snap); cmd != nil {
+		return cmd
+	}
 	return nil
+}
+
+// scheduleRecencyTick returns a tea.Cmd that fires once when the next
+// "recently completed" task crosses RecentCompletedTTL — only when the list
+// is actually being truncated (otherwise the recency grouping is unused, so
+// no re-render is needed). Returns nil when there's nothing to wake up for.
+func scheduleRecencyTick(snap storage.TaskSnapshot) tea.Cmd {
+	if snap.Total <= taskTreeMaxVisible {
+		return nil
+	}
+	now := time.Now()
+	var nextExpiry time.Time
+	for _, t := range snap.Items {
+		if t.Status != storage.TaskCompleted || t.CompletedAt == nil {
+			continue
+		}
+		expiry := t.CompletedAt.Add(RecentCompletedTTL)
+		if !expiry.After(now) {
+			continue
+		}
+		if nextExpiry.IsZero() || expiry.Before(nextExpiry) {
+			nextExpiry = expiry
+		}
+	}
+	if nextExpiry.IsZero() {
+		return nil
+	}
+	// 50ms floor protects against tea.Tick busy-looping if the deadline is
+	// already past or fires marginally early.
+	delay := max(time.Until(nextExpiry), 50*time.Millisecond)
+	return tea.Tick(delay, func(time.Time) tea.Msg { return taskRecencyTickMsg{} })
 }
 
 func tasksFullyCompleted(snap storage.TaskSnapshot) bool {
