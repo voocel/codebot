@@ -233,21 +233,14 @@ func (c *Manager) applyState(state State) {
 }
 
 func (c *Manager) wireValidators() {
+	// exit_plan_mode is not registered as a base tool — it is created on demand
+	// via newExitTool() during PhasePlanning and dropped on approval/cancel.
+	// Only enter_plan_mode lives in allTools and needs a validator wired here.
 	for _, tool := range c.session.ToolsByName("enter_plan_mode") {
 		if enterTool, ok := tool.(*localtools.EnterPlanModeTool); ok {
 			enterTool.SetValidator(func() error {
 				if c.state.Snapshot().Phase != PhaseOff {
 					return fmt.Errorf("plan mode already active")
-				}
-				return nil
-			})
-		}
-	}
-	for _, tool := range c.session.ToolsByName("exit_plan_mode") {
-		if exitTool, ok := tool.(*localtools.ExitPlanModeTool); ok {
-			exitTool.SetValidator(func() error {
-				if c.state.Snapshot().Phase != PhasePlanning {
-					return fmt.Errorf("exit_plan_mode is only available while planning")
 				}
 				return nil
 			})

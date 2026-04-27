@@ -38,6 +38,19 @@ type PromptMsg struct {
 	Text string
 }
 
+// ApprovedPlanMsg prints the just-approved plan into scrollback so the user
+// keeps a record of what was sanctioned for execution. The plan card itself
+// disappears the moment review ends, so without this the conversation jumps
+// from "approve?" straight to agent output with no plan context.
+//
+// Details carries already-formatted prefix-allowance lines (or any other
+// detail rows) so the tui package stays decoupled from the plan package.
+type ApprovedPlanMsg struct {
+	Title   string
+	Content string
+	Details []string
+}
+
 // ImageAttachedMsg notifies the Model that an image has been pasted from clipboard.
 type ImageAttachedMsg struct {
 	Block agentcore.ContentBlock // pre-built ImageBlock (base64 + mime)

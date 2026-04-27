@@ -123,7 +123,12 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
 		askTool,
 		localtools.NewEnterPlanMode(),
-		localtools.NewExitPlanMode(),
+		// exit_plan_mode is intentionally NOT registered here: it only makes
+		// sense while a plan is being drafted. Plan.Manager.newExitTool()
+		// adds an instance to the active toolset for PhasePlanning and
+		// drops it on approval/cancel via RestoreAllTools(). Registering it
+		// globally would let the model call it post-approval and trip the
+		// validator with "exit_plan_mode is only available while planning".
 	)
 	builtTools = append(builtTools, cronTools...)
 
@@ -193,10 +198,11 @@ var coreToolNames = map[string]bool{
 	"task_update": true,
 	"task_list":   true,
 	"task_get":    true,
-	// Interaction / plan mode — turn-1 UX primitives.
+	// Interaction / plan mode — turn-1 UX primitives. exit_plan_mode is
+	// intentionally absent: it is only exposed while drafting a plan (see
+	// plan.Manager.applyState) and would otherwise be callable after approval.
 	"ask_user":        true,
 	"enter_plan_mode": true,
-	"exit_plan_mode":  true,
 }
 
 // supportsToolSearch reports whether the given provider/model combination

@@ -224,6 +224,51 @@ func (m *Model) RenderPlanBar() string {
 	return PlanBoxStyle.Render(b.String())
 }
 
+// renderApprovedPlan formats the just-approved plan for the scrollback so
+// users keep a record of what was sanctioned after the review card closes.
+// Visual structure mirrors RenderPlanBar's plan-content section (header +
+// dashed rules + markdown body + allowed-command details) without the card
+// border, so it reads as a natural continuation of the conversation.
+func (m *Model) renderApprovedPlan(msg ApprovedPlanMsg) string {
+	content := strings.TrimSpace(msg.Content)
+	title := strings.TrimSpace(msg.Title)
+	if content == "" && title == "" && len(msg.Details) == 0 {
+		return ""
+	}
+
+	ruleWidth := max(m.Width-6, 20)
+	rule := MutedStyle.Render(strings.Repeat("─", ruleWidth))
+
+	header := "Plan approved"
+	if title != "" {
+		header += " · " + title
+	}
+
+	var b strings.Builder
+	b.WriteString(askDescStyle.Render(header))
+	b.WriteByte('\n')
+
+	if content != "" {
+		b.WriteString(rule)
+		b.WriteByte('\n')
+		rendered := strings.TrimRight(m.renderMarkdownBlock(content, 0), "\n")
+		b.WriteString(rendered)
+		b.WriteByte('\n')
+		b.WriteString(rule)
+	}
+
+	for _, line := range msg.Details {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		b.WriteByte('\n')
+		b.WriteString(askDescStyle.Render(line))
+	}
+
+	return b.String()
+}
+
 // RenderContextBar renders the context line below the input (env info).
 func (m *Model) RenderContextBar() string {
 	if m.QuitPending {
@@ -440,8 +485,7 @@ const taskTreeMaxVisible = 5
 // Running line. Two layouts mirror Claude Code's TaskListV2:
 //
 //	nested (agent running, hangs off the Running spinner):
-//	  ⎿  Tasks 3/8
-//	     ☐ pending subject
+//	  ⎿  ☐ pending subject
 //	     ▣ in-progress active form
 //	     ✓ completed subject              (strikethrough)
 //	     … +N pending, M completed
@@ -502,25 +546,31 @@ func (m *Model) renderTaskTree() string {
 	}
 
 	if m.Running {
-		return renderTaskTreeNested(snap, visible, hiddenItems)
+		return renderTaskTreeNested(visible, hiddenItems)
 	}
 	return renderTaskTreeStandalone(snap, visible, hiddenItems)
 }
 
 // renderTaskTreeNested formats the tree as a child of the Running spinner
 // line — connector pulls the eye down from the parent into the checklist.
-func renderTaskTreeNested(snap *storage.TaskSnapshot, visible, hiddenItems []storage.Task) string {
+// The connector hangs off the first task line so the tree visually attaches
+// to the Running parent without a redundant "Tasks N/M" header row.
+func renderTaskTreeNested(visible, hiddenItems []storage.Task) string {
+	if len(visible) == 0 {
+		return ""
+	}
+
 	var b strings.Builder
 
-	header := fmt.Sprintf("Tasks %d/%d", snap.Completed, snap.Total)
-	b.WriteString("  ")
-	b.WriteString(ConnectorStyle.Render(TreeConnector))
-	b.WriteString(lipgloss.NewStyle().Foreground(Accent).Render(header))
-
 	const indent = "     " // 2 (margin) + 3 (TreeConnector width)
-	for _, t := range visible {
-		b.WriteByte('\n')
-		b.WriteString(indent)
+	for i, t := range visible {
+		if i == 0 {
+			b.WriteString("  ")
+			b.WriteString(ConnectorStyle.Render(TreeConnector))
+		} else {
+			b.WriteByte('\n')
+			b.WriteString(indent)
+		}
 		b.WriteString(renderTaskTreeLine(t))
 	}
 	if summary := taskOverflowSummary(hiddenItems); summary != "" {

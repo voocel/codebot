@@ -77,6 +77,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleCommandResult(msg)
 	case PromptMsg:
 		return m.handlePrompt(msg)
+	case ApprovedPlanMsg:
+		return m.handleApprovedPlan(msg)
 	case ImageAttachedMsg:
 		m.Pasting--
 		m.Images = append(m.Images, msg.Block)
@@ -714,6 +716,20 @@ func (m *Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 		return m, m.printBlock(output)
 	}
 	return m, nil
+}
+
+// handleApprovedPlan prints the approved plan into scrollback so the user
+// retains a copy after the review card disappears.
+func (m *Model) handleApprovedPlan(msg ApprovedPlanMsg) (tea.Model, tea.Cmd) {
+	rendered := m.renderApprovedPlan(msg)
+	if rendered == "" {
+		return m, nil
+	}
+	if m.ShowWelcome {
+		rendered = m.renderWelcome() + "\n" + rendered
+		m.ShowWelcome = false
+	}
+	return m, m.printBlock(rendered)
 }
 
 // handlePrompt processes an injected prompt — renders as user message and sends to agent.

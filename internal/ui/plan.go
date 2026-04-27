@@ -64,13 +64,36 @@ func (a *App) executePlan() tea.Cmd {
 	if a.PlanManager == nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
-	if _, _, _, err := a.PlanManager.Approve(); err != nil {
+	title, content, commands, err := a.PlanManager.Approve()
+	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
 	a.planOtherMode = false
 	a.planOtherBuf = ""
 	a.planChoice = 0
-	return a.sendAsPrompt("The plan has been approved. Execute it now.")
+
+	approved := tui.ApprovedPlanMsg{
+		Title:   title,
+		Content: content,
+		Details: describeAllowedCommandLines(commands),
+	}
+	emitApproved := func() tea.Msg { return approved }
+	return tea.Sequence(emitApproved, a.sendAsPrompt("The plan has been approved. Execute it now."))
+}
+
+// describeAllowedCommandLines mirrors allowedCommandLines() but takes an
+// explicit slice so we can render the just-approved snapshot even after the
+// plan manager has cleared its review state.
+func describeAllowedCommandLines(commands []plan.AllowedCommand) []string {
+	labels := plan.DescribeAllowedCommands(commands)
+	if len(labels) == 0 {
+		return nil
+	}
+	lines := []string{"Allowed command prefixes:"}
+	for _, label := range labels {
+		lines = append(lines, "- "+label)
+	}
+	return lines
 }
 
 func (a *App) cancelPlanMode() tea.Cmd {
