@@ -61,6 +61,7 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 		defer errMu.Unlock()
 		return exitErr
 	}
+	hiddenToolCalls := make(map[string]struct{})
 
 	unsub := sess.Subscribe(func(ev agent.SessionEvent) {
 		if text, _, ok := formatAutoCompactionEvent(ev); ok {
@@ -105,16 +106,18 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 			}
 
 		case agentcore.EventToolExecStart:
-			// Mirror TUI: hide AI bookkeeping tools (task_create/update/get/list)
-			// from text mode stderr too. JSON mode above stays unfiltered so
-			// scripts that consume the JSONL stream still get full audit data.
-			if tui.IsHiddenTool(ae.Tool) {
+			// Mirror TUI: hide internal tool calls from text mode stderr too.
+			// JSON mode above stays unfiltered so scripts that consume the
+			// JSONL stream still get full audit data.
+			if tui.IsHiddenToolCall(ae.Tool, ae.Args) {
+				hiddenToolCalls[ae.ToolID] = struct{}{}
 				return
 			}
 			fmt.Fprintf(os.Stderr, "[tool] %s\n", ae.Tool)
 
 		case agentcore.EventToolExecEnd:
-			if tui.IsHiddenTool(ae.Tool) {
+			if _, hidden := hiddenToolCalls[ae.ToolID]; hidden || tui.IsHiddenToolCall(ae.Tool, ae.Args) {
+				delete(hiddenToolCalls, ae.ToolID)
 				return
 			}
 			if ae.IsError {

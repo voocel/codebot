@@ -123,12 +123,11 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
 		askTool,
 		localtools.NewEnterPlanMode(),
-		// exit_plan_mode is intentionally NOT registered here: it only makes
-		// sense while a plan is being drafted. Plan.Manager.newExitTool()
-		// adds an instance to the active toolset for PhasePlanning and
-		// drops it on approval/cancel via RestoreAllTools(). Registering it
-		// globally would let the model call it post-approval and trip the
-		// validator with "exit_plan_mode is only available while planning".
+		// Keep exit_plan_mode in the base toolset: agentcore captures the tool
+		// list at run start, so adding it dynamically after enter_plan_mode is
+		// too late for the same planning run. Plan.Manager still filters the
+		// visible active toolset and validates out-of-phase calls.
+		localtools.NewExitPlanMode(),
 	)
 	builtTools = append(builtTools, cronTools...)
 
@@ -185,24 +184,23 @@ func buildHookSupport(input *resolvedInput, services *bootServices, settings con
 // keep the base prompt compact.
 var coreToolNames = map[string]bool{
 	// Filesystem + shell — used in virtually every turn.
-	"read": true,
+	"read":  true,
 	"write": true,
-	"edit": true,
-	"bash": true,
-	"grep": true,
-	"glob": true,
-	"ls":   true,
+	"edit":  true,
+	"bash":  true,
+	"grep":  true,
+	"glob":  true,
+	"ls":    true,
 	// Task management — if present, should be immediately callable
 	// (the system prompt tells the model to use them proactively).
 	"task_create": true,
 	"task_update": true,
 	"task_list":   true,
 	"task_get":    true,
-	// Interaction / plan mode — turn-1 UX primitives. exit_plan_mode is
-	// intentionally absent: it is only exposed while drafting a plan (see
-	// plan.Manager.applyState) and would otherwise be callable after approval.
+	// Interaction / plan mode — turn-1 UX primitives.
 	"ask_user":        true,
 	"enter_plan_mode": true,
+	"exit_plan_mode":  true,
 }
 
 // supportsToolSearch reports whether the given provider/model combination
@@ -212,23 +210,24 @@ var coreToolNames = map[string]bool{
 // intentionally excluded — see the note below.
 //
 // OpenAI caveat (2026-04):
-//   The deferred-tool-search protocol relies on two mechanisms that today are
-//   Anthropic-specific in our stack:
-//     1. defer_loading: true on the tool spec      (litellm/anthropic.go:223)
-//     2. tool_reference content blocks expanded    (litellm/anthropic.go:825)
-//        server-side into the real tool schema
 //
-//   The OpenAI / OpenAI-compat providers in litellm do NOT honor either. On
-//   those paths, "activating" a deferred tool simply re-adds its schema to
-//   the tools[] array mid-session, which invalidates OpenAI's 24h prefix
-//   cache every time the set changes — costing far more tokens than deferring
-//   ever saved. So we opt OpenAI out and send every tool up-front, keeping
-//   the prefix identical across turns.
+//	The deferred-tool-search protocol relies on two mechanisms that today are
+//	Anthropic-specific in our stack:
+//	  1. defer_loading: true on the tool spec      (litellm/anthropic.go:223)
+//	  2. tool_reference content blocks expanded    (litellm/anthropic.go:825)
+//	     server-side into the real tool schema
 //
-//   GPT-5.4 reportedly has native tool-search support on the official
-//   endpoint, but we have not wired litellm's openai provider to emit the
-//   right request shape yet. Revisit here when that support lands —
-//   the block below is the single switch to flip.
+//	The OpenAI / OpenAI-compat providers in litellm do NOT honor either. On
+//	those paths, "activating" a deferred tool simply re-adds its schema to
+//	the tools[] array mid-session, which invalidates OpenAI's 24h prefix
+//	cache every time the set changes — costing far more tokens than deferring
+//	ever saved. So we opt OpenAI out and send every tool up-front, keeping
+//	the prefix identical across turns.
+//
+//	GPT-5.4 reportedly has native tool-search support on the official
+//	endpoint, but we have not wired litellm's openai provider to emit the
+//	right request shape yet. Revisit here when that support lands —
+//	the block below is the single switch to flip.
 func supportsToolSearch(provider, model string) bool {
 	p := strings.ToLower(provider)
 	m := strings.ToLower(model)

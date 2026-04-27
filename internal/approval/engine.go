@@ -22,6 +22,17 @@ type Engine struct {
 	tool         decisionEngine
 }
 
+// planModeAllowedTools lists Internal-capability tools that may run while
+// codebot is in plan mode. Plan mode is read-only by default; these are the
+// control-plane tools that drive the plan-mode UX itself, so blocking them
+// would make the mode unusable. Listed centrally so the policy is auditable
+// in one place rather than scattered across each tool's metadata.
+var planModeAllowedTools = []string{
+	"exit_plan_mode", // submits the plan for review — exit point of plan mode
+	"ask_user",       // structured clarification — needed mid-planning
+	"tool_search",    // schema discovery for deferred tools — pure inspection
+}
+
 func NewEngine(cwd string, mode Mode, rules *RuleSet, onAudit func(AuditEntry)) (*Engine, error) {
 	store, err := permission.NewStore(config.ApprovalsPath(cwd))
 	if err != nil {
@@ -34,11 +45,12 @@ func NewEngine(cwd string, mode Mode, rules *RuleSet, onAudit func(AuditEntry)) 
 		rules:        rules,
 		sessionAllow: make(map[string]storedEntry),
 		tool: permission.NewEngine(permission.EngineConfig{
-			Workspace: cwd,
-			Mode:      permission.Mode(mode),
-			Rules:     (*permission.RuleSet)(rules),
-			Store:     store,
-			OnAudit:   onAudit,
+			Workspace:            cwd,
+			Mode:                 permission.Mode(mode),
+			Rules:                (*permission.RuleSet)(rules),
+			Store:                store,
+			OnAudit:              onAudit,
+			PlanModeAllowedTools: planModeAllowedTools,
 		}),
 	}, nil
 }

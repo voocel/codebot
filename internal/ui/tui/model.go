@@ -19,12 +19,9 @@ type PlanBarInfo struct {
 	Choices []string // selectable options
 	Active  int      // active choice index
 
-	// Plan review card fields. Title + PlanContent + PlanFilePath drive the
-	// CC-style review dialog: a "Ready to code?" heading, the plan markdown
-	// rendered in-line with dashed top/bottom rules, and a footer hint with
-	// the on-disk path.
+	// Plan review card fields. The plan body is already in scrollback; this
+	// card only shows the title, constraints, choices, and edit path.
 	Title        string
-	PlanContent  string
 	PlanFilePath string
 	Details      []string
 	OtherMode    bool   // typing custom feedback
@@ -119,10 +116,15 @@ type State struct {
 	Streaming *strings.Builder
 	Thinking  *strings.Builder
 	IsStream  bool
+	// SuppressNextAssistantText avoids double-printing when an in-flight
+	// assistant stream is flushed manually before a terminal tool aborts the
+	// run, but a late MessageEnd still arrives with the same content.
+	SuppressNextAssistantText string
 
 	Running         bool
 	TurnCount       int
 	PendingTools    map[string]string           // toolID -> tool name
+	HiddenToolCalls map[string]struct{}         // toolID -> internal call hidden from UI
 	ToolHeaders     map[string]string           // toolID -> formatted header (printed at end)
 	ToolOutputBuf   map[string]*strings.Builder // toolID -> streaming output
 	ToolDeltaBuf    map[string]*strings.Builder // toolID -> accumulated subagent delta text
@@ -282,6 +284,7 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 			Streaming:       &strings.Builder{},
 			Thinking:        &strings.Builder{},
 			PendingTools:    make(map[string]string),
+			HiddenToolCalls: make(map[string]struct{}),
 			ToolHeaders:     make(map[string]string),
 			ToolOutputBuf:   make(map[string]*strings.Builder),
 			ToolDeltaBuf:    make(map[string]*strings.Builder),

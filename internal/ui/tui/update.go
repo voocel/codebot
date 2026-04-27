@@ -77,8 +77,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleCommandResult(msg)
 	case PromptMsg:
 		return m.handlePrompt(msg)
-	case ApprovedPlanMsg:
-		return m.handleApprovedPlan(msg)
 	case ImageAttachedMsg:
 		m.Pasting--
 		m.Images = append(m.Images, msg.Block)
@@ -718,20 +716,6 @@ func (m *Model) handleCommandResult(msg CommandResultMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleApprovedPlan prints the approved plan into scrollback so the user
-// retains a copy after the review card disappears.
-func (m *Model) handleApprovedPlan(msg ApprovedPlanMsg) (tea.Model, tea.Cmd) {
-	rendered := m.renderApprovedPlan(msg)
-	if rendered == "" {
-		return m, nil
-	}
-	if m.ShowWelcome {
-		rendered = m.renderWelcome() + "\n" + rendered
-		m.ShowWelcome = false
-	}
-	return m, m.printBlock(rendered)
-}
-
 // handlePrompt processes an injected prompt — renders as user message and sends to agent.
 func (m *Model) handlePrompt(msg PromptMsg) (tea.Model, tea.Cmd) {
 	text := msg.Text
@@ -775,10 +759,10 @@ func (m *Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 	sb.WriteString("\n\n")
 	sb.WriteString(MutedStyle.Render("  ── restored session ──"))
 
-	toolCallNames := buildRestoreToolIndex(msg.Msgs)
+	toolCalls := buildRestoreToolIndex(msg.Msgs)
 
 	for _, am := range msg.Msgs {
-		m.appendRestoredMessage(&sb, am, toolCallNames)
+		m.appendRestoredMessage(&sb, am, toolCalls)
 	}
 
 	sb.WriteString("\n\n")
@@ -786,28 +770,33 @@ func (m *Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 	return m, m.Emit(sb.String())
 }
 
-func buildRestoreToolIndex(msgs []agentcore.AgentMessage) map[string]string {
-	toolCallNames := make(map[string]string)
+type restoredToolCall struct {
+	name string
+	args json.RawMessage
+}
+
+func buildRestoreToolIndex(msgs []agentcore.AgentMessage) map[string]restoredToolCall {
+	toolCalls := make(map[string]restoredToolCall)
 	for _, am := range msgs {
 		concrete, ok := am.(agentcore.Message)
 		if !ok || concrete.GetRole() != agentcore.RoleAssistant {
 			continue
 		}
 		for _, tc := range concrete.ToolCalls() {
-			toolCallNames[tc.ID] = tc.Name
+			toolCalls[tc.ID] = restoredToolCall{name: tc.Name, args: tc.Args}
 		}
 	}
-	return toolCallNames
+	return toolCalls
 }
 
-func (m *Model) appendRestoredMessage(sb *strings.Builder, am agentcore.AgentMessage, toolCallNames map[string]string) {
+func (m *Model) appendRestoredMessage(sb *strings.Builder, am agentcore.AgentMessage, toolCalls map[string]restoredToolCall) {
 	switch am.GetRole() {
 	case agentcore.RoleUser:
 		m.appendRestoredUserMessage(sb, am)
 	case agentcore.RoleAssistant:
 		m.appendRestoredAssistantMessage(sb, am)
 	case agentcore.RoleTool:
-		m.appendRestoredToolMessage(sb, am, toolCallNames)
+		m.appendRestoredToolMessage(sb, am, toolCalls)
 	}
 }
 
@@ -836,7 +825,7 @@ func (m *Model) appendRestoredAssistantMessage(sb *strings.Builder, am agentcore
 		return
 	}
 	for _, tc := range concrete.ToolCalls() {
-		if IsHiddenTool(tc.Name) {
+		if IsHiddenToolCall(tc.Name, tc.Args) {
 			continue
 		}
 		header := ToolIconStyle.Render("● ") + RenderToolHeader(tc.Name, tc.Args)
@@ -845,17 +834,18 @@ func (m *Model) appendRestoredAssistantMessage(sb *strings.Builder, am agentcore
 	}
 }
 
-func (m *Model) appendRestoredToolMessage(sb *strings.Builder, am agentcore.AgentMessage, toolCallNames map[string]string) {
+func (m *Model) appendRestoredToolMessage(sb *strings.Builder, am agentcore.AgentMessage, toolCalls map[string]restoredToolCall) {
 	concrete, ok := am.(agentcore.Message)
 	if !ok {
 		return
 	}
 	toolCallID, _ := concrete.Metadata["tool_call_id"].(string)
-	if IsHiddenTool(toolCallNames[toolCallID]) {
+	toolCall := toolCalls[toolCallID]
+	if IsHiddenToolCall(toolCall.name, toolCall.args) {
 		return
 	}
 	isError, _ := concrete.Metadata["is_error"].(bool)
-	body := m.renderRestoredToolBody(toolCallNames[toolCallID], json.RawMessage(am.TextContent()), isError)
+	body := m.renderRestoredToolBody(toolCall.name, json.RawMessage(am.TextContent()), isError)
 	if body == "" {
 		return
 	}

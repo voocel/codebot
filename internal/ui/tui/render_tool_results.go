@@ -174,40 +174,25 @@ func expandTabs(s string) string {
 // Filesystem (write / ls / read)
 // ---------------------------------------------------------------------------
 
-// RenderWriteResult renders the write tool result with a green preview of the written content.
+// RenderWriteResult renders the write completion as a summary. The content
+// preview is already emitted during the preview update, so repeating it here
+// duplicates the same file body in scrollback.
 func RenderWriteResult(result json.RawMessage) string {
-	connector := ConnectorStyle.Render(TreeConnector)
+	prefix := ToolIconStyle.Render("✓  ")
 	if len(result) == 0 {
-		return connector + MutedStyle.Render("(file written)")
+		return prefix + MutedStyle.Render("(file written)")
 	}
 
 	var parsed map[string]any
 	if err := json.Unmarshal(result, &parsed); err != nil {
-		return connector + TruncateLines(string(result), 10)
+		return prefix + TruncateLines(string(result), 10)
 	}
 
 	msg, _ := parsed["message"].(string)
-	preview, _ := parsed["preview"].(string)
-	if preview == "" {
-		if msg == "" {
-			msg = "(file written)"
-		}
-		return connector + MutedStyle.Render(msg)
+	if msg == "" {
+		msg = "(file written)"
 	}
-
-	previewLines := strings.Split(strings.TrimRight(preview, "\n"), "\n")
-	stats := fmt.Sprintf("Wrote %d lines", len(previewLines))
-
-	var sb strings.Builder
-	sb.WriteString(connector + MutedStyle.Render(stats) + "\n")
-	for _, line := range previewLines {
-		if strings.HasPrefix(line, "+") {
-			sb.WriteString(DiffAddStyle.Render(line) + "\n")
-		} else {
-			sb.WriteString(MutedStyle.Render(line) + "\n")
-		}
-	}
-	return strings.TrimRight(sb.String(), "\n")
+	return prefix + MutedStyle.Render(msg)
 }
 
 // countDiffLines counts +/- prefixed lines in a diff, ignoring +++ and ---

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/permission"
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/storage"
@@ -107,6 +108,9 @@ func (t *TaskGetTool) Name() string                           { return "task_get
 func (t *TaskGetTool) Label() string                          { return "Get Task" }
 func (t *TaskGetTool) ReadOnly(_ json.RawMessage) bool        { return true }
 func (t *TaskGetTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
+func (t *TaskGetTool) PermissionMetadata() permission.Metadata {
+	return permission.Metadata{Capability: permission.CapabilityRead}
+}
 func (t *TaskGetTool) Description() string {
 	return `Use this tool to retrieve a task by ID from the task list.
 
@@ -317,6 +321,9 @@ func (t *TaskListTool) Name() string                           { return "task_li
 func (t *TaskListTool) Label() string                          { return "List Tasks" }
 func (t *TaskListTool) ReadOnly(_ json.RawMessage) bool        { return true }
 func (t *TaskListTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
+func (t *TaskListTool) PermissionMetadata() permission.Metadata {
+	return permission.Metadata{Capability: permission.CapabilityRead}
+}
 func (t *TaskListTool) Description() string {
 	return `Use this tool to list all tasks in the task list.
 
@@ -462,7 +469,6 @@ func taskHasOpenBlockers(task storage.Task, unresolved map[string]struct{}) bool
 	}
 	return false
 }
-
 
 // ---------------------------------------------------------------------------
 // TaskOutputTool — read/wait for background task output

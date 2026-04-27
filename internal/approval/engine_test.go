@@ -42,6 +42,39 @@ func TestApproveHookAllowAlwaysPersists(t *testing.T) {
 	}
 }
 
+func TestPlanModeAllowsControlPlaneTools(t *testing.T) {
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetPlanMode(true)
+
+	for _, name := range planModeAllowedTools {
+		decision, err := engine.Decide(context.Background(), permission.Request{
+			ToolName: name,
+			Metadata: permission.Metadata{Capability: permission.CapabilityInternal},
+		})
+		if err != nil {
+			t.Fatalf("Decide %s: %v", name, err)
+		}
+		if decision == nil || !decision.Allowed() {
+			t.Fatalf("expected %s to be allowed in plan mode, got %#v", name, decision)
+		}
+	}
+
+	// An unlisted Internal tool stays blocked — the allowlist is exhaustive.
+	decision, err := engine.Decide(context.Background(), permission.Request{
+		ToolName: "task_create",
+		Metadata: permission.Metadata{Capability: permission.CapabilityInternal},
+	})
+	if err != nil {
+		t.Fatalf("Decide task_create: %v", err)
+	}
+	if decision == nil || decision.Allowed() {
+		t.Fatalf("expected task_create to be denied in plan mode, got %#v", decision)
+	}
+}
+
 func TestApproveCommandRespectsPlanMode(t *testing.T) {
 	engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
 	if err != nil {

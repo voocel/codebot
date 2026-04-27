@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/storage"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 type stubModel struct{}
@@ -132,5 +133,49 @@ func TestControllerEnterSubmitApprove(t *testing.T) {
 	}
 	if decision == nil || !decision.Allowed() {
 		t.Fatalf("expected approved plan action to allow tests, got %#v", decision)
+	}
+}
+
+func TestEnterPlanToolSynchronouslyEntersPlanMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := storage.NewManager(dir).Create(dir)
+	if err != nil {
+		t.Fatalf("create session store: %v", err)
+	}
+	defer store.Close()
+
+	engine, err := approval.NewEngine(dir, approval.ModeBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	enterTool := localtools.NewEnterPlanMode()
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubModel{}), agentcore.WithTools(enterTool))
+	session := agent.NewSession(agent.SessionConfig{
+		Agent: ag,
+		Settings: config.Resolved{
+			MaxTurns: 30,
+		},
+		Cwd:   dir,
+		Tools: []agentcore.Tool{enterTool},
+	})
+	defer session.Close()
+
+	controller := NewManager(session, engine, storage.NewPlanStore(dir), store)
+	if err := controller.Restore(State{Phase: PhaseOff}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	result, err := enterTool.Execute(context.Background(), json.RawMessage(`{"task":"build novel cli"}`))
+	if err != nil {
+		t.Fatalf("enter tool execute: %v", err)
+	}
+	if controller.Snapshot().Phase != PhasePlanning {
+		t.Fatalf("phase = %q, want planning", controller.Snapshot().Phase)
+	}
+	if !strings.Contains(string(result), "The review confirmation UI appears only after exit_plan_mode succeeds") {
+		t.Fatalf("expected strict submission prompt in result, got %s", result)
 	}
 }

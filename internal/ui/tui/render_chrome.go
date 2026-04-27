@@ -59,27 +59,12 @@ func (m *Model) RenderStatusBar() string {
 	}
 }
 
-// planContentHardCap is a generous safety net to keep the card from
-// becoming absurdly tall on pathological 200+ line plans. We deliberately
-// do NOT clip content to the terminal viewport — Claude Code renders the
-// full plan markdown and lets the top of the dialog scroll off-screen
-// naturally on small terminals (the user scrolls up to see it). Aggressive
-// height-based truncation hides the very thing the user opened the dialog
-// to read; the previous attempt at it produced "the card looks fine but
-// the plan is invisible" complaints. Beyond this cap we still emit
-// "+N more lines · Ctrl+E to view full plan" so extreme cases stay
-// addressable.
-const planContentHardCap = 80
-
-// RenderPlanBar renders the plan review card. Mirrors Claude Code's
-// ExitPlanModePermissionRequest layout:
+// RenderPlanBar renders the plan review card. The full plan has already been
+// emitted into scrollback by the assistant, so this card only asks for the
+// user's decision and shows execution constraints.
 //
 //	┌─ "Ready to code?" (Accent border) ────────────┐
-//	│ Here is the plan:                             │
-//	│ ─────────────────────────────────             │
-//	│ <plan markdown>                               │
-//	│ ─────────────────────────────────             │
-//	│                                               │
+//	│ Plan ready: <title>                           │
 //	│ Allowed command prefixes:                     │
 //	│ - <cmd>                                       │
 //	│                                               │
@@ -104,17 +89,10 @@ func (m *Model) RenderPlanBar() string {
 
 	optionCount := len(plan.Choices) + 1 // +1 for "Type here"
 
-	// Rule width must match the markdown wrap width (`m.Width - 6`, set in
-	// handleResize) so the dashed top/bottom rules visually align with the
-	// widest plan-content line. If we cap the rule narrower than markdown,
-	// long plan lines push the box out wider than the rule and the layout
-	// breaks. Floored at 20 so a tiny terminal still produces a visible rule.
+	// Keep details and footer wrapped inside the card instead of letting long
+	// plan file paths push the right border past the terminal width.
 	ruleWidth := max(m.Width-6, 20)
-	rule := MutedStyle.Render(strings.Repeat("─", ruleWidth))
 
-	// Pre-render the footer so long paths wrap inside the card (set the
-	// width on askHintStyle so lipgloss soft-wraps at ruleWidth instead of
-	// pushing the right border past m.Width).
 	var renderedFooter string
 	if !plan.OtherMode && plan.PlanFilePath != "" {
 		footer := "Ctrl+E to edit in $EDITOR · " + plan.PlanFilePath
@@ -127,41 +105,12 @@ func (m *Model) RenderPlanBar() string {
 	b.WriteString(askQuestionStyle.Render("Ready to code?"))
 	b.WriteString("\n\n")
 
-	// Plan content section — header, dashed top rule, markdown, dashed
-	// bottom rule. Skipped if there's literally nothing to show, so the
-	// dialog still works for empty plans.
-	planSrc := strings.TrimSpace(plan.PlanContent)
-	if planSrc == "" && plan.Title != "" {
-		planSrc = "# " + plan.Title
+	if title := strings.TrimSpace(plan.Title); title != "" {
+		b.WriteString(askDescStyle.Render("Plan ready: " + title))
+	} else {
+		b.WriteString(askDescStyle.Render("Plan ready."))
 	}
-	if planSrc != "" {
-		b.WriteString(askDescStyle.Render("Here is the plan:"))
-		b.WriteByte('\n')
-		b.WriteString(rule)
-		b.WriteByte('\n')
-
-		// Render the full plan in-line. We deliberately don't clip to
-		// terminal height — Claude Code shows the full plan and lets the
-		// top of the dialog scroll into OS scrollback on small terminals.
-		// Only pathological plans (>planContentHardCap rendered lines)
-		// get truncated, with a "+N more · Ctrl+E" hint pointing the
-		// user at the editor to view the rest.
-		rendered := strings.TrimRight(m.renderMarkdownBlock(planSrc, 0), "\n")
-		renderedLines := strings.Split(rendered, "\n")
-		hidden := 0
-		if len(renderedLines) > planContentHardCap {
-			hidden = len(renderedLines) - planContentHardCap
-			rendered = strings.Join(renderedLines[:planContentHardCap], "\n")
-		}
-		b.WriteString(rendered)
-		b.WriteByte('\n')
-		if hidden > 0 {
-			b.WriteString(askHintStyle.Render(fmt.Sprintf("… %d more lines · press Ctrl+E to view full plan", hidden)))
-			b.WriteByte('\n')
-		}
-		b.WriteString(rule)
-		b.WriteString("\n\n")
-	}
+	b.WriteString("\n\n")
 
 	// Allowed command prefixes (and any other plan review details).
 	for _, detail := range plan.Details {
@@ -213,60 +162,14 @@ func (m *Model) RenderPlanBar() string {
 		b.WriteString(askHintStyle.Render(fmt.Sprintf("Enter to select · ↑↓ Navigate · 1-%d Shortcut · Esc to cancel", optionCount)))
 	}
 
-	// Footer — Ctrl+E + plan file path, pre-rendered above with
-	// askHintStyle.Width(ruleWidth) so long paths wrap inside the card
-	// instead of pushing the right border off-screen.
+	// Footer — Ctrl+E + plan file path, pre-rendered above so long paths wrap
+	// inside the card instead of pushing the right border off-screen.
 	if renderedFooter != "" {
 		b.WriteByte('\n')
 		b.WriteString(renderedFooter)
 	}
 
 	return PlanBoxStyle.Render(b.String())
-}
-
-// renderApprovedPlan formats the just-approved plan for the scrollback so
-// users keep a record of what was sanctioned after the review card closes.
-// Visual structure mirrors RenderPlanBar's plan-content section (header +
-// dashed rules + markdown body + allowed-command details) without the card
-// border, so it reads as a natural continuation of the conversation.
-func (m *Model) renderApprovedPlan(msg ApprovedPlanMsg) string {
-	content := strings.TrimSpace(msg.Content)
-	title := strings.TrimSpace(msg.Title)
-	if content == "" && title == "" && len(msg.Details) == 0 {
-		return ""
-	}
-
-	ruleWidth := max(m.Width-6, 20)
-	rule := MutedStyle.Render(strings.Repeat("─", ruleWidth))
-
-	header := "Plan approved"
-	if title != "" {
-		header += " · " + title
-	}
-
-	var b strings.Builder
-	b.WriteString(askDescStyle.Render(header))
-	b.WriteByte('\n')
-
-	if content != "" {
-		b.WriteString(rule)
-		b.WriteByte('\n')
-		rendered := strings.TrimRight(m.renderMarkdownBlock(content, 0), "\n")
-		b.WriteString(rendered)
-		b.WriteByte('\n')
-		b.WriteString(rule)
-	}
-
-	for _, line := range msg.Details {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		b.WriteByte('\n')
-		b.WriteString(askDescStyle.Render(line))
-	}
-
-	return b.String()
 }
 
 // RenderContextBar renders the context line below the input (env info).

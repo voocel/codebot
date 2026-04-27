@@ -33,6 +33,41 @@ func IsHiddenTool(tool string) bool {
 	return false
 }
 
+// IsHiddenToolCall extends tool-level hiding with call-specific internal
+// filesystem paths. Auto-memory reads are system context hydration, like
+// AGENTS.md loading, so their ENOENT/success output should not enter the user
+// transcript.
+func IsHiddenToolCall(tool string, args json.RawMessage) bool {
+	if IsHiddenTool(tool) {
+		return true
+	}
+	if tool != "read" {
+		return false
+	}
+	return isAutoMemoryPath(extractPathArg(args))
+}
+
+func extractPathArg(args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var obj map[string]any
+	if json.Unmarshal(args, &obj) != nil {
+		return ""
+	}
+	path, _ := obj["path"].(string)
+	return path
+}
+
+func isAutoMemoryPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return strings.Contains(clean, "/memory/") &&
+		(strings.Contains(clean, "/.codebot/projects/") || strings.HasPrefix(clean, "~/.codebot/projects/"))
+}
+
 // ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------

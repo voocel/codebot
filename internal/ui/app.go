@@ -71,6 +71,11 @@ type App struct {
 	planChoice    int    // selected option in planReview menu
 	planOtherMode bool   // typing custom feedback
 	planOtherBuf  string // custom feedback buffer
+
+	// lastPlanningAssistantText keeps the visible plan text from the current
+	// planning turn so exit_plan_mode does not need to duplicate the whole
+	// plan in hidden tool-call arguments.
+	lastPlanningAssistantText string
 }
 
 func (a *App) reloadPluginState() error {

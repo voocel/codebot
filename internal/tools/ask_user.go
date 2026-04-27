@@ -8,6 +8,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/voocel/agentcore/permission"
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/codebot/internal/apperr"
 )
@@ -57,6 +58,9 @@ func (t *AskUserTool) SetHandler(h AskUserHandler) {
 
 func (t *AskUserTool) Name() string  { return "ask_user" }
 func (t *AskUserTool) Label() string { return "Ask User" }
+func (t *AskUserTool) PermissionMetadata() permission.Metadata {
+	return permission.Metadata{Capability: permission.CapabilityInternal}
+}
 func (t *AskUserTool) Description() string {
 	return `Ask the user structured questions when you need clarification, want to validate assumptions, or need decisions on implementation choices. Users can select from predefined options or provide custom input via "Other".`
 }

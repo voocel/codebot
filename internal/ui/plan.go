@@ -53,6 +53,7 @@ func (a *App) enterPlanMode(task string) tea.Cmd {
 	if a.PlanManager == nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
+	a.lastPlanningAssistantText = ""
 	prompt, err := a.PlanManager.Enter(task)
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
@@ -64,36 +65,15 @@ func (a *App) executePlan() tea.Cmd {
 	if a.PlanManager == nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
-	title, content, commands, err := a.PlanManager.Approve()
-	if err != nil {
+	if _, _, _, err := a.PlanManager.Approve(); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
 	a.planOtherMode = false
 	a.planOtherBuf = ""
 	a.planChoice = 0
+	a.lastPlanningAssistantText = ""
 
-	approved := tui.ApprovedPlanMsg{
-		Title:   title,
-		Content: content,
-		Details: describeAllowedCommandLines(commands),
-	}
-	emitApproved := func() tea.Msg { return approved }
-	return tea.Sequence(emitApproved, a.sendAsPrompt("The plan has been approved. Execute it now."))
-}
-
-// describeAllowedCommandLines mirrors allowedCommandLines() but takes an
-// explicit slice so we can render the just-approved snapshot even after the
-// plan manager has cleared its review state.
-func describeAllowedCommandLines(commands []plan.AllowedCommand) []string {
-	labels := plan.DescribeAllowedCommands(commands)
-	if len(labels) == 0 {
-		return nil
-	}
-	lines := []string{"Allowed command prefixes:"}
-	for _, label := range labels {
-		lines = append(lines, "- "+label)
-	}
-	return lines
+	return a.sendAsPrompt("The plan has been approved. Execute it now.")
 }
 
 func (a *App) cancelPlanMode() tea.Cmd {
@@ -107,6 +87,7 @@ func (a *App) cancelPlanMode() tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
 	a.resetPlanUI()
+	a.lastPlanningAssistantText = ""
 	return tui.SendCommandResult(tui.CommandStyle.Render("Plan mode cancelled. All tools restored."))
 }
 
@@ -121,6 +102,7 @@ func (a *App) resetPlanUI() {
 	a.planChoice = 0
 	a.planOtherMode = false
 	a.planOtherBuf = ""
+	a.lastPlanningAssistantText = ""
 }
 
 const planOptionCount = 3
@@ -217,11 +199,16 @@ func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
+	a.lastPlanningAssistantText = ""
 	return a.sendAsPrompt(prompt)
 }
 
 func (a *App) planOnEvent(m *tui.Model, ev agentcore.Event) tea.Cmd {
 	switch ev.Type {
+	case agentcore.EventMessageEnd:
+		if a.planPhase() == plan.PhasePlanning && ev.Message.GetRole() == agentcore.RoleAssistant {
+			a.lastPlanningAssistantText = strings.TrimSpace(ev.Message.TextContent())
+		}
 	case agentcore.EventToolExecEnd:
 		if ev.IsError {
 			return nil
@@ -235,8 +222,8 @@ func (a *App) planOnEvent(m *tui.Model, ev agentcore.Event) tea.Cmd {
 	}
 	// Plan review state is rendered live by RenderPlanBar (driven by
 	// planStatus). We deliberately don't emit a scrollback summary on
-	// EventAgentEnd anymore — the plan card already shows title, content,
-	// allowed commands, and choices in one place.
+	// EventAgentEnd anymore — the full plan is already in scrollback, and the
+	// plan card only shows title, allowed commands, and choices.
 	return nil
 }
 
@@ -271,7 +258,12 @@ func (a *App) onExitPlanMode(m *tui.Model, result json.RawMessage) tea.Cmd {
 
 	content := resp.Content
 	if strings.TrimSpace(content) == "" {
-		content = a.Session.LastAssistantText()
+		if m.Streaming != nil {
+			content = strings.TrimSpace(m.Streaming.String())
+		}
+	}
+	if strings.TrimSpace(content) == "" {
+		content = a.lastPlanningAssistantText
 	}
 	title := strings.TrimSpace(resp.Title)
 	if title == "" {
@@ -285,8 +277,10 @@ func (a *App) onExitPlanMode(m *tui.Model, result json.RawMessage) tea.Cmd {
 	a.planChoice = 0
 	a.planOtherMode = false
 	a.planOtherBuf = ""
+	a.lastPlanningAssistantText = ""
+	flush := m.FlushStreamingAssistant()
 	a.Session.AbortSilent()
-	return nil
+	return flush
 }
 
 func (a *App) showCurrentPlan() tea.Cmd {
@@ -336,19 +330,12 @@ func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {
 	if a.planPhase() != plan.PhaseReview || m.Running {
 		return nil
 	}
-	var content string
-	if a.PlanManager != nil {
-		if c, err := a.PlanManager.CurrentPlan(); err == nil {
-			content = c
-		}
-	}
 	var filePath string
 	if a.PlanManager != nil {
 		filePath = a.PlanManager.CurrentPlanPath()
 	}
 	return &tui.PlanBarInfo{
 		Title:        a.currentPlanTitle(),
-		PlanContent:  content,
 		PlanFilePath: filePath,
 		Details:      a.planReviewDetails(),
 		Choices:      []string{"Execute plan", "Exit plan mode"},

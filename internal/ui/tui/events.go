@@ -59,6 +59,38 @@ func (m *Model) printInline(content string) tea.Cmd {
 	return m.Emit(formatScrollbackBlock(content, true))
 }
 
+// FlushStreamingAssistant prints the current live assistant stream into
+// scrollback before a programmatic abort can skip EventMessageEnd.
+func (m *Model) FlushStreamingAssistant() tea.Cmd {
+	if m.Streaming == nil || m.Thinking == nil {
+		return nil
+	}
+	content := strings.TrimSpace(m.Streaming.String())
+	thinkingText := strings.TrimSpace(m.Thinking.String())
+	if content == "" && thinkingText == "" {
+		return nil
+	}
+
+	var block strings.Builder
+	if thinkingText != "" {
+		indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2)
+		block.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+		if content != "" {
+			block.WriteString("\n\n")
+		}
+	}
+	if content != "" {
+		indented := m.renderMarkdownBlock(content, 2)
+		block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
+		m.SuppressNextAssistantText = content
+	}
+
+	m.IsStream = false
+	m.Streaming.Reset()
+	m.Thinking.Reset()
+	return m.printBlock(block.String())
+}
+
 // HandleAgentEvent processes agent events.
 // Completed content is printed to terminal scrollback via tea.Println.
 // In-progress content (streaming, tool output) is shown in the live View().
@@ -81,6 +113,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.printBlock(m.renderRunSummary()))
 		m.QueuedMsgs = nil
 		clear(m.PendingTools)
+		clear(m.HiddenToolCalls)
 		clear(m.ToolHeaders)
 		clear(m.ToolOutputBuf)
 		clear(m.ToolDeltaBuf)
@@ -95,6 +128,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		m.IsStream = false
 		m.Streaming.Reset()
 		m.Thinking.Reset()
+		m.SuppressNextAssistantText = ""
 		if m.AskUser != nil {
 			close(m.AskUser.respCh)
 			m.AskUser = nil
@@ -142,6 +176,11 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 
 			content := strings.TrimSpace(ev.Message.TextContent())
 			thinkingText := strings.TrimSpace(ev.Message.ThinkingContent())
+			if content != "" && content == m.SuppressNextAssistantText {
+				content = ""
+				thinkingText = ""
+				m.SuppressNextAssistantText = ""
+			}
 
 			// Single printBlock to guarantee display order in scrollback.
 			var block strings.Builder
@@ -163,7 +202,8 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		// Hidden tools (Claude Code's TodoWrite/Task* policy) skip the visible
 		// pipeline entirely: no header, no output buffer, no tool count. The
 		// call still happens in the agent loop — only the TUI side is silent.
-		if IsHiddenTool(ev.Tool) {
+		if IsHiddenToolCall(ev.Tool, ev.Args) {
+			m.HiddenToolCalls[ev.ToolID] = struct{}{}
 			break
 		}
 		label := ev.Tool
@@ -189,7 +229,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case agentcore.EventToolExecUpdate:
-		if IsHiddenTool(ev.Tool) {
+		if _, hidden := m.HiddenToolCalls[ev.ToolID]; hidden || IsHiddenToolCall(ev.Tool, ev.Args) {
 			break
 		}
 		switch ev.UpdateKind {
@@ -243,9 +283,16 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case agentcore.EventToolExecEnd:
-		if IsHiddenTool(ev.Tool) {
+		if _, hidden := m.HiddenToolCalls[ev.ToolID]; hidden || IsHiddenToolCall(ev.Tool, ev.Args) {
+			delete(m.HiddenToolCalls, ev.ToolID)
+			delete(m.PendingTools, ev.ToolID)
+			delete(m.ToolHeaders, ev.ToolID)
+			delete(m.ToolOutputBuf, ev.ToolID)
+			delete(m.ToolDeltaBuf, ev.ToolID)
+			delete(m.ToolThinkingBuf, ev.ToolID)
 			break
 		}
+		delete(m.HiddenToolCalls, ev.ToolID)
 		delete(m.PendingTools, ev.ToolID)
 		delete(m.ToolOutputBuf, ev.ToolID)
 		delete(m.ToolDeltaBuf, ev.ToolID)
@@ -289,11 +336,17 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 
 		var block string
 		if body != "" {
-			block = header + "\n" + body
+			if header != "" {
+				block = header + "\n" + body
+			} else {
+				block = body
+			}
 		} else {
 			block = header
 		}
-		cmds = append(cmds, m.printBlock(block))
+		if block != "" {
+			cmds = append(cmds, m.printBlock(block))
+		}
 
 	case agentcore.EventError:
 		m.clearRetryStatus()

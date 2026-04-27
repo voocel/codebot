@@ -16,8 +16,12 @@ You are in plan mode. Explore and analyze the codebase, then create a detailed i
 
 IMPORTANT: When your plan is ready, you MUST:
 1. Write the FULL plan as text in the conversation
-2. Then call exit_plan_mode with the title, content, and any allowed_commands
+2. Immediately call exit_plan_mode with the title and any allowed_commands
 
+Do NOT ask the user for natural-language confirmation.
+Do NOT end the turn after only writing the plan.
+Do NOT repeat the full plan inside tool arguments; Codebot captures the visible assistant text.
+The review confirmation UI appears only after exit_plan_mode succeeds.
 Do NOT call exit_plan_mode before writing the plan. Do NOT modify any files.`
 
 type Manager struct {
@@ -79,7 +83,13 @@ func (c *Manager) Enter(task string) (string, error) {
 		return "", err
 	}
 
-	prompt := "You are now in plan mode. Explore the codebase and write a detailed implementation plan.\nWrite your complete plan as text, then call exit_plan_mode with the title, content, and any allowed command prefixes."
+	prompt := strings.Join([]string{
+		"You are now in plan mode. Explore the codebase and write a detailed implementation plan.",
+		"Write your complete plan as assistant text, then immediately call exit_plan_mode with the title and any allowed command prefixes.",
+		"Do not repeat the full plan inside tool arguments; Codebot captures the visible assistant text.",
+		"Do not ask the user to confirm in natural language. Do not end the turn after only writing the plan.",
+		"The review confirmation UI appears only after exit_plan_mode succeeds.",
+	}, "\n")
 	if next.Task != "" {
 		prompt += "\n\nTask: " + next.Task
 	}
@@ -233,14 +243,24 @@ func (c *Manager) applyState(state State) {
 }
 
 func (c *Manager) wireValidators() {
-	// exit_plan_mode is not registered as a base tool — it is created on demand
-	// via newExitTool() during PhasePlanning and dropped on approval/cancel.
-	// Only enter_plan_mode lives in allTools and needs a validator wired here.
 	for _, tool := range c.session.ToolsByName("enter_plan_mode") {
 		if enterTool, ok := tool.(*localtools.EnterPlanModeTool); ok {
 			enterTool.SetValidator(func() error {
 				if c.state.Snapshot().Phase != PhaseOff {
 					return fmt.Errorf("plan mode already active")
+				}
+				return nil
+			})
+			enterTool.SetHandler(func(task string) (string, error) {
+				return c.Enter(task)
+			})
+		}
+	}
+	for _, tool := range c.session.ToolsByName("exit_plan_mode") {
+		if exitTool, ok := tool.(*localtools.ExitPlanModeTool); ok {
+			exitTool.SetValidator(func() error {
+				if c.state.Snapshot().Phase != PhasePlanning {
+					return fmt.Errorf("exit_plan_mode is only available while planning")
 				}
 				return nil
 			})
@@ -255,6 +275,9 @@ func (c *Manager) newEnterTool() *localtools.EnterPlanModeTool {
 			return fmt.Errorf("plan mode already active")
 		}
 		return nil
+	})
+	tool.SetHandler(func(task string) (string, error) {
+		return c.Enter(task)
 	})
 	return tool
 }
