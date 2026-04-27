@@ -162,9 +162,17 @@ func BuildReminders(ctx ContextFiles, skills []skill.Spec) []string {
 	if ctx.SystemAppend != "" {
 		reminders = append(reminders, "<system-reminder>\n"+ctx.SystemAppend+"\n</system-reminder>")
 	}
-	if ctx.Memory != "" {
+	if ctx.MemoryDir != "" {
 		memPath := filepath.Join(ctx.MemoryDir, "MEMORY.md")
-		reminders = append(reminders, "<system-reminder>\nContents of "+memPath+" (auto-memory, persists across conversations):\n\n"+ctx.Memory+"\n</system-reminder>")
+		body := ctx.Memory
+		if body == "" {
+			// The system prompt promises MEMORY.md is always loaded into
+			// context. Without this placeholder the model sees the promise
+			// and tries to Read the file itself, which surfaces ENOENT on
+			// first session before any memory has been written.
+			body = "Your MEMORY.md is currently empty. When you save new memories, they will appear here."
+		}
+		reminders = append(reminders, "<system-reminder>\nContents of "+memPath+" (auto-memory, persists across conversations):\n\n"+body+"\n</system-reminder>")
 	}
 	return reminders
 }

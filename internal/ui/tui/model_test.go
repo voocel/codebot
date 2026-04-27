@@ -234,7 +234,7 @@ func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
 			return &PlanBarInfo{
 				Title:   "Refactor session manager",
 				Details: []string{"Allowed command prefixes:", "- go test — run tests"},
-				Choices: []string{"Execute plan", "Cancel"},
+				Choices: []string{"Execute plan", "Exit plan mode"},
 			}
 		},
 	})

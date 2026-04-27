@@ -80,9 +80,16 @@ func newApprovalEngine(input *resolvedInput) (*approval.Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("approval engine: %w", err)
 	}
+	memoryDir := config.MemoryDir(input.cwd)
 	approvalEngine.SetFilesystemRoots(approval.FilesystemRoots{
 		ReadRoots:  append(input.settings.Permissions.ReadRoots, config.SessionsDir(input.cwd)),
 		WriteRoots: input.settings.Permissions.WriteRoots,
+		// Auto-memory lives outside the user's workspace; mark it as a
+		// harness-managed path so reads/writes skip the OutsideRoots prompt
+		// and balanced-mode write approval. Deny rules and plan mode still
+		// apply (see permission.Engine.Decide).
+		InternalReadable: []string{memoryDir},
+		InternalWritable: []string{memoryDir},
 	})
 	return approvalEngine, nil
 }

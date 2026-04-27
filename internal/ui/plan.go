@@ -328,7 +328,7 @@ func (a *App) planStatus(m *tui.Model) *tui.PlanBarInfo {
 		PlanContent:  content,
 		PlanFilePath: filePath,
 		Details:      a.planReviewDetails(),
-		Choices:      []string{"Execute plan", "Cancel"},
+		Choices:      []string{"Execute plan", "Exit plan mode"},
 		Active:       a.planChoice,
 		OtherMode:    a.planOtherMode,
 		OtherBuf:     a.planOtherBuf,
