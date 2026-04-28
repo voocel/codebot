@@ -29,6 +29,7 @@ type App struct {
 	Session   *agent.Session
 	Cwd       string
 	GitBranch string
+	Version   string
 
 	ApprovalEngine *approval.Engine
 

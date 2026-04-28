@@ -76,7 +76,7 @@ var wordmarkGlyphs = map[rune][3]string{
 
 // renderWordmark composes "CODEBOT" as a 3-row 3D wordmark:
 //
-//	row 1 — top highlight (brightest, Title color)
+//	row 1 — top highlight (Strong, max contrast — pure black/white per theme)
 //	row 2 — mid body      (Brand color, solid)
 //	row 3 — bottom shade  (BrandSoft, simulates ambient shadow)
 //
@@ -97,7 +97,7 @@ func renderWordmark() string {
 		r3.WriteString(g[2])
 	}
 
-	topStyle := lipgloss.NewStyle().Foreground(Title)
+	topStyle := lipgloss.NewStyle().Foreground(Strong)
 	midStyle := lipgloss.NewStyle().Foreground(Brand).Bold(true)
 	botStyle := lipgloss.NewStyle().Foreground(BrandSoft)
 
@@ -168,7 +168,7 @@ func (m *Model) renderWelcome() string {
 		footerBits = append(footerBits, ContextChipStyle.Render(m.formatModelChip()))
 	}
 	if m.Cwd != "" {
-		footerBits = append(footerBits, ContextChipStyle.Render(shortenPath(m.Cwd)))
+		footerBits = append(footerBits, ContextChipStyle.Render(ShortenPath(m.Cwd)))
 	}
 	if m.GitBranch != "" {
 		footerBits = append(footerBits, ContextChipStyle.Render("branch "+m.GitBranch))

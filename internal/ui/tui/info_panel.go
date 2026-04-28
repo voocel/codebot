@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	reflowwrap "github.com/muesli/reflow/wrap"
 )
 
 // InfoPanel builds structured info displays used by /settings, /context, etc.
@@ -19,6 +20,7 @@ import (
 type InfoPanel struct {
 	title string
 	rows  []panelRow
+	width int // 0 = no wrap; otherwise the panel's available render width
 }
 
 type panelRowKind int
@@ -68,6 +70,13 @@ func (p *InfoPanel) Blank() {
 	p.rows = append(p.rows, panelRow{kind: rowBlank})
 }
 
+// SetWidth tells the panel how many columns it has to render in. When set,
+// values that exceed the value column wrap to subsequent lines indented under
+// the value column. width <= 0 disables wrapping (legacy behavior).
+func (p *InfoPanel) SetWidth(width int) {
+	p.width = width
+}
+
 // Render produces the final styled string.
 func (p *InfoPanel) Render() string {
 	if len(p.rows) == 0 {
@@ -92,10 +101,46 @@ func (p *InfoPanel) Render() string {
 	sectionStyle := CardSectionStyle
 	titleStyle := CardTitleStyle
 
+	const leftPad = 2 // gutter before the label column
+	// valueBudget is the width available for the value column. When width is
+	// unset or so narrow that wrapping would produce slivers, fall back to
+	// no-wrap (single-line) rendering.
+	valueBudget := 0
+	if p.width > 0 {
+		valueBudget = p.width - leftPad - colWidth
+		if valueBudget < 12 {
+			valueBudget = 0
+		}
+	}
+	indent := strings.Repeat(" ", leftPad+colWidth)
+
 	var sb strings.Builder
 	if p.title != "" {
 		sb.WriteString(titleStyle.Render(p.title))
 		sb.WriteString("\n")
+	}
+
+	writeRow := func(label, value string, vs lipgloss.Style) {
+		// Fast path: no wrap configured or value already fits.
+		if valueBudget == 0 || lipgloss.Width(value) <= valueBudget {
+			sb.WriteString(labelStyle.Render(fmt.Sprintf("  %-*s", colWidth, label)))
+			sb.WriteString(vs.Render(value))
+			sb.WriteString("\n")
+			return
+		}
+		// reflow/wrap force-breaks at displayed width — handles paths and
+		// other word-less strings correctly, and preserves ANSI color spans.
+		wrapped := strings.Split(
+			strings.TrimRight(reflowwrap.String(value, valueBudget), "\n"), "\n")
+		for i, line := range wrapped {
+			if i == 0 {
+				sb.WriteString(labelStyle.Render(fmt.Sprintf("  %-*s", colWidth, label)))
+			} else {
+				sb.WriteString(indent)
+			}
+			sb.WriteString(vs.Render(line))
+			sb.WriteString("\n")
+		}
 	}
 
 	for _, r := range p.rows {
@@ -106,17 +151,11 @@ func (p *InfoPanel) Render() string {
 			sb.WriteString(sectionStyle.Render(r.label))
 			sb.WriteString("\n")
 		case rowNormal:
-			sb.WriteString(labelStyle.Render(fmt.Sprintf("  %-*s", colWidth, r.label)))
-			sb.WriteString(valueStyle.Render(r.value))
-			sb.WriteString("\n")
+			writeRow(r.label, r.value, valueStyle)
 		case rowHint:
-			sb.WriteString(labelStyle.Render(fmt.Sprintf("  %-*s", colWidth, r.label)))
-			sb.WriteString(hintStyle.Render(r.value))
-			sb.WriteString("\n")
+			writeRow(r.label, r.value, hintStyle)
 		case rowWarn:
-			sb.WriteString(labelStyle.Render(fmt.Sprintf("  %-*s", colWidth, r.label)))
-			sb.WriteString(warnStyle.Render(r.value))
-			sb.WriteString("\n")
+			writeRow(r.label, r.value, warnStyle)
 		}
 	}
 

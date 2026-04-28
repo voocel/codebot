@@ -122,14 +122,14 @@ func (c *DebugHarnessCommand) View(width, height int) string {
 	return frame.Render()
 }
 
-func (c *DebugHarnessCommand) renderTurn() string {
+func (c *DebugHarnessCommand) renderTurn(width int) string {
 	s := c.state
 	toolCalls := 0
 	if s.hasRunSummary {
 		toolCalls = s.lastRunSummary.ToolCalls
 	}
 
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 	p.Row("Assistant responded", FormatBool(s.lastTurn.AssistantResponded))
 	p.Row("Tool calls", fmt.Sprintf("%d", toolCalls))
 	p.Row("Read-only tools", fmt.Sprintf("%d", s.lastTurn.ReadOnlyToolCalls))
@@ -141,9 +141,9 @@ func (c *DebugHarnessCommand) renderTurn() string {
 	return p.Render()
 }
 
-func (c *DebugHarnessCommand) renderActivity() string {
+func (c *DebugHarnessCommand) renderActivity(width int) string {
 	s := c.state
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 
 	tools := FormatRecentToolCalls(s.recentTools)
 	if len(tools) == 0 {
@@ -176,9 +176,9 @@ func (c *DebugHarnessCommand) renderActivity() string {
 	return p.Render()
 }
 
-func (c *DebugHarnessCommand) renderMetrics() string {
+func (c *DebugHarnessCommand) renderMetrics(width int) string {
 	s := c.state
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 
 	p.Row("Reminders total", fmt.Sprintf("%d", s.metrics.ReminderTotal))
 	p.Hint("Reminder kinds", FormatReminderCounts(s.metrics.ReminderByKind))
@@ -199,12 +199,12 @@ func (c *DebugHarnessCommand) renderMetrics() string {
 	return p.Render()
 }
 
-func (c *DebugHarnessCommand) renderContext() string {
+func (c *DebugHarnessCommand) renderContext(width int) string {
 	s := c.state
 	if s.contextUsage == nil {
 		return tui.MutedStyle.Render("  Context usage unavailable.")
 	}
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 	p.Row("Context used", fmt.Sprintf("%s (%.1f%%)",
 		tui.FormatTokens(s.contextUsage.Tokens), s.contextUsage.Percent))
 	p.Row("Context window", tui.FormatTokens(s.contextUsage.ContextWindow))

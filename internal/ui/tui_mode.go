@@ -36,6 +36,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		Session:        sess,
 		Cwd:            cwd,
 		GitBranch:      rt.GitBranch,
+		Version:        version,
 		ApprovalEngine: approvalEngine,
 		TaskRuntime:    rt.TaskRuntime,
 		Commands:       nil,

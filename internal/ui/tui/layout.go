@@ -40,8 +40,8 @@ func indentBlock(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// shortenPath replaces the home directory prefix with ~.
-func shortenPath(p string) string {
+// ShortenPath replaces the home directory prefix with ~.
+func ShortenPath(p string) string {
 	home, err := os.UserHomeDir()
 	if err == nil && home != "" && strings.HasPrefix(p, home) {
 		return "~" + p[len(home):]

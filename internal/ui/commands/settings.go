@@ -102,13 +102,13 @@ func (c *SettingsCommand) View(width, height int) string {
 	return frame.Render()
 }
 
-func (c *SettingsCommand) renderGeneral() string {
+func (c *SettingsCommand) renderGeneral(width int) string {
 	s := c.session.Settings()
 	baseURL := c.session.BaseURL()
 	if baseURL == "" {
 		baseURL = "(default)"
 	}
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 	p.Row("Provider", s.Provider)
 	p.Row("Model", c.session.ModelName())
 	p.Row("API Key", maskAPIKey(c.session.APIKey()))
@@ -117,7 +117,7 @@ func (c *SettingsCommand) renderGeneral() string {
 	return p.Render()
 }
 
-func (c *SettingsCommand) renderRuntime() string {
+func (c *SettingsCommand) renderRuntime(width int) string {
 	s := c.session.Settings()
 	thinking := s.ThinkingLevel
 	if thinking == "" {
@@ -133,7 +133,7 @@ func (c *SettingsCommand) renderRuntime() string {
 		}
 	}
 
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 	p.Row("Thinking", thinking)
 	p.Row("Context", tui.FormatTokens(s.ContextWindow))
 	if s.CompactWindow > 0 {
@@ -150,7 +150,7 @@ func (c *SettingsCommand) renderRuntime() string {
 	return p.Render()
 }
 
-func (c *SettingsCommand) renderProviders() string {
+func (c *SettingsCommand) renderProviders(width int) string {
 	s := c.session.Settings()
 	if len(s.Providers) == 0 {
 		return tui.MutedStyle.Render("  No providers configured.")
@@ -163,7 +163,7 @@ func (c *SettingsCommand) renderProviders() string {
 	sort.Strings(names)
 
 	current := s.Provider
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 	for _, n := range names {
 		pc := s.Providers[n]
 		parts := []string{fmt.Sprintf("%d model(s)", len(pc.Models))}

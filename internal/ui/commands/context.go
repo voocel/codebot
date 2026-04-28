@@ -114,9 +114,9 @@ func (c *ContextCommand) View(width, height int) string {
 	return frame.Render()
 }
 
-func (c *ContextCommand) renderUsage() string {
+func (c *ContextCommand) renderUsage(width int) string {
 	s := c.state
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 
 	usage := s.contextUsage
 	if s.snapshotOK && s.snapshot != nil && s.snapshot.Usage != nil {
@@ -163,9 +163,9 @@ func (c *ContextCommand) renderUsage() string {
 	return p.Render()
 }
 
-func (c *ContextCommand) renderComposition() string {
+func (c *ContextCommand) renderComposition(width int) string {
 	s := c.state
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 
 	if s.snapshotOK && s.snapshot != nil {
 		p.Row("Scope", FormatContextScope(s.snapshot.Scope))
@@ -201,13 +201,13 @@ func (c *ContextCommand) renderComposition() string {
 	return p.Render()
 }
 
-func (c *ContextCommand) renderSuggestions() string {
+func (c *ContextCommand) renderSuggestions(width int) string {
 	s := c.state
 	if len(s.suggestions) == 0 {
 		return tui.MutedStyle.Render("  No suggestions. Context looks healthy.")
 	}
 
-	p := tui.NewInfoPanel("")
+	p := newPanel(width)
 	for _, sug := range s.suggestions {
 		msg := sug.Message
 		if sug.Savings > 0 {

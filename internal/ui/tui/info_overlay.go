@@ -8,10 +8,13 @@ import (
 )
 
 // InfoOverlayTab describes one pane inside an InfoOverlayFrame.
-// Body is invoked on each render so it can reflect live session state.
+// Body is invoked on each render so it can reflect live session state. The
+// width passed in is the inner content width (already subtracted from the
+// frame chrome) — body renderers should hand it to InfoPanel.SetWidth or
+// equivalent so long values wrap instead of overflowing the terminal.
 type InfoOverlayTab struct {
 	Name string
-	Body func() string
+	Body func(width int) string
 }
 
 // InfoOverlayFrame renders a modal-style info overlay: title + tab bar +
@@ -56,7 +59,7 @@ func (f InfoOverlayFrame) Render() string {
 	sb.WriteString("\n")
 
 	if len(f.Tabs) > 0 && f.Active >= 0 && f.Active < len(f.Tabs) {
-		body := strings.TrimRight(f.Tabs[f.Active].Body(), "\n")
+		body := strings.TrimRight(f.Tabs[f.Active].Body(inner), "\n")
 		if body != "" {
 			body = fitBody(body, f.bodyBudget())
 			sb.WriteString("\n")

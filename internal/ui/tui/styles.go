@@ -166,7 +166,7 @@ var (
 var (
 	ContextChipStyle       = lipgloss.NewStyle().Foreground(Muted)
 	ContextChipAccentStyle = lipgloss.NewStyle().Foreground(Brand)
-	ContextChipPathStyle   = lipgloss.NewStyle().Foreground(Path)
+	ContextChipPathStyle   = lipgloss.NewStyle().Foreground(BrandSoft)
 	// Transient hints like "Press Ctrl+C again to exit" or "bash mode" — muted
 	// gray, not a loud warning. Claude Code keeps these understated.
 	ContextChipWarnStyle = lipgloss.NewStyle().Foreground(Muted)

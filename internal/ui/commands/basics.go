@@ -192,30 +192,3 @@ func Reload(reload func() (ReloadResult, error)) Command {
 	})
 }
 
-// Session constructs the /session command which prints the current session's
-// id, paths, and accumulated cost.
-func Session(session *agent.Session) Command {
-	return NewSimple(Spec{
-		Name: "session", Usage: "/session", Description: "Show current session info",
-		Category: "info", Kind: KindBuiltin,
-	}, func(_ Invocation) tea.Cmd {
-		info, err := session.CurrentSessionInfo()
-		if err != nil {
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to load session info: " + err.Error()))
-		}
-		name := info.ID
-		if info.Name != "" {
-			name = info.Name + " (" + info.ID + ")"
-		}
-		text := fmt.Sprintf("Session: %s\nPath: %s\nCwd: %s\nCreated: %s",
-			name, info.Path, info.Cwd, info.Created.Format("2006-01-02 15:04:05"))
-
-		inTok, outTok, cost := session.CostEstimate()
-		if inTok+outTok > 0 {
-			text += fmt.Sprintf("\nCost: ~$%.4f (%s in / %s out)",
-				cost, tui.FormatTokens(inTok), tui.FormatTokens(outTok))
-		}
-
-		return tui.SendCommandResult(tui.CommandStyle.Render(text))
-	})
-}

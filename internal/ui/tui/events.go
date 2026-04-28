@@ -321,7 +321,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		} else if ev.Tool == "ls" && !ev.IsError {
 			dirPath, lsBody := RenderLsResult(ev.Result)
 			if dirPath != "" {
-				header = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Ls") + ToolArgsStyle.Render("("+shortenPath(dirPath)+")")
+				header = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Ls") + ToolArgsStyle.Render("("+ShortenPath(dirPath)+")")
 			}
 			body = indentBlock(lsBody, 2)
 		} else {

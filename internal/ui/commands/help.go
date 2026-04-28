@@ -21,7 +21,6 @@ type HelpCommand struct {
 
 type helpState struct {
 	active int
-	width  int // captured from View() so body renderers can wrap long lines
 }
 
 var helpTabs = []string{"general", "built-in", "custom", "skills"}
@@ -80,7 +79,6 @@ func (c *HelpCommand) View(width, height int) string {
 	if c.state == nil {
 		return ""
 	}
-	c.state.width = width
 	frame := tui.InfoOverlayFrame{
 		Title: "Codebot",
 		Tabs: []tui.InfoOverlayTab{
@@ -97,7 +95,7 @@ func (c *HelpCommand) View(width, height int) string {
 	return frame.Render()
 }
 
-func (c *HelpCommand) renderGeneral() string {
+func (c *HelpCommand) renderGeneral(_ int) string {
 	// labelStyle uses Info to keep the left "key" column visually aligned
 	// with the usage column in renderCommandGroup — same blue-teal accent
 	// across every tab gives the help overlay one cohesive palette.
@@ -138,22 +136,22 @@ func (c *HelpCommand) renderGeneral() string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-func (c *HelpCommand) renderBuiltin() string {
-	return c.renderCommandGroup(KindBuiltin,
+func (c *HelpCommand) renderBuiltin(width int) string {
+	return c.renderCommandGroup(width, KindBuiltin,
 		"No built-in commands registered.")
 }
 
-func (c *HelpCommand) renderCustom() string {
-	return c.renderCommandGroup(KindCustom,
+func (c *HelpCommand) renderCustom(width int) string {
+	return c.renderCommandGroup(width, KindCustom,
 		"No custom commands. Add Markdown files under .codebot/commands/ to register slash commands.")
 }
 
-func (c *HelpCommand) renderSkills() string {
-	return c.renderCommandGroup(KindSkill,
+func (c *HelpCommand) renderSkills(width int) string {
+	return c.renderCommandGroup(width, KindSkill,
 		"No skills loaded. Drop skill bundles into .codebot/skills/ or install via /plugins install.")
 }
 
-func (c *HelpCommand) renderCommandGroup(kind Kind, emptyMsg string) string {
+func (c *HelpCommand) renderCommandGroup(width int, kind Kind, emptyMsg string) string {
 	var cmds []Command
 	for _, cmd := range c.registry.All() {
 		spec := c.registry.EffectiveSpec(cmd)
@@ -183,9 +181,10 @@ func (c *HelpCommand) renderCommandGroup(kind Kind, emptyMsg string) string {
 	// the previous line (gutter + usage column + gap).
 	descIndent := strings.Repeat(" ", len(leftPad)+usageColumn+len(colGap))
 
-	// availWidth is the printable width inside the overlay frame; falls back
-	// to 80 when the host hasn't reported a width yet (early renders).
-	availWidth := c.state.width - 4 // matches inner = max(width-4,20) in InfoOverlayFrame
+	// availWidth is the printable width inside the overlay frame; the body
+	// width is already inner = max(frame-4, 20) when InfoOverlayFrame calls
+	// us, so use it directly. Falls back to 80 when caller passed 0.
+	availWidth := width
 	if availWidth <= 0 {
 		availWidth = 80
 	}
