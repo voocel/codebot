@@ -1,11 +1,55 @@
 package tui
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/voocel/agentcore"
 )
+
+func TestIsPlanFileTool(t *testing.T) {
+	t.Parallel()
+
+	plansDir := filepath.Clean("/home/u/.codebot/plans")
+	planPath := filepath.Join(plansDir, "agile-baking-aurora.md")
+	otherPath := filepath.Clean("/home/u/project/main.go")
+	cwd := filepath.Clean("/home/u/.codebot/plans") // pretend cwd resolves into plansDir for relative-path test
+
+	args := func(path string) json.RawMessage {
+		raw, _ := json.Marshal(map[string]string{"path": path})
+		return raw
+	}
+
+	cases := []struct {
+		name     string
+		tool     string
+		cwd      string
+		plansDir string
+		args     json.RawMessage
+		want     bool
+	}{
+		{name: "write under plans dir", tool: "write", plansDir: plansDir, args: args(planPath), want: true},
+		{name: "edit under plans dir", tool: "edit", plansDir: plansDir, args: args(planPath), want: true},
+		{name: "write outside plans dir", tool: "write", plansDir: plansDir, args: args(otherPath), want: false},
+		{name: "non file tool", tool: "bash", plansDir: plansDir, args: args(planPath), want: false},
+		{name: "empty plans dir", tool: "write", plansDir: "", args: args(planPath), want: false},
+		{name: "empty args", tool: "write", plansDir: plansDir, args: nil, want: false},
+		{name: "missing path field", tool: "write", plansDir: plansDir, args: json.RawMessage(`{}`), want: false},
+		{name: "escape via parent path", tool: "write", plansDir: plansDir, args: args(plansDir + "/../escape.md"), want: false},
+		{name: "relative path resolves into plans dir", tool: "write", cwd: cwd, plansDir: plansDir, args: args("agile-baking-aurora.md"), want: true},
+		{name: "relative path outside plans dir", tool: "write", cwd: "/home/u/project", plansDir: plansDir, args: args("main.go"), want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isPlanFileTool(tc.tool, tc.cwd, tc.plansDir, tc.args); got != tc.want {
+				t.Fatalf("isPlanFileTool(%q, %q, %q, %s) = %v, want %v", tc.tool, tc.cwd, tc.plansDir, string(tc.args), got, tc.want)
+			}
+		})
+	}
+}
 
 func TestHandleAgentEventLifecycleState(t *testing.T) {
 	t.Parallel()
@@ -320,3 +364,4 @@ func TestHandleAgentEventProgressBuffers(t *testing.T) {
 		})
 	}
 }
+

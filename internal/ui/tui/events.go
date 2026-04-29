@@ -2,13 +2,56 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 )
+
+// isPlanFileTool reports whether a write/edit tool call targets a file under
+// the plans directory. Mirrors Claude Code's design (see
+// FileWriteTool/UI.tsx): plan-file write/edit calls render as a status-only
+// line ("Plan") so the tool log isn't drowned out by the model's incremental
+// edits. The full plan body surfaces once exit_plan_mode succeeds.
+//
+// `cwd` lets us resolve relative paths the same way agentcore's write/edit
+// tool does (ResolvePath(WorkDir, path)), so a relative-path write still
+// matches when it lands inside plansDir.
+func isPlanFileTool(tool, cwd, plansDir string, args json.RawMessage) bool {
+	if plansDir == "" {
+		return false
+	}
+	if tool != "write" && tool != "edit" {
+		return false
+	}
+	if len(args) == 0 {
+		return false
+	}
+	var parsed struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &parsed); err != nil {
+		return false
+	}
+	if parsed.Path == "" {
+		return false
+	}
+	target := parsed.Path
+	if !filepath.IsAbs(target) && cwd != "" {
+		target = filepath.Join(cwd, target)
+	}
+	cleaned := filepath.Clean(target)
+	root := filepath.Clean(plansDir)
+	rel, err := filepath.Rel(root, cleaned)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
 
 // formatScrollbackBlock applies the project's standard spacing rules to a
 // block of scrollback output: trailing newlines stripped, and optionally a
@@ -80,7 +123,7 @@ func (m *Model) FlushStreamingAssistant() tea.Cmd {
 		}
 	}
 	if content != "" {
-		indented := m.renderMarkdownBlock(content, 2)
+		indented := m.RenderMarkdownBlock(content, 2)
 		block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 		m.SuppressNextAssistantText = content
 	}
@@ -190,7 +233,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 				block.WriteString("\n\n")
 			}
 			if content != "" {
-				indented := m.renderMarkdownBlock(content, 2)
+				indented := m.RenderMarkdownBlock(content, 2)
 				block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 			}
 			if block.Len() > 0 {
@@ -223,6 +266,16 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 				header += MutedStyle.Render(" → ") + ToolArgsStyle.Render(truncateRunes(hint, 80))
 			}
 			m.ToolHeaders[ev.ToolID] = header
+		} else if isPlanFileTool(ev.Tool, m.Cwd, m.PlansDir, ev.Args) {
+			// Plan files render as a single status line ("Plan") to mirror
+			// Claude Code: incremental write/edit on the plan file would
+			// otherwise spam the tool log with diffs of an artifact the user
+			// will see in full once exit_plan_mode succeeds. The "Plan" label
+			// in PendingTools doubles as the marker EventToolExecEnd reads to
+			// suppress the diff body — agentcore drops Args from End events so
+			// per-call state must come from somewhere set at Start.
+			m.PendingTools[ev.ToolID] = "Plan"
+			m.ToolHeaders[ev.ToolID] = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Plan")
 		} else {
 			m.PendingTools[ev.ToolID] = label
 			m.ToolHeaders[ev.ToolID] = ToolIconStyle.Render("● ") + RenderToolHeader(ev.Tool, ev.Args)
@@ -234,6 +287,12 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		}
 		switch ev.UpdateKind {
 		case agentcore.ToolExecUpdatePreview:
+			// Plan files: the preview pipeline is skipped entirely. The header
+			// alone (rendered at EventToolExecEnd as "● Plan" + footer hint)
+			// matches cc's behavior and avoids paint thrash from many edits.
+			if m.PendingTools[ev.ToolID] == "Plan" {
+				break
+			}
 			rendered := RenderEditResult(ev.Result)
 			if rendered != "" {
 				// Flush buffered header with the first preview.
@@ -293,6 +352,12 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			break
 		}
 		delete(m.HiddenToolCalls, ev.ToolID)
+		// agentcore drops Args from End events, so we recover the plan-file
+		// marker from PendingTools (set to "Plan" at Start) before deleting it.
+		// Subagent's same-name collision is impossible: subagent End is dispatched
+		// by the `ev.Tool == "subagent"` branch below, never reaching the plan-file
+		// branch.
+		isPlanFile := m.PendingTools[ev.ToolID] == "Plan"
 		delete(m.PendingTools, ev.ToolID)
 		delete(m.ToolOutputBuf, ev.ToolID)
 		delete(m.ToolDeltaBuf, ev.ToolID)
@@ -302,14 +367,30 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		header := m.ToolHeaders[ev.ToolID]
 		delete(m.ToolHeaders, ev.ToolID)
 		if ev.IsError {
-			// Retint the bullet red now that we know the call failed.
-			header = ErrorIconStyle.Render("● ") + RenderToolHeader(ev.Tool, ev.Args)
+			// Retint the bullet red but keep the args summary captured at
+			// EventToolExecStart — agentcore drops Args from the End event
+			// (see loop.go), so re-rendering from ev.Args alone would lose
+			// the command/path the user needs to read the error.
+			okBullet := ToolIconStyle.Render("● ")
+			redBullet := ErrorIconStyle.Render("● ")
+			if rest, ok := strings.CutPrefix(header, okBullet); ok {
+				header = redBullet + rest
+			} else if header == "" {
+				header = redBullet + RenderToolHeader(ev.Tool, ev.Args)
+			} else {
+				header = redBullet + header
+			}
 		}
 
 		var body string
 		if ev.Tool == "subagent" && !ev.IsError {
 			content := FormatSubagentOutput(ev.Result)
 			body = indentBlock(m.renderSubagentCard(content), 2)
+		} else if isPlanFile && !ev.IsError {
+			// Plan files: hide the 12-line diff. The full plan body surfaces
+			// once exit_plan_mode succeeds (see plan.go renderPlanForReview);
+			// during incremental edits we only show a one-line affordance.
+			body = indentBlock(MutedStyle.Render("/plan to preview"), 2)
 		} else if ev.Tool == "edit" && !ev.IsError {
 			body = indentBlock(RenderEditResult(ev.Result), 2)
 		} else if ev.Tool == "write" && !ev.IsError {

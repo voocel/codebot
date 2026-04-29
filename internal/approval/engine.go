@@ -2,7 +2,9 @@ package approval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,6 +21,7 @@ type Engine struct {
 	store        *permission.Store
 	sessionAllow map[string]storedEntry
 	planAllow    []string
+	planFilePath string
 	tool         decisionEngine
 }
 
@@ -33,26 +36,83 @@ var planModeAllowedTools = []string{
 	"tool_search",    // schema discovery for deferred tools — pure inspection
 }
 
+// planModeAllowExec decides whether an exec-capability tool may run during
+// plan mode. The plan-mode prompt instructs the model to use bash strictly
+// for read-only exploration (grep / find / git status / cat / ...) and to
+// avoid any write commands; we trust that contract here rather than parsing
+// shell syntax. Approval mode still applies once the plan is approved — at
+// that point the harness leaves plan mode and the regular ask flow returns.
+func planModeAllowExec(req permission.Request) bool {
+	return req.ToolName == "bash"
+}
+
 func NewEngine(cwd string, mode Mode, rules *RuleSet, onAudit func(AuditEntry)) (*Engine, error) {
 	store, err := permission.NewStore(config.ApprovalsPath(cwd))
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{
+	e := &Engine{
 		cwd:          cwd,
 		onAudit:      onAudit,
 		store:        store,
 		rules:        rules,
 		sessionAllow: make(map[string]storedEntry),
-		tool: permission.NewEngine(permission.EngineConfig{
-			Workspace:            cwd,
-			Mode:                 permission.Mode(mode),
-			Rules:                (*permission.RuleSet)(rules),
-			Store:                store,
-			OnAudit:              onAudit,
-			PlanModeAllowedTools: planModeAllowedTools,
-		}),
-	}, nil
+	}
+	e.tool = permission.NewEngine(permission.EngineConfig{
+		Workspace:            cwd,
+		Mode:                 permission.Mode(mode),
+		Rules:                (*permission.RuleSet)(rules),
+		Store:                store,
+		OnAudit:              onAudit,
+		PlanModeAllowedTools: planModeAllowedTools,
+		PlanModeExecAllowed:  planModeAllowExec,
+		PlanModeWriteAllowed: e.planModeAllowWrite,
+	})
+	return e, nil
+}
+
+// planModeAllowWrite permits write/edit only when targeting the registered
+// plan file. The plan Manager updates this on Enter/Approve/Cancel via
+// SetPlanFilePath; an empty path disables the allowance.
+func (e *Engine) planModeAllowWrite(req permission.Request) bool {
+	e.mu.RLock()
+	target := e.planFilePath
+	e.mu.RUnlock()
+	if target == "" {
+		return false
+	}
+	if req.ToolName != "write" && req.ToolName != "edit" {
+		return false
+	}
+	var args struct {
+		Path string `json:"path"`
+	}
+	if len(req.Args) == 0 {
+		return false
+	}
+	if err := json.Unmarshal(req.Args, &args); err != nil {
+		return false
+	}
+	path := args.Path
+	if path == "" {
+		return false
+	}
+	if !filepath.IsAbs(path) && e.cwd != "" {
+		path = filepath.Join(e.cwd, path)
+	}
+	return filepath.Clean(path) == filepath.Clean(target)
+}
+
+func (e *Engine) SetPlanFilePath(path string) {
+	e.mu.Lock()
+	e.planFilePath = path
+	e.mu.Unlock()
+}
+
+func (e *Engine) PlanFilePath() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.planFilePath
 }
 
 func (e *Engine) Decide(ctx context.Context, req permission.Request) (*permission.Decision, error) {

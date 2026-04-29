@@ -72,11 +72,6 @@ type App struct {
 	planChoice    int    // selected option in planReview menu
 	planOtherMode bool   // typing custom feedback
 	planOtherBuf  string // custom feedback buffer
-
-	// lastPlanningAssistantText keeps the visible plan text from the current
-	// planning turn so exit_plan_mode does not need to duplicate the whole
-	// plan in hidden tool-call arguments.
-	lastPlanningAssistantText string
 }
 
 func (a *App) reloadPluginState() error {
@@ -228,8 +223,13 @@ func (a *App) Config() tui.Config {
 	if a.PlanManager == nil {
 		a.Session.RestoreAllTools()
 	}
+	plansDir := ""
+	if a.PlanStore != nil {
+		plansDir = a.PlanStore.Dir()
+	}
 	return tui.Config{
 		Cwd:         a.Cwd,
+		PlansDir:    plansDir,
 		GitBranch:   a.GitBranch,
 		History:     a.History,
 		OnKey:       a.onKey(),

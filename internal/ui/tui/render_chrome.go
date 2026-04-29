@@ -59,8 +59,9 @@ func (m *Model) RenderStatusBar() string {
 	}
 }
 
-// RenderPlanBar renders the plan review card. The full plan has already been
-// emitted into scrollback by the assistant, so this card only asks for the
+// RenderPlanBar renders the plan review card. The full plan body is emitted
+// into scrollback by the harness when exit_plan_mode succeeds (see
+// internal/ui/plan.go: renderPlanForReview), so this card only asks for the
 // user's decision and shows execution constraints.
 //
 //	┌─ "Ready to code?" (Accent border) ────────────┐

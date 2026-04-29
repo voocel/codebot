@@ -35,6 +35,7 @@ type Config struct {
 	Provider             string
 	ContextWindow        int
 	Cwd                  string
+	PlansDir             string // absolute path to the plan files directory; enables cc-style hidden rendering for write/edit on plan files
 	GitBranch            string
 	EnvHint              string                   // shown below welcome when using env var credentials
 	History              *storage.History         // input history (Up/Down navigation)
@@ -123,7 +124,7 @@ type State struct {
 
 	Running         bool
 	TurnCount       int
-	PendingTools    map[string]string           // toolID -> tool name
+	PendingTools    map[string]string           // toolID -> display label (== "Plan" marks a plan-file write/edit)
 	HiddenToolCalls map[string]struct{}         // toolID -> internal call hidden from UI
 	ToolHeaders     map[string]string           // toolID -> formatted header (printed at end)
 	ToolOutputBuf   map[string]*strings.Builder // toolID -> streaming output
@@ -135,6 +136,7 @@ type State struct {
 	Ready  bool
 
 	Cwd         string
+	PlansDir    string
 	GitBranch   string
 	ShowWelcome bool
 	EnvHint     string // env var hint shown below welcome
@@ -290,6 +292,7 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 			ToolDeltaBuf:    make(map[string]*strings.Builder),
 			ToolThinkingBuf: make(map[string]*strings.Builder),
 			Cwd:             c.Cwd,
+			PlansDir:        c.PlansDir,
 			GitBranch:       c.GitBranch,
 			ShowWelcome:     true,
 			EnvHint:         c.EnvHint,

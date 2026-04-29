@@ -81,15 +81,19 @@ func newApprovalEngine(input *resolvedInput) (*approval.Engine, error) {
 		return nil, fmt.Errorf("approval engine: %w", err)
 	}
 	memoryDir := config.MemoryDir(input.cwd)
+	plansDir := config.PlansDir(input.cwd)
 	approvalEngine.SetFilesystemRoots(approval.FilesystemRoots{
 		ReadRoots:  append(input.settings.Permissions.ReadRoots, config.SessionsDir(input.cwd)),
 		WriteRoots: input.settings.Permissions.WriteRoots,
-		// Auto-memory lives outside the user's workspace; mark it as a
-		// harness-managed path so reads/writes skip the OutsideRoots prompt
-		// and balanced-mode write approval. Deny rules and plan mode still
-		// apply (see permission.Engine.Decide).
-		InternalReadable: []string{memoryDir},
-		InternalWritable: []string{memoryDir},
+		// Auto-memory + plan files live outside the user's workspace; mark
+		// them as harness-managed paths so reads/writes skip the OutsideRoots
+		// prompt and balanced-mode write approval. Plan mode itself only
+		// allows writes to the *current* plan file (approval.Engine matches
+		// the path it was given via SetPlanFilePath), so listing plansDir
+		// here just covers cross-mode reads/writes (e.g., /plan open after
+		// approval).
+		InternalReadable: []string{memoryDir, plansDir},
+		InternalWritable: []string{memoryDir, plansDir},
 	})
 	return approvalEngine, nil
 }

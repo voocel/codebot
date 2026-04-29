@@ -53,7 +53,6 @@ func (a *App) enterPlanMode(task string) tea.Cmd {
 	if a.PlanManager == nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plan manager is not available."))
 	}
-	a.lastPlanningAssistantText = ""
 	prompt, err := a.PlanManager.Enter(task)
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
@@ -71,7 +70,6 @@ func (a *App) executePlan() tea.Cmd {
 	a.planOtherMode = false
 	a.planOtherBuf = ""
 	a.planChoice = 0
-	a.lastPlanningAssistantText = ""
 
 	return a.sendAsPrompt("The plan has been approved. Execute it now.")
 }
@@ -87,7 +85,6 @@ func (a *App) cancelPlanMode() tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
 	a.resetPlanUI()
-	a.lastPlanningAssistantText = ""
 	return tui.SendCommandResult(tui.CommandStyle.Render("Plan mode cancelled. All tools restored."))
 }
 
@@ -102,7 +99,6 @@ func (a *App) resetPlanUI() {
 	a.planChoice = 0
 	a.planOtherMode = false
 	a.planOtherBuf = ""
-	a.lastPlanningAssistantText = ""
 }
 
 const planOptionCount = 3
@@ -199,20 +195,11 @@ func (a *App) editPlanWithFeedback(feedback string) tea.Cmd {
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-	a.lastPlanningAssistantText = ""
 	return a.sendAsPrompt(prompt)
 }
 
 func (a *App) planOnEvent(m *tui.Model, ev agentcore.Event) tea.Cmd {
-	switch ev.Type {
-	case agentcore.EventMessageEnd:
-		if a.planPhase() == plan.PhasePlanning && ev.Message.GetRole() == agentcore.RoleAssistant {
-			a.lastPlanningAssistantText = strings.TrimSpace(ev.Message.TextContent())
-		}
-	case agentcore.EventToolExecEnd:
-		if ev.IsError {
-			return nil
-		}
+	if ev.Type == agentcore.EventToolExecEnd && !ev.IsError {
 		switch ev.Tool {
 		case "enter_plan_mode":
 			return a.onEnterPlanMode(m, ev.Result)
@@ -221,9 +208,9 @@ func (a *App) planOnEvent(m *tui.Model, ev agentcore.Event) tea.Cmd {
 		}
 	}
 	// Plan review state is rendered live by RenderPlanBar (driven by
-	// planStatus). We deliberately don't emit a scrollback summary on
-	// EventAgentEnd anymore — the full plan is already in scrollback, and the
-	// plan card only shows title, allowed commands, and choices.
+	// planStatus). The plan content is on disk (model wrote it via
+	// write/edit during planning); we deliberately don't emit a scrollback
+	// summary on EventAgentEnd.
 	return nil
 }
 
@@ -251,36 +238,54 @@ func (a *App) onExitPlanMode(m *tui.Model, result json.RawMessage) tea.Cmd {
 
 	var resp struct {
 		Title           string                   `json:"title"`
-		Content         string                   `json:"content"`
 		AllowedCommands []plan.RawAllowedCommand `json:"allowed_commands"`
 	}
 	_ = json.Unmarshal(result, &resp)
 
-	content := resp.Content
-	if strings.TrimSpace(content) == "" {
-		if m.Streaming != nil {
-			content = strings.TrimSpace(m.Streaming.String())
-		}
-	}
-	if strings.TrimSpace(content) == "" {
-		content = a.lastPlanningAssistantText
-	}
-	title := strings.TrimSpace(resp.Title)
-	if title == "" {
-		title = plan.ExtractTitle(content)
-	}
 	commands := plan.ParseAllowedCommands(resp.AllowedCommands)
-	if err := a.PlanManager.Submit(title, content, commands); err != nil {
+	// Submit reads the plan content from disk — the model wrote it
+	// incrementally via write/edit during planning.
+	if err := a.PlanManager.Submit(strings.TrimSpace(resp.Title), commands); err != nil {
 		return m.Emit(tui.ErrorStyle.Render("Plan submit error: " + err.Error()))
 	}
 
 	a.planChoice = 0
 	a.planOtherMode = false
 	a.planOtherBuf = ""
-	a.lastPlanningAssistantText = ""
+
+	// Emit the full plan to scrollback so the user can read it before
+	// approving. The model wrote it to the plan file via write/edit; the
+	// per-call Write preview only shows the first 12 lines, so without this
+	// the user would see the title + path in the review card but not the
+	// content itself. Mirrors Claude Code's ExitPlanMode tool-result render.
+	var emitPlan tea.Cmd
+	if content, err := a.PlanManager.CurrentPlan(); err == nil && strings.TrimSpace(content) != "" {
+		emitPlan = m.Emit(a.renderPlanForReview(m, content))
+	}
+
+	// exit_plan_mode succeeded — stop the agent so the user can review the
+	// plan. Without this the loop keeps running and the model would chatter
+	// past the review card.
 	flush := m.FlushStreamingAssistant()
 	a.Session.AbortSilent()
-	return flush
+	return tea.Batch(flush, emitPlan)
+}
+
+func (a *App) renderPlanForReview(m *tui.Model, content string) string {
+	var b strings.Builder
+	b.WriteString(tui.ToolIconStyle.Render("● ") + tui.ToolNameStyle.Render("Plan"))
+	if title := strings.TrimSpace(a.currentPlanTitle()); title != "" && title != "(untitled)" {
+		b.WriteString(tui.MutedStyle.Render(" — " + title))
+	}
+	b.WriteString("\n\n")
+	// Indent the body 2 spaces so the plan aligns under the "● Plan" header,
+	// matching the visual layout of every other tool result block in events.go.
+	b.WriteString(m.RenderMarkdownBlock(strings.TrimSpace(content), 2))
+	if path := a.PlanManager.CurrentPlanPath(); path != "" {
+		b.WriteString("\n\n")
+		b.WriteString(tui.MutedStyle.Render("  Plan saved to: " + path + " · /plan open to edit"))
+	}
+	return b.String()
 }
 
 func (a *App) showCurrentPlan() tea.Cmd {

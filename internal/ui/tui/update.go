@@ -816,7 +816,7 @@ func (m *Model) appendRestoredAssistantMessage(sb *strings.Builder, am agentcore
 		sb.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 	}
 	if content := strings.TrimSpace(am.TextContent()); content != "" {
-		indented := m.renderMarkdownBlock(content, 2)
+		indented := m.RenderMarkdownBlock(content, 2)
 		sb.WriteString("\n\n")
 		sb.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
 	}

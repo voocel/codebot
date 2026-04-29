@@ -101,6 +101,12 @@ func (s *PlanStore) Path(name string) string {
 	return s.path(name)
 }
 
+// Dir returns the directory plans are stored in. Used by the TUI to detect
+// whether a write/edit target is a plan file (cc-style hidden rendering).
+func (s *PlanStore) Dir() string {
+	return s.dir
+}
+
 // GenerateName returns a random name in adjective-gerund-noun format.
 func GenerateName() string {
 	return pick(adjectives) + "-" + pick(gerunds) + "-" + pick(nouns)

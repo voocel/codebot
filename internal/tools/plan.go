@@ -64,7 +64,7 @@ func (t *EnterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (js
 		Task string `json:"task"`
 	}
 	_ = json.Unmarshal(args, &a)
-	message := "You are now in plan mode. Explore the codebase and write a detailed implementation plan. Write the full plan as text, then call exit_plan_mode with title and any allowed command prefixes."
+	message := "You are now in plan mode. Build your plan in the plan file referenced by the plan-mode system message, then call exit_plan_mode when ready."
 	if t.onEnter != nil {
 		prompt, err := t.onEnter(a.Task)
 		if err != nil {
@@ -97,11 +97,10 @@ func (t *ExitPlanModeTool) PermissionMetadata() permission.Metadata {
 	return permission.Metadata{Capability: permission.CapabilityInternal}
 }
 func (t *ExitPlanModeTool) Description() string {
-	return "Submit your completed implementation plan for user review. " +
-		"You MUST write the full plan as visible assistant text first so the user can see it, " +
-		"then call this tool with the title and allowed command prefixes. " +
-		"Do not repeat the full plan in tool arguments; Codebot captures the visible text. " +
-		"Do not ask the user to continue in natural language; this tool opens the review confirmation UI."
+	return "Signal that the plan file (referenced in the plan-mode system message) is ready for user review. " +
+		"You should already have written the plan to that file using write or edit. " +
+		"This tool reads the plan from disk; do NOT pass the plan content as an argument. " +
+		"Codebot opens the review confirmation UI after this tool succeeds."
 }
 
 func (t *ExitPlanModeTool) Schema() map[string]any {
@@ -125,7 +124,6 @@ func (t *ExitPlanModeTool) Execute(_ context.Context, args json.RawMessage) (jso
 	}
 	var a struct {
 		Title           string `json:"title"`
-		Content         string `json:"content"`
 		AllowedCommands []struct {
 			CommandPrefix string `json:"command_prefix"`
 			Description   string `json:"description"`
@@ -138,7 +136,6 @@ func (t *ExitPlanModeTool) Execute(_ context.Context, args json.RawMessage) (jso
 	return json.Marshal(map[string]any{
 		"status":           "submitted",
 		"title":            a.Title,
-		"content":          a.Content,
 		"allowed_commands": a.AllowedCommands,
 		"message":          "Plan submitted for review. Do not respond further.",
 	})

@@ -38,7 +38,7 @@ func (m *Model) View() string {
 		// signals "agent is working", so we drop the bare bullet to avoid
 		// the flash.
 		if streamed := m.Streaming.String(); strings.TrimSpace(streamed) != "" {
-			indented := m.renderMarkdownBlock(streamed, 2)
+			indented := m.RenderMarkdownBlock(streamed, 2)
 			parts = append(parts, "", AssistantIconStyle.Render("● ")+strings.TrimPrefix(indented, "  ")+m.Spinner.View())
 		}
 	}

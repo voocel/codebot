@@ -152,9 +152,9 @@ func (m *Model) RenderMarkdown(content string) string {
 	return m.Markdown.RenderFinal(content)
 }
 
-// renderMarkdownBlock renders complete markdown and applies only outer
+// RenderMarkdownBlock renders complete markdown and applies only outer
 // indentation. Markdown output is already wrapped by the renderer.
-func (m *Model) renderMarkdownBlock(content string, indent int) string {
+func (m *Model) RenderMarkdownBlock(content string, indent int) string {
 	if content == "" {
 		return ""
 	}
