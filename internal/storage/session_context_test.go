@@ -61,7 +61,7 @@ func TestBuildSnapshotRepairsMissingToolResult(t *testing.T) {
 			agentcore.ToolCallBlock(agentcore.ToolCall{
 				ID:   "toolu_123",
 				Name: "read",
-				Args: []byte(`{"path":"README.md"}`),
+				Args: []byte(`{"file_path":"README.md"}`),
 			}),
 		},
 	}

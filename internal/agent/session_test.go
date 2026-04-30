@@ -106,10 +106,10 @@ func (m *scriptedReminderModel) Generate(
 	if m.callCount == 1 && !sawInjectedReminder {
 		return &agentcore.LLMResponse{
 			Message: toolCallMessage(
-				agentcore.ToolCall{ID: "tc1", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
-				agentcore.ToolCall{ID: "tc2", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
-				agentcore.ToolCall{ID: "tc3", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
-				agentcore.ToolCall{ID: "tc4", Name: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
+				agentcore.ToolCall{ID: "tc1", Name: "read", Args: json.RawMessage(`{"file_path":"main.go"}`)},
+				agentcore.ToolCall{ID: "tc2", Name: "read", Args: json.RawMessage(`{"file_path":"main.go"}`)},
+				agentcore.ToolCall{ID: "tc3", Name: "read", Args: json.RawMessage(`{"file_path":"main.go"}`)},
+				agentcore.ToolCall{ID: "tc4", Name: "read", Args: json.RawMessage(`{"file_path":"main.go"}`)},
 			),
 		}, nil
 	}
@@ -873,7 +873,7 @@ func TestRepeatedToolCallQueuesRuntimeReminder(t *testing.T) {
 	})
 	t.Cleanup(s.Close)
 
-	args := json.RawMessage(`{"path":"main.go"}`)
+	args := json.RawMessage(`{"file_path":"main.go"}`)
 	for i := 0; i < repeatedToolCallThreshold; i++ {
 		toolID := "read-" + string(rune('a'+i))
 		s.handleAgentEvent(agentcore.Event{Type: agentcore.EventToolExecStart, ToolID: toolID, Tool: "read", Args: args})

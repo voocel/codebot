@@ -242,8 +242,8 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	otherPath := dir + "/main.go"
 
 	denyCases := []permission.Request{
-		{ToolName: "write", Args: json.RawMessage(`{"path":"` + otherPath + `","content":"x"}`)},
-		{ToolName: "edit", Args: json.RawMessage(`{"path":"` + otherPath + `"}`)},
+		{ToolName: "write", Args: json.RawMessage(`{"file_path":"` + otherPath + `","content":"x"}`)},
+		{ToolName: "edit", Args: json.RawMessage(`{"file_path":"` + otherPath + `"}`)},
 		{ToolName: "task_create"},
 		{ToolName: "subagent"},
 	}
@@ -258,12 +258,12 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	}
 
 	allowCases := []permission.Request{
-		{ToolName: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
+		{ToolName: "read", Args: json.RawMessage(`{"file_path":"main.go"}`)},
 		{ToolName: "grep", Args: json.RawMessage(`{"pattern":"foo"}`)},
 		{ToolName: "bash", Args: json.RawMessage(`{"command":"grep -r foo ."}`)},
 		{ToolName: "ask_user"},
-		{ToolName: "write", Args: json.RawMessage(`{"path":"` + planPath + `","content":"# Plan"}`)},
-		{ToolName: "edit", Args: json.RawMessage(`{"path":"` + planPath + `"}`)},
+		{ToolName: "write", Args: json.RawMessage(`{"file_path":"` + planPath + `","content":"# Plan"}`)},
+		{ToolName: "edit", Args: json.RawMessage(`{"file_path":"` + planPath + `"}`)},
 	}
 	for _, req := range allowCases {
 		decision, err := engine.Decide(context.Background(), req)

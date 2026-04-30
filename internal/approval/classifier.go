@@ -17,9 +17,18 @@ import (
 //   - web_fetch / web_search  → Network
 //   - Skill, ask_user, plan/task/cron control, tool_search, subagent
 //                             → Internal
+//
+// read/edit/write expose `file_path`; glob/grep/ls expose `path`. We probe
+// `file_path` first so the canonical CC-style argument wins when both are
+// present.
 func classify(req permission.Request) permission.Classification {
 	switch req.ToolName {
-	case "read", "glob", "grep", "ls":
+	case "read":
+		return permission.Classification{
+			Capability: permission.CapabilityRead,
+			Path:       pathField(req.Args),
+		}
+	case "glob", "grep", "ls":
 		return permission.Classification{
 			Capability: permission.CapabilityRead,
 			Path:       stringField(req.Args, "path"),
@@ -27,7 +36,7 @@ func classify(req permission.Request) permission.Classification {
 	case "write", "edit":
 		return permission.Classification{
 			Capability: permission.CapabilityWrite,
-			Path:       stringField(req.Args, "path"),
+			Path:       pathField(req.Args),
 		}
 	case "bash":
 		return permission.Classification{
@@ -65,4 +74,14 @@ func stringField(raw json.RawMessage, key string) string {
 	}
 	value, _ := payload[key].(string)
 	return value
+}
+
+// pathField reads the file path field, preferring file_path (CC-style,
+// used by read/edit/write) and falling back to path (legacy, still used
+// by glob/grep/ls).
+func pathField(raw json.RawMessage) string {
+	if v := stringField(raw, "file_path"); v != "" {
+		return v
+	}
+	return stringField(raw, "path")
 }

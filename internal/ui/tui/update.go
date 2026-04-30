@@ -92,6 +92,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case PermissionMsg:
 		m.Permission = initPermission(msg)
+		if msg.Tool == planExitToolName {
+			// Push the full plan into scrollback so it stays visible
+			// regardless of length; the approval card itself only shows
+			// the title + two options and always fits on screen.
+			body := renderPlanScrollback(msg.Preview, m.Markdown, m.Width)
+			return m, m.Emit(formatScrollbackBlock(body, false))
+		}
 		return m, nil
 	case PermissionDismissMsg:
 		m.Permission = nil

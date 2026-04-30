@@ -18,7 +18,7 @@ func TestIsPlanFileTool(t *testing.T) {
 	cwd := filepath.Clean("/home/u/.codebot/plans") // pretend cwd resolves into plansDir for relative-path test
 
 	args := func(path string) json.RawMessage {
-		raw, _ := json.Marshal(map[string]string{"path": path})
+		raw, _ := json.Marshal(map[string]string{"file_path": path})
 		return raw
 	}
 
@@ -36,7 +36,7 @@ func TestIsPlanFileTool(t *testing.T) {
 		{name: "non file tool", tool: "bash", plansDir: plansDir, args: args(planPath), want: false},
 		{name: "empty plans dir", tool: "write", plansDir: "", args: args(planPath), want: false},
 		{name: "empty args", tool: "write", plansDir: plansDir, args: nil, want: false},
-		{name: "missing path field", tool: "write", plansDir: plansDir, args: json.RawMessage(`{}`), want: false},
+		{name: "missing file_path field", tool: "write", plansDir: plansDir, args: json.RawMessage(`{}`), want: false},
 		{name: "escape via parent path", tool: "write", plansDir: plansDir, args: args(plansDir + "/../escape.md"), want: false},
 		{name: "relative path resolves into plans dir", tool: "write", cwd: cwd, plansDir: plansDir, args: args("agile-baking-aurora.md"), want: true},
 		{name: "relative path outside plans dir", tool: "write", cwd: "/home/u/project", plansDir: plansDir, args: args("main.go"), want: false},

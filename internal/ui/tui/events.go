@@ -31,15 +31,19 @@ func isPlanFileTool(tool, cwd, plansDir string, args json.RawMessage) bool {
 		return false
 	}
 	var parsed struct {
-		Path string `json:"path"`
+		FilePath string `json:"file_path"`
+		Path     string `json:"path"`
 	}
 	if err := json.Unmarshal(args, &parsed); err != nil {
 		return false
 	}
-	if parsed.Path == "" {
+	target := parsed.FilePath
+	if target == "" {
+		target = parsed.Path
+	}
+	if target == "" {
 		return false
 	}
-	target := parsed.Path
 	if !filepath.IsAbs(target) && cwd != "" {
 		target = filepath.Join(cwd, target)
 	}

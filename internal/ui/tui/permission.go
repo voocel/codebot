@@ -177,25 +177,20 @@ func renderPermission(s *permissionState, md *markdown.Renderer) string {
 	return AskCardStyle.Render(b.String())
 }
 
-// renderPlanApproval shows the full plan with markdown formatting in a
-// dedicated card so the user can read every line before deciding.
-func renderPlanApproval(s *permissionState, md *markdown.Renderer) string {
+// renderPlanApproval keeps the card compact (title + 2 options) so it always
+// fits at the bottom of the terminal. The full plan body is pushed into
+// scrollback as a separate block when the PermissionMsg arrives — see
+// renderPlanScrollback. Trying to render the entire plan inside the live
+// View card causes it to overflow the terminal height and clip silently
+// (bubbletea cannot scroll a live View).
+func renderPlanApproval(s *permissionState, _ *markdown.Renderer) string {
 	var b strings.Builder
 	activeOptionStyle := lipgloss.NewStyle().Foreground(Accent).Bold(true)
 	inactiveOptionStyle := askOptionInactiveStyle
 
 	b.WriteString(PermissionTitleStyle.Render("Plan Ready for Approval"))
 	b.WriteString("\n")
-	b.WriteString(MutedStyle.Render("Review the plan below; approve to leave plan mode and start execution, or reject to keep planning."))
-	b.WriteString("\n\n")
-
-	plan := strings.TrimSpace(s.preview)
-	if plan == "" {
-		plan = "(no plan content)"
-	} else if md != nil {
-		plan = strings.TrimSpace(md.RenderFinal(plan))
-	}
-	b.WriteString(plan)
+	b.WriteString(MutedStyle.Render("Plan printed above · approve to start execution, reject to keep planning."))
 	b.WriteString("\n\n")
 
 	renderOptions(&b, s, activeOptionStyle, inactiveOptionStyle)
@@ -204,6 +199,31 @@ func renderPlanApproval(s *permissionState, md *markdown.Renderer) string {
 	b.WriteString(askHintStyle.Render("Enter to confirm · ↑↓ navigate · Esc to reject"))
 
 	return AskCardStyle.Render(b.String())
+}
+
+// renderPlanScrollback formats the plan body as a scrollback block so it
+// stays visible (and scrollable in the user's terminal) regardless of plan
+// length. Called once when the plan-approval prompt is opened. Mirrors CC's
+// PlanApprovalRequestDisplay: a header, then the plan body fenced by top/
+// bottom rules and indented two columns so it reads as a self-contained
+// section rather than a wall of text flush against the margin.
+func renderPlanScrollback(plan string, md *markdown.Renderer, width int) string {
+	body := strings.TrimSpace(plan)
+	if body == "" {
+		body = "(no plan content)"
+	} else if md != nil {
+		body = strings.TrimSpace(md.RenderFinal(body))
+	}
+	body = indentBlock(body, 2)
+
+	ruleWidth := width - 4
+	if ruleWidth < 20 {
+		ruleWidth = 20
+	}
+	rule := MutedStyle.Render(strings.Repeat("─", ruleWidth))
+
+	header := PermissionTitleStyle.Render("Plan Ready for Approval")
+	return strings.Join([]string{header, "", rule, body, rule}, "\n")
 }
 
 func renderOptions(b *strings.Builder, s *permissionState, active, inactive lipgloss.Style) {

@@ -54,6 +54,9 @@ func extractPathArg(args json.RawMessage) string {
 	if json.Unmarshal(args, &obj) != nil {
 		return ""
 	}
+	if v, ok := obj["file_path"].(string); ok && v != "" {
+		return v
+	}
 	path, _ := obj["path"].(string)
 	return path
 }
@@ -140,6 +143,9 @@ func extractToolSummary(tool string, args json.RawMessage) string {
 		}
 		return strings.Join(parts, " ")
 	case "read", "edit", "write":
+		if v, ok := obj["file_path"].(string); ok && v != "" {
+			return ShortenPath(v)
+		}
 		if v, ok := obj["path"].(string); ok && v != "" {
 			return ShortenPath(v)
 		}
