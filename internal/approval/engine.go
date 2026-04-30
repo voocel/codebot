@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +20,6 @@ type Engine struct {
 	rules               *RuleSet
 	store               *permission.Store
 	sessionAllow        map[string]storedEntry
-	planFilePath        string
 	planContentProvider func() (string, error)
 	tool                decisionEngine
 }
@@ -63,55 +61,11 @@ func NewEngine(cwd string, mode Mode, rules *RuleSet, onAudit func(AuditEntry)) 
 		Rules:                (*permission.RuleSet)(rules),
 		Store:                store,
 		OnAudit:              onAudit,
+		Classifier:           classify,
 		PlanModeAllowedTools: planModeAllowedTools,
 		PlanModeExecAllowed:  planModeAllowExec,
-		PlanModeWriteAllowed: e.planModeAllowWrite,
 	})
 	return e, nil
-}
-
-// planModeAllowWrite permits write/edit only when targeting the registered
-// plan file. The plan Manager updates this on Enter/Approve/Cancel via
-// SetPlanFilePath; an empty path disables the allowance.
-func (e *Engine) planModeAllowWrite(req permission.Request) bool {
-	e.mu.RLock()
-	target := e.planFilePath
-	e.mu.RUnlock()
-	if target == "" {
-		return false
-	}
-	if req.ToolName != "write" && req.ToolName != "edit" {
-		return false
-	}
-	var args struct {
-		Path string `json:"path"`
-	}
-	if len(req.Args) == 0 {
-		return false
-	}
-	if err := json.Unmarshal(req.Args, &args); err != nil {
-		return false
-	}
-	path := args.Path
-	if path == "" {
-		return false
-	}
-	if !filepath.IsAbs(path) && e.cwd != "" {
-		path = filepath.Join(e.cwd, path)
-	}
-	return filepath.Clean(path) == filepath.Clean(target)
-}
-
-func (e *Engine) SetPlanFilePath(path string) {
-	e.mu.Lock()
-	e.planFilePath = path
-	e.mu.Unlock()
-}
-
-func (e *Engine) PlanFilePath() string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.planFilePath
 }
 
 // SetPlanContentProvider registers a callback that returns the current plan

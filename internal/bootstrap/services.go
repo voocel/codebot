@@ -87,11 +87,11 @@ func newApprovalEngine(input *resolvedInput) (*approval.Engine, error) {
 		WriteRoots: input.settings.Permissions.WriteRoots,
 		// Auto-memory + plan files live outside the user's workspace; mark
 		// them as harness-managed paths so reads/writes skip the OutsideRoots
-		// prompt and balanced-mode write approval. Plan mode itself only
-		// allows writes to the *current* plan file (approval.Engine matches
-		// the path it was given via SetPlanFilePath), so listing plansDir
-		// here just covers cross-mode reads/writes (e.g., /plan open after
-		// approval).
+		// prompt and balanced-mode write approval. The same declaration also
+		// drives plan-mode write permission: the agentcore engine treats any
+		// InternalWritable path as harness-trusted during plan mode, so the
+		// model can update plan files and the auto-memory store while
+		// pair-planning without per-path hooks.
 		InternalReadable: []string{memoryDir, plansDir},
 		InternalWritable: []string{memoryDir, plansDir},
 	})

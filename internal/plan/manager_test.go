@@ -196,6 +196,13 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
 	}
+	// Mirror production: plansDir lives outside the user's workspace
+	// (~/.codebot/plans/...), so it must be declared as InternalWritable
+	// for plan-mode writes to pass through.
+	plansDir := t.TempDir()
+	engine.SetFilesystemRoots(approval.FilesystemRoots{
+		InternalWritable: []string{plansDir},
+	})
 
 	allTools := []agentcore.Tool{
 		&stubTool{name: "write"},
@@ -213,7 +220,7 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	session, _ := newTestSession(t, dir, allTools)
 	defer session.Close()
 
-	planStore := storage.NewPlanStore(dir)
+	planStore := storage.NewPlanStore(plansDir)
 	controller := NewManager(session, engine, planStore, store)
 	if err := controller.Restore(State{Phase: PhaseOff}); err != nil {
 		t.Fatalf("restore: %v", err)
@@ -271,8 +278,8 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	if err := controller.Cancel(); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
-	if got := engine.PlanFilePath(); got != "" {
-		t.Fatalf("plan file path must clear on cancel, still got %q", got)
+	if engine.PlanMode() {
+		t.Fatalf("plan mode must clear on cancel")
 	}
 }
 

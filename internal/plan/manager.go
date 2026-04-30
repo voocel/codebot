@@ -221,14 +221,12 @@ func (c *Manager) applyState(state State) {
 		c.session.OverlayPrompt(planModeOverlay, buildModePrompt(planPath))
 		if c.approval != nil {
 			c.approval.SetPlanMode(true)
-			c.approval.SetPlanFilePath(planPath)
 			c.approval.SetPlanContentProvider(c.CurrentPlan)
 		}
 	default:
 		c.session.OverlayPrompt(planModeOverlay, "")
 		if c.approval != nil {
 			c.approval.SetPlanMode(false)
-			c.approval.SetPlanFilePath("")
 			c.approval.SetPlanContentProvider(nil)
 			if mode, err := approval.ParseMode(state.PreMode); err == nil && state.PreMode != "" {
 				c.approval.SetMode(mode)
