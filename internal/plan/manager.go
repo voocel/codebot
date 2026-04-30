@@ -11,24 +11,67 @@ import (
 	localtools "github.com/voocel/codebot/internal/tools"
 )
 
-// buildModePrompt produces the plan-mode system overlay. The plan file path is
-// the only file the model is allowed to write to in plan mode (enforced by the
-// permission engine via approval.Engine.SetPlanFilePath). Mirrors Claude Code's
-// "plan file is the canonical artifact" design — the model edits the file
-// incrementally during planning, and exit_plan_mode is just a readiness signal.
+// buildModePrompt produces the plan-mode system overlay. The plan file is the
+// canonical artifact: the model edits it incrementally with write/edit; the
+// permission engine denies all other writes (and Subagent dispatch) while
+// PlanMode=true. exit_plan_mode signals readiness and routes through the
+// permission ask flow for user approval.
+//
+// Wording mirrors CC's iterative plan-mode instructions
+// (claude-code-src/utils/messages.ts:getPlanModeInterviewInstructions) so the
+// model gets the same MUST-NOT framing, the explore→update→ask loop, and the
+// strict end-of-turn contract.
 func buildModePrompt(planFilePath string) string {
-	return `[PLAN MODE - Read-Only]
-You are in plan mode. Explore and analyze the codebase, then build a detailed implementation plan in the plan file.
+	return `Plan mode is active. The user indicated that they do not want you to execute yet — you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
 
-Plan file: ` + planFilePath + `
+## Plan File Info:
+A plan file exists at ` + planFilePath + `. Use the write tool to populate it (if empty) or the edit tool to refine it incrementally as your understanding grows.
+You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit — other than this you are only allowed to take READ-ONLY actions.
 
-This is the ONLY file you may modify in plan mode. Use the write or edit tool to build your plan in this file incrementally as you discover things — start with a skeleton, fill in sections as you go, refine details before submitting.
+## Iterative Planning Workflow
 
-Bash is available for read-only exploration only (grep, find, git status, cat, sed, ls). Other writes (to source files, configs, etc.) will be denied by the permission layer.
+You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you can't make alone, and write your findings into the plan file as you go. The plan file (above) is the ONLY file you may edit — it starts as a rough skeleton and gradually becomes the final plan.
 
-When the plan file is ready for user review, call exit_plan_mode with a short title and any allowed command prefixes the user should pre-approve. Do NOT pass the plan content to exit_plan_mode — Codebot reads it directly from the plan file.
+### The Loop
 
-Do NOT dump the full plan as assistant text in the conversation; write it to the plan file instead. Do NOT ask the user for natural-language approval — exit_plan_mode opens the review UI.`
+Repeat this cycle until the plan is complete:
+
+1. **Explore** — Use read, grep, glob, ls (and bash for read-only commands like ` + "`git status`" + `, ` + "`find`" + `, ` + "`cat`" + `, ` + "`sed -n`" + `) to read code. Look for existing functions, utilities, and patterns to reuse.
+2. **Update the plan file** — After each discovery, immediately capture what you learned. Don't wait until the end.
+3. **Ask the user** — When you hit an ambiguity or decision you can't resolve from code alone, use ask_user. Then go back to step 1.
+
+### First Turn
+
+Start by quickly scanning a few key files to form an initial understanding of the task scope. Then write a skeleton plan (headers and rough notes) and ask the user your first round of questions. Don't explore exhaustively before engaging the user.
+
+### Asking Good Questions
+
+- Never ask what you could find out by reading the code
+- Batch related questions together (single ask_user call with multiple questions when applicable)
+- Focus on things only the user can answer: requirements, preferences, tradeoffs, edge case priorities
+- Scale depth to the task — a vague feature request needs many rounds; a focused bug fix may need one or none
+
+### Plan File Structure
+
+Your plan file should be divided into clear sections using markdown headers, based on the request. Fill out these sections as you go.
+- Begin with a **Context** section: explain why this change is being made — the problem or need it addresses, what prompted it, and the intended outcome
+- Include only your recommended approach, not all alternatives
+- Ensure that the plan file is concise enough to scan quickly, but detailed enough to execute effectively
+- Include the paths of critical files to be modified
+- Reference existing functions and utilities you found that should be reused, with their file paths
+- Include a verification section describing how to test the changes end-to-end (run the code, run tests, manual checks)
+
+### When to Converge
+
+Your plan is ready when you've addressed all ambiguities and it covers: what to change, which files to modify, what existing code to reuse (with file paths), and how to verify the changes. Call exit_plan_mode when the plan is ready for approval.
+
+### Ending Your Turn
+
+Your turn should only end by either:
+- Using ask_user to gather more information
+- Calling exit_plan_mode when the plan is ready for approval
+
+**Important:** Use exit_plan_mode to request plan approval. Do NOT ask about plan approval via text or ask_user. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?" MUST go through exit_plan_mode.`
 }
 
 type Manager struct {
@@ -40,13 +83,27 @@ type Manager struct {
 }
 
 func NewManager(session *agent.Session, approvalEngine *approval.Engine, planStore *storage.PlanStore, sessionStore *storage.Store) *Manager {
-	return &Manager{
+	m := &Manager{
 		session:      session,
 		approval:     approvalEngine,
 		planStore:    planStore,
 		sessionStore: sessionStore,
 		state:        NewStore(),
 	}
+	if session != nil {
+		// Drives the periodic plan-mode reminder injection (see
+		// agent/plan_reminders.go) — runtime polls before each user prompt.
+		session.SetPlanModeSignal(m.signal)
+	}
+	return m
+}
+
+func (c *Manager) signal() (bool, string) {
+	state := c.state.Snapshot()
+	if state.Phase != PhasePlanning || c.planStore == nil {
+		return false, ""
+	}
+	return true, c.planStore.Path(state.Slug)
 }
 
 func (c *Manager) Snapshot() State {
@@ -62,14 +119,16 @@ func (c *Manager) Restore(state State) error {
 	return nil
 }
 
-func (c *Manager) Enter(task string) (string, error) {
+// Enter transitions from PhaseOff to PhasePlanning, generating a fresh plan
+// file slug and writing the plan-mode overlay prompt into the session.
+func (c *Manager) Enter() (string, error) {
 	state := c.state.Snapshot()
 	if state.Phase != PhaseOff {
 		return "", fmt.Errorf("plan mode already active")
 	}
 
 	slug := storage.GenerateName()
-	if err := c.ensurePlanFile(slug, task); err != nil {
+	if err := c.ensurePlanFile(slug); err != nil {
 		return "", err
 	}
 
@@ -80,7 +139,6 @@ func (c *Manager) Enter(task string) (string, error) {
 
 	next := State{
 		Phase:   PhasePlanning,
-		Task:    strings.TrimSpace(task),
 		Slug:    slug,
 		PreMode: preMode,
 	}
@@ -90,109 +148,41 @@ func (c *Manager) Enter(task string) (string, error) {
 		return "", err
 	}
 
-	planPath := ""
-	if c.planStore != nil {
-		planPath = c.planStore.Path(slug)
-	}
-	prompt := strings.Join([]string{
-		"You are now in plan mode. Explore the codebase and build a detailed implementation plan in the plan file.",
-		"Plan file: " + planPath,
-		"Use the write or edit tool to build your plan in this file incrementally. This is the only file you may modify in plan mode.",
-		"When the plan file is ready, call exit_plan_mode with a short title and any allowed command prefixes. Do not pass plan content as a tool argument — Codebot reads it from the file.",
-		"Do not dump the full plan in the conversation; write it to the plan file instead.",
-	}, "\n")
-	if next.Task != "" {
-		prompt += "\n\nTask: " + next.Task
-	}
-	return prompt, nil
+	planPath := c.planStore.Path(slug)
+	return "Entered plan mode. Build your plan in " + planPath + " using the write or edit tool, then call exit_plan_mode for approval.", nil
 }
 
-// Submit transitions the plan from Planning to Review. The plan content is
-// read from the plan file on disk — the model is expected to have written it
-// there incrementally during planning. Title falls back to the first heading
-// in the plan file if empty.
-func (c *Manager) Submit(title string, commands []AllowedCommand) error {
+// Exit unconditionally transitions out of plan mode and returns the plan
+// content. User approval is enforced upstream by approval.Engine.Decide
+// (matching CC's checkPermissions:'ask' design): when this method is reached
+// the user has already approved or the call is from /plan cancel.
+func (c *Manager) Exit() (string, error) {
 	state := c.state.Snapshot()
 	if state.Phase != PhasePlanning {
-		return fmt.Errorf("exit_plan_mode is only available while planning")
-	}
-	if c.planStore == nil || state.Slug == "" {
-		return fmt.Errorf("plan store not configured")
+		return "", fmt.Errorf("not in plan mode")
 	}
 	content, err := c.planStore.Load(state.Slug)
 	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(content) == "" {
-		return fmt.Errorf("plan file is empty; write the plan to %s before calling exit_plan_mode", c.planStore.Path(state.Slug))
-	}
-	title = strings.TrimSpace(title)
-	if title == "" {
-		title = ExtractTitle(content)
-	}
-	next := state
-	next.Phase = PhaseReview
-	next.Title = title
-	next.AllowedCommands = append([]AllowedCommand(nil), commands...)
-	c.state.Replace(next)
-	c.applyState(next)
-	if err := c.persist(next); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *Manager) Approve() (string, string, []AllowedCommand, error) {
-	state := c.state.Snapshot()
-	if state.Phase != PhaseReview {
-		return "", "", nil, fmt.Errorf("no plan awaiting approval")
-	}
-	content, err := c.planStore.Load(state.Slug)
-	if err != nil {
-		return "", "", nil, err
-	}
-	if strings.TrimSpace(content) == "" {
-		return "", "", nil, fmt.Errorf("plan file is empty")
+		return "", err
 	}
 
-	next := state
-	next.Phase = PhaseOff
-	next.Task = ""
-	c.state.Replace(next)
-	c.applyState(next)
-	if err := c.persist(next); err != nil {
-		return "", "", nil, err
-	}
-	return next.Title, content, append([]AllowedCommand(nil), next.AllowedCommands...), nil
-}
-
-func (c *Manager) Revise(feedback string) (string, error) {
-	state := c.state.Snapshot()
-	if state.Phase != PhaseReview {
-		return "", fmt.Errorf("no plan to revise")
-	}
-	next := state
-	next.Phase = PhasePlanning
-	next.Title = ""
-	next.Task = ""
-	next.AllowedCommands = nil
+	next := State{Phase: PhaseOff, PreMode: state.PreMode}
 	c.state.Replace(next)
 	c.applyState(next)
 	if err := c.persist(next); err != nil {
 		return "", err
 	}
-	return "User feedback on the plan: " + strings.TrimSpace(feedback) + "\n\nPlease revise the plan accordingly.", nil
+	return content, nil
 }
 
+// Cancel is invoked from /plan cancel: ends plan mode without expecting any
+// plan file to exist.
 func (c *Manager) Cancel() error {
 	state := c.state.Snapshot()
 	if state.Phase == PhaseOff {
 		return nil
 	}
-	next := State{
-		Phase:   PhaseOff,
-		PreMode: state.PreMode,
-	}
+	next := State{Phase: PhaseOff, PreMode: state.PreMode}
 	c.state.Replace(next)
 	c.applyState(next)
 	return c.persist(next)
@@ -220,16 +210,8 @@ func (c *Manager) applyState(state State) {
 	}
 	c.wireValidators()
 
-	const (
-		planModeOverlay     = "plan.mode"
-		planApprovedOverlay = "plan.approved"
-	)
+	const planModeOverlay = "plan.mode"
 
-	// Plan mode keeps the full tool list. Permission engine (with PlanMode=true)
-	// denies Write/Subagent capabilities and allow-lists exec/internal tools +
-	// the registered plan file path — see internal/approval. Mirrors Claude
-	// Code's "plan file is the canonical artifact" design: the model edits the
-	// plan file incrementally; exit_plan_mode is just a readiness signal.
 	planPath := ""
 	if c.planStore != nil && state.Slug != "" {
 		planPath = c.planStore.Path(state.Slug)
@@ -237,37 +219,21 @@ func (c *Manager) applyState(state State) {
 	switch state.Phase {
 	case PhasePlanning:
 		c.session.OverlayPrompt(planModeOverlay, buildModePrompt(planPath))
-		c.session.OverlayPrompt(planApprovedOverlay, "")
 		if c.approval != nil {
 			c.approval.SetPlanMode(true)
 			c.approval.SetPlanFilePath(planPath)
-			c.approval.SetPlanAllowedCommands(nil)
-		}
-	case PhaseReview:
-		c.session.OverlayPrompt(planModeOverlay, buildModePrompt(planPath))
-		c.session.OverlayPrompt(planApprovedOverlay, "")
-		if c.approval != nil {
-			c.approval.SetPlanMode(true)
-			c.approval.SetPlanFilePath("")
-			c.approval.SetPlanAllowedCommands(nil)
+			c.approval.SetPlanContentProvider(c.CurrentPlan)
 		}
 	default:
 		c.session.OverlayPrompt(planModeOverlay, "")
 		if c.approval != nil {
 			c.approval.SetPlanMode(false)
 			c.approval.SetPlanFilePath("")
+			c.approval.SetPlanContentProvider(nil)
 			if mode, err := approval.ParseMode(state.PreMode); err == nil && state.PreMode != "" {
 				c.approval.SetMode(mode)
 			}
-			c.approval.SetPlanAllowedCommands(AllowedCommandPrefixes(state.AllowedCommands))
 		}
-		if state.Slug != "" && state.Title != "" && c.planStore != nil {
-			if content, err := c.planStore.Load(state.Slug); err == nil && strings.TrimSpace(content) != "" {
-				c.session.OverlayPrompt(planApprovedOverlay, BuildApprovedPlanPrompt(state.Title, content, state.AllowedCommands))
-				return
-			}
-		}
-		c.session.OverlayPrompt(planApprovedOverlay, "")
 	}
 }
 
@@ -280,19 +246,18 @@ func (c *Manager) wireValidators() {
 				}
 				return nil
 			})
-			enterTool.SetHandler(func(task string) (string, error) {
-				return c.Enter(task)
-			})
+			enterTool.SetHandler(c.Enter)
 		}
 	}
 	for _, tool := range c.session.ToolsByName("exit_plan_mode") {
 		if exitTool, ok := tool.(*localtools.ExitPlanModeTool); ok {
 			exitTool.SetValidator(func() error {
 				if c.state.Snapshot().Phase != PhasePlanning {
-					return fmt.Errorf("exit_plan_mode is only available while planning")
+					return fmt.Errorf("exit_plan_mode is only available in plan mode")
 				}
 				return nil
 			})
+			exitTool.SetExiter(c.Exit)
 		}
 	}
 }
@@ -301,16 +266,10 @@ func (c *Manager) persist(state State) error {
 	if c.sessionStore == nil {
 		return nil
 	}
-	return c.sessionStore.AppendPlanState(
-		string(state.Phase),
-		state.Slug,
-		state.Title,
-		state.PreMode,
-		AllowedCommandsToEntries(state.AllowedCommands),
-	)
+	return c.sessionStore.AppendPlanState(string(state.Phase), state.Slug, state.PreMode)
 }
 
-func (c *Manager) ensurePlanFile(slug, task string) error {
+func (c *Manager) ensurePlanFile(slug string) error {
 	if c.planStore == nil || slug == "" {
 		return nil
 	}
@@ -318,37 +277,11 @@ func (c *Manager) ensurePlanFile(slug, task string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	content := "# Plan\n"
-	if strings.TrimSpace(task) != "" {
-		content += "\nTask: " + strings.TrimSpace(task) + "\n"
-	}
-	content += "\n## Draft\n"
-	return c.planStore.Save(slug, content)
+	return c.planStore.Save(slug, "# Plan\n")
 }
 
-func BuildApprovedPlanPrompt(title, content string, commands []AllowedCommand) string {
-	var b strings.Builder
-	b.WriteString("[APPROVED PLAN]\nExecute the following plan.\n\n")
-	b.WriteString("Plan: " + title + "\n")
-	if len(commands) > 0 {
-		b.WriteString("\nAllowed command prefixes for this session:\n")
-		for _, command := range commands {
-			b.WriteString("- " + describeAllowedCommandForPrompt(command) + "\n")
-		}
-	}
-	b.WriteString("\n")
-	b.WriteString(content)
-	return b.String()
-}
-
-func describeAllowedCommandForPrompt(command AllowedCommand) string {
-	desc := strings.TrimSpace(command.Description)
-	if desc == "" || desc == command.CommandPrefix {
-		return command.CommandPrefix
-	}
-	return command.CommandPrefix + " (" + desc + ")"
-}
-
+// ExtractTitle pulls the first heading or non-empty line from plan content as
+// a display title. Used by the TUI to label review surfaces.
 func ExtractTitle(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)

@@ -3,11 +3,20 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 
 	"github.com/voocel/agentcore/permission"
 	"github.com/voocel/agentcore/schema"
 )
+
+// AllowedPromptArg is a semantic label the model may attach to exit_plan_mode
+// to remind the user about follow-up actions (e.g. {Tool: "Bash", Prompt: "go test"}).
+// These are reference-only — they do NOT auto-allow tool calls. The approval
+// engine surfaces them in the plan-exit prompt preview alongside the plan body.
+type AllowedPromptArg struct {
+	Tool   string `json:"tool"`
+	Prompt string `json:"prompt"`
+}
 
 // ---------------------------------------------------------------------------
 // enter_plan_mode
@@ -15,13 +24,13 @@ import (
 
 type EnterPlanModeTool struct {
 	validate func() error
-	onEnter  func(task string) (string, error)
+	onEnter  func() (string, error)
 }
 
 func NewEnterPlanMode() *EnterPlanModeTool { return &EnterPlanModeTool{} }
 
 func (t *EnterPlanModeTool) SetValidator(fn func() error) { t.validate = fn }
-func (t *EnterPlanModeTool) SetHandler(fn func(task string) (string, error)) {
+func (t *EnterPlanModeTool) SetHandler(fn func() (string, error)) {
 	t.onEnter = fn
 }
 
@@ -49,24 +58,18 @@ Do NOT use for:
 }
 
 func (t *EnterPlanModeTool) Schema() map[string]any {
-	return schema.Object(
-		schema.Property("task", schema.String("Brief description of the task to plan for")),
-	)
+	return schema.Object()
 }
 
-func (t *EnterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *EnterPlanModeTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	if t.validate != nil {
 		if err := t.validate(); err != nil {
 			return nil, err
 		}
 	}
-	var a struct {
-		Task string `json:"task"`
-	}
-	_ = json.Unmarshal(args, &a)
 	message := "You are now in plan mode. Build your plan in the plan file referenced by the plan-mode system message, then call exit_plan_mode when ready."
 	if t.onEnter != nil {
-		prompt, err := t.onEnter(a.Task)
+		prompt, err := t.onEnter()
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +77,6 @@ func (t *EnterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (js
 	}
 	return json.Marshal(map[string]any{
 		"status":  "entered",
-		"task":    a.Task,
 		"message": message,
 	})
 }
@@ -85,11 +87,21 @@ func (t *EnterPlanModeTool) Execute(_ context.Context, args json.RawMessage) (js
 
 type ExitPlanModeTool struct {
 	validate func() error
+	exiter   func() (string, error)
 }
 
 func NewExitPlanMode() *ExitPlanModeTool { return &ExitPlanModeTool{} }
 
 func (t *ExitPlanModeTool) SetValidator(fn func() error) { t.validate = fn }
+
+// SetExiter wires the plan-mode state transition. Called only after the
+// permission engine has approved the exit (CC-style: ExitPlanMode declares
+// checkPermissions:'ask', so the user has already seen the plan and chosen
+// approve before the tool runs). The callback returns the approved plan
+// content so it can be echoed in the tool result for the model.
+func (t *ExitPlanModeTool) SetExiter(fn func() (string, error)) {
+	t.exiter = fn
+}
 
 func (t *ExitPlanModeTool) Name() string  { return "exit_plan_mode" }
 func (t *ExitPlanModeTool) Label() string { return "Exit Plan Mode" }
@@ -99,44 +111,46 @@ func (t *ExitPlanModeTool) PermissionMetadata() permission.Metadata {
 func (t *ExitPlanModeTool) Description() string {
 	return "Signal that the plan file (referenced in the plan-mode system message) is ready for user review. " +
 		"You should already have written the plan to that file using write or edit. " +
-		"This tool reads the plan from disk; do NOT pass the plan content as an argument. " +
-		"Codebot opens the review confirmation UI after this tool succeeds."
+		"This tool reads the plan from disk and asks the user to approve or deny; " +
+		"do NOT pass the plan content as an argument. " +
+		"Optional allowed_prompts annotate follow-up actions for the user; they are reference labels and do NOT auto-allow anything."
 }
 
 func (t *ExitPlanModeTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("title", schema.String("Short title summarizing the plan (under 60 chars)")).Required(),
-		schema.Property("allowed_commands", schema.Array(
-			"Allowed command prefixes for follow-up execution. Use exact prefixes such as 'go test' or 'go mod tidy'. At most 5 items.",
+		schema.Property("allowed_prompts", schema.Array(
+			"Optional reference labels for follow-up actions the user may want to take after approving the plan. Each item is {tool, prompt}, e.g. {tool: \"Bash\", prompt: \"go test ./...\"}.",
 			schema.Object(
-				schema.Property("command_prefix", schema.String("Command prefix to allow, e.g. 'go test'")).Required(),
-				schema.Property("description", schema.String("Short human-readable description of what this command does")),
+				schema.Property("tool", schema.String("Tool name, e.g. \"Bash\"")).Required(),
+				schema.Property("prompt", schema.String("Short label for the follow-up action")).Required(),
 			),
 		)),
 	)
 }
 
-func (t *ExitPlanModeTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *ExitPlanModeTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	if t.validate != nil {
 		if err := t.validate(); err != nil {
 			return nil, err
 		}
 	}
-	var a struct {
-		Title           string `json:"title"`
-		AllowedCommands []struct {
-			CommandPrefix string `json:"command_prefix"`
-			Description   string `json:"description"`
-		} `json:"allowed_commands"`
+	if t.exiter == nil {
+		return nil, ErrPlanExitNotWired
 	}
-	_ = json.Unmarshal(args, &a)
-	if a.Title == "" {
-		return nil, fmt.Errorf("title is required")
+	// Approval has already happened upstream in approval.Engine.Decide; the
+	// permission engine wouldn't have invoked Execute on a denial. Here we
+	// just transition state and return the approved plan content.
+	content, err := t.exiter()
+	if err != nil {
+		return nil, err
 	}
 	return json.Marshal(map[string]any{
-		"status":           "submitted",
-		"title":            a.Title,
-		"allowed_commands": a.AllowedCommands,
-		"message":          "Plan submitted for review. Do not respond further.",
+		"status":  "approved",
+		"plan":    content,
+		"message": "User approved the plan. Continue executing it now.",
 	})
 }
+
+// ErrPlanExitNotWired is returned when exit_plan_mode is invoked before the
+// harness wires the exiter callback. Indicates a bootstrapping bug.
+var ErrPlanExitNotWired = errors.New("exit_plan_mode is not wired")

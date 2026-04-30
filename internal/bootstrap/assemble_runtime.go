@@ -14,7 +14,6 @@ import (
 	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
 
@@ -51,25 +50,23 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	}
 
 	return &Runtime{
-		Cwd:                 input.cwd,
-		GitBranch:           detectGitBranch(input.cwd),
-		ApprovalEngine:      services.approvalEngine,
-		TaskRuntime:         taskRT,
-		Settings:            assembly.settings,
-		ModelName:           modelName,
-		Session:             session,
-		SessionStore:        input.sessionStore,
-		PluginCatalog:       services.pluginCatalog,
-		SkillCatalog:        services.skillCatalog,
-		MCPManager:          services.mcpManager,
-		MCPServers:          services.mcpServers,
-		HookRunner:          assembly.hookRunner,
-		EnvHint:             input.envHint,
-		PlanSlug:            input.sessionSnapshot.PlanSlug,
-		PlanTitle:           input.sessionSnapshot.PlanTitle,
-		PlanPhase:           input.sessionSnapshot.PlanPhase,
-		PlanPreMode:         input.sessionSnapshot.PlanPreMode,
-		PlanAllowedCommands: append([]storage.AllowedCommandEntry(nil), input.sessionSnapshot.PlanAllowedCommands...),
+		Cwd:            input.cwd,
+		GitBranch:      detectGitBranch(input.cwd),
+		ApprovalEngine: services.approvalEngine,
+		TaskRuntime:    taskRT,
+		Settings:       assembly.settings,
+		ModelName:      modelName,
+		Session:        session,
+		SessionStore:   input.sessionStore,
+		PluginCatalog:  services.pluginCatalog,
+		SkillCatalog:   services.skillCatalog,
+		MCPManager:     services.mcpManager,
+		MCPServers:     services.mcpServers,
+		HookRunner:     assembly.hookRunner,
+		EnvHint:        input.envHint,
+		PlanSlug:       input.sessionSnapshot.PlanSlug,
+		PlanPhase:      input.sessionSnapshot.PlanPhase,
+		PlanPreMode:    input.sessionSnapshot.PlanPreMode,
 	}, nil
 }
 

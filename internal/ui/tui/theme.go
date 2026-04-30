@@ -49,7 +49,7 @@ var Accent = lipgloss.AdaptiveColor{Light: "#B47A2E", Dark: "#E5B567"}
 
 // Status.
 var (
-	Success = lipgloss.AdaptiveColor{Light: "#2C7A39", Dark: "#4EBA65"} // pure saturated green, matches Claude Code
+	Success = lipgloss.AdaptiveColor{Light: "#2C7A39", Dark: "#4EBA65"} // pure saturated green
 	Danger  = lipgloss.AdaptiveColor{Light: "#C53030", Dark: "#E06C75"}
 	Info    = lipgloss.AdaptiveColor{Light: "#1E6FAF", Dark: "#78C6E7"}
 	Live    = lipgloss.AdaptiveColor{Light: "31", Dark: "153"} // spinner / running chrome

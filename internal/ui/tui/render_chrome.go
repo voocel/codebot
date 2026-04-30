@@ -27,11 +27,6 @@ func (m *Model) RenderStatusBar() string {
 	if m.Permission != nil || m.AskUser != nil {
 		return ""
 	}
-	if m.config.StatusPlan != nil {
-		if plan := m.config.StatusPlan(m); plan != nil && len(plan.Choices) > 0 {
-			return ""
-		}
-	}
 
 	var runningLine string
 	if m.Running {
@@ -57,120 +52,6 @@ func (m *Model) RenderStatusBar() string {
 	default:
 		return ""
 	}
-}
-
-// RenderPlanBar renders the plan review card. The full plan body is emitted
-// into scrollback by the harness when exit_plan_mode succeeds (see
-// internal/ui/plan.go: renderPlanForReview), so this card only asks for the
-// user's decision and shows execution constraints.
-//
-//	┌─ "Ready to code?" (Accent border) ────────────┐
-//	│ Plan ready: <title>                           │
-//	│ Allowed command prefixes:                     │
-//	│ - <cmd>                                       │
-//	│                                               │
-//	│   1. Execute plan                             │
-//	│   2. Cancel                                   │
-//	│   ───                                         │
-//	│   3. Type here to request changes             │
-//	│                                               │
-//	│ Enter · ↑↓ · 1-3 · Esc cancel                 │
-//	│ Ctrl+E to edit · ~/.codebot/plans/foo.md      │
-//	└───────────────────────────────────────────────┘
-//
-// Empty when no review is in progress.
-func (m *Model) RenderPlanBar() string {
-	if m.config.StatusPlan == nil {
-		return ""
-	}
-	plan := m.config.StatusPlan(m)
-	if plan == nil || len(plan.Choices) == 0 {
-		return ""
-	}
-
-	optionCount := len(plan.Choices) + 1 // +1 for "Type here"
-
-	// Keep details and footer wrapped inside the card instead of letting long
-	// plan file paths push the right border past the terminal width.
-	ruleWidth := max(m.Width-6, 20)
-
-	var renderedFooter string
-	if !plan.OtherMode && plan.PlanFilePath != "" {
-		footer := "Ctrl+E to edit in $EDITOR · " + plan.PlanFilePath
-		renderedFooter = askHintStyle.Width(ruleWidth).Render(footer)
-	}
-
-	var b strings.Builder
-
-	// Card title.
-	b.WriteString(askQuestionStyle.Render("Ready to code?"))
-	b.WriteString("\n\n")
-
-	if title := strings.TrimSpace(plan.Title); title != "" {
-		b.WriteString(askDescStyle.Render("Plan ready: " + title))
-	} else {
-		b.WriteString(askDescStyle.Render("Plan ready."))
-	}
-	b.WriteString("\n\n")
-
-	// Allowed command prefixes (and any other plan review details).
-	for _, detail := range plan.Details {
-		detail = strings.TrimSpace(detail)
-		if detail == "" {
-			continue
-		}
-		b.WriteString(askDescStyle.Render(detail))
-		b.WriteByte('\n')
-	}
-	if len(plan.Details) > 0 {
-		b.WriteByte('\n')
-	}
-
-	// Numbered options.
-	for i, c := range plan.Choices {
-		num := fmt.Sprintf("%d. ", i+1)
-		if i == plan.Active {
-			b.WriteString(askOptionActiveStyle.Render("> " + num + c))
-		} else {
-			b.WriteString(askOptionInactiveStyle.Render("  " + num + c))
-		}
-		b.WriteByte('\n')
-	}
-
-	// Separator before "Type here".
-	b.WriteString(askDescStyle.Render("  ───"))
-	b.WriteByte('\n')
-
-	// "Type here" option — agent-neutral wording, no provider name.
-	const otherLabel = "Type here to request changes"
-	otherIdx := len(plan.Choices)
-	otherNum := fmt.Sprintf("%d. ", otherIdx+1)
-	if plan.Active == otherIdx {
-		if plan.OtherMode {
-			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + plan.OtherBuf + "█"))
-		} else {
-			b.WriteString(askOptionActiveStyle.Render("> " + otherNum + otherLabel))
-		}
-	} else {
-		b.WriteString(askOptionInactiveStyle.Render("  " + otherNum + otherLabel))
-	}
-	b.WriteString("\n\n")
-
-	// Hint line — keys.
-	if plan.OtherMode {
-		b.WriteString(askHintStyle.Render("Enter to confirm · Esc to go back"))
-	} else {
-		b.WriteString(askHintStyle.Render(fmt.Sprintf("Enter to select · ↑↓ Navigate · 1-%d Shortcut · Esc to cancel", optionCount)))
-	}
-
-	// Footer — Ctrl+E + plan file path, pre-rendered above so long paths wrap
-	// inside the card instead of pushing the right border off-screen.
-	if renderedFooter != "" {
-		b.WriteByte('\n')
-		b.WriteString(renderedFooter)
-	}
-
-	return PlanBoxStyle.Render(b.String())
 }
 
 // RenderContextBar renders the context line below the input (env info).
@@ -386,7 +267,7 @@ func (m *Model) renderQueuedMsgs() string {
 const taskTreeMaxVisible = 5
 
 // renderTaskTree renders the compact task tree pinned just below the
-// Running line. Two layouts mirror Claude Code's TaskListV2:
+// Running line. Two layouts:
 //
 //	nested (agent running, hangs off the Running spinner):
 //	  ⎿  ☐ pending subject
@@ -408,10 +289,10 @@ func (m *Model) renderTaskTree() string {
 		return ""
 	}
 
-	// When the list fits, we keep creation order untouched. When truncation
-	// kicks in, we mirror Claude Code's TaskListV2 priority groups so that
-	// tasks completed within the last RecentCompletedTTL get pinned to the
-	// top (visual celebration), while older completes sink to the bottom.
+	// When the list fits, keep creation order untouched. When truncation kicks
+	// in, priority groups apply: tasks completed within the last
+	// RecentCompletedTTL get pinned to the top (visual celebration), older
+	// completes sink to the bottom.
 	items := snap.Items
 	var visible, hiddenItems []storage.Task
 	if len(items) <= taskTreeMaxVisible {
@@ -485,9 +366,9 @@ func renderTaskTreeNested(visible, hiddenItems []storage.Task) string {
 	return b.String()
 }
 
-// renderTaskTreeStandalone formats the tree as a self-contained block
-// (no parent line above), matching Claude Code's `isStandalone` layout:
-// muted prose header with bold counts, marginLeft=2 for the whole box.
+// renderTaskTreeStandalone formats the tree as a self-contained block (no
+// parent line above): muted prose header with bold counts, marginLeft=2 for
+// the whole box.
 func renderTaskTreeStandalone(snap *storage.TaskSnapshot, visible, hiddenItems []storage.Task) string {
 	var b strings.Builder
 
@@ -531,7 +412,7 @@ func renderStandaloneHeader(snap *storage.TaskSnapshot) string {
 
 // taskOverflowSummary breaks down hidden tasks by status: empty if none,
 // otherwise something like "… +1 in progress, 3 pending, 2 completed".
-// Mirrors Claude Code's hiddenSummary order (in_progress → pending → completed).
+// Order: in_progress → pending → completed.
 func taskOverflowSummary(hidden []storage.Task) string {
 	if len(hidden) == 0 {
 		return ""
@@ -592,12 +473,11 @@ func renderTaskTreeLine(t storage.Task) string {
 	case storage.TaskCompleted:
 		icon = "✓"
 		iconStyle = lipgloss.NewStyle().Foreground(Success)
-		// Mirrors Claude Code's <Text dimColor strikethrough>. We emit a single
-		// SGR block (`ESC[2;9m … ESC[0m`) instead of going through lipgloss's
-		// styled renderer because lipgloss wraps each rune in its own
-		// open/close pair when strikethrough is enabled (per-char `ESC[0m`
-		// resets), and many terminals fail to draw a continuous overstrike
-		// line across those resets.
+		// Emit a single SGR block (`ESC[2;9m … ESC[0m`) for dim+strikethrough
+		// instead of going through lipgloss's styled renderer: lipgloss wraps
+		// each rune in its own open/close pair when strikethrough is enabled
+		// (per-char `ESC[0m` resets), and many terminals fail to draw a
+		// continuous overstrike line across those resets.
 		renderedText = "\x1b[2;9m" + text + "\x1b[0m"
 	default:
 		icon = "○"

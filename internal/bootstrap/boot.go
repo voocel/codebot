@@ -36,21 +36,19 @@ type Runtime struct {
 	ApprovalEngine *approval.Engine
 	TaskRuntime    *agentcore.TaskRuntime
 
-	Settings            config.Resolved
-	ModelName           string // display form: "provider/model" or session-restored name
-	Session             *agent.Session
-	SessionStore        *storage.Store
-	PluginCatalog       *plugin.Catalog
-	SkillCatalog        *skill.Catalog
-	MCPManager          *mcpclient.Manager
-	MCPServers          map[string]mcpclient.ServerConfig // for async connection in TUI
-	HookRunner          *hooks.Runner                     // nil if no hooks configured
-	EnvHint             string                            // non-empty when credentials come from environment variable
-	PlanSlug            string                            // restored plan slug (empty if no plan)
-	PlanTitle           string                            // restored plan title
-	PlanPhase           string                            // restored plan phase
-	PlanPreMode         string                            // restored plan pre-mode
-	PlanAllowedCommands []storage.AllowedCommandEntry     // restored allowed command prefixes
+	Settings      config.Resolved
+	ModelName     string // display form: "provider/model" or session-restored name
+	Session       *agent.Session
+	SessionStore  *storage.Store
+	PluginCatalog *plugin.Catalog
+	SkillCatalog  *skill.Catalog
+	MCPManager    *mcpclient.Manager
+	MCPServers    map[string]mcpclient.ServerConfig // for async connection in TUI
+	HookRunner    *hooks.Runner                     // nil if no hooks configured
+	EnvHint       string                            // non-empty when credentials come from environment variable
+	PlanSlug      string                            // restored plan slug (empty if no plan)
+	PlanPhase     string                            // restored plan phase
+	PlanPreMode   string                            // restored plan pre-mode
 }
 
 // Close releases runtime resources.

@@ -11,15 +11,13 @@ import (
 
 // ContextSnapshot is the projected runtime state from a session log.
 type ContextSnapshot struct {
-	Messages            []agentcore.AgentMessage
-	Provider            string
-	Model               string
-	Thinking            string
-	PlanSlug            string
-	PlanTitle           string
-	PlanPhase           string
-	PlanPreMode         string
-	PlanAllowedCommands []AllowedCommandEntry
+	Messages    []agentcore.AgentMessage
+	Provider    string
+	Model       string
+	Thinking    string
+	PlanSlug    string
+	PlanPhase   string
+	PlanPreMode string
 }
 
 // BuildSnapshot reconstructs runtime state by walking the tree from the current leaf.
@@ -89,10 +87,8 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	lastModel := ""
 	lastThinking := ""
 	lastPlanSlug := ""
-	lastPlanTitle := ""
 	lastPlanPhase := ""
 	lastPlanPreMode := ""
-	var lastPlanAllowedCommands []AllowedCommandEntry
 
 	for _, entry := range chain {
 		switch entry.Kind {
@@ -138,20 +134,12 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 					s.header.Name = name
 				}
 			}
-		case EntryPlanSlug:
-			var ps PlanSlugEntry
-			if json.Unmarshal(entry.Data, &ps) == nil {
-				lastPlanSlug = ps.Slug
-				lastPlanTitle = ps.Title
-			}
 		case EntryPlanState:
 			var ps PlanStateEntry
 			if json.Unmarshal(entry.Data, &ps) == nil {
 				lastPlanPhase = ps.Phase
 				lastPlanSlug = ps.Slug
-				lastPlanTitle = ps.Title
 				lastPlanPreMode = ps.PreMode
-				lastPlanAllowedCommands = append([]AllowedCommandEntry(nil), ps.AllowedCommands...)
 			}
 		}
 	}
@@ -159,14 +147,12 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	repaired := agentcore.RepairMessageSequence(agentcore.CollectMessages(msgs))
 
 	return ContextSnapshot{
-		Messages:            agentcore.ToAgentMessages(repaired),
-		Provider:            lastProvider,
-		Model:               lastModel,
-		Thinking:            lastThinking,
-		PlanSlug:            lastPlanSlug,
-		PlanTitle:           lastPlanTitle,
-		PlanPhase:           lastPlanPhase,
-		PlanPreMode:         lastPlanPreMode,
-		PlanAllowedCommands: append([]AllowedCommandEntry(nil), lastPlanAllowedCommands...),
+		Messages:    agentcore.ToAgentMessages(repaired),
+		Provider:    lastProvider,
+		Model:       lastModel,
+		Thinking:    lastThinking,
+		PlanSlug:    lastPlanSlug,
+		PlanPhase:   lastPlanPhase,
+		PlanPreMode: lastPlanPreMode,
 	}, nil
 }

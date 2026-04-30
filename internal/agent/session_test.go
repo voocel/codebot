@@ -287,6 +287,51 @@ func (m *countingChatModel) Calls() int {
 	return m.callCount
 }
 
+type captureChatModel struct {
+	mu       sync.Mutex
+	captured []agentcore.Message
+}
+
+func (m *captureChatModel) Generate(
+	_ context.Context,
+	msgs []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	m.mu.Lock()
+	m.captured = append([]agentcore.Message(nil), msgs...)
+	m.mu.Unlock()
+	return &agentcore.LLMResponse{Message: assistantTextMessage("ok")}, nil
+}
+
+func (m *captureChatModel) GenerateStream(
+	ctx context.Context,
+	msgs []agentcore.Message,
+	tools []agentcore.ToolSpec,
+	opts ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	resp, err := m.Generate(ctx, msgs, tools, opts...)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{
+		Type:       agentcore.StreamEventDone,
+		Message:    resp.Message,
+		StopReason: resp.Message.StopReason,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *captureChatModel) SupportsTools() bool { return true }
+
+func (m *captureChatModel) Captured() []agentcore.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]agentcore.Message(nil), m.captured...)
+}
+
 type stubExecTool struct {
 	name string
 }
@@ -1006,5 +1051,70 @@ func TestHandleProjectedRewriteUpdatesMetrics(t *testing.T) {
 	metrics := s.RuntimeMetrics()
 	if metrics.CompactionByKind[CompactionKindTrim] != 1 || metrics.CompactionSavedByKind[CompactionKindTrim] != 400 {
 		t.Fatalf("unexpected trim compaction metrics: %#v", metrics)
+	}
+}
+
+// Regression: a thinking + tool_use assistant must not be forwarded as a
+// thinking-only block, which the litellm bridge would serialize as empty and
+// OpenAI would reject.
+func TestEphemeralQueryDropsThinkingOnlyAssistant(t *testing.T) {
+	t.Parallel()
+
+	model := &captureChatModel{}
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
+
+	thinkingOnlyAssistant := agentcore.Message{
+		Role: agentcore.RoleAssistant,
+		Content: []agentcore.ContentBlock{
+			agentcore.ThinkingBlock("planning the search"),
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: "t1", Name: "ls", Args: json.RawMessage(`{}`)}),
+		},
+		StopReason: agentcore.StopReasonToolUse,
+	}
+	toolResult := agentcore.Message{
+		Role:     agentcore.RoleTool,
+		Content:  []agentcore.ContentBlock{agentcore.TextBlock("result")},
+		Metadata: map[string]any{"tool_call_id": "t1"},
+	}
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "explore"),
+		thinkingOnlyAssistant,
+		toolResult,
+		textMessage(agentcore.RoleAssistant, "found it"),
+	}); err != nil {
+		t.Fatalf("seed messages: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent:     ag,
+		ChatModel: model,
+		Settings:  config.Resolved{MaxTurns: 10},
+		Cwd:       t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	if _, err := s.SideQuestion(context.Background(), "side?"); err != nil {
+		t.Fatalf("SideQuestion: %v", err)
+	}
+
+	captured := model.Captured()
+	if len(captured) == 0 {
+		t.Fatalf("expected captured messages, got none")
+	}
+
+	for i, msg := range captured {
+		if msg.Role != agentcore.RoleAssistant {
+			continue
+		}
+		var hasText bool
+		for _, b := range msg.Content {
+			if b.Type == agentcore.ContentText && strings.TrimSpace(b.Text) != "" {
+				hasText = true
+				break
+			}
+		}
+		if !hasText {
+			t.Fatalf("captured[%d] assistant has no non-empty text block: %#v", i, msg.Content)
+		}
 	}
 }

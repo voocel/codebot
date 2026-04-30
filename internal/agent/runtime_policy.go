@@ -50,6 +50,7 @@ func newSessionRuntimePolicy(session *Session) *sessionRuntimePolicy {
 func (p *sessionRuntimePolicy) beforeUserPrompt(blocks []agentcore.ContentBlock) {
 	_ = blocks
 	p.queueTaskManagementPromptReminder()
+	p.queuePlanModePromptReminder()
 }
 
 func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {
@@ -167,6 +168,17 @@ func (p *sessionRuntimePolicy) queueTaskManagementPromptReminder() {
 	snap := s.taskStore.Snapshot()
 	if key, reminder, ok := taskManagementReminderForNextPrompt(s.agent.Messages(), snap); ok {
 		s.queueRuntimeReminder(key, ReminderTaskManagement, reminder)
+	}
+}
+
+func (p *sessionRuntimePolicy) queuePlanModePromptReminder() {
+	s := p.session
+	active, planPath := s.currentPlanModeSignal()
+	if !active {
+		return
+	}
+	if key, reminder, ok := planModeReminderForNextPrompt(s.agent.Messages(), planPath); ok {
+		s.queueRuntimeReminder(key, ReminderPlanMode, reminder)
 	}
 }
 

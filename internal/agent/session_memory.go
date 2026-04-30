@@ -16,40 +16,26 @@ import (
 
 // SessionMemory is a project-scoped, markdown-formatted running summary of the
 // user's collaboration with the agent. It is updated in the background after
-// high-signal turns so that autoCompact (future work) and session resume can
-// inherit accumulated context without re-summarizing the full transcript.
-//
-// Design intentionally mirrors Claude Code v2.1.88's SessionMemory
-// (services/SessionMemory/sessionMemory.ts) — same thresholds, same template
-// anatomy, same stale-detection heuristic — so that behavior is predictable
-// for anyone familiar with CC's prompt-caching discipline.
+// high-signal turns so that autoCompact and session resume can inherit
+// accumulated context without re-summarizing the full transcript.
 
 const (
-	// sessionMemoryInitTokens is the prompt-tokens threshold that triggers the
-	// first extraction. Below this, the session is considered too short to be
-	// worth summarizing. Matches CC's minimumMessageTokensToInit (10_000).
+	// First extraction triggers once prompt tokens cross this threshold.
 	sessionMemoryInitTokens = 10_000
 
-	// sessionMemoryUpdateTokens is the minimum token delta between extractions.
-	// Matches CC's minimumTokensBetweenUpdate (5_000).
+	// Minimum token delta between extractions.
 	sessionMemoryUpdateTokens = 5_000
 
-	// sessionMemoryExtractionTimeout bounds one extraction's model call. The
-	// ctx passed to ephemeralQuery cancels at this point; the defer then
-	// clears extractionStartedAt so another extraction may run.
+	// Bounds one extraction's model call.
 	sessionMemoryExtractionTimeout = 90 * time.Second
 
-	// sessionMemoryStaleAfter: an extraction slot held past this point is
-	// considered dead (leaked goroutine, disk I/O stuck past the ctx cancel,
-	// etc.) and the gate reclaims it. Must exceed extractionTimeout with a
-	// safety margin — otherwise the gate could release the slot while the
-	// original goroutine is still running model.Generate concurrently, which
-	// ChatModel does not promise to tolerate (see agentcore/context/summary.go).
+	// An extraction slot held past this point is treated as dead (leaked
+	// goroutine, stuck I/O) and reclaimed. Must exceed the timeout with a
+	// safety margin so a still-running goroutine doesn't race a fresh one
+	// against ChatModel.Generate, which is not promised to be concurrent-safe.
 	sessionMemoryStaleAfter = 2 * sessionMemoryExtractionTimeout
 
-	// sessionMemoryMaxExtractionTokens caps the response we accept from the
-	// model — the template is around 1k tokens filled, 3k gives generous
-	// headroom while still much cheaper than re-running autoCompact.
+	// Caps the response we accept; template fills to ~1k, 3k gives headroom.
 	sessionMemoryMaxExtractionTokens = 3000
 )
 
@@ -80,10 +66,9 @@ _Non-obvious facts about the codebase, the user's habits, project idioms._
 _Chronological bullet list of high-signal turns. Most recent last._
 `
 
-// sessionMemoryUpdatePrompt asks the model to re-emit the memory body with new
-// information folded in. We deliberately include the previous content so the
-// model can preserve structure and only update what changed — matching CC's
-// incremental update pattern.
+// sessionMemoryUpdatePrompt asks the model to re-emit the memory body with the
+// latest information folded in. The previous content is included so the model
+// can preserve structure and update only what changed.
 const sessionMemoryUpdatePrompt = `You maintain a running session memory for this coding collaboration. Update the memory below to reflect the conversation so far.
 
 RULES:
@@ -97,10 +82,8 @@ RULES:
 %s
 </current-session-memory>`
 
-// sessionMemoryState tracks extraction bookkeeping for a single session.
-// It is embedded in Session (not module-global) so multiple sessions in the
-// same process do not cross-contaminate — a detail CC dodges because its
-// extraction lives on module state, but Go servers/tests run concurrently.
+// sessionMemoryState tracks extraction bookkeeping per session. Embedded in
+// Session (not module-global) so concurrent sessions don't cross-contaminate.
 type sessionMemoryState struct {
 	mu sync.Mutex
 

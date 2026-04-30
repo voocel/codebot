@@ -40,7 +40,23 @@ func (t *stubTool) Execute(context.Context, json.RawMessage) (json.RawMessage, e
 	return nil, nil
 }
 
-func TestControllerEnterSubmitApprove(t *testing.T) {
+func newTestSession(t *testing.T, dir string, tools []agentcore.Tool) (*agent.Session, *agentcore.Agent) {
+	t.Helper()
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubModel{}), agentcore.WithTools(tools...))
+	session := agent.NewSession(agent.SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      dir,
+		Tools:    tools,
+	})
+	return session, ag
+}
+
+// TestExitPlanModeApprovedFlow drives the full CC-style lifecycle: enter
+// plan mode, the model writes the plan, exit_plan_mode is intercepted by
+// engine.Decide which surfaces the plan to the approver, the approver
+// approves, the tool runs and unwinds plan mode.
+func TestExitPlanModeApprovedFlow(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -54,22 +70,15 @@ func TestControllerEnterSubmitApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
 	}
-
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubModel{}))
-	session := agent.NewSession(agent.SessionConfig{
-		Agent: ag,
-		Settings: config.Resolved{
-			MaxTurns: 30,
-		},
-		Cwd: dir,
-		Tools: []agentcore.Tool{
-			&stubTool{name: "read"},
-			&stubTool{name: "glob"},
-			&stubTool{name: "grep"},
-			&stubTool{name: "ls"},
-			&stubTool{name: "ask_user"},
-		},
+	var promptedWith string
+	engine.SetApprover(func(_ context.Context, p approval.Prompt) (approval.Choice, error) {
+		promptedWith = p.Preview
+		return approval.ChoiceAllowOnce, nil
 	})
+
+	enterTool := localtools.NewEnterPlanMode()
+	exitTool := localtools.NewExitPlanMode()
+	session, _ := newTestSession(t, dir, []agentcore.Tool{enterTool, exitTool})
 	defer session.Close()
 
 	planStore := storage.NewPlanStore(dir)
@@ -78,73 +87,101 @@ func TestControllerEnterSubmitApprove(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	if _, err := controller.Enter("refactor auth"); err != nil {
+	if _, err := controller.Enter(); err != nil {
 		t.Fatalf("enter: %v", err)
 	}
-	state := controller.Snapshot()
-	if state.Phase != PhasePlanning {
-		t.Fatalf("phase = %q, want planning", state.Phase)
-	}
-	if controller.CurrentPlanPath() == "" {
-		t.Fatal("expected plan path after enter")
-	}
-
-	// Simulate the model writing the plan to the plan file via the write tool.
-	if err := planStore.Save(state.Slug, "# Auth Plan\n\n- step 1"); err != nil {
+	if err := planStore.Save(controller.Snapshot().Slug, "# Auth Plan\n\n- step 1"); err != nil {
 		t.Fatalf("save plan: %v", err)
 	}
-	commands := []AllowedCommand{{CommandPrefix: "go test", Description: "运行单元测试"}}
-	if err := controller.Submit("Auth Plan", commands); err != nil {
-		t.Fatalf("submit: %v", err)
+
+	// Drive the permission gate first — this is the path that the agent
+	// loop takes before invoking the tool. exit_plan_mode + plan mode is
+	// intercepted in Engine.Decide and routed through the approver.
+	decision, err := engine.Decide(context.Background(), permission.Request{
+		ToolName: "exit_plan_mode",
+		Args:     json.RawMessage(`{"allowed_prompts":[{"tool":"Bash","prompt":"go test"}]}`),
+	})
+	if err != nil {
+		t.Fatalf("decide: %v", err)
 	}
-	state = controller.Snapshot()
-	if state.Phase != PhaseReview {
-		t.Fatalf("phase = %q, want review", state.Phase)
+	if decision == nil || !decision.Allowed() {
+		t.Fatalf("expected allow decision, got %#v", decision)
+	}
+	if !strings.Contains(promptedWith, "# Auth Plan") {
+		t.Fatalf("expected plan content in approver preview, got %q", promptedWith)
+	}
+	if !strings.Contains(promptedWith, "Bash: go test") {
+		t.Fatalf("expected allowed_prompts in preview, got %q", promptedWith)
 	}
 
-	title, content, actions, err := controller.Approve()
+	// With approval granted, the tool's Execute transitions state.
+	result, err := exitTool.Execute(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
-		t.Fatalf("approve: %v", err)
+		t.Fatalf("exit tool execute: %v", err)
 	}
-	if title != "Auth Plan" {
-		t.Fatalf("title = %q, want Auth Plan", title)
-	}
-	if !strings.Contains(content, "# Auth Plan") {
-		t.Fatalf("unexpected content: %q", content)
-	}
-	if len(actions) != 1 || actions[0].CommandPrefix != "go test" {
-		t.Fatalf("unexpected actions: %#v", actions)
+	if !strings.Contains(string(result), "Auth Plan") {
+		t.Fatalf("expected plan in tool result, got %s", result)
 	}
 	if controller.Snapshot().Phase != PhaseOff {
 		t.Fatalf("phase = %q, want off", controller.Snapshot().Phase)
 	}
-	if !strings.Contains(ag.State().SystemPrompt, "[APPROVED PLAN]") {
-		t.Fatalf("expected approved plan overlay, got %q", ag.State().SystemPrompt)
+}
+
+// TestExitPlanModeDeniedKeepsPlanModeActive verifies that engine.Decide
+// returns Deny on user denial, and plan mode stays active so the model can
+// refine and retry.
+func TestExitPlanModeDeniedKeepsPlanModeActive(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := storage.NewManager(dir).Create(dir)
+	if err != nil {
+		t.Fatalf("create session store: %v", err)
 	}
-	if !strings.Contains(ag.State().SystemPrompt, "Allowed command prefixes for this session") {
-		t.Fatalf("expected approved commands heading in prompt, got %q", ag.State().SystemPrompt)
+	defer store.Close()
+
+	engine, err := approval.NewEngine(dir, approval.ModeBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
 	}
-	if !strings.Contains(ag.State().SystemPrompt, "go test (运行单元测试)") {
-		t.Fatalf("expected approved commands in prompt, got %q", ag.State().SystemPrompt)
+	engine.SetApprover(func(_ context.Context, _ approval.Prompt) (approval.Choice, error) {
+		return approval.ChoiceDeny, nil
+	})
+
+	session, _ := newTestSession(t, dir, []agentcore.Tool{&stubTool{name: "read"}})
+	defer session.Close()
+
+	planStore := storage.NewPlanStore(dir)
+	controller := NewManager(session, engine, planStore, store)
+	if err := controller.Restore(State{Phase: PhaseOff}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := controller.Enter(); err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+	if err := planStore.Save(controller.Snapshot().Slug, "# Plan"); err != nil {
+		t.Fatalf("save plan: %v", err)
 	}
 
 	decision, err := engine.Decide(context.Background(), permission.Request{
-		ToolName: "bash",
-		Args:     json.RawMessage(`{"command":"go test ./..."}`),
+		ToolName: "exit_plan_mode",
 	})
 	if err != nil {
-		t.Fatalf("Decide: %v", err)
+		t.Fatalf("decide: %v", err)
 	}
-	if decision == nil || !decision.Allowed() {
-		t.Fatalf("expected approved plan action to allow tests, got %#v", decision)
+	if decision == nil || decision.Allowed() {
+		t.Fatalf("expected deny decision, got %#v", decision)
+	}
+	if controller.Snapshot().Phase != PhasePlanning {
+		t.Fatalf("phase = %q, want planning after denial", controller.Snapshot().Phase)
 	}
 }
 
-// TestPlanModeKeepsToolListAndDelegatesToPermission locks the Claude Code
-// contract: plan mode does NOT swap out the session's tool list. The
-// permission engine alone enforces read-only semantics. Any future
-// regression that strips write/task_create/subagent from session.Tools when
-// entering plan mode will fail the first assertion.
+// TestPlanModeKeepsToolListAndDelegatesToPermission locks the contract that
+// plan mode does NOT swap out the session's tool list. The permission
+// engine alone enforces read-only semantics. Any future regression that
+// strips write/task_create/subagent from session.Tools when entering plan
+// mode will fail the first assertion.
 func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	t.Parallel()
 
@@ -173,13 +210,7 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 		&stubTool{name: "ask_user"},
 	}
 
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubModel{}), agentcore.WithTools(allTools...))
-	session := agent.NewSession(agent.SessionConfig{
-		Agent:    ag,
-		Settings: config.Resolved{MaxTurns: 30},
-		Cwd:      dir,
-		Tools:    allTools,
-	})
+	session, _ := newTestSession(t, dir, allTools)
 	defer session.Close()
 
 	planStore := storage.NewPlanStore(dir)
@@ -187,13 +218,13 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	if err := controller.Restore(State{Phase: PhaseOff}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if _, err := controller.Enter("explore"); err != nil {
+	if _, err := controller.Enter(); err != nil {
 		t.Fatalf("enter: %v", err)
 	}
 
 	for _, name := range []string{"write", "edit", "task_create", "subagent"} {
 		if got := len(session.ToolsByName(name)); got == 0 {
-			t.Fatalf("tool %q must remain in session.Tools during plan mode (Claude Code contract); was removed", name)
+			t.Fatalf("tool %q must remain in session.Tools during plan mode; was removed", name)
 		}
 	}
 
@@ -219,9 +250,6 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 		}
 	}
 
-	// The plan file is the ONE writable path during planning. Verifies the
-	// approval.Engine.SetPlanFilePath wiring and the agentcore
-	// PlanModeWriteAllowed hook are connected end-to-end.
 	allowCases := []permission.Request{
 		{ToolName: "read", Args: json.RawMessage(`{"path":"main.go"}`)},
 		{ToolName: "grep", Args: json.RawMessage(`{"pattern":"foo"}`)},
@@ -240,10 +268,6 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 		}
 	}
 
-	// After cancel, plan file path is cleared — the previous allowance must
-	// stop applying. This guards against a stale planFilePath surviving phase
-	// transitions (which would let the model keep editing the plan after
-	// approval / cancel).
 	if err := controller.Cancel(); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
@@ -252,6 +276,9 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	}
 }
 
+// TestEnterPlanToolSynchronouslyEntersPlanMode verifies enter_plan_mode
+// performs the state transition inside its handler so the next turn already
+// sees PlanMode=true.
 func TestEnterPlanToolSynchronouslyEntersPlanMode(t *testing.T) {
 	t.Parallel()
 
@@ -268,15 +295,7 @@ func TestEnterPlanToolSynchronouslyEntersPlanMode(t *testing.T) {
 	}
 
 	enterTool := localtools.NewEnterPlanMode()
-	ag := agentcore.NewAgent(agentcore.WithModel(&stubModel{}), agentcore.WithTools(enterTool))
-	session := agent.NewSession(agent.SessionConfig{
-		Agent: ag,
-		Settings: config.Resolved{
-			MaxTurns: 30,
-		},
-		Cwd:   dir,
-		Tools: []agentcore.Tool{enterTool},
-	})
+	session, _ := newTestSession(t, dir, []agentcore.Tool{enterTool})
 	defer session.Close()
 
 	controller := NewManager(session, engine, storage.NewPlanStore(dir), store)
@@ -284,17 +303,53 @@ func TestEnterPlanToolSynchronouslyEntersPlanMode(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	result, err := enterTool.Execute(context.Background(), json.RawMessage(`{"task":"build novel cli"}`))
+	result, err := enterTool.Execute(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("enter tool execute: %v", err)
 	}
 	if controller.Snapshot().Phase != PhasePlanning {
 		t.Fatalf("phase = %q, want planning", controller.Snapshot().Phase)
 	}
-	if !strings.Contains(string(result), "Plan file:") {
+	if !strings.Contains(string(result), controller.CurrentPlanPath()) {
 		t.Fatalf("expected plan file path in result prompt, got %s", result)
 	}
-	if !strings.Contains(string(result), "write or edit tool") {
-		t.Fatalf("expected write/edit tool guidance in result prompt, got %s", result)
+}
+
+// TestPlanExitWithoutApproverFallsThroughToAllow ensures headless / scripted
+// flows (no approver wired) don't deadlock — the engine falls through to
+// allow so the tool can complete. Audit notes the missing approver.
+func TestPlanExitWithoutApproverFallsThroughToAllow(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := storage.NewManager(dir).Create(dir)
+	if err != nil {
+		t.Fatalf("create session store: %v", err)
+	}
+	defer store.Close()
+
+	engine, err := approval.NewEngine(dir, approval.ModeBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	session, _ := newTestSession(t, dir, []agentcore.Tool{&stubTool{name: "read"}})
+	defer session.Close()
+
+	planStore := storage.NewPlanStore(dir)
+	controller := NewManager(session, engine, planStore, store)
+	if err := controller.Restore(State{Phase: PhaseOff}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := controller.Enter(); err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+
+	decision, err := engine.Decide(context.Background(), permission.Request{ToolName: "exit_plan_mode"})
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if decision == nil || !decision.Allowed() {
+		t.Fatalf("expected allow fallback when no approver is wired, got %#v", decision)
 	}
 }

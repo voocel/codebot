@@ -594,10 +594,8 @@ func (m *Model) handleDownKey() (tea.Model, tea.Cmd, bool) {
 // handleResize processes terminal resize events.
 //
 // On width change or height shrink we wipe the viewport *and* the OS
-// scrollback (`\x1b[2J\x1b[3J\x1b[H`) and then replay every cached
-// scrollback body via a single tea.Println. This mirrors Claude Code's
-// Ink-based behaviour (log-update.ts:142-147 →
-// fullResetSequence_CAUSES_FLICKER) and exterminates resize ghosts at the
+// scrollback (`\x1b[2J\x1b[3J\x1b[H`) and then replay every cached scrollback
+// body via a single tea.Println. This exterminates resize ghosts at the
 // source: bubbletea's line-based cursor tracking cannot untangle terminal
 // reflow, so instead of patching the delta we rebuild the whole stream.
 //

@@ -105,10 +105,7 @@ func TestBuildSnapshotIncludesPlanState(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.AppendPlanState("review", "calm-writing-river", "Refactor plan", "balanced", []AllowedCommandEntry{
-		{CommandPrefix: "go test", Description: "运行测试"},
-		{CommandPrefix: "go build", Description: "构建项目"},
-	}); err != nil {
+	if err := store.AppendPlanState("planning", "calm-writing-river", "balanced"); err != nil {
 		t.Fatalf("append plan state: %v", err)
 	}
 
@@ -116,22 +113,13 @@ func TestBuildSnapshotIncludesPlanState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
-	if snapshot.PlanPhase != "review" {
-		t.Fatalf("plan phase = %q, want review", snapshot.PlanPhase)
+	if snapshot.PlanPhase != "planning" {
+		t.Fatalf("plan phase = %q, want planning", snapshot.PlanPhase)
 	}
 	if snapshot.PlanSlug != "calm-writing-river" {
 		t.Fatalf("plan slug = %q, want calm-writing-river", snapshot.PlanSlug)
 	}
-	if snapshot.PlanTitle != "Refactor plan" {
-		t.Fatalf("plan title = %q, want Refactor plan", snapshot.PlanTitle)
-	}
 	if snapshot.PlanPreMode != "balanced" {
 		t.Fatalf("plan pre mode = %q, want balanced", snapshot.PlanPreMode)
-	}
-	if len(snapshot.PlanAllowedCommands) != 2 {
-		t.Fatalf("plan allowed commands len = %d, want 2", len(snapshot.PlanAllowedCommands))
-	}
-	if snapshot.PlanAllowedCommands[0].CommandPrefix != "go test" {
-		t.Fatalf("first allowed command = %q, want go test", snapshot.PlanAllowedCommands[0].CommandPrefix)
 	}
 }

@@ -188,22 +188,11 @@ func (s *Store) AppendLLMCall(entry LLMCallEntry) error {
 	return s.appendChained(EntryLLMCall, data)
 }
 
-// AppendPlanSlug records the plan file slug associated with this session.
-func (s *Store) AppendPlanSlug(slug, title string) error {
-	data, err := json.Marshal(PlanSlugEntry{Slug: slug, Title: title})
-	if err != nil {
-		return fmt.Errorf("marshal plan slug: %w", err)
-	}
-	return s.appendChained(EntryPlanSlug, data)
-}
-
-func (s *Store) AppendPlanState(phase, slug, title, preMode string, allowedCommands []AllowedCommandEntry) error {
+func (s *Store) AppendPlanState(phase, slug, preMode string) error {
 	data, err := json.Marshal(PlanStateEntry{
-		Phase:           phase,
-		Slug:            slug,
-		Title:           title,
-		PreMode:         preMode,
-		AllowedCommands: allowedCommands,
+		Phase:   phase,
+		Slug:    slug,
+		PreMode: preMode,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal plan state: %w", err)

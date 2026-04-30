@@ -219,6 +219,26 @@ func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderK
 	})
 	return true
 }
+// SetPlanModeSignal registers a callback the runtime polls before every user
+// prompt to decide whether to queue a plan-mode reminder. plan.Manager wires
+// this so the reminder cadence stays driven by the actual plan-mode state
+// rather than a side-channel boolean.
+func (s *Session) SetPlanModeSignal(fn func() (active bool, planFilePath string)) {
+	s.mu.Lock()
+	s.planModeSignal = fn
+	s.mu.Unlock()
+}
+
+func (s *Session) currentPlanModeSignal() (bool, string) {
+	s.mu.Lock()
+	fn := s.planModeSignal
+	s.mu.Unlock()
+	if fn == nil {
+		return false, ""
+	}
+	return fn()
+}
+
 func (s *Session) SetBeforePrompt(fn func()) {
 	s.beforePrompt = fn
 }
@@ -981,8 +1001,9 @@ func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...a
 		return nil, fmt.Errorf("no conversation context")
 	}
 
-	// Strip tool-related content: providers reject tool references when no
-	// tool definitions are provided. Keep system, user, and text-only assistant.
+	// Drop tool and thinking blocks: the litellm bridge serializes assistant
+	// via TextContent() which ignores thinking, so a thinking-only assistant
+	// would arrive empty and get rejected by OpenAI.
 	msgs := make([]agentcore.Message, 0, len(raw))
 	for _, m := range raw {
 		switch m.Role {
@@ -991,7 +1012,7 @@ func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...a
 		case agentcore.RoleAssistant:
 			var textBlocks []agentcore.ContentBlock
 			for _, b := range m.Content {
-				if b.Type == agentcore.ContentText || b.Type == agentcore.ContentThinking {
+				if b.Type == agentcore.ContentText {
 					textBlocks = append(textBlocks, b)
 				}
 			}

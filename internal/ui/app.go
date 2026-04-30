@@ -68,10 +68,6 @@ type App struct {
 
 	// CommandLoaders allow alternative command sources to be injected at app construction time.
 	CommandLoaders []CommandLoader
-
-	planChoice    int    // selected option in planReview menu
-	planOtherMode bool   // typing custom feedback
-	planOtherBuf  string // custom feedback buffer
 }
 
 func (a *App) reloadPluginState() error {
@@ -238,21 +234,15 @@ func (a *App) Config() tui.Config {
 		OnEvent:     a.planOnEvent,
 		StatusRight: a.statusRight,
 		StatusMode:  a.statusMode,
-		StatusPlan:  a.planStatus,
 		Overlay:     a.overlayState,
 		Completions: a.completions,
 		OnBtwResult: a.onBtwResult,
 	}
 }
 
-// onKey returns a hook that intercepts slash commands and plan approval keys.
+// onKey returns a hook that intercepts slash commands.
 func (a *App) onKey() func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	return func(m *tui.Model, msg tea.KeyMsg) (bool, tea.Cmd) {
-		// Plan pending approval: AskUser-style interaction.
-		if a.planPhase() == plan.PhaseReview && !m.Running {
-			return a.handlePlanReviewKey(msg)
-		}
-
 		// Shift+Tab: cycle permission mode (only when idle).
 		if msg.String() == "shift+tab" && !m.Running {
 			return true, a.cycleMode()

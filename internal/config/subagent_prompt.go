@@ -46,8 +46,7 @@ func PlanSubAgentPrompt(cwd string) string {
 }
 
 // SuggestionPrompt is the instruction appended as a user message to generate
-// a prompt suggestion after the agent completes a turn. Aligned with Claude
-// Code's Prompt Suggestion Generator v2.
+// a prompt suggestion after the agent completes a turn.
 const SuggestionPrompt = `[SUGGESTION MODE: Suggest what the user might naturally type next.]
 
 FIRST: Look at the user's recent messages and original request.

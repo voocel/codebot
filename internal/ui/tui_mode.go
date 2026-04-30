@@ -54,11 +54,9 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 	adapter.installMCPRefreshHook()
 
 	_ = planManager.Restore(planstate.State{
-		Phase:           planstate.Phase(rt.PlanPhase),
-		Slug:            rt.PlanSlug,
-		Title:           rt.PlanTitle,
-		PreMode:         rt.PlanPreMode,
-		AllowedCommands: planstate.ParseAllowedCommandsFromEntries(rt.PlanAllowedCommands),
+		Phase:   planstate.Phase(rt.PlanPhase),
+		Slug:    rt.PlanSlug,
+		PreMode: rt.PlanPreMode,
 	})
 
 	adapter.rebuildRegistry()
@@ -339,6 +337,8 @@ func formatRuntimeReminderKind(kind agent.RuntimeReminderKind) string {
 		return "post-stop validation failed"
 	case agent.ReminderTaskManagement:
 		return "task management reminder"
+	case agent.ReminderPlanMode:
+		return "plan mode reminder"
 	default:
 		if kind == "" {
 			return "unknown"

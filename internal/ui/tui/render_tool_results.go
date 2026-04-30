@@ -19,9 +19,9 @@ import (
 // ---------------------------------------------------------------------------
 
 // RenderEditResult renders the edit tool result with colored diff output.
-// Leads with a "⎿  Added N lines, removed M lines" summary, à la Claude Code.
-// Single-line changes (1 removed + 1 added) get intra-line highlighting
-// where only the changed portion is rendered in inverse color.
+// Leads with a "⎿  Added N lines, removed M lines" summary. Single-line
+// changes (1 removed + 1 added) get intra-line highlighting where only the
+// changed portion is rendered in inverse color.
 func RenderEditResult(result json.RawMessage) string {
 	connector := ConnectorStyle.Render(TreeConnector)
 	if len(result) == 0 {
@@ -258,7 +258,7 @@ func RenderLsResult(result json.RawMessage) (dirPath string, body string) {
 }
 
 // RenderReadSummary renders a one-line summary for the read tool ("Read N lines"),
-// matching Claude Code's convention of not dumping file contents into the log.
+// avoiding dumping file contents into the log.
 func RenderReadSummary(result json.RawMessage) string {
 	connector := ConnectorStyle.Render(TreeConnector)
 	text := FormatToolResult(result, false)

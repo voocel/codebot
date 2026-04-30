@@ -30,7 +30,7 @@ type Job struct {
 	Schedule  string `json:"schedule"`
 	Prompt    string `json:"prompt"`
 	Recurring bool   `json:"recurring,omitempty"`
-	CreatedAt int64  `json:"createdAt"` // Unix milliseconds (matches Claude Code format)
+	CreatedAt int64  `json:"createdAt"` // Unix milliseconds
 	Durable   bool   `json:"durable,omitempty"`
 
 	interval time.Duration // parsed interval (mutually exclusive with cronExpr)

@@ -90,7 +90,6 @@ type retryTickMsg struct{}
 
 // RecentCompletedTTL is how long a freshly-completed task stays pinned at
 // the top of the truncated task tree before sinking to the bottom group.
-// Mirrors Claude Code's RECENT_COMPLETED_TTL_MS.
 const RecentCompletedTTL = 30 * time.Second
 
 // taskRecencyTickMsg fires when a recently-completed task crosses the

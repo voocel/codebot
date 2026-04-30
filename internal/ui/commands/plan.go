@@ -15,7 +15,7 @@ import (
 // callbacks below.
 type PlanCommand struct {
 	Phase  func() plan.Phase
-	Enter  func(task string) tea.Cmd
+	Enter  func() tea.Cmd
 	Show   func() tea.Cmd
 	Cancel func() tea.Cmd
 	Open   func() tea.Cmd
@@ -24,7 +24,7 @@ type PlanCommand struct {
 func (c *PlanCommand) Spec() Spec {
 	return Spec{
 		Name:        "plan",
-		Usage:       "/plan [open|cancel|<task>]",
+		Usage:       "/plan [open|cancel]",
 		Description: "Enter plan mode or manage plans",
 		Category:    "plan",
 		NeedsIdle:   true,
@@ -35,7 +35,7 @@ func (c *PlanCommand) Spec() Spec {
 func (c *PlanCommand) Run(inv Invocation) tea.Cmd {
 	if len(inv.Args) == 0 {
 		if c.Phase() == plan.PhaseOff {
-			return c.Enter("")
+			return c.Enter()
 		}
 		return c.Show()
 	}
@@ -51,5 +51,5 @@ func (c *PlanCommand) Run(inv Invocation) tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(
 			"Already in plan mode. Use /plan open to inspect the plan, or /plan cancel to exit first."))
 	}
-	return c.Enter(strings.Join(inv.Args, " "))
+	return c.Enter()
 }

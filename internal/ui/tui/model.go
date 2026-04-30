@@ -13,21 +13,6 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
-// PlanBarInfo provides plan mode status for the status bar.
-type PlanBarInfo struct {
-	Tag     string   // appended to status bar (e.g., "plan mode")
-	Choices []string // selectable options
-	Active  int      // active choice index
-
-	// Plan review card fields. The plan body is already in scrollback; this
-	// card only shows the title, constraints, choices, and edit path.
-	Title        string
-	PlanFilePath string
-	Details      []string
-	OtherMode    bool   // typing custom feedback
-	OtherBuf     string // custom feedback buffer
-}
-
 // Config provides hooks for extending the base TUI behavior.
 type Config struct {
 	Placeholder          string
@@ -35,7 +20,7 @@ type Config struct {
 	Provider             string
 	ContextWindow        int
 	Cwd                  string
-	PlansDir             string // absolute path to the plan files directory; enables cc-style hidden rendering for write/edit on plan files
+	PlansDir             string // absolute path to the plan files directory; enables hidden rendering for write/edit on plan files
 	GitBranch            string
 	EnvHint              string                   // shown below welcome when using env var credentials
 	History              *storage.History         // input history (Up/Down navigation)
@@ -49,7 +34,6 @@ type Config struct {
 	OnHideCompletedTasks func(snap storage.TaskSnapshot) tea.Cmd
 	StatusRight          func(m *Model) string
 	StatusMode           func(m *Model) string // mode indicator for context bar (e.g. "⏵⏵ trust")
-	StatusPlan           func(m *Model) *PlanBarInfo
 	Overlay              func(m *Model) *OverlayState         // interactive command overlay
 	Completions          func(prefix string) []CompletionItem // slash command completions
 	OnBtwResult          func(msg BtwResultMsg)               // called when /btw side question completes

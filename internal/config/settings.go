@@ -297,9 +297,10 @@ func CommandsDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "commands")
 }
 
-// PlansDir returns ~/.codebot/plans/<projectID>/.
-func PlansDir(cwd string) string {
-	return filepath.Join(UserConfigDir(), "plans", projectID(cwd))
+// PlansDir returns ~/.codebot/plans/. A single global directory shared across
+// projects; word-slug filenames make collisions vanishingly rare.
+func PlansDir(_ string) string {
+	return filepath.Join(UserConfigDir(), "plans")
 }
 
 // ApprovalsPath returns ~/.codebot/approvals/<projectID>.json.

@@ -13,8 +13,7 @@ import (
 )
 
 // isPlanFileTool reports whether a write/edit tool call targets a file under
-// the plans directory. Mirrors Claude Code's design (see
-// FileWriteTool/UI.tsx): plan-file write/edit calls render as a status-only
+// the plans directory. Plan-file write/edit calls render as a status-only
 // line ("Plan") so the tool log isn't drowned out by the model's incremental
 // edits. The full plan body surfaces once exit_plan_mode succeeds.
 //
@@ -242,9 +241,9 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case agentcore.EventToolExecStart:
-		// Hidden tools (Claude Code's TodoWrite/Task* policy) skip the visible
-		// pipeline entirely: no header, no output buffer, no tool count. The
-		// call still happens in the agent loop — only the TUI side is silent.
+		// Hidden tools (task_*) skip the visible pipeline entirely: no header,
+		// no output buffer, no tool count. The call still happens in the agent
+		// loop — only the TUI side is silent.
 		if IsHiddenToolCall(ev.Tool, ev.Args) {
 			m.HiddenToolCalls[ev.ToolID] = struct{}{}
 			break
@@ -267,13 +266,13 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			}
 			m.ToolHeaders[ev.ToolID] = header
 		} else if isPlanFileTool(ev.Tool, m.Cwd, m.PlansDir, ev.Args) {
-			// Plan files render as a single status line ("Plan") to mirror
-			// Claude Code: incremental write/edit on the plan file would
-			// otherwise spam the tool log with diffs of an artifact the user
-			// will see in full once exit_plan_mode succeeds. The "Plan" label
-			// in PendingTools doubles as the marker EventToolExecEnd reads to
-			// suppress the diff body — agentcore drops Args from End events so
-			// per-call state must come from somewhere set at Start.
+			// Plan files render as a single status line ("Plan"). Incremental
+			// write/edit on the plan file would otherwise spam the tool log
+			// with diffs of an artifact the user will see in full once
+			// exit_plan_mode succeeds. The "Plan" label in PendingTools doubles
+			// as the marker EventToolExecEnd reads to suppress the diff body —
+			// agentcore drops Args from End events so per-call state must come
+			// from somewhere set at Start.
 			m.PendingTools[ev.ToolID] = "Plan"
 			m.ToolHeaders[ev.ToolID] = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Plan")
 		} else {
@@ -289,7 +288,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		case agentcore.ToolExecUpdatePreview:
 			// Plan files: the preview pipeline is skipped entirely. The header
 			// alone (rendered at EventToolExecEnd as "● Plan" + footer hint)
-			// matches cc's behavior and avoids paint thrash from many edits.
+			// avoids paint thrash from many edits.
 			if m.PendingTools[ev.ToolID] == "Plan" {
 				break
 			}

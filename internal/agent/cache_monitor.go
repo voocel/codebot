@@ -19,11 +19,11 @@ type cacheSnapshot struct {
 }
 
 // breakDropFraction is the minimum relative drop in cache_read (vs previous
-// turn) that we treat as a "break". Mirrors Claude Code's 5% heuristic.
+// turn) that we treat as a "break".
 const breakDropFraction = 0.05
 
 // breakDropAbsolute is the minimum absolute token drop to avoid false positives
-// at small context sizes. Mirrors Claude Code's 2000-token threshold.
+// at small context sizes.
 const breakDropAbsolute = 2000
 
 // hashSystemBlocks returns a stable fingerprint for the current system prompt.

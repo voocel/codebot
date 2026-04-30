@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,27 +14,25 @@ import (
 )
 
 type Engine struct {
-	mu           sync.RWMutex
-	cwd          string
-	onAudit      func(AuditEntry)
-	approver     ApproverFunc
-	rules        *RuleSet
-	store        *permission.Store
-	sessionAllow map[string]storedEntry
-	planAllow    []string
-	planFilePath string
-	tool         decisionEngine
+	mu                  sync.RWMutex
+	cwd                 string
+	onAudit             func(AuditEntry)
+	approver            ApproverFunc
+	rules               *RuleSet
+	store               *permission.Store
+	sessionAllow        map[string]storedEntry
+	planFilePath        string
+	planContentProvider func() (string, error)
+	tool                decisionEngine
 }
 
 // planModeAllowedTools lists Internal-capability tools that may run while
-// codebot is in plan mode. Plan mode is read-only by default; these are the
-// control-plane tools that drive the plan-mode UX itself, so blocking them
-// would make the mode unusable. Listed centrally so the policy is auditable
-// in one place rather than scattered across each tool's metadata.
+// codebot is in plan mode. exit_plan_mode is intentionally NOT here — it
+// goes through Engine.Decide's plan-exit interception so the user sees the
+// plan content in the standard ask card before the tool runs.
 var planModeAllowedTools = []string{
-	"exit_plan_mode", // submits the plan for review — exit point of plan mode
-	"ask_user",       // structured clarification — needed mid-planning
-	"tool_search",    // schema discovery for deferred tools — pure inspection
+	"ask_user",    // structured clarification — needed mid-planning
+	"tool_search", // schema discovery for deferred tools — pure inspection
 }
 
 // planModeAllowExec decides whether an exec-capability tool may run during
@@ -115,11 +114,108 @@ func (e *Engine) PlanFilePath() string {
 	return e.planFilePath
 }
 
+// SetPlanContentProvider registers a callback that returns the current plan
+// file content. The plan-exit interception in Decide reads from it to surface
+// the plan in the approval prompt's preview field. plan.Manager wires this
+// on enter / clears it on exit.
+func (e *Engine) SetPlanContentProvider(fn func() (string, error)) {
+	e.mu.Lock()
+	e.planContentProvider = fn
+	e.mu.Unlock()
+}
+
+// Decide routes a tool permission request. exit_plan_mode in plan mode is
+// intercepted here and surfaced through the standard approver path with the
+// plan content as preview — matching CC's `checkPermissions: 'ask'` design.
+// All other tools delegate to the agentcore permission engine.
 func (e *Engine) Decide(ctx context.Context, req permission.Request) (*permission.Decision, error) {
-	if decision := e.decideApprovedPlanAction(req); decision != nil {
-		return decision, nil
+	if req.ToolName == "exit_plan_mode" && e.PlanMode() {
+		return e.decidePlanExit(ctx, req)
 	}
 	return e.tool.Decide(ctx, req)
+}
+
+func (e *Engine) decidePlanExit(ctx context.Context, req permission.Request) (*permission.Decision, error) {
+	e.mu.RLock()
+	approver := e.approver
+	contentFn := e.planContentProvider
+	e.mu.RUnlock()
+
+	mode, planMode := e.Mode(), true
+	info := toolInfo{
+		tool:       "exit_plan_mode",
+		capability: permission.CapabilityInternal,
+		summary:    "Approve this plan and exit plan mode?",
+		reason:     "Review the plan; approve to leave plan mode and start execution.",
+	}
+
+	if approver == nil {
+		// No UI wired (headless / tests without an approver). Fall through
+		// to allow so the tool runs and exits plan mode unilaterally.
+		e.audit(info, mode, planMode, "allow", true, "no approver wired")
+		return &permission.Decision{Kind: permission.DecisionAllow, Source: permission.DecisionSourceInternal}, nil
+	}
+
+	preview := ""
+	if contentFn != nil {
+		if c, err := contentFn(); err == nil {
+			preview = c
+		}
+	}
+	preview = appendAllowedPromptsPreview(preview, req.Args)
+	info.preview = preview
+
+	choice, err := approver(ctx, Prompt{
+		Tool:       info.tool,
+		Summary:    info.summary,
+		Reason:     info.reason,
+		Capability: info.capability,
+		Preview:    preview,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if choice == ChoiceDeny {
+		reason := "user denied plan; refine and call exit_plan_mode again"
+		e.audit(info, mode, planMode, "deny", false, reason)
+		return &permission.Decision{
+			Kind:    permission.DecisionDeny,
+			Source:  permission.DecisionSourcePrompt,
+			Reason:  reason,
+			Preview: preview,
+		}, nil
+	}
+	e.audit(info, mode, planMode, string(choice), true, "")
+	return &permission.Decision{
+		Kind:    permission.DecisionAllow,
+		Source:  permission.DecisionSourcePrompt,
+		Preview: preview,
+	}, nil
+}
+
+func appendAllowedPromptsPreview(preview string, args json.RawMessage) string {
+	if len(args) == 0 {
+		return preview
+	}
+	var a struct {
+		AllowedPrompts []struct {
+			Tool   string `json:"tool"`
+			Prompt string `json:"prompt"`
+		} `json:"allowed_prompts"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil || len(a.AllowedPrompts) == 0 {
+		return preview
+	}
+	var b strings.Builder
+	b.WriteString(preview)
+	if preview != "" {
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Follow-up actions noted by the model:\n")
+	for _, p := range a.AllowedPrompts {
+		b.WriteString("- " + p.Tool + ": " + p.Prompt + "\n")
+	}
+	return b.String()
 }
 
 func (e *Engine) SetFilesystemRoots(roots FilesystemRoots) {

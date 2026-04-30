@@ -3,7 +3,6 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -20,63 +19,6 @@ func TestWrapTextBreaksLongTokens(t *testing.T) {
 	for _, line := range lines {
 		if got := lipgloss.Width(line); got > 20 {
 			t.Fatalf("line width = %d, want <= 20; line=%q", got, line)
-		}
-	}
-}
-
-func TestRenderStatusBarDoesNotIncludePlanModeTag(t *testing.T) {
-	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
-		StatusPlan: func(*Model) *PlanBarInfo {
-			return &PlanBarInfo{Tag: "plan mode"}
-		},
-	})
-	m.Ready = true
-	m.Width = 100
-	m.Running = true
-	m.RunStats.StartedAt = time.Now().Add(-2 * time.Second)
-	m.RunStats.DisplayInput = 1200
-	m.RunStats.DisplayOutput = 340
-
-	bar := m.RenderStatusBar()
-	if !strings.Contains(bar, "Running") {
-		t.Fatalf("expected running status in %q", bar)
-	}
-	if strings.Contains(bar, "plan mode") {
-		t.Fatalf("expected plan mode tag to stay out of status bar, got %q", bar)
-	}
-}
-
-func TestRenderPlanBarOnlyAsksForDecision(t *testing.T) {
-	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
-		StatusPlan: func(*Model) *PlanBarInfo {
-			return &PlanBarInfo{
-				Title:        "Refactor session manager",
-				PlanFilePath: "/tmp/plan.md",
-				Details:      []string{"Allowed command prefixes:", "- go test - run tests"},
-				Choices:      []string{"Execute plan", "Exit plan mode"},
-			}
-		},
-	})
-	m.Ready = true
-	m.Width = 100
-
-	bar := stripANSI(m.RenderPlanBar())
-	for _, want := range []string{
-		"Ready to code?",
-		"Plan ready: Refactor session manager",
-		"Allowed command prefixes:",
-		"Execute plan",
-		"Exit plan mode",
-		"Type here to request changes",
-		"Ctrl+E to edit in $EDITOR",
-	} {
-		if !strings.Contains(bar, want) {
-			t.Fatalf("expected plan bar to contain %q, got %q", want, bar)
-		}
-	}
-	for _, unwanted := range []string{"Here is the plan:", "press Ctrl+E to view full plan"} {
-		if strings.Contains(bar, unwanted) {
-			t.Fatalf("plan bar repeated plan body UI %q in %q", unwanted, bar)
 		}
 	}
 }

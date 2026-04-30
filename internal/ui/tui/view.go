@@ -77,9 +77,6 @@ func (m *Model) View() string {
 		}
 		appendInputArea()
 		parts = append(parts, overlay)
-	} else if planBar := m.RenderPlanBar(); planBar != "" {
-		parts = append(parts, planBar)
-		parts = append(parts, m.RenderStatusBar())
 	} else if m.AskUser != nil {
 		parts = append(parts, renderAskUser(m.AskUser))
 	} else if m.Permission != nil {

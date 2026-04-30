@@ -122,13 +122,13 @@ func (s *Session) postCompactRecoveryMessages(_ context.Context, _ agentctx.Summ
 }
 
 // readRecentFiles re-reads files referenced by a committed summary rewrite so
-// the model can continue editing without an extra Read call.
-// This is intentionally kept at the application layer and is only used for
-// explicit committed rewrites, not transient projected views.
+// the model can continue editing without an extra Read call. Kept at the
+// application layer; only used for explicit committed rewrites, not transient
+// projected views.
 //
-// Mirrors Claude Code's createPostCompactFileAttachments strategy:
+// Strategy:
 //   - modified files first (higher priority), then read-only
-//   - skip files already in kept messages, plan files, memory files, binary files
+//   - skip files already in kept messages, plan files, memory files, binaries
 //   - max 5 files, 50k token total budget, 5k per file
 func readRecentFiles(info agentctx.SummaryInfo, kept []agentcore.AgentMessage) []agentcore.AgentMessage {
 	var candidates []string

@@ -227,38 +227,6 @@ func TestOverlayAppearsBelowInput(t *testing.T) {
 	}
 }
 
-func TestPlanReviewKeepsPlanModeInBottomContextBar(t *testing.T) {
-	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
-		StatusMode: func(*Model) string { return "◇ plan mode" },
-		StatusPlan: func(*Model) *PlanBarInfo {
-			return &PlanBarInfo{
-				Title:   "Refactor session manager",
-				Details: []string{"Allowed command prefixes:", "- go test — run tests"},
-				Choices: []string{"Execute plan", "Exit plan mode"},
-			}
-		},
-	})
-	m.Ready = true
-	m.Width = 100
-	m.Cwd = "/tmp/project"
-
-	view := m.View()
-	promptIdx := strings.Index(view, "Ready to code?")
-	modeIdx := strings.Index(view, "◇ plan mode")
-	if promptIdx < 0 || modeIdx < 0 {
-		t.Fatalf("expected plan review heading and bottom mode indicator, got: %q", view)
-	}
-	if !strings.Contains(view, "Allowed command prefixes:") || !strings.Contains(view, "go test") {
-		t.Fatalf("expected allowed command details, got: %q", view)
-	}
-	if modeIdx < promptIdx {
-		t.Fatalf("expected mode indicator below plan review card, got: %q", view)
-	}
-	if strings.Contains(view, "❯ ") {
-		t.Fatalf("expected input area to stay hidden during plan review, got: %q", view)
-	}
-}
-
 func TestTaskListUpdateSchedulesHideWhenAllCompleted(t *testing.T) {
 	useImmediateHideCompletedTasksTick(t)
 

@@ -18,10 +18,9 @@ func card(borderColor lipgloss.TerminalColor) lipgloss.Style {
 		Padding(0, 1)
 }
 
-// inputPanel wraps the textarea with top+bottom horizontal rules — mirroring
-// Claude Code's visual (thin ─ separators hugging the prompt, no side borders
-// so the input flows edge-to-edge). Left/right are omitted to keep the caret
-// anchored flush-left without a surrounding box.
+// inputPanel wraps the textarea with top+bottom horizontal rules: thin ─
+// separators hugging the prompt, no side borders so the input flows edge-to-
+// edge and the caret stays flush-left.
 func inputPanel(borderColor lipgloss.TerminalColor) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, true, false).
@@ -34,7 +33,7 @@ func inputPanel(borderColor lipgloss.TerminalColor) lipgloss.Style {
 // ---------------------------------------------------------------------------
 
 var (
-	// Bullet — green for successful tool call, red for failure, à la Claude Code.
+	// Bullet — green for successful tool call, red for failure.
 	ToolIconStyle  = lipgloss.NewStyle().Foreground(Success)
 	ErrorIconStyle = lipgloss.NewStyle().Foreground(Danger)
 
@@ -107,8 +106,8 @@ var (
 	ConnectorStyle = lipgloss.NewStyle().Foreground(Subtle)
 )
 
-// TreeConnector is the Claude-Code-style result connector: U+23BF (⎿) plus
-// two spaces for wide, legible alignment under the tool header.
+// TreeConnector is the result connector: U+23BF (⎿) plus two spaces for
+// alignment under the tool header.
 const TreeConnector = "⎿  "
 
 // ConnectorPad matches TreeConnector's width (3 cells) for continuation lines.
@@ -168,10 +167,9 @@ var (
 	ContextChipAccentStyle = lipgloss.NewStyle().Foreground(Brand)
 	ContextChipPathStyle   = lipgloss.NewStyle().Foreground(BrandSoft)
 	// Transient hints like "Press Ctrl+C again to exit" or "bash mode" — muted
-	// gray, not a loud warning. Claude Code keeps these understated.
+	// gray, not a loud warning.
 	ContextChipWarnStyle = lipgloss.NewStyle().Foreground(Muted)
 
-	PlanBoxStyle      = card(Accent)
 	SubagentCardStyle = card(Accent)
 
 	PermissionTitleStyle = lipgloss.NewStyle().Foreground(Accent).Bold(true)

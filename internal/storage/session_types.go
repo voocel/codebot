@@ -15,7 +15,6 @@ const (
 	EntryCompaction     EntryKind = "compaction"
 	EntryThinkingChange EntryKind = "thinking_change"
 	EntrySessionInfo    EntryKind = "session_info"
-	EntryPlanSlug       EntryKind = "plan_slug"
 	EntryPlanState      EntryKind = "plan_state"
 	EntryLLMCall        EntryKind = "llm_call"
 )
@@ -55,23 +54,11 @@ type Compaction struct {
 	Messages []json.RawMessage `json:"messages,omitempty"`
 }
 
-// PlanSlugEntry records which plan file belongs to this session.
-type PlanSlugEntry struct {
-	Slug  string `json:"slug"`
-	Title string `json:"title"`
-}
-
-type AllowedCommandEntry struct {
-	CommandPrefix string `json:"command_prefix"`
-	Description   string `json:"description,omitempty"`
-}
-
+// PlanStateEntry records a plan-mode phase transition.
 type PlanStateEntry struct {
-	Phase           string                `json:"phase"`
-	Slug            string                `json:"slug,omitempty"`
-	Title           string                `json:"title,omitempty"`
-	PreMode         string                `json:"pre_mode,omitempty"`
-	AllowedCommands []AllowedCommandEntry `json:"allowed_commands,omitempty"`
+	Phase   string `json:"phase"`
+	Slug    string `json:"slug,omitempty"`
+	PreMode string `json:"pre_mode,omitempty"`
 }
 
 // LLMCallEntry is a per-turn observability record for a single LLM response.

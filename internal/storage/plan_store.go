@@ -102,7 +102,7 @@ func (s *PlanStore) Path(name string) string {
 }
 
 // Dir returns the directory plans are stored in. Used by the TUI to detect
-// whether a write/edit target is a plan file (cc-style hidden rendering).
+// whether a write/edit target is a plan file (hidden rendering).
 func (s *PlanStore) Dir() string {
 	return s.dir
 }
