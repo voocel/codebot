@@ -150,7 +150,7 @@ type State struct {
 
 	// Scrollback mirrors the stream of pre-formatted bodies sent to
 	// tea.Println. It exists solely to cure the terminal-resize ghost /
-	// reflow duplication problem (重影).
+	// reflow duplication problem.
 	//
 	// Precise cause: Println content, once written, is inert — bubbletea
 	// never redraws it, so reflow at worst re-wraps it in place without

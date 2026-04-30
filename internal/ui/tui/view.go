@@ -80,7 +80,7 @@ func (m *Model) View() string {
 	} else if m.AskUser != nil {
 		parts = append(parts, renderAskUser(m.AskUser))
 	} else if m.Permission != nil {
-		parts = append(parts, renderPermission(m.Permission))
+		parts = append(parts, renderPermission(m.Permission, m.Markdown))
 		parts = append(parts, m.RenderStatusBar())
 	} else {
 		if statusBar := m.RenderStatusBar(); statusBar != "" {

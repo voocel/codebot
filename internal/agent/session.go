@@ -90,8 +90,8 @@ type Session struct {
 	skillRuntime      skillRuntimeState
 
 	deferredToolsPreamble  string   // <available-deferred-tools> for first user message
-	staticReminders        []string // 从上下文文件生成的稳定 reminders
-	runtimeReminders       []string // 运行时动态注入的一次性 reminders
+	staticReminders        []string // stable reminders derived from context files
+	runtimeReminders       []string // one-shot reminders injected at runtime
 	runtimeReminderKeys    map[string]struct{}
 	steeredReminderKeys    map[string]struct{}
 	autoResumeReminderKeys map[string]struct{}

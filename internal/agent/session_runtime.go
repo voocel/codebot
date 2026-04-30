@@ -338,12 +338,12 @@ func (s *Session) applySkillPathHints(name string, paths []string) {
 	}
 	reminder := "<system-reminder>\n"
 	if strings.TrimSpace(name) != "" {
-		reminder += fmt.Sprintf("当前 skill %q 建议优先关注这些路径或模式：\n", name)
+		reminder += fmt.Sprintf("The active skill %q suggests focusing on these paths or patterns first:\n", name)
 	} else {
-		reminder += "当前 skill 建议优先关注这些路径或模式：\n"
+		reminder += "The active skill suggests focusing on these paths or patterns first:\n"
 	}
 	reminder += strings.Join(lines, "\n")
-	reminder += "\n如果需要扩大范围，先说明原因，再继续。\n</system-reminder>"
+	reminder += "\nIf you need to look beyond them, explain why before continuing.\n</system-reminder>"
 	s.deliverRuntimeReminder("skill_paths:"+strings.Join(lines, "|"), ReminderSkillPaths, reminder)
 }
 

@@ -6,7 +6,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
+
+// planExitToolName is the codebot tool that requests user approval of a
+// finished plan. Plan-mode approval has different UX requirements than a
+// generic permission prompt (must show full plan content, only two choices,
+// markdown rendering), so the renderer special-cases this tool.
+const planExitToolName = "exit_plan_mode"
 
 // PermitChoice is the user's response to a permission prompt.
 type PermitChoice int
@@ -50,10 +57,10 @@ var permissionOptionsFull = []struct {
 	desc   string
 	choice PermitChoice
 }{
-	{"Allow once", "仅本次允许", PermitChoiceAllowOnce},
-	{"Allow for session", "本会话不再询问此类命令", PermitChoiceAllowSession},
-	{"Always allow", "保存到项目配置，后续不再询问", PermitChoiceAllowAlways},
-	{"Deny", "拒绝执行", PermitChoiceDeny},
+	{"Allow once", "this invocation only", PermitChoiceAllowOnce},
+	{"Allow for session", "don't ask again this session", PermitChoiceAllowSession},
+	{"Always allow", "save to project config", PermitChoiceAllowAlways},
+	{"Deny", "reject this invocation", PermitChoiceDeny},
 }
 
 var permissionOptionsRestricted = []struct {
@@ -61,13 +68,27 @@ var permissionOptionsRestricted = []struct {
 	desc   string
 	choice PermitChoice
 }{
-	{"Allow once", "仅本次允许（路径在授权范围外）", PermitChoiceAllowOnce},
-	{"Deny", "拒绝执行", PermitChoiceDeny},
+	{"Allow once", "path outside authorized roots", PermitChoiceAllowOnce},
+	{"Deny", "reject this invocation", PermitChoiceDeny},
+}
+
+// Plan approval is binary by nature (a plan is approved once or refined and
+// retried), so AllowSession / AllowAlways have no meaning here.
+var permissionOptionsPlanExit = []struct {
+	label  string
+	desc   string
+	choice PermitChoice
+}{
+	{"Approve plan", "leave plan mode and start execution", PermitChoiceAllowOnce},
+	{"Reject plan", "stay in plan mode and refine", PermitChoiceDeny},
 }
 
 func initPermission(msg PermissionMsg) *permissionState {
 	opts := permissionOptionsFull
-	if msg.OutsideRoots {
+	switch {
+	case msg.Tool == planExitToolName:
+		opts = permissionOptionsPlanExit
+	case msg.OutsideRoots:
 		opts = permissionOptionsRestricted
 	}
 	return &permissionState{
@@ -110,7 +131,11 @@ func handlePermissionKey(s *permissionState, msg tea.KeyMsg) (bool, tea.Cmd) {
 	}
 }
 
-func renderPermission(s *permissionState) string {
+func renderPermission(s *permissionState, md *markdown.Renderer) string {
+	if s.tool == planExitToolName {
+		return renderPlanApproval(s, md)
+	}
+
 	var b strings.Builder
 	labelStyle := askDescStyle
 	valueStyle := askOptionInactiveStyle
@@ -135,23 +160,60 @@ func renderPermission(s *permissionState) string {
 		b.WriteString(valueStyle.Render(s.reason))
 	}
 	if s.preview != "" {
-		preview := s.preview
-		if runes := []rune(preview); len(runes) > 240 {
-			preview = string(runes[:240]) + "..."
-		}
+		// Render the full preview. agentcore's previewText already caps generic
+		// tool previews at 400 chars; any further cap here would hide content
+		// from the approver.
 		b.WriteByte('\n')
-		b.WriteString(labelStyle.Render("  Preview: "))
-		b.WriteString(valueStyle.Render(preview))
+		b.WriteString(labelStyle.Render("  Preview:\n"))
+		b.WriteString(valueStyle.Render(s.preview))
 	}
 	b.WriteString("\n\n")
 
+	renderOptions(&b, s, activeOptionStyle, inactiveOptionStyle)
+
+	b.WriteByte('\n')
+	b.WriteString(askHintStyle.Render("Enter to select · ↑↓ navigate · Esc to deny"))
+
+	return AskCardStyle.Render(b.String())
+}
+
+// renderPlanApproval shows the full plan with markdown formatting in a
+// dedicated card so the user can read every line before deciding.
+func renderPlanApproval(s *permissionState, md *markdown.Renderer) string {
+	var b strings.Builder
+	activeOptionStyle := lipgloss.NewStyle().Foreground(Accent).Bold(true)
+	inactiveOptionStyle := askOptionInactiveStyle
+
+	b.WriteString(PermissionTitleStyle.Render("Plan Ready for Approval"))
+	b.WriteString("\n")
+	b.WriteString(MutedStyle.Render("Review the plan below; approve to leave plan mode and start execution, or reject to keep planning."))
+	b.WriteString("\n\n")
+
+	plan := strings.TrimSpace(s.preview)
+	if plan == "" {
+		plan = "(no plan content)"
+	} else if md != nil {
+		plan = strings.TrimSpace(md.RenderFinal(plan))
+	}
+	b.WriteString(plan)
+	b.WriteString("\n\n")
+
+	renderOptions(&b, s, activeOptionStyle, inactiveOptionStyle)
+
+	b.WriteByte('\n')
+	b.WriteString(askHintStyle.Render("Enter to confirm · ↑↓ navigate · Esc to reject"))
+
+	return AskCardStyle.Render(b.String())
+}
+
+func renderOptions(b *strings.Builder, s *permissionState, active, inactive lipgloss.Style) {
 	for i, opt := range s.options {
 		num := fmt.Sprintf("%d. ", i+1)
 		prefix := "  "
-		style := inactiveOptionStyle
+		style := inactive
 		if i == s.cursor {
 			prefix = "> "
-			style = activeOptionStyle
+			style = active
 		}
 		b.WriteString(style.Render(prefix + num + opt.label))
 		if opt.desc != "" {
@@ -160,9 +222,4 @@ func renderPermission(s *permissionState) string {
 		}
 		b.WriteByte('\n')
 	}
-
-	b.WriteByte('\n')
-	b.WriteString(askHintStyle.Render("Enter to select · ↑↓ navigate · Esc to deny"))
-
-	return AskCardStyle.Render(b.String())
 }

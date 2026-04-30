@@ -86,7 +86,7 @@ func Scaffold(input ScaffoldInput) (*ScaffoldResult, error) {
 		ID:          id,
 		Name:        displayNameFromID(id),
 		Version:     "0.1.0",
-		Description: "TODO: 描述这个 plugin 为 codebot 增加了什么能力",
+		Description: "TODO: describe what this plugin adds to codebot",
 		SkillsDir:   "./skills",
 		CommandsDir: "./commands",
 	}
@@ -144,33 +144,33 @@ func displayNameFromID(id string) string {
 func buildScaffoldREADME(id, scope string) string {
 	return fmt.Sprintf(
 		"# %s\n\n"+
-			"这是一个 codebot plugin 脚手架。\n\n"+
-			"## 目录\n\n"+
-			"- `plugin.json`：plugin manifest\n"+
-			"- `skills/`：放技能文件，文件名会成为技能名\n"+
-			"- `commands/`：放 slash command 的 Markdown 文件\n\n"+
-			"## 当前作用域\n\n"+
+			"A codebot plugin scaffold.\n\n"+
+			"## Layout\n\n"+
+			"- `plugin.json` — plugin manifest\n"+
+			"- `skills/` — skill files; the filename becomes the skill name\n"+
+			"- `commands/` — Markdown files for slash commands\n\n"+
+			"## Scope\n\n"+
 			"- %s\n\n"+
-			"## 下一步\n\n"+
-			"1. 编辑 `plugin.json`，补全描述与版本信息。\n"+
-			"2. 在 `skills/` 中新增一个技能文件，例如 `review.md`。\n"+
-			"3. 在 `commands/` 中新增一个命令文件，例如 `triage.md`。\n"+
-			"4. 回到项目后执行 `/reload` 或 `/plugins list` 检查装载结果。\n\n"+
-			"## 最小技能示例\n\n"+
+			"## Next steps\n\n"+
+			"1. Edit `plugin.json` to fill in the description and version.\n"+
+			"2. Add a skill file under `skills/`, e.g. `review.md`.\n"+
+			"3. Add a command file under `commands/`, e.g. `triage.md`.\n"+
+			"4. Run `/reload` or `/plugins list` in your project to verify it loads.\n\n"+
+			"## Minimal skill example\n\n"+
 			"```md\n"+
 			"---\n"+
-			"description: 代码审查助手\n"+
-			"when_to_use: 当用户要求你 review diff、找回归或指出风险时使用\n"+
+			"description: Code review assistant\n"+
+			"when_to_use: When the user asks you to review a diff, hunt regressions, or flag risks\n"+
 			"---\n\n"+
-			"先阅读变更，再给出按严重级别排序的问题清单。\n"+
+			"Read the change first, then return a list of issues sorted by severity.\n"+
 			"```\n\n"+
-			"## 最小命令示例\n\n"+
+			"## Minimal command example\n\n"+
 			"```md\n"+
 			"---\n"+
-			"description: 进入发布检查流程\n"+
+			"description: Enter the release-check flow\n"+
 			"usage: /release-check [version]\n"+
 			"---\n\n"+
-			"检查当前工作区的变更、测试状态和待发布风险。\n"+
+			"Check the current workspace's changes, test status, and outstanding release risks.\n"+
 			"```\n",
 		id,
 		scope,

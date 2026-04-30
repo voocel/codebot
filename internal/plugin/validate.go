@@ -43,7 +43,7 @@ func ValidatePath(path, scope string) (*ValidationReport, error) {
 			report.Errors = append(report.Errors, err.Error())
 		}
 		if len(specs) == 0 {
-			report.Warnings = append(report.Warnings, "skillsDir 存在，但没有可加载的 skill")
+			report.Warnings = append(report.Warnings, "skillsDir exists but contains no loadable skill")
 		}
 	}
 	if dir := loaded.commandsDir(); dir != "" {
@@ -54,11 +54,11 @@ func ValidatePath(path, scope string) (*ValidationReport, error) {
 			report.Errors = append(report.Errors, err.Error())
 		}
 		if len(cmds) == 0 {
-			report.Warnings = append(report.Warnings, "commandsDir 存在，但没有可加载的 command")
+			report.Warnings = append(report.Warnings, "commandsDir exists but contains no loadable command")
 		}
 	}
 	if report.SkillCount == 0 && report.CommandCount == 0 && report.MCPCount == 0 {
-		report.Warnings = append(report.Warnings, "plugin 当前没有任何贡献项")
+		report.Warnings = append(report.Warnings, "plugin has no contributions")
 	}
 	return report, nil
 }
@@ -71,7 +71,7 @@ func ValidateLoaded(loaded Loaded) (*ValidationReport, error) {
 	state := loaded.State
 	report.State = &state
 	if !loaded.IsTrusted() && report.MCPCount > 0 {
-		report.Warnings = append(report.Warnings, "当前 trust=untrusted，MCP 贡献会被过滤")
+		report.Warnings = append(report.Warnings, "trust=untrusted; MCP contributions are filtered out")
 	}
 	return report, nil
 }

@@ -107,7 +107,7 @@ func anthropicMaxOutputTokens(modelName string) int {
 	case strings.Contains(name, "opus"):
 		return 32000
 	default:
-		// 保守兜底，避免未知模型直接触发 provider 400。
+		// Conservative fallback so unknown models don't trip a provider 400.
 		return 32000
 	}
 }
