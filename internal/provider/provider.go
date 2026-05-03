@@ -9,7 +9,7 @@ import (
 	"github.com/voocel/codebot/internal/apperr"
 )
 
-var supportedTypeNames = []string{"openai", "anthropic", "gemini", "openrouter"}
+var supportedTypeNames = []string{"openai", "anthropic", "gemini", "openrouter", "deepseek"}
 
 type modelFactory func(name, apiKey, baseURL string) (agentcore.ChatModel, error)
 
@@ -37,6 +37,12 @@ var modelFactories = map[string]modelFactory{
 			return llm.NewOpenAIModel(name, apiKey, baseURL)
 		}
 		return llm.NewOpenAIModel(name, apiKey)
+	},
+	"deepseek": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
+		if baseURL != "" {
+			return llm.NewDeepSeekModel(name, apiKey, baseURL)
+		}
+		return llm.NewDeepSeekModel(name, apiKey)
 	},
 }
 

@@ -18,6 +18,7 @@ var providerList = []struct {
 	{"anthropic", "Anthropic"},
 	{"gemini", "Google Gemini"},
 	{"openrouter", "OpenRouter"},
+	{"deepseek", "DeepSeek"},
 }
 
 // RunSetup runs an interactive first-time configuration wizard.

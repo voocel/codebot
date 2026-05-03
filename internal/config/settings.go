@@ -22,6 +22,7 @@ var KnownProviderTypes = map[string]string{
 	"openai":     "openai",
 	"openrouter": "openrouter",
 	"gemini":     "gemini",
+	"deepseek":   "deepseek",
 }
 
 // ProviderConfig holds credentials and model configuration for a single provider.
@@ -142,6 +143,7 @@ var providerEnvVars = map[string]struct{ key, base string }{
 	"openai":     {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
 	"openrouter": {"OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"},
 	"gemini":     {"GEMINI_API_KEY", "GEMINI_BASE_URL"},
+	"deepseek":   {"DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"},
 }
 
 // ProviderCredentials returns API key and base URL for the given provider.
@@ -178,7 +180,7 @@ func EnvCredentials(prov string) (apiKey, baseURL string) {
 // DetectEnvProvider scans known providers for available environment variable credentials.
 // Returns the provider name and env var key of the first match, or empty if none found.
 func DetectEnvProvider() (provider, envKey string) {
-	order := []string{"anthropic", "openai", "gemini", "openrouter"}
+	order := []string{"anthropic", "openai", "gemini", "openrouter", "deepseek"}
 	for _, prov := range order {
 		if key, _ := EnvCredentials(prov); key != "" {
 			return prov, providerEnvVars[prov].key
@@ -579,6 +581,8 @@ func DefaultModelName(prov string) string {
 		return "claude-sonnet-4-6"
 	case "gemini":
 		return "gemini-3.0-flash"
+	case "deepseek":
+		return "deepseek-chat"
 	default:
 		return "gpt-5-mini"
 	}

@@ -25,25 +25,24 @@ type ModelCommand struct {
 	state *modelSelectState
 }
 
-type modelSelectEntry struct {
-	provider string
-	model    string
-}
+// tabsWindowSize caps how many provider tabs render at once. When more
+// providers exist, ←/→ scrolls the window so the active tab stays visible.
+const tabsWindowSize = 6
 
-type modelGroup struct {
-	name     string
-	startIdx int
-	count    int
+type providerSection struct {
+	name   string
+	models []string
 }
 
 type modelSelectState struct {
-	entries     []modelSelectEntry
-	groups      []modelGroup
-	current     string
-	currentProv string
-	cursor      int
-	thinkLevels []string
-	thinkIdx    int
+	sections     []providerSection
+	provIdx      int // index into sections
+	provWinStart int // first visible tab; window is [start, start+tabsWindowSize)
+	modelIdx     int // index within sections[provIdx].models
+	current      string
+	currentProv  string
+	thinkLevels  []string
+	thinkIdx     int
 }
 
 // Model constructs the /model command.
@@ -65,8 +64,8 @@ func (c *ModelCommand) Spec() Spec {
 
 func (c *ModelCommand) Run(_ Invocation) tea.Cmd {
 	settings := c.session.Settings()
-	entries, groups := buildModelList(settings.Providers)
-	if len(entries) == 0 {
+	sections := buildProviderSections(settings.Providers)
+	if len(sections) == 0 {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(
 			"No models configured. Add models to your providers in .codebot/settings.json"))
 	}
@@ -74,32 +73,29 @@ func (c *ModelCommand) Run(_ Invocation) tea.Cmd {
 	currentModel := c.session.ModelName()
 	currentProv := c.session.Provider()
 
-	cursor := 0
-	for i, e := range entries {
-		if e.provider == currentProv && strings.EqualFold(e.model, currentModel) {
-			cursor = i
+	provIdx, modelIdx := 0, 0
+	for i, s := range sections {
+		if s.name == currentProv {
+			provIdx = i
+			for j, m := range s.models {
+				if strings.EqualFold(m, currentModel) {
+					modelIdx = j
+					break
+				}
+			}
 			break
 		}
 	}
 
-	reg := c.session.Registry()
-	var thinkLevels []string
-	if reg != nil {
-		thinkLevels = reg.AvailableThinkingLevels(entries[cursor].model)
-	} else {
-		thinkLevels = []string{"off"}
-	}
-	thinkIdx := currentThinkingIndex(c.session, thinkLevels)
-
 	c.state = &modelSelectState{
-		entries:     entries,
-		groups:      groups,
-		current:     currentModel,
-		currentProv: currentProv,
-		cursor:      cursor,
-		thinkLevels: thinkLevels,
-		thinkIdx:    thinkIdx,
+		sections:     sections,
+		provIdx:      provIdx,
+		provWinStart: clampWindowStart(provIdx, 0, len(sections), tabsWindowSize),
+		modelIdx:     modelIdx,
+		current:      currentModel,
+		currentProv:  currentProv,
 	}
+	c.refreshThinking()
 	c.overlay.SetOverlay(c)
 	return nil
 }
@@ -114,41 +110,61 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 	switch msg.String() {
 	case "up", "k":
-		if s.cursor > 0 {
-			s.cursor--
+		if s.modelIdx > 0 {
+			s.modelIdx--
 			c.refreshThinking()
 		}
 		return true, nil
 
 	case "down", "j":
-		if s.cursor < len(s.entries)-1 {
-			s.cursor++
+		if s.modelIdx < len(s.sections[s.provIdx].models)-1 {
+			s.modelIdx++
 			c.refreshThinking()
 		}
 		return true, nil
 
 	case "left", "h":
-		if s.thinkIdx > 0 {
-			s.thinkIdx--
+		if s.provIdx > 0 {
+			s.provIdx--
+			s.modelIdx = 0
+			s.provWinStart = clampWindowStart(s.provIdx, s.provWinStart, len(s.sections), tabsWindowSize)
+			c.refreshThinking()
 		}
 		return true, nil
 
 	case "right", "l":
-		if s.thinkIdx < len(s.thinkLevels)-1 {
-			s.thinkIdx++
+		if s.provIdx < len(s.sections)-1 {
+			s.provIdx++
+			s.modelIdx = 0
+			s.provWinStart = clampWindowStart(s.provIdx, s.provWinStart, len(s.sections), tabsWindowSize)
+			c.refreshThinking()
+		}
+		return true, nil
+
+	case "tab":
+		if len(s.thinkLevels) > 1 {
+			s.thinkIdx = (s.thinkIdx + 1) % len(s.thinkLevels)
+		}
+		return true, nil
+
+	case "shift+tab":
+		if len(s.thinkLevels) > 1 {
+			s.thinkIdx = (s.thinkIdx - 1 + len(s.thinkLevels)) % len(s.thinkLevels)
 		}
 		return true, nil
 
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		idx := int(msg.Runes[0] - '1')
-		if idx < len(s.entries) {
-			s.cursor = idx
+		if idx < len(s.sections[s.provIdx].models) {
+			s.modelIdx = idx
 			c.refreshThinking()
 		}
 		return true, nil
 
 	case "enter":
-		entry := s.entries[s.cursor]
+		section := s.sections[s.provIdx]
+		prov := section.name
+		model := section.models[s.modelIdx]
 		thinkLevel := ""
 		if s.thinkIdx < len(s.thinkLevels) {
 			thinkLevel = s.thinkLevels[s.thinkIdx]
@@ -156,7 +172,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 		c.overlay.ClearOverlay()
 
-		if err := c.session.SetModel(entry.provider, entry.model); err != nil {
+		if err := c.session.SetModel(prov, model); err != nil {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch model: " + err.Error()))
 		}
 
@@ -167,8 +183,6 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		// Persist selection so manual edits and /model share one source of
 		// truth. SmallModel is written alongside to avoid leaving a stale
 		// value from a previous provider.
-		prov := entry.provider
-		model := entry.model
 		small := c.session.Settings().SmallModel
 		patch := config.Settings{
 			Provider:   &prov,
@@ -185,15 +199,15 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			fmt.Fprintf(os.Stderr, "warning: persist model setting: %v\n", perr)
 		}
 
-		display := config.FormatModelID(entry.provider, entry.model)
+		display := config.FormatModelID(prov, model)
 		if thinkLevel != "" && thinkLevel != "off" {
 			display += " (thinking: " + thinkLevel + ")"
 		}
 		return true, func() tea.Msg {
 			return tui.CommandResultMsg{
 				Text:             tui.SystemMsgStyle.Render("Switched to model: " + display),
-				NewProvider:      entry.provider,
-				NewModel:         entry.model,
+				NewProvider:      prov,
+				NewModel:         model,
 				NewContextWindow: c.session.Settings().ContextWindow,
 			}
 		}
@@ -213,43 +227,38 @@ func (c *ModelCommand) View(width, _ int) string {
 	s := c.state
 
 	var sb strings.Builder
-	hint := tui.MutedStyle.Render("Select model (↑↓ navigate · ←→ thinking · Enter select · Esc cancel):")
+	hint := tui.MutedStyle.Render("Select model (↑↓ select · ←→ provider · Tab thinking · Enter confirm · Esc cancel):")
 	sb.WriteString(hint)
-	sb.WriteString("\n")
+	sb.WriteString("\n\n")
+
+	sb.WriteString(c.renderTabBar())
+	sb.WriteString("\n\n")
 
 	selectedStyle := lipgloss.NewStyle().Foreground(tui.Brand).Bold(true)
 	currentMark := lipgloss.NewStyle().Foreground(tui.Success)
 	dimStyle := tui.MutedStyle
-	headerStyle := tui.MutedStyle
 
 	reg := c.session.Registry()
+	models := s.sections[s.provIdx].models
+	provName := s.sections[s.provIdx].name
 
-	groupIdx := 0
-	for i, e := range s.entries {
-		if groupIdx < len(s.groups) && s.groups[groupIdx].startIdx == i {
-			g := s.groups[groupIdx]
-			sb.WriteString(headerStyle.Render("  " + g.name))
-			sb.WriteString("\n")
-			groupIdx++
-		}
-
+	for i, m := range models {
 		num := fmt.Sprintf("%d.", i+1)
 
 		prefix := "  "
-		if i == s.cursor {
+		if i == s.modelIdx {
 			prefix = "> "
 		}
 
 		marker := "  "
-		isCurrent := e.provider == s.currentProv && strings.EqualFold(e.model, s.current)
+		isCurrent := provName == s.currentProv && strings.EqualFold(m, s.current)
 		if isCurrent {
 			marker = "* "
 		}
 
-		var name, ctx, reasoning string
+		var ctx, reasoning string
 		if reg != nil {
-			if entry, _, err := reg.Resolve(e.model); err == nil {
-				name = entry.Name
+			if entry, _, err := reg.Resolve(m); err == nil {
 				ctx = tui.FormatTokens(entry.ContextWindow)
 				if entry.Reasoning {
 					reasoning = "reasoning"
@@ -257,18 +266,19 @@ func (c *ModelCommand) View(width, _ int) string {
 			}
 		}
 
-		if i == s.cursor && len(s.thinkLevels) > 1 {
+		if i == s.modelIdx && len(s.thinkLevels) > 1 {
 			reasoning = c.renderThinkingIndicator()
 		}
 
-		line := fmt.Sprintf("%s%s%-2s %-30s %-18s %6s  %s",
-			prefix, marker, num, e.model, name, ctx, reasoning)
+		line := fmt.Sprintf("%s%s%-2s %-30s %6s  %s",
+			prefix, marker, num, m, ctx, reasoning)
 
-		if i == s.cursor {
+		switch {
+		case i == s.modelIdx:
 			sb.WriteString(selectedStyle.Render(line))
-		} else if isCurrent {
+		case isCurrent:
 			sb.WriteString(currentMark.Render(line))
-		} else {
+		default:
 			sb.WriteString(dimStyle.Render(line))
 		}
 		sb.WriteString("\n")
@@ -278,6 +288,38 @@ func (c *ModelCommand) View(width, _ int) string {
 	return sb.String()
 }
 
+func (c *ModelCommand) renderTabBar() string {
+	s := c.state
+	total := len(s.sections)
+	winEnd := min(s.provWinStart+tabsWindowSize, total)
+
+	activeStyle := lipgloss.NewStyle().Foreground(tui.Brand).Bold(true).Underline(true)
+	inactiveStyle := tui.MutedStyle
+	arrowStyle := tui.MutedStyle
+
+	leftArrow := "  "
+	if s.provWinStart > 0 {
+		leftArrow = arrowStyle.Render("◂ ")
+	}
+	rightArrow := "  "
+	if winEnd < total {
+		rightArrow = arrowStyle.Render(" ▸")
+	}
+
+	var parts []string
+	for i := s.provWinStart; i < winEnd; i++ {
+		name := s.sections[i].name
+		if i == s.provIdx {
+			parts = append(parts, activeStyle.Render(name))
+		} else {
+			parts = append(parts, inactiveStyle.Render(name))
+		}
+	}
+
+	separator := inactiveStyle.Render(" · ")
+	return "  " + leftArrow + strings.Join(parts, separator) + rightArrow
+}
+
 func (c *ModelCommand) Dismiss() {
 	c.state = nil
 }
@@ -285,10 +327,13 @@ func (c *ModelCommand) Dismiss() {
 func (c *ModelCommand) refreshThinking() {
 	s := c.state
 	reg := c.session.Registry()
+	model := s.sections[s.provIdx].models[s.modelIdx]
 	if reg == nil {
+		s.thinkLevels = []string{"off"}
+		s.thinkIdx = 0
 		return
 	}
-	s.thinkLevels = reg.AvailableThinkingLevels(s.entries[s.cursor].model)
+	s.thinkLevels = reg.AvailableThinkingLevels(model)
 	s.thinkIdx = currentThinkingIndex(c.session, s.thinkLevels)
 }
 
@@ -297,16 +342,7 @@ func (c *ModelCommand) renderThinkingIndicator() string {
 	if len(s.thinkLevels) == 0 {
 		return ""
 	}
-	level := s.thinkLevels[s.thinkIdx]
-	left := " "
-	right := " "
-	if s.thinkIdx > 0 {
-		left = "◀"
-	}
-	if s.thinkIdx < len(s.thinkLevels)-1 {
-		right = "▶"
-	}
-	return fmt.Sprintf("[%s %s %s]", left, level, right)
+	return fmt.Sprintf("[◂ %s ▸]", s.thinkLevels[s.thinkIdx])
 }
 
 func currentThinkingIndex(session *agent.Session, levels []string) int {
@@ -322,7 +358,7 @@ func currentThinkingIndex(session *agent.Session, levels []string) int {
 	return 0
 }
 
-func buildModelList(providers map[string]config.ProviderConfig) ([]modelSelectEntry, []modelGroup) {
+func buildProviderSections(providers map[string]config.ProviderConfig) []providerSection {
 	names := make([]string, 0, len(providers))
 	for name, pc := range providers {
 		if len(pc.Models) > 0 {
@@ -331,15 +367,33 @@ func buildModelList(providers map[string]config.ProviderConfig) ([]modelSelectEn
 	}
 	sort.Strings(names)
 
-	var entries []modelSelectEntry
-	var groups []modelGroup
+	sections := make([]providerSection, 0, len(names))
 	for _, name := range names {
 		pc := providers[name]
-		g := modelGroup{name: name, startIdx: len(entries), count: len(pc.Models)}
-		for _, m := range pc.Models {
-			entries = append(entries, modelSelectEntry{provider: name, model: m})
-		}
-		groups = append(groups, g)
+		models := append([]string(nil), pc.Models...)
+		sections = append(sections, providerSection{name: name, models: models})
 	}
-	return entries, groups
+	return sections
+}
+
+// clampWindowStart returns a window start that keeps idx within
+// [start, start+size) and inside [0, total). When total <= size, the window
+// always starts at 0.
+func clampWindowStart(idx, start, total, size int) int {
+	if total <= size {
+		return 0
+	}
+	if idx < start {
+		start = idx
+	}
+	if idx >= start+size {
+		start = idx - size + 1
+	}
+	if max := total - size; start > max {
+		start = max
+	}
+	if start < 0 {
+		start = 0
+	}
+	return start
 }
