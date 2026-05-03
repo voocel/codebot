@@ -867,9 +867,55 @@ func (s *Session) Registry() *provider.ModelRegistry {
 	return s.registry
 }
 
+// CacheStats reports session-cumulative prompt cache metrics. Input includes
+// CacheRead per litellm convention; HitRate is CacheRead / Input. SavedUSD
+// estimates the dollars saved by serving CacheRead tokens at the cache-read
+// rate instead of the full input rate.
+type CacheStats struct {
+	Input       int
+	ReadTokens  int
+	WriteTokens int
+	HitRate     float64
+	SavedUSD    float64
+}
+
+func (s *Session) CacheStats() CacheStats {
+	usage := s.agent.TotalUsage()
+	cs := CacheStats{
+		Input:       usage.Input,
+		ReadTokens:  usage.CacheRead,
+		WriteTokens: usage.CacheWrite,
+	}
+	if usage.Input > 0 {
+		cs.HitRate = float64(usage.CacheRead) / float64(usage.Input)
+	}
+
+	s.mu.Lock()
+	model := s.modelName
+	reg := s.registry
+	s.mu.Unlock()
+
+	if reg != nil {
+		inRate, _, crRate, _ := reg.CostRates(model)
+		if inRate > crRate {
+			cs.SavedUSD = float64(usage.CacheRead) * (inRate - crRate) / 1e6
+		}
+	}
+	return cs
+}
+
 func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 	usage := s.agent.TotalUsage()
-	inputTokens = usage.Input + usage.CacheRead + usage.CacheWrite
+
+	// Input already includes CacheRead per the litellm convention; subtract
+	// it so the cached portion is only billed at the cache-read rate, not
+	// twice (once at full input rate, once at cache-read rate).
+	nonCachedInput := usage.Input - usage.CacheRead
+	if nonCachedInput < 0 {
+		nonCachedInput = usage.Input
+	}
+
+	inputTokens = nonCachedInput + usage.CacheRead + usage.CacheWrite
 	outputTokens = usage.Output
 
 	s.mu.Lock()
@@ -879,7 +925,7 @@ func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 
 	if reg != nil {
 		inRate, outRate, crRate, cwRate := reg.CostRates(model)
-		cost = float64(usage.Input)*inRate/1e6 +
+		cost = float64(nonCachedInput)*inRate/1e6 +
 			float64(outputTokens)*outRate/1e6 +
 			float64(usage.CacheRead)*crRate/1e6 +
 			float64(usage.CacheWrite)*cwRate/1e6

@@ -208,6 +208,20 @@ func (c *StatusCommand) renderUsage(width int) string {
 	p.Row("Tokens out", tui.FormatTokens(outTok))
 	p.Row("Cost", fmt.Sprintf("~$%.4f", cost))
 
+	if cs := c.Session.CacheStats(); cs.Input > 0 {
+		p.Section("Cache")
+		p.Row("Hit rate", fmt.Sprintf("%.1f%%   (%s of %s)",
+			cs.HitRate*100,
+			tui.FormatTokens(cs.ReadTokens),
+			tui.FormatTokens(cs.Input)))
+		p.Row("Read", tui.FormatTokens(cs.ReadTokens))
+		p.Row("Written", tui.FormatTokens(cs.WriteTokens))
+		if cs.SavedUSD > 0 {
+			p.Row("Saved", fmt.Sprintf("~$%.4f", cs.SavedUSD))
+		}
+		p.Hint("Retention", "ephemeral (5m)")
+	}
+
 	p.Section("Context")
 	p.Row("Used", formatContextSummary(usage))
 	if usage != nil {
