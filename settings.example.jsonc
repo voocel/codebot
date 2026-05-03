@@ -30,6 +30,11 @@
       "models": ["gemini-3.1-pro", "gemini-2.5-flash"],
       "small_model": "gemini-2.5-flash"
     },
+    "deepseek": {
+      "api_key": "",
+      "models": ["deepseek-chat", "deepseek-reasoner"],
+      "small_model": "deepseek-chat"
+    },
     // Custom proxy example: "type" specifies the API protocol (openai/anthropic/gemini).
     // Omit "type" for well-known provider names — it will be inferred automatically.
     "my-proxy": {

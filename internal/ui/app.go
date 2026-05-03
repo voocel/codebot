@@ -354,20 +354,27 @@ func (a *App) cycleMode() tea.Cmd {
 	return nil
 }
 
-// ModalOverlay is an optional interface for overlays that replace the input area.
+// ModalOverlay is an optional interface used by overlays that want to opt out
+// of the modal default. Overlays that intercept keyboard input (the typical
+// case) replace the input area; non-modal overlays — autocomplete-style hint
+// panels that coexist with the input — must implement this and return false.
 type ModalOverlay interface {
 	IsModal() bool
 }
 
 // overlayState bridges the registry's interactive command overlay to the TUI.
+// Default is modal (ReplacesInput = true) so any overlay capturing keys is
+// safe by construction; only overlays that explicitly return IsModal()=false
+// keep the input area visible alongside their view.
 func (a *App) overlayState(m *tui.Model) *tui.OverlayState {
 	ov := a.registry.Overlay()
 	if ov == nil || !ov.Active() {
 		return nil
 	}
 	state := &tui.OverlayState{
-		HandleKey: ov.HandleKey,
-		View:      ov.View,
+		HandleKey:     ov.HandleKey,
+		View:          ov.View,
+		ReplacesInput: true,
 	}
 	if modal, ok := ov.(ModalOverlay); ok {
 		state.ReplacesInput = modal.IsModal()

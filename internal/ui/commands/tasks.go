@@ -62,7 +62,8 @@ func (c *TasksCommand) Run(_ Invocation) tea.Cmd {
 	return nil
 }
 
-func (c *TasksCommand) Active() bool { return c.state != nil }
+func (c *TasksCommand) Active() bool  { return c.state != nil }
+func (c *TasksCommand) IsModal() bool { return true }
 
 func (c *TasksCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if c.state == nil {

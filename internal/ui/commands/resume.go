@@ -75,7 +75,8 @@ func (c *ResumeCommand) Run(_ Invocation) tea.Cmd {
 	return nil
 }
 
-func (c *ResumeCommand) Active() bool { return c.state != nil }
+func (c *ResumeCommand) Active() bool  { return c.state != nil }
+func (c *ResumeCommand) IsModal() bool { return true }
 
 func (c *ResumeCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if c.state == nil {

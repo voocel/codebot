@@ -100,7 +100,8 @@ func (c *ModelCommand) Run(_ Invocation) tea.Cmd {
 	return nil
 }
 
-func (c *ModelCommand) Active() bool { return c.state != nil }
+func (c *ModelCommand) Active() bool  { return c.state != nil }
+func (c *ModelCommand) IsModal() bool { return true }
 
 func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if c.state == nil {

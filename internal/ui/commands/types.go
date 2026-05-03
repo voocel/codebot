@@ -67,6 +67,8 @@ func (c *simpleCmd) Run(inv Invocation) tea.Cmd { return c.run(inv) }
 // custom rendering. When Active() returns true the host TUI routes all
 // keyboard events through HandleKey and replaces the input area with View.
 //
+// Implementations are modal by default — see ModalOverlay below for opting out.
+//
 // View receives the available width AND height of the terminal viewport so
 // implementations can clip or paginate their content. A height of 0 means
 // "unconstrained" (legacy callers); implementations should treat any positive
@@ -79,7 +81,11 @@ type InteractiveCommand interface {
 	Dismiss()
 }
 
-// ModalOverlay is an optional interface for overlays that replace the input area.
+// ModalOverlay is an optional interface used by overlays that want to opt out
+// of the modal default. Overlays that intercept keyboard input (the typical
+// case) replace the input area, so they don't need to implement this.
+// Non-modal overlays — autocomplete-style hint panels that coexist with the
+// input — must implement this and return false.
 type ModalOverlay interface {
 	IsModal() bool
 }
