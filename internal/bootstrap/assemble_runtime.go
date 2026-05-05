@@ -12,13 +12,14 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
+	"github.com/voocel/agentcore/task"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 func assembleRuntime(input *resolvedInput, services *bootServices, assembly *sessionAssembly) (*Runtime, error) {
-	taskRT := agentcore.NewTaskRuntime()
+	taskRT := task.NewRuntime()
 	taskTools := localtools.NewTaskTools(services.taskStore, taskRT, assembly.hookRunner)
 	tools := make([]agentcore.Tool, 0, len(assembly.tools)+len(taskTools))
 	tools = append(tools, assembly.tools...)
@@ -32,7 +33,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		reserveTokens = assembly.settings.ContextWindow - int(float64(assembly.settings.ContextWindow)*r)
 	}
 	contextEngine, summaryCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens, input.cwd)
-	agentCore, err := buildAgent(assembly, services, contextEngine, taskRT, tools)
+	agentCore, err := buildAgent(assembly, services, contextEngine, tools)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +100,7 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 	return engine, summaryCompact
 }
 
-func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine agentcore.ContextManager, taskRT *agentcore.TaskRuntime, tools []agentcore.Tool) (*agentcore.Agent, error) {
+func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine agentcore.ContextManager, tools []agentcore.Tool) (*agentcore.Agent, error) {
 	opts := []agentcore.AgentOption{
 		agentcore.WithModel(assembly.chatModel),
 		agentcore.WithSystemBlocks(assembly.systemBlocks),
@@ -109,11 +110,7 @@ func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine
 		agentcore.WithMaxToolErrors(3),
 		agentcore.WithMaxToolConcurrency(4),
 		agentcore.WithContextManager(contextEngine),
-		agentcore.WithConvertToLLM(agentctx.ContextConvertToLLM),
-		agentcore.WithContextWindow(assembly.settings.ContextWindow),
-		agentcore.WithContextEstimate(agentctx.ContextEstimateAdapter),
-		agentcore.WithPermissionEngine(services.approvalEngine),
-		agentcore.WithTaskRuntime(taskRT),
+		agentcore.WithToolGate(services.approvalEngine.AsToolGate()),
 	}
 	if assembly.hookMiddleware != nil {
 		opts = append(opts, agentcore.WithMiddlewares(assembly.hookMiddleware))
@@ -162,7 +159,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 	})
 }
 
-func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, services *bootServices, session *agent.Session, baseTools, tools []agentcore.Tool, ag *agentcore.Agent, taskRT *agentcore.TaskRuntime, contextEngine *agentctx.ContextEngine, summaryCompact *agentctx.FullSummaryStrategy) {
+func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, services *bootServices, session *agent.Session, baseTools, tools []agentcore.Tool, ag *agentcore.Agent, taskRT *task.Runtime, contextEngine *agentctx.ContextEngine, summaryCompact *agentctx.FullSummaryStrategy) {
 	summaryCompact.SetPostSummaryHooks(session.PostSummaryRecoveryHook())
 	contextEngine.SetProjectHook(session.HandleProjectedRewrite)
 	contextEngine.SetRecoverHook(session.HandleOverflowRewrite)

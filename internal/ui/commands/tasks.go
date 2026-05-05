@@ -11,13 +11,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/task"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // TasksCommand drives /tasks — an interactive overlay listing background
 // shells and forked sub-agents, with detail and stop controls.
 type TasksCommand struct {
-	runtime *agentcore.TaskRuntime
+	runtime *task.Runtime
 	overlay OverlayController
 
 	state *tasksState
@@ -31,13 +32,13 @@ const (
 )
 
 type tasksState struct {
-	entries []agentcore.BackgroundTaskEntry
+	entries []task.Entry
 	cursor  int
 	view    tasksView
 }
 
 // Tasks constructs the /tasks command.
-func Tasks(runtime *agentcore.TaskRuntime, overlay OverlayController) *TasksCommand {
+func Tasks(runtime *task.Runtime, overlay OverlayController) *TasksCommand {
 	return &TasksCommand{runtime: runtime, overlay: overlay}
 }
 
@@ -93,7 +94,7 @@ func (c *TasksCommand) View(width, _ int) string {
 
 func (c *TasksCommand) Dismiss() { c.state = nil }
 
-func (c *TasksCommand) listTasks() []agentcore.BackgroundTaskEntry {
+func (c *TasksCommand) listTasks() []task.Entry {
 	if c.runtime == nil {
 		return nil
 	}
@@ -148,7 +149,7 @@ func (c *TasksCommand) handleListKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		if len(s.entries) > 0 {
 			c.refresh()
 			s.view = tasksViewDetail
-			if s.cursor < len(s.entries) && s.entries[s.cursor].Status == agentcore.TaskRunning {
+			if s.cursor < len(s.entries) && s.entries[s.cursor].Status == task.Running {
 				return true, tui.TasksTickCmd()
 			}
 		}
@@ -216,14 +217,14 @@ func (c *TasksCommand) viewList(_ int) string {
 	var shellRunning, agentRunning int
 	for i := range s.entries {
 		switch s.entries[i].Type {
-		case agentcore.TaskTypeShell:
+		case task.TypeShell:
 			shellEntries = append(shellEntries, i)
-			if s.entries[i].Status == agentcore.TaskRunning {
+			if s.entries[i].Status == task.Running {
 				shellRunning++
 			}
-		case agentcore.TaskTypeSubAgent:
+		case task.TypeSubAgent:
 			agentEntries = append(agentEntries, i)
-			if s.entries[i].Status == agentcore.TaskRunning {
+			if s.entries[i].Status == task.Running {
 				agentRunning++
 			}
 		}
@@ -303,15 +304,15 @@ func (c *TasksCommand) viewDetail(width int) string {
 	e := s.entries[s.cursor]
 
 	switch e.Type {
-	case agentcore.TaskTypeShell:
+	case task.TypeShell:
 		return c.viewShellDetail(e, width)
-	case agentcore.TaskTypeSubAgent:
+	case task.TypeSubAgent:
 		return c.viewAgentDetail(e, width)
 	}
 	return ""
 }
 
-func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width int) string {
+func (c *TasksCommand) viewShellDetail(e task.Entry, width int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.Text)
 	labelStyle := lipgloss.NewStyle().Foreground(tui.Muted)
 	valueStyle := lipgloss.NewStyle().Foreground(tui.Text)
@@ -363,7 +364,7 @@ func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width in
 		}
 	}
 
-	if e.Status != agentcore.TaskRunning && e.ExitCode != 0 {
+	if e.Status != task.Running && e.ExitCode != 0 {
 		sb.WriteString("\n")
 		sb.WriteString(tui.ErrorStyle.Render(fmt.Sprintf("  Exit code: %d", e.ExitCode)))
 		sb.WriteString("\n")
@@ -371,7 +372,7 @@ func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width in
 
 	sb.WriteString("\n")
 	hint := "  Esc to go back"
-	if e.Status == agentcore.TaskRunning {
+	if e.Status == task.Running {
 		hint += " · x to stop"
 	}
 	sb.WriteString(tui.MutedStyle.Italic(true).Render(hint))
@@ -379,7 +380,7 @@ func (c *TasksCommand) viewShellDetail(e agentcore.BackgroundTaskEntry, width in
 	return sb.String()
 }
 
-func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width int) string {
+func (c *TasksCommand) viewAgentDetail(e task.Entry, width int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.Text)
 	labelStyle := lipgloss.NewStyle().Foreground(tui.Muted)
 	valueStyle := lipgloss.NewStyle().Foreground(tui.Text)
@@ -438,7 +439,7 @@ func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width in
 		}
 	}
 
-	if e.Status == agentcore.TaskFailed && e.Error != "" {
+	if e.Status == task.Failed && e.Error != "" {
 		sb.WriteString("\n")
 		sb.WriteString(tui.ErrorStyle.Render("  Error: " + e.Error))
 		sb.WriteString("\n")
@@ -446,7 +447,7 @@ func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width in
 
 	sb.WriteString("\n")
 	hint := "  Esc to go back"
-	if e.Status == agentcore.TaskRunning {
+	if e.Status == task.Running {
 		hint += " · x to stop"
 	}
 	sb.WriteString(tui.MutedStyle.Italic(true).Render(hint))
@@ -454,13 +455,13 @@ func (c *TasksCommand) viewAgentDetail(e agentcore.BackgroundTaskEntry, width in
 	return sb.String()
 }
 
-func renderTaskStatus(status agentcore.TaskStatus) string {
+func renderTaskStatus(status task.Status) string {
 	switch status {
-	case agentcore.TaskRunning:
+	case task.Running:
 		return lipgloss.NewStyle().Foreground(tui.Brand).Render("(running)")
-	case agentcore.TaskCompleted:
+	case task.Completed:
 		return lipgloss.NewStyle().Foreground(tui.Success).Render("(completed)")
-	case agentcore.TaskFailed:
+	case task.Failed:
 		return tui.ErrorStyle.Render("(failed)")
 	default:
 		return tui.MutedStyle.Render("(" + string(status) + ")")

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/subagent"
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
@@ -27,7 +28,7 @@ type sessionAssembly struct {
 	contextFiles          config.ContextFiles
 	hookMiddleware        agentcore.ToolMiddleware
 	hookRunner            *hooks.Runner
-	subagentTool          *agentcore.SubAgentTool
+	subagentTool          *subagent.Tool
 	bashTool              *agentcoretools.BashTool
 }
 
@@ -105,7 +106,7 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	return settings, activeProvider, chatModel, nil
 }
 
-func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, []agentcore.Tool, *agentcore.SubAgentTool, *agentcoretools.BashTool, error) {
+func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, []agentcore.Tool, *subagent.Tool, *agentcoretools.BashTool, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	var bashTool *agentcoretools.BashTool

@@ -3,7 +3,7 @@ package bootstrap
 import (
 	"context"
 
-	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/task"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
@@ -34,7 +34,7 @@ type Runtime struct {
 	GitBranch string
 
 	ApprovalEngine *approval.Engine
-	TaskRuntime    *agentcore.TaskRuntime
+	TaskRuntime    *task.Runtime
 
 	Settings      config.Resolved
 	ModelName     string // display form: "provider/model" or session-restored name

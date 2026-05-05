@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/task"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
@@ -50,7 +50,7 @@ type App struct {
 	CronStore *cron.Store
 
 	// TaskRuntime provides unified access to all background tasks (shells + agents).
-	TaskRuntime *agentcore.TaskRuntime
+	TaskRuntime *task.Runtime
 
 	// PlanStore persists plans to ~/.codebot/plans/.
 	PlanStore *storage.PlanStore

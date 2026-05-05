@@ -13,6 +13,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/permission"
 	"github.com/voocel/agentcore/schema"
+	"github.com/voocel/agentcore/task"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/storage"
 )
@@ -475,7 +476,7 @@ func taskHasOpenBlockers(task storage.Task, unresolved map[string]struct{}) bool
 // ---------------------------------------------------------------------------
 
 // TaskOutputTool lets the model query or wait for background task output.
-type TaskOutputTool struct{ rt *agentcore.TaskRuntime }
+type TaskOutputTool struct{ rt *task.Runtime }
 
 func (t *TaskOutputTool) Name() string  { return "task_output" }
 func (t *TaskOutputTool) Label() string { return "Get Task Output" }
@@ -502,7 +503,7 @@ func (t *TaskOutputTool) Execute(ctx context.Context, args json.RawMessage) (jso
 	if entry == nil {
 		return json.Marshal(fmt.Sprintf("Task not found: %s", a.TaskID))
 	}
-	if !a.Block || entry.Status != agentcore.TaskRunning {
+	if !a.Block || entry.Status != task.Running {
 		return json.Marshal(formatBgEntry(entry, readTaskTail(entry.OutputFile, 32*1024), true))
 	}
 
@@ -530,7 +531,7 @@ func (t *TaskOutputTool) Execute(ctx context.Context, args json.RawMessage) (jso
 			if entry == nil {
 				return json.Marshal(fmt.Sprintf("Task not found: %s", a.TaskID))
 			}
-			if entry.Status != agentcore.TaskRunning {
+			if entry.Status != task.Running {
 				return json.Marshal(formatBgEntry(entry, readTaskTail(entry.OutputFile, 32*1024), true))
 			}
 		}
@@ -542,7 +543,7 @@ func (t *TaskOutputTool) Execute(ctx context.Context, args json.RawMessage) (jso
 // ---------------------------------------------------------------------------
 
 // TaskStopTool lets the model terminate a background task.
-type TaskStopTool struct{ rt *agentcore.TaskRuntime }
+type TaskStopTool struct{ rt *task.Runtime }
 
 func (t *TaskStopTool) Name() string  { return "task_stop" }
 func (t *TaskStopTool) Label() string { return "Stop Background Task" }
@@ -573,7 +574,7 @@ func (t *TaskStopTool) Execute(_ context.Context, args json.RawMessage) (json.Ra
 
 // NewTaskTools creates the task tools for both planning and background execution.
 // Pass nil for rt if background task tools are not needed.
-func NewTaskTools(store *storage.TaskStore, rt *agentcore.TaskRuntime, hookRunner *hooks.Runner) []agentcore.Tool {
+func NewTaskTools(store *storage.TaskStore, rt *task.Runtime, hookRunner *hooks.Runner) []agentcore.Tool {
 	tools := []agentcore.Tool{
 		&TaskCreateTool{store: store, hooks: hookRunner},
 		&TaskGetTool{store: store},
@@ -677,7 +678,7 @@ func copyTask(t *storage.Task) *storage.Task {
 // Background task helpers
 // ---------------------------------------------------------------------------
 
-func formatBgEntry(entry *agentcore.BackgroundTaskEntry, output string, withVerification bool) map[string]any {
+func formatBgEntry(entry *task.Entry, output string, withVerification bool) map[string]any {
 	result := map[string]any{
 		"task_id":     entry.ID,
 		"type":        entry.Type,
@@ -693,20 +694,20 @@ func formatBgEntry(entry *agentcore.BackgroundTaskEntry, output string, withVeri
 	if entry.Error != "" {
 		result["error"] = entry.Error
 	}
-	if entry.Type == agentcore.TaskTypeShell {
+	if entry.Type == task.TypeShell {
 		result["command"] = entry.Command
 		result["pid"] = entry.PID
-		if entry.Status != agentcore.TaskRunning {
+		if entry.Status != task.Running {
 			result["exit_code"] = entry.ExitCode
 		}
 	}
-	if entry.Type == agentcore.TaskTypeSubAgent {
+	if entry.Type == task.TypeSubAgent {
 		result["agent"] = entry.Agent
 		result["tool_count"] = entry.ToolCount
 		result["tokens_in"] = entry.TokensIn
 		result["tokens_out"] = entry.TokensOut
 	}
-	if withVerification && entry.Status != agentcore.TaskRunning {
+	if withVerification && entry.Status != task.Running {
 		result["verification_needed"] = true
 	}
 	return result

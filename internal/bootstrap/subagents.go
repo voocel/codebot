@@ -5,6 +5,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
+	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
@@ -25,7 +26,7 @@ type subAgentDeps struct {
 }
 
 // buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
-func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
+func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
 	readOnly := readOnlyTools(deps.Cwd)
 	coderTools := filterOutSubagent(deps.AllTools)
 
@@ -41,8 +42,8 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 		}
 	}
 
-	sat := agentcore.NewSubAgentTool(
-		agentcore.SubAgentConfig{
+	sat := subagent.New(
+		subagent.Config{
 			Name:         "explore",
 			Description:  "Fast codebase exploration agent. Use when you need to find files by patterns, search code for keywords, or answer questions about the codebase (e.g. 'how does authentication work?'). Read-only, no modifications.",
 			Model:        exploreModel,
@@ -54,7 +55,7 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 			},
 			ConvertToLLM: agentctx.ContextConvertToLLM,
 		},
-		agentcore.SubAgentConfig{
+		subagent.Config{
 			Name:         "plan",
 			Description:  "Software architect. Explore code and design implementation strategies with step-by-step plans.",
 			Model:        deps.Model,
@@ -71,7 +72,7 @@ func buildSubAgentTool(deps subAgentDeps) *agentcore.SubAgentTool {
 		// results back and the main agent updates task status.
 		// TODO(team): when teammate (long-running agent) is implemented,
 		// grant task_* tools so teammates can coordinate via shared tasks.
-		agentcore.SubAgentConfig{
+		subagent.Config{
 			Name:         "coder",
 			Description:  "General-purpose coding agent. Independently search, read, and write code to complete subtasks.",
 			Model:        deps.Model,
