@@ -131,7 +131,7 @@ func MCP(manager *mcpclient.Manager) Command {
 					connected++
 				default:
 					fmt.Fprintf(&sb, "%s %-20s %d tools\n",
-						tui.DiffAddStyle.Render("●"), s.Name, s.ToolCount)
+						tui.ToolIconStyle.Render("●"), s.Name, s.ToolCount)
 					totalTools += s.ToolCount
 					connected++
 				}

@@ -1,11 +1,24 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
+
+// pinTrueColor forces lipgloss to emit SGR escapes inside this test even
+// without a TTY, so bg/fg assertions are meaningful. Scope is limited to the
+// caller via t.Cleanup — a package-level init would change ANSI output for
+// every other test in this package and break ones that compare plain strings.
+func pinTrueColor(t *testing.T) {
+	t.Helper()
+	prev := lipgloss.DefaultRenderer().ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+}
 
 func TestWrapTextBreaksLongTokens(t *testing.T) {
 	m := Model{State: State{Width: 20, Ready: true}}
@@ -60,6 +73,117 @@ func TestRenderInputPanelUsesDefaultStyleWithoutShellPrefix(t *testing.T) {
 	if m.shellInputActive() {
 		t.Fatal("did not expect shell input mode without ! prefix")
 	}
+}
+
+// edit-tool diff format (see agentcore/tools/edit.go:892-898):
+//
+//	-%*d %s\n  for removed lines
+//	+%*d %s\n  for added lines
+//	 %*d %s\n  for context lines (leading space)
+//	 %*s ...\n for truncation marker
+//
+// The renderer must:
+//   - leave context lines untouched (no add/remove background)
+//   - render +/- gutter with foreground only (no background fill on the marker)
+//   - apply background only to the body, padded to width so the band reaches edge
+func TestRenderEditResultDiffColoring(t *testing.T) {
+	pinTrueColor(t)
+	diff := strings.Join([]string{
+		" 1 unchanged context",
+		"-2 old line",
+		"+2 new line",
+		" 3 trailing context",
+	}, "\n")
+	payload, _ := json.Marshal(map[string]any{"diff": diff})
+
+	out := RenderEditResult(payload, 40)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 5 {
+		t.Fatalf("expected stats + 4 diff lines, got %d:\n%s", len(lines), out)
+	}
+
+	// Stats header.
+	if !strings.Contains(lines[0], "Added 1 lines, removed 1 lines") {
+		t.Fatalf("missing stats line: %q", lines[0])
+	}
+
+	// Context lines must not carry the diff background ANSI (red/green bg
+	// codes 41/42/48). MutedStyle is foreground-only.
+	for _, idx := range []int{1, 4} {
+		if hasBgEscape(lines[idx]) {
+			t.Fatalf("context line %d unexpectedly has background ANSI: %q", idx, lines[idx])
+		}
+	}
+
+	// Removed/added lines must have a body with background ANSI.
+	if !hasBgEscape(lines[2]) {
+		t.Fatalf("removed line missing background: %q", lines[2])
+	}
+	if !hasBgEscape(lines[3]) {
+		t.Fatalf("added line missing background: %q", lines[3])
+	}
+
+	// Visible width of every diff line must reach `width` so the bg band
+	// fills the row. lipgloss.Width strips ANSI before counting.
+	for _, idx := range []int{2, 3} {
+		if got := lipgloss.Width(lines[idx]); got != 40 {
+			t.Fatalf("diff line %d visible width = %d, want 40; line=%q", idx, got, lines[idx])
+		}
+	}
+}
+
+// renderDiffLine on a short line should pad the body to the target width so
+// the background band reaches the edge instead of stopping at the last code
+// character.
+func TestRenderDiffLinePadsToWidth(t *testing.T) {
+	pinTrueColor(t)
+	out := renderDiffLine("+5 hi", DiffAddGutterStyle, DiffAddBodyStyle, 30)
+	if got := lipgloss.Width(out); got != 30 {
+		t.Fatalf("padded width = %d, want 30; out=%q", got, out)
+	}
+}
+
+// renderDiffLine must not truncate or wrap when the line already exceeds
+// width — the terminal handles wrapping. Reporting visible width >= len
+// confirms we didn't drop characters.
+func TestRenderDiffLineLongerThanWidthIsNotTruncated(t *testing.T) {
+	pinTrueColor(t)
+	long := "+5 " + strings.Repeat("x", 100)
+	out := renderDiffLine(long, DiffAddGutterStyle, DiffAddBodyStyle, 20)
+	if got := lipgloss.Width(out); got < lipgloss.Width(long) {
+		t.Fatalf("visible width %d < input width %d, content was truncated", got, lipgloss.Width(long))
+	}
+}
+
+// hasBgEscape reports whether the rendered string includes a background-color
+// ANSI escape (SGR codes 40–47, 48, or 100–107). Foreground-only renderings
+// (MutedStyle, gutter style) must not match.
+func hasBgEscape(s string) bool {
+	// Walk every SGR sequence "\x1b[...m" and inspect its parameters.
+	for i := 0; i < len(s); i++ {
+		if s[i] != 0x1b || i+1 >= len(s) || s[i+1] != '[' {
+			continue
+		}
+		end := strings.IndexByte(s[i:], 'm')
+		if end < 0 {
+			break
+		}
+		params := s[i+2 : i+end]
+		i += end
+		for _, p := range strings.Split(params, ";") {
+			switch p {
+			case "48":
+				return true
+			}
+			if len(p) == 2 && p[0] == '4' && p[1] >= '0' && p[1] <= '7' {
+				return true
+			}
+			if len(p) == 3 && p[0] == '1' && p[1] == '0' && p[2] >= '0' && p[2] <= '7' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestIndentBlock(t *testing.T) {

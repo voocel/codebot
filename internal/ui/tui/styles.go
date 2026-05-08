@@ -84,11 +84,22 @@ var (
 // Diff (edit result)
 // ---------------------------------------------------------------------------
 
+// Gutter (line number + sigil) carries foreground only — no background fill.
+// This matches Claude Code's primary diff renderer: the marker stays loud via
+// fg, and only the code body gets the colored band. Body carries bg only, so
+// the line's existing foreground (syntax highlighting, path tokens) survives.
 var (
-	DiffAddStyle           = lipgloss.NewStyle().Foreground(Success)
-	DiffRemoveStyle        = lipgloss.NewStyle().Foreground(Danger)
-	DiffInverseAddStyle    = lipgloss.NewStyle().Foreground(Success).Reverse(true)
-	DiffInverseRemoveStyle = lipgloss.NewStyle().Foreground(Danger).Reverse(true)
+	DiffAddGutterStyle    = lipgloss.NewStyle().Foreground(Success)
+	DiffRemoveGutterStyle = lipgloss.NewStyle().Foreground(Danger)
+
+	DiffAddBodyStyle    = lipgloss.NewStyle().Background(DiffAddBg)
+	DiffRemoveBodyStyle = lipgloss.NewStyle().Background(DiffRemoveBg)
+
+	// Word-level intra-line emphasis: deeper bg shade in the same hue, no fg
+	// override. The body's foreground (or future syntax highlighting) flows
+	// through; only the background tells the eye "this part actually changed".
+	DiffAddInverseStyle    = lipgloss.NewStyle().Background(DiffAddBgStrong)
+	DiffRemoveInverseStyle = lipgloss.NewStyle().Background(DiffRemoveBgStrong)
 )
 
 // ---------------------------------------------------------------------------

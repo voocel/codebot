@@ -296,7 +296,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			if m.PendingTools[ev.ToolID] == "Plan" {
 				break
 			}
-			rendered := RenderEditResult(ev.Result)
+			rendered := RenderEditResult(ev.Result, m.diffBodyWidth())
 			if rendered != "" {
 				// Flush buffered header with the first preview.
 				if header, ok := m.ToolHeaders[ev.ToolID]; ok {
@@ -395,7 +395,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			// during incremental edits we only show a one-line affordance.
 			body = indentBlock(MutedStyle.Render("/plan to preview"), 2)
 		} else if ev.Tool == "edit" && !ev.IsError {
-			body = indentBlock(RenderEditResult(ev.Result), 2)
+			body = indentBlock(RenderEditResult(ev.Result, m.diffBodyWidth()), 2)
 		} else if ev.Tool == "write" && !ev.IsError {
 			body = indentBlock(RenderWriteResult(ev.Result), 2)
 		} else if ev.Tool == "read" && !ev.IsError {

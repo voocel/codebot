@@ -25,6 +25,18 @@ func (m *Model) wrapTextForIndent(content string, indent int) string {
 	return strings.TrimRight(reflowwrap.String(content, width), "\n")
 }
 
+// diffBodyWidth returns the cell budget for diff body rendering. Every
+// caller wraps the result in indentBlock(..., 2), so the inner content sees
+// the terminal width minus that indent. Falls back to 80 on uninitialised
+// width (e.g. tests, pre-resize).
+func (m *Model) diffBodyWidth() int {
+	const indent = 2
+	if m.Width > indent {
+		return m.Width - indent
+	}
+	return 80
+}
+
 // indentBlock prepends n spaces to each non-empty line.
 func indentBlock(s string, n int) string {
 	if s == "" {

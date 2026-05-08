@@ -864,7 +864,7 @@ func (m *Model) renderRestoredToolBody(toolName string, raw json.RawMessage, isE
 		content := FormatSubagentOutput(raw)
 		return indentBlock(m.renderSubagentCard(content), 2)
 	case toolName == "edit" && !isError:
-		return indentBlock(RenderEditResult(raw), 2)
+		return indentBlock(RenderEditResult(raw, m.diffBodyWidth()), 2)
 	case toolName == "write" && !isError:
 		return indentBlock(RenderWriteResult(raw), 2)
 	case (toolName == "read" || toolName == "glob") && !isError:

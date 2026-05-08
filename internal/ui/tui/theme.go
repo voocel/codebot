@@ -55,6 +55,17 @@ var (
 	Live    = lipgloss.AdaptiveColor{Light: "31", Dark: "153"} // spinner / running chrome
 )
 
+// Diff backgrounds — low-saturation tints for full-line fills, with a deeper
+// shade reserved for word-level intra-line emphasis. Keeping these as
+// background-only lets the body's existing foreground (syntax highlighting,
+// path tokens, etc.) survive intact.
+var (
+	DiffAddBg          = lipgloss.AdaptiveColor{Light: "#DAFBE1", Dark: "#0E2A1A"}
+	DiffRemoveBg       = lipgloss.AdaptiveColor{Light: "#FFEBE9", Dark: "#3A1416"}
+	DiffAddBgStrong    = lipgloss.AdaptiveColor{Light: "#AAEBC1", Dark: "#1F5D33"}
+	DiffRemoveBgStrong = lipgloss.AdaptiveColor{Light: "#FFC1BC", Dark: "#7A1E22"}
+)
+
 // Message roles.
 var (
 	RoleUser      = lipgloss.AdaptiveColor{Light: "31", Dark: "#9CC2F9"}

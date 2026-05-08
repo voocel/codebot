@@ -21,8 +21,13 @@ import (
 // RenderEditResult renders the edit tool result with colored diff output.
 // Leads with a "⎿  Added N lines, removed M lines" summary. Single-line
 // changes (1 removed + 1 added) get intra-line highlighting where only the
-// changed portion is rendered in inverse color.
-func RenderEditResult(result json.RawMessage) string {
+// changed portion is rendered with a deeper background tint.
+//
+// width is the terminal cells available to the diff body (caller already
+// subtracts its own indent). The body is right-padded to that width so the
+// background fill carries cleanly to the edge instead of stopping at the
+// last code character.
+func RenderEditResult(result json.RawMessage, width int) string {
 	connector := ConnectorStyle.Render(TreeConnector)
 	if len(result) == 0 {
 		return connector + MutedStyle.Render("(edit completed)")
@@ -72,22 +77,22 @@ func RenderEditResult(result json.RawMessage) string {
 			}
 			// Single-line change: intra-line diff
 			if len(removed) == 1 && len(added) == 1 {
-				remRendered, addRendered := renderIntraLineDiff(removed[0], added[0])
+				remRendered, addRendered := renderIntraLineDiff(removed[0], added[0], width)
 				sb.WriteString(remRendered + "\n")
 				sb.WriteString(addRendered + "\n")
 			} else {
 				for _, r := range removed {
-					sb.WriteString(DiffRemoveStyle.Render(r) + "\n")
+					sb.WriteString(renderDiffLine(r, DiffRemoveGutterStyle, DiffRemoveBodyStyle, width) + "\n")
 				}
 				for _, a := range added {
-					sb.WriteString(DiffAddStyle.Render(a) + "\n")
+					sb.WriteString(renderDiffLine(a, DiffAddGutterStyle, DiffAddBodyStyle, width) + "\n")
 				}
 			}
 			continue
 		}
 
 		if strings.HasPrefix(line, "+") {
-			sb.WriteString(DiffAddStyle.Render(line) + "\n")
+			sb.WriteString(renderDiffLine(line, DiffAddGutterStyle, DiffAddBodyStyle, width) + "\n")
 		} else {
 			sb.WriteString(MutedStyle.Render(line) + "\n")
 		}
@@ -96,11 +101,28 @@ func RenderEditResult(result json.RawMessage) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// renderIntraLineDiff highlights the specific changed portion within a single-line change.
-// It finds the common prefix/suffix of the content (after the line-number prefix),
-// then renders unchanged parts in base color and changed parts in inverse color.
+// renderDiffLine renders one diff line as gutter (line-number + sigil, fg+bg)
+// followed by body (code, bg only). The body is padded with spaces to width
+// so the background fill carries to the right edge — without padding, lipgloss
+// stops the bg at the last code character and the visual band looks broken.
+func renderDiffLine(line string, gutter, body lipgloss.Style, width int) string {
+	prefix, content := splitDiffPrefix(line)
+	used := lipgloss.Width(prefix) + lipgloss.Width(content)
+	if pad := width - used; pad > 0 {
+		content += strings.Repeat(" ", pad)
+	}
+	return gutter.Render(prefix) + body.Render(content)
+}
+
+// renderIntraLineDiff highlights the changed substring within a single-line
+// change. The unchanged head/tail use the base bg tint; the changed middle
+// uses the deeper bg tint. Foreground is never overridden so syntax
+// highlighting (when present) survives.
+//
+// width controls the right-edge padding so the bg fill reaches the terminal
+// edge instead of stopping at the last code character.
 // Uses rune-level comparison to avoid splitting multi-byte UTF-8 characters.
-func renderIntraLineDiff(removedLine, addedLine string) (string, string) {
+func renderIntraLineDiff(removedLine, addedLine string, width int) (string, string) {
 	// Split off the diff prefix (e.g. "-  5 " or "+  5 ")
 	remPrefix, remContent := splitDiffPrefix(removedLine)
 	addPrefix, addContent := splitDiffPrefix(addedLine)
@@ -128,21 +150,35 @@ func renderIntraLineDiff(removedLine, addedLine string) (string, string) {
 	addMid := string(addRunes[prefixLen : len(addRunes)-suffixLen])
 	commonSuf := string(remRunes[len(remRunes)-suffixLen:])
 
-	// Build rendered lines
-	var remSB, addSB strings.Builder
-	remSB.WriteString(DiffRemoveStyle.Render(remPrefix + commonPre))
-	if remMid != "" {
-		remSB.WriteString(DiffInverseRemoveStyle.Render(remMid))
-	}
-	remSB.WriteString(DiffRemoveStyle.Render(commonSuf))
+	rem := composeIntraLine(remPrefix, commonPre, remMid, commonSuf, width,
+		DiffRemoveGutterStyle, DiffRemoveBodyStyle, DiffRemoveInverseStyle)
+	add := composeIntraLine(addPrefix, commonPre, addMid, commonSuf, width,
+		DiffAddGutterStyle, DiffAddBodyStyle, DiffAddInverseStyle)
+	return rem, add
+}
 
-	addSB.WriteString(DiffAddStyle.Render(addPrefix + commonPre))
-	if addMid != "" {
-		addSB.WriteString(DiffInverseAddStyle.Render(addMid))
+// composeIntraLine assembles one side of an intra-line diff: gutter (fg+bg),
+// then body split into common-pre / changed-mid / common-suf with the changed
+// segment in the deeper bg shade. Trailing pad keeps the bg fill flush right.
+func composeIntraLine(prefix, pre, mid, suf string, width int, gutter, body, emphasis lipgloss.Style) string {
+	used := lipgloss.Width(prefix) + lipgloss.Width(pre) + lipgloss.Width(mid) + lipgloss.Width(suf)
+	pad := ""
+	if remaining := width - used; remaining > 0 {
+		pad = strings.Repeat(" ", remaining)
 	}
-	addSB.WriteString(DiffAddStyle.Render(commonSuf))
 
-	return remSB.String(), addSB.String()
+	var sb strings.Builder
+	sb.WriteString(gutter.Render(prefix))
+	if pre != "" {
+		sb.WriteString(body.Render(pre))
+	}
+	if mid != "" {
+		sb.WriteString(emphasis.Render(mid))
+	}
+	if suf != "" || pad != "" {
+		sb.WriteString(body.Render(suf + pad))
+	}
+	return sb.String()
 }
 
 // splitDiffPrefix splits a diff line like "-  5 content" into prefix ("-  5 ") and content ("content").
