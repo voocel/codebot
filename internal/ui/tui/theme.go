@@ -59,11 +59,18 @@ var (
 // shade reserved for word-level intra-line emphasis. Keeping these as
 // background-only lets the body's existing foreground (syntax highlighting,
 // path tokens, etc.) survive intact.
+//
+// Dark-mode tints are tuned to roughly match Claude Code's diff bands: a
+// previous iteration used #0E2A1A / #3A1416 (~11% lightness) which read as
+// near-black with a faint hue cast and made the foreground feel dim by
+// association. The current values land near 18-20% lightness — clearly
+// red/green, but still calm enough that fg tokens (Name #D4D4D4) hold
+// AAA-level contrast (~9:1).
 var (
-	DiffAddBg          = lipgloss.AdaptiveColor{Light: "#DAFBE1", Dark: "#0E2A1A"}
-	DiffRemoveBg       = lipgloss.AdaptiveColor{Light: "#FFEBE9", Dark: "#3A1416"}
-	DiffAddBgStrong    = lipgloss.AdaptiveColor{Light: "#AAEBC1", Dark: "#1F5D33"}
-	DiffRemoveBgStrong = lipgloss.AdaptiveColor{Light: "#FFC1BC", Dark: "#7A1E22"}
+	DiffAddBg          = lipgloss.AdaptiveColor{Light: "#DAFBE1", Dark: "#1A4529"}
+	DiffRemoveBg       = lipgloss.AdaptiveColor{Light: "#FFEBE9", Dark: "#5A1F23"}
+	DiffAddBgStrong    = lipgloss.AdaptiveColor{Light: "#AAEBC1", Dark: "#2D7242"}
+	DiffRemoveBgStrong = lipgloss.AdaptiveColor{Light: "#FFC1BC", Dark: "#8E2A2F"}
 )
 
 // Message roles.

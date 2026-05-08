@@ -296,7 +296,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			if m.PendingTools[ev.ToolID] == "Plan" {
 				break
 			}
-			rendered := RenderEditResult(ev.Result, m.diffBodyWidth())
+			rendered := RenderEditResult(ev.Result, extractPathArg(ev.Args), m.diffBodyWidth())
 			if rendered != "" {
 				// Flush buffered header with the first preview.
 				if header, ok := m.ToolHeaders[ev.ToolID]; ok {
@@ -410,7 +410,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			// rebuilds the header, so failed edits still surface even when
 			// preview ran first.
 			if header != "" {
-				body = indentBlock(RenderEditResult(ev.Result, m.diffBodyWidth()), 2)
+				body = indentBlock(RenderEditResult(ev.Result, extractPathArg(ev.Args), m.diffBodyWidth()), 2)
 			}
 		} else if ev.Tool == "write" && !ev.IsError {
 			body = indentBlock(RenderWriteResult(ev.Result), 2)

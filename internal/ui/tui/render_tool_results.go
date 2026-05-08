@@ -12,6 +12,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	reflowwrap "github.com/muesli/reflow/wrap"
+
+	"github.com/voocel/codebot/internal/ui/tui/syntax"
 )
 
 // ---------------------------------------------------------------------------
@@ -19,15 +21,11 @@ import (
 // ---------------------------------------------------------------------------
 
 // RenderEditResult renders the edit tool result with colored diff output.
-// Leads with a "⎿  Added N lines, removed M lines" summary. Single-line
-// changes (1 removed + 1 added) get intra-line highlighting where only the
-// changed portion is rendered with a deeper background tint.
-//
-// width is the terminal cells available to the diff body (caller already
-// subtracts its own indent). The body is right-padded to that width so the
-// background fill carries cleanly to the edge instead of stopping at the
-// last code character.
-func RenderEditResult(result json.RawMessage, width int) string {
+// Single-line changes get intra-line highlighting (only the changed
+// portion uses a deeper bg). filePath selects the chroma lexer; width is
+// the body cells available for right-padding so the bg band reaches the
+// edge instead of stopping at the last code character.
+func RenderEditResult(result json.RawMessage, filePath string, width int) string {
 	connector := ConnectorStyle.Render(TreeConnector)
 	if len(result) == 0 {
 		return connector + MutedStyle.Render("(edit completed)")
@@ -77,53 +75,118 @@ func RenderEditResult(result json.RawMessage, width int) string {
 			}
 			// Single-line change: intra-line diff
 			if len(removed) == 1 && len(added) == 1 {
-				remRendered, addRendered := renderIntraLineDiff(removed[0], added[0], width)
+				remRendered, addRendered := renderIntraLineDiff(removed[0], added[0], filePath, width)
 				sb.WriteString(remRendered + "\n")
 				sb.WriteString(addRendered + "\n")
 			} else {
 				for _, r := range removed {
-					sb.WriteString(renderDiffLine(r, DiffRemoveGutterStyle, DiffRemoveBodyStyle, width) + "\n")
+					sb.WriteString(renderDiffLine(r, DiffRemoveGutterStyle, DiffRemoveBodyStyle, filePath, width) + "\n")
 				}
 				for _, a := range added {
-					sb.WriteString(renderDiffLine(a, DiffAddGutterStyle, DiffAddBodyStyle, width) + "\n")
+					sb.WriteString(renderDiffLine(a, DiffAddGutterStyle, DiffAddBodyStyle, filePath, width) + "\n")
 				}
 			}
 			continue
 		}
 
 		if strings.HasPrefix(line, "+") {
-			sb.WriteString(renderDiffLine(line, DiffAddGutterStyle, DiffAddBodyStyle, width) + "\n")
+			sb.WriteString(renderDiffLine(line, DiffAddGutterStyle, DiffAddBodyStyle, filePath, width) + "\n")
 		} else {
-			sb.WriteString(MutedStyle.Render(line) + "\n")
+			sb.WriteString(renderContextLine(line, filePath) + "\n")
 		}
 		i++
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// renderDiffLine renders one diff line as gutter (line-number + sigil, fg+bg)
-// followed by body (code, bg only). The body is padded with spaces to width
-// so the background fill carries to the right edge — without padding, lipgloss
-// stops the bg at the last code character and the visual band looks broken.
-func renderDiffLine(line string, gutter, body lipgloss.Style, width int) string {
+// renderContextLine renders an unchanged diff line: muted gutter + highlighted
+// body, no bg tint. Highlighting context lines too keeps the file's normal
+// colour rhythm; without it +/- lines pop while context goes flat grey.
+func renderContextLine(line, filePath string) string {
 	prefix, content := splitDiffPrefix(line)
-	used := lipgloss.Width(prefix) + lipgloss.Width(content)
-	if pad := width - used; pad > 0 {
-		content += strings.Repeat(" ", pad)
+	if content == "" {
+		return MutedStyle.Render(line)
 	}
-	return gutter.Render(prefix) + body.Render(content)
+	return MutedStyle.Render(prefix) + syntax.Highlight(content, filePath)
+}
+
+// renderDiffLine renders one diff line as gutter (fg+bg) + body (bg-only with
+// highlighted fg), wrapping long content so each row pads to width. Without
+// padding, lipgloss stops the bg at the last code char and the band breaks.
+// Continuation rows reuse the sigil but blank the line-number column.
+func renderDiffLine(line string, gutter, body lipgloss.Style, filePath string, width int) string {
+	prefix, content := splitDiffPrefix(line)
+	prefixWidth := lipgloss.Width(prefix)
+	bodyWidth := width - prefixWidth
+	if bodyWidth <= 0 {
+		highlighted := syntax.Highlight(content, filePath)
+		return gutter.Render(prefix) + body.Render(highlighted)
+	}
+
+	segments := wrapVisible(content, bodyWidth)
+	if len(segments) == 0 {
+		segments = []string{""}
+	}
+
+	contPrefix := ""
+	if prefixWidth > 0 {
+		contPrefix = string(prefix[0]) + strings.Repeat(" ", prefixWidth-1)
+	}
+
+	var sb strings.Builder
+	for i, seg := range segments {
+		p := prefix
+		if i > 0 {
+			p = contPrefix
+		}
+		pad := max(bodyWidth-lipgloss.Width(seg), 0)
+		highlighted := syntax.Highlight(seg, filePath)
+		if pad > 0 {
+			highlighted += strings.Repeat(" ", pad)
+		}
+		sb.WriteString(gutter.Render(p))
+		sb.WriteString(body.Render(highlighted))
+		if i < len(segments)-1 {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+// wrapVisible hard-wraps s into chunks of at most width terminal cells,
+// rune-aware so wide chars and combining marks aren't split. Hard wrap (no
+// word boundary) because diff bodies often hold long unbroken tokens.
+func wrapVisible(s string, width int) []string {
+	if width <= 0 || s == "" {
+		return []string{s}
+	}
+	var out []string
+	var cur strings.Builder
+	curW := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if rw == 0 {
+			cur.WriteRune(r)
+			continue
+		}
+		if curW+rw > width {
+			out = append(out, cur.String())
+			cur.Reset()
+			curW = 0
+		}
+		cur.WriteRune(r)
+		curW += rw
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // renderIntraLineDiff highlights the changed substring within a single-line
-// change. The unchanged head/tail use the base bg tint; the changed middle
-// uses the deeper bg tint. Foreground is never overridden so syntax
-// highlighting (when present) survives.
-//
-// width controls the right-edge padding so the bg fill reaches the terminal
-// edge instead of stopping at the last code character.
-// Uses rune-level comparison to avoid splitting multi-byte UTF-8 characters.
-func renderIntraLineDiff(removedLine, addedLine string, width int) (string, string) {
-	// Split off the diff prefix (e.g. "-  5 " or "+  5 ")
+// change: unchanged head/tail keep the base bg, the changed middle uses the
+// deeper bg. Rune-level diff so multi-byte chars aren't split.
+func renderIntraLineDiff(removedLine, addedLine, filePath string, width int) (string, string) {
 	remPrefix, remContent := splitDiffPrefix(removedLine)
 	addPrefix, addContent := splitDiffPrefix(addedLine)
 
@@ -150,17 +213,17 @@ func renderIntraLineDiff(removedLine, addedLine string, width int) (string, stri
 	addMid := string(addRunes[prefixLen : len(addRunes)-suffixLen])
 	commonSuf := string(remRunes[len(remRunes)-suffixLen:])
 
-	rem := composeIntraLine(remPrefix, commonPre, remMid, commonSuf, width,
+	rem := composeIntraLine(remPrefix, commonPre, remMid, commonSuf, filePath, width,
 		DiffRemoveGutterStyle, DiffRemoveBodyStyle, DiffRemoveInverseStyle)
-	add := composeIntraLine(addPrefix, commonPre, addMid, commonSuf, width,
+	add := composeIntraLine(addPrefix, commonPre, addMid, commonSuf, filePath, width,
 		DiffAddGutterStyle, DiffAddBodyStyle, DiffAddInverseStyle)
 	return rem, add
 }
 
 // composeIntraLine assembles one side of an intra-line diff: gutter (fg+bg),
 // then body split into common-pre / changed-mid / common-suf with the changed
-// segment in the deeper bg shade. Trailing pad keeps the bg fill flush right.
-func composeIntraLine(prefix, pre, mid, suf string, width int, gutter, body, emphasis lipgloss.Style) string {
+// segment in the deeper bg. Each segment is highlighted independently.
+func composeIntraLine(prefix, pre, mid, suf, filePath string, width int, gutter, body, emphasis lipgloss.Style) string {
 	used := lipgloss.Width(prefix) + lipgloss.Width(pre) + lipgloss.Width(mid) + lipgloss.Width(suf)
 	pad := ""
 	if remaining := width - used; remaining > 0 {
@@ -170,13 +233,13 @@ func composeIntraLine(prefix, pre, mid, suf string, width int, gutter, body, emp
 	var sb strings.Builder
 	sb.WriteString(gutter.Render(prefix))
 	if pre != "" {
-		sb.WriteString(body.Render(pre))
+		sb.WriteString(body.Render(syntax.Highlight(pre, filePath)))
 	}
 	if mid != "" {
-		sb.WriteString(emphasis.Render(mid))
+		sb.WriteString(emphasis.Render(syntax.Highlight(mid, filePath)))
 	}
 	if suf != "" || pad != "" {
-		sb.WriteString(body.Render(suf + pad))
+		sb.WriteString(body.Render(syntax.Highlight(suf, filePath) + pad))
 	}
 	return sb.String()
 }

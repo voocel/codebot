@@ -98,7 +98,7 @@ func TestRenderEditResultDiffColoring(t *testing.T) {
 	}, "\n")
 	payload, _ := json.Marshal(map[string]any{"diff": diff})
 
-	out := RenderEditResult(payload, 40)
+	out := RenderEditResult(payload, "", 40)
 	lines := strings.Split(out, "\n")
 	if len(lines) < 5 {
 		t.Fatalf("expected stats + 4 diff lines, got %d:\n%s", len(lines), out)
@@ -144,27 +144,133 @@ func TestRenderEditResultDiffColoring(t *testing.T) {
 	}
 }
 
-// renderDiffLine on a short line should pad the body to the target width so
-// the background band reaches the edge instead of stopping at the last code
-// character.
+// Context lines must carry chroma fg but never diff bg.
+func TestRenderEditResultContextHasHighlightNoBg(t *testing.T) {
+	pinTrueColor(t)
+	diff := " 1 package main\n" +
+		"-2 old\n" +
+		"+2 new\n" +
+		" 3 import \"fmt\"\n"
+	payload, _ := json.Marshal(map[string]any{"diff": diff})
+
+	out := RenderEditResult(payload, "main.go", 50)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 5 {
+		t.Fatalf("expected stats + 4 rows, got %d:\n%s", len(lines), out)
+	}
+
+	// Rows 1 and 4 are context (` 1 package main`, ` 3 import "fmt"`).
+	for _, idx := range []int{1, 4} {
+		row := lines[idx]
+		if !strings.Contains(row, "\x1b[38;2;") {
+			t.Fatalf("context row %d should carry chroma fg ANSI: %q", idx, row)
+		}
+		if hasBgEscape(row) {
+			t.Fatalf("context row %d must not carry diff bg ANSI: %q", idx, row)
+		}
+	}
+}
+
+// Highlighted rows must still pad to width — guards ANSI-nesting bugs
+// where a chroma reset would expose a gap between code and padding.
+func TestRenderEditResultHighlightedKeepsBgIntact(t *testing.T) {
+	pinTrueColor(t)
+	diff := strings.Join([]string{
+		"-1 func old() {}",
+		"+1 func renamed() {}",
+	}, "\n")
+	payload, _ := json.Marshal(map[string]any{"diff": diff})
+
+	out := RenderEditResult(payload, "main.go", 60)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected stats + 2 diff lines, got %d:\n%s", len(lines), out)
+	}
+
+	// Last two lines are the diff rows. Each must pad to width AND contain
+	// at least one fg ANSI from chroma (proving highlighting actually ran
+	// on a recognised lexer).
+	for _, idx := range []int{1, 2} {
+		row := lines[idx]
+		if got := lipgloss.Width(row); got != 60 {
+			t.Fatalf("row %d visible width = %d, want 60; row=%q", idx, got, row)
+		}
+		if !strings.Contains(row, "\x1b[38;2;") {
+			t.Fatalf("row %d missing chroma fg ANSI (highlighting didn't run): %q", idx, row)
+		}
+	}
+}
+
 func TestRenderDiffLinePadsToWidth(t *testing.T) {
 	pinTrueColor(t)
-	out := renderDiffLine("+5 hi", DiffAddGutterStyle, DiffAddBodyStyle, 30)
+	out := renderDiffLine("+5 hi", DiffAddGutterStyle, DiffAddBodyStyle, "", 30)
 	if got := lipgloss.Width(out); got != 30 {
 		t.Fatalf("padded width = %d, want 30; out=%q", got, out)
 	}
 }
 
-// renderDiffLine must not truncate or wrap when the line already exceeds
-// width — the terminal handles wrapping. Reporting visible width >= len
-// confirms we didn't drop characters.
-func TestRenderDiffLineLongerThanWidthIsNotTruncated(t *testing.T) {
+// Highlighter must run on every wrap segment, not just the first.
+func TestRenderDiffLineWrapPreservesHighlightOnContinuation(t *testing.T) {
+	pinTrueColor(t)
+	long := "+5 " + strings.Repeat("var x int = 1; ", 20) // long Go statement
+	out := renderDiffLine(long, DiffAddGutterStyle, DiffAddBodyStyle, "main.go", 30)
+	rows := strings.Split(out, "\n")
+	if len(rows) < 2 {
+		t.Fatalf("expected wrap to produce >=2 rows, got %d", len(rows))
+	}
+	for i, row := range rows {
+		if !strings.Contains(row, "\x1b[38;2;") {
+			t.Fatalf("row %d missing chroma fg ANSI — wrap dropped highlighting: %q", i, row)
+		}
+	}
+}
+
+// Long bodies must self-wrap so the bg band stays continuous; continuation
+// rows blank the line-number column but keep the sigil.
+func TestRenderDiffLineWrapsLongLine(t *testing.T) {
 	pinTrueColor(t)
 	long := "+5 " + strings.Repeat("x", 100)
-	out := renderDiffLine(long, DiffAddGutterStyle, DiffAddBodyStyle, 20)
-	if got := lipgloss.Width(out); got < lipgloss.Width(long) {
-		t.Fatalf("visible width %d < input width %d, content was truncated", got, lipgloss.Width(long))
+	out := renderDiffLine(long, DiffAddGutterStyle, DiffAddBodyStyle, "", 20)
+	rows := strings.Split(out, "\n")
+	if len(rows) < 2 {
+		t.Fatalf("expected long line to wrap into multiple rows, got %d row(s):\n%s", len(rows), out)
 	}
+	for i, row := range rows {
+		if got := lipgloss.Width(row); got != 20 {
+			t.Fatalf("row %d width = %d, want 20; row=%q", i, got, row)
+		}
+	}
+
+	visibleRows := make([]string, len(rows))
+	for i, row := range rows {
+		visibleRows[i] = stripANSIInTest(row)
+	}
+	for i := 1; i < len(visibleRows); i++ {
+		row := visibleRows[i]
+		if len(row) < 2 || row[0] != '+' {
+			t.Fatalf("continuation row %d should start with '+', got %q", i, row)
+		}
+		if row[1] != ' ' {
+			t.Fatalf("continuation row %d should blank the line-number column (space at idx 1), got %q", i, row)
+		}
+	}
+}
+
+func stripANSIInTest(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			end := strings.IndexByte(s[i:], 'm')
+			if end < 0 {
+				break
+			}
+			i += end + 1
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 // hasBgEscape reports whether the rendered string includes a background-color

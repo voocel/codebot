@@ -850,7 +850,7 @@ func (m *Model) appendRestoredToolMessage(sb *strings.Builder, am agentcore.Agen
 		return
 	}
 	isError, _ := concrete.Metadata["is_error"].(bool)
-	body := m.renderRestoredToolBody(toolCall.name, json.RawMessage(am.TextContent()), isError)
+	body := m.renderRestoredToolBody(toolCall.name, toolCall.args, json.RawMessage(am.TextContent()), isError)
 	if body == "" {
 		return
 	}
@@ -858,13 +858,13 @@ func (m *Model) appendRestoredToolMessage(sb *strings.Builder, am agentcore.Agen
 	sb.WriteString(body)
 }
 
-func (m *Model) renderRestoredToolBody(toolName string, raw json.RawMessage, isError bool) string {
+func (m *Model) renderRestoredToolBody(toolName string, args, raw json.RawMessage, isError bool) string {
 	switch {
 	case toolName == "subagent" && !isError:
 		content := FormatSubagentOutput(raw)
 		return indentBlock(m.renderSubagentCard(content), 2)
 	case toolName == "edit" && !isError:
-		return indentBlock(RenderEditResult(raw, m.diffBodyWidth()), 2)
+		return indentBlock(RenderEditResult(raw, extractPathArg(args), m.diffBodyWidth()), 2)
 	case toolName == "write" && !isError:
 		return indentBlock(RenderWriteResult(raw), 2)
 	case (toolName == "read" || toolName == "glob") && !isError:
