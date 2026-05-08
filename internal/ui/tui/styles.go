@@ -84,13 +84,13 @@ var (
 // Diff (edit result)
 // ---------------------------------------------------------------------------
 
-// Gutter (line number + sigil) carries foreground only — no background fill.
-// This matches Claude Code's primary diff renderer: the marker stays loud via
-// fg, and only the code body gets the colored band. Body carries bg only, so
-// the line's existing foreground (syntax highlighting, path tokens) survives.
+// The whole row — gutter + body — sits on the same colored band, matching
+// Claude Code's diff layout. Gutter additionally carries a fg so the line
+// number / sigil stand out; body has bg only, leaving the existing foreground
+// (syntax highlighting, path tokens) untouched.
 var (
-	DiffAddGutterStyle    = lipgloss.NewStyle().Foreground(Success)
-	DiffRemoveGutterStyle = lipgloss.NewStyle().Foreground(Danger)
+	DiffAddGutterStyle    = lipgloss.NewStyle().Foreground(Success).Background(DiffAddBg)
+	DiffRemoveGutterStyle = lipgloss.NewStyle().Foreground(Danger).Background(DiffRemoveBg)
 
 	DiffAddBodyStyle    = lipgloss.NewStyle().Background(DiffAddBg)
 	DiffRemoveBodyStyle = lipgloss.NewStyle().Background(DiffRemoveBg)

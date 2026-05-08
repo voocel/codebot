@@ -161,6 +161,77 @@ func TestHandleAgentEventLifecycleState(t *testing.T) {
 	}
 }
 
+// agentcore emits ToolExecUpdatePreview before Run for edit, and edit
+// returns the same diff from Preview() and Run(). Without dedup, the
+// transcript shows the full "header + diff" block twice. The End handler
+// uses an empty buffered header as the "preview already painted this"
+// signal and must produce no print cmd in that case.
+func TestHandleAgentEventEditEndSkipsBodyAfterPreview(t *testing.T) {
+	t.Parallel()
+
+	resultJSON, _ := json.Marshal(map[string]any{
+		"diff": "-1 old\n+1 new\n",
+	})
+
+	t.Run("preview consumed header → end emits no print cmd", func(t *testing.T) {
+		m := New(nil, "test-model")
+		m.Ready = true
+		m.Width = 80
+		m.PendingTools["t1"] = "edit"
+		// ToolHeaders["t1"] intentionally absent — simulates preview
+		// having already flushed it.
+
+		_, cmd := m.HandleAgentEvent(agentcore.Event{
+			Type:    agentcore.EventToolExecEnd,
+			ToolID:  "t1",
+			Tool:    "edit",
+			Result:  resultJSON,
+			IsError: false,
+		})
+		if cmd != nil {
+			t.Fatalf("expected no print cmd when preview already painted the diff, got cmd=%v", cmd)
+		}
+	})
+
+	t.Run("no preview (header buffered) → end still prints", func(t *testing.T) {
+		m := New(nil, "test-model")
+		m.Ready = true
+		m.Width = 80
+		m.PendingTools["t1"] = "edit"
+		m.ToolHeaders["t1"] = "● Edit(file.txt)"
+
+		_, cmd := m.HandleAgentEvent(agentcore.Event{
+			Type:    agentcore.EventToolExecEnd,
+			ToolID:  "t1",
+			Tool:    "edit",
+			Result:  resultJSON,
+			IsError: false,
+		})
+		if cmd == nil {
+			t.Fatal("expected a print cmd when preview did not run, got nil")
+		}
+	})
+
+	t.Run("error after preview → end re-prints with red header", func(t *testing.T) {
+		m := New(nil, "test-model")
+		m.Ready = true
+		m.Width = 80
+		m.PendingTools["t1"] = "edit"
+		// header consumed by preview
+		_, cmd := m.HandleAgentEvent(agentcore.Event{
+			Type:    agentcore.EventToolExecEnd,
+			ToolID:  "t1",
+			Tool:    "edit",
+			Args:    json.RawMessage(`{"file_path":"file.txt"}`),
+			Result:  json.RawMessage(`"boom"`),
+			IsError: true,
+		})
+		if cmd == nil {
+			t.Fatal("expected a print cmd on error even when preview ran, got nil")
+		}
+	})
+}
+
 func TestHandleAgentEventMessageEndReturnsPrintCmd(t *testing.T) {
 	t.Parallel()
 

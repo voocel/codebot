@@ -84,8 +84,10 @@ func TestRenderInputPanelUsesDefaultStyleWithoutShellPrefix(t *testing.T) {
 //
 // The renderer must:
 //   - leave context lines untouched (no add/remove background)
-//   - render +/- gutter with foreground only (no background fill on the marker)
-//   - apply background only to the body, padded to width so the band reaches edge
+//   - paint the whole row (gutter + body) on one colored band, so the line
+//     number sits on the same background as the code
+//   - apply foreground only to the gutter and pad the body to width so the
+//     band reaches the right edge instead of stopping at the last code char
 func TestRenderEditResultDiffColoring(t *testing.T) {
 	pinTrueColor(t)
 	diff := strings.Join([]string{
@@ -121,6 +123,16 @@ func TestRenderEditResultDiffColoring(t *testing.T) {
 	}
 	if !hasBgEscape(lines[3]) {
 		t.Fatalf("added line missing background: %q", lines[3])
+	}
+
+	// Regression guard: the bg band must cover the *whole* row, gutter
+	// included — an earlier revision left the gutter on the terminal
+	// default, which doesn't match Claude Code's layout. Check that a bg
+	// SGR appears before any visible character on each diff line.
+	for _, idx := range []int{2, 3} {
+		if !startsInBgScope(lines[idx]) {
+			t.Fatalf("diff line %d gutter not painted (expected bg ANSI before any visible char): %q", idx, lines[idx])
+		}
 	}
 
 	// Visible width of every diff line must reach `width` so the bg band
@@ -182,6 +194,37 @@ func hasBgEscape(s string) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// startsInBgScope reports whether the first visible character of s sits
+// inside an active background-color SGR scope. It walks the prefix and
+// returns true iff a bg-color SGR is seen before any non-escape byte.
+func startsInBgScope(s string) bool {
+	for i := 0; i < len(s); {
+		if s[i] != 0x1b || i+1 >= len(s) || s[i+1] != '[' {
+			// Hit visible content; the answer depends on whether we've
+			// already opened a bg scope above.
+			return false
+		}
+		end := strings.IndexByte(s[i:], 'm')
+		if end < 0 {
+			return false
+		}
+		params := s[i+2 : i+end]
+		for _, p := range strings.Split(params, ";") {
+			if p == "48" {
+				return true
+			}
+			if len(p) == 2 && p[0] == '4' && p[1] >= '0' && p[1] <= '7' {
+				return true
+			}
+			if len(p) == 3 && p[0] == '1' && p[1] == '0' && p[2] >= '0' && p[2] <= '7' {
+				return true
+			}
+		}
+		i += end + 1
 	}
 	return false
 }

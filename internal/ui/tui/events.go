@@ -395,7 +395,23 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			// during incremental edits we only show a one-line affordance.
 			body = indentBlock(MutedStyle.Render("/plan to preview"), 2)
 		} else if ev.Tool == "edit" && !ev.IsError {
-			body = indentBlock(RenderEditResult(ev.Result, m.diffBodyWidth()), 2)
+			// Preview already painted "header + diff" for this tool call
+			// (agentcore emits ToolExecUpdatePreview before Run, and edit
+			// returns the same diff from Preview() and Run() — see
+			// agentcore/tools/edit.go:150,184). Repainting here just
+			// duplicates the block in the transcript.
+			//
+			// Signal: the preview branch consumed ToolHeaders[ev.ToolID];
+			// if header is empty here, preview ran and the diff is already
+			// on screen. Skip the body so the End event becomes a no-op
+			// for state cleanup only.
+			//
+			// IsError takes a different branch above (line ~372) and
+			// rebuilds the header, so failed edits still surface even when
+			// preview ran first.
+			if header != "" {
+				body = indentBlock(RenderEditResult(ev.Result, m.diffBodyWidth()), 2)
+			}
 		} else if ev.Tool == "write" && !ev.IsError {
 			body = indentBlock(RenderWriteResult(ev.Result), 2)
 		} else if ev.Tool == "read" && !ev.IsError {
