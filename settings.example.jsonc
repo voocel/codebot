@@ -1,5 +1,5 @@
 {
-  // 默认 provider/model；运行时切换模型只影响当前会话，不会自动回写这里
+  // Default provider/model. Runtime model switches only affect the current session and are not written back here.
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
   "small_model": "claude-haiku-4-5",  // auto-filled from provider config or main model
@@ -49,6 +49,12 @@
   "thinking_level": "low",   // off | low | medium | high | xhigh
   "max_turns": 30,
 
+  // Cap the effective compaction window: effective = min(detected, compact_window).
+  // Useful for forcing earlier compaction on 1M-window models that suffer attention decay past ~200k.
+  // Never exceeds the model's real window. Omit / 0 = use detected window.
+  "compact_window": 300000,
+  "compact_ratio": 0.85,
+
   "search_provider": "tavily", // tavily | jina
   "search_api_key": "",
 
@@ -72,11 +78,11 @@
     ]
   },
 
-  // 文件系统授权根目录。
-  // 默认 read_roots / write_roots 都只有当前工作目录 "."。
-  // 可以显式加入额外目录；写根目录通常应比读根目录更保守。
-  // 注意：roots 严格约束文件类工具（read/write/edit/glob/grep/ls），
-  // bash 仅约束启动目录（workdir），不保证命令实际访问范围，始终需要审批。
+  // Filesystem authorization roots.
+  // Defaults: read_roots / write_roots both contain only the current working directory ".".
+  // Add extra directories explicitly; write_roots should usually be stricter than read_roots.
+  // Note: roots strictly govern file tools (read/write/edit/glob/grep/ls).
+  // bash is only constrained at launch (workdir) and never guarantees actual access scope — always requires approval.
   "permissions": {
     "read_roots": [
       ".",
