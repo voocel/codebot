@@ -31,7 +31,7 @@ This split matters. The agent loop stays small and reusable, while long-running 
 - Task management: task_create, task_get, task_update, task_list (SubAgent coordination)
 - SubAgent delegation with parallel/chain execution
 - Automatic context compaction when window fills up
-- Multi-provider: Anthropic, OpenAI, OpenRouter, Gemini
+- Multi-provider: Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek
 - MCP (Model Context Protocol) server integration
 
 **Sessions**
@@ -95,7 +95,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 codebot
 ```
 
-Supported environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`. For more options see [settings.example.jsonc](settings.example.jsonc).
+Supported environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`. For more options see [settings.example.jsonc](settings.example.jsonc).
 
 OpenRouter can be used as a first-class provider in `settings.json`:
 
