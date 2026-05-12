@@ -102,35 +102,30 @@ func (m *Model) renderCommandPalette() string {
 	}
 	selected := m.compItems[min(max(m.compIdx, 0), len(m.compItems)-1)]
 
+	// Reserve 2 cols on the right as safety against terminal-edge wrapping.
+	// Flush-left to align with the status/context bar above.
 	width := 74
 	if m.Width > 0 {
 		width = min(max(m.Width-2, 34), 92)
 	}
 
 	list, remaining := m.renderCommandPaletteList(width)
-	var lines []string
-	header := CommandPaletteTitleStyle.Render("Commands") + "  " +
-		CommandPaletteKindBadge(selected.Kind) + " " +
-		CommandPaletteCategoryBadge(selected.Category)
-	if badge := CommandPaletteIdleBadge(selected.NeedsIdle); badge != "" {
-		header += " " + badge
+	lines := []string{list}
+	if footer := renderCommandPaletteFooter(selected, remaining, width); footer != "" {
+		lines = append(lines, footer)
 	}
-	lines = append(lines, header)
-	lines = append(lines, list)
-	lines = append(lines, renderCommandPaletteFooter(selected, remaining, width))
-	lines = append(lines, "")
+	lines = append(lines, CommandPaletteHintStyle.Render("↑↓ move · Tab complete · Enter run/fill · Esc close"))
 
-	hint := "↑↓ move · Tab complete · Enter run/fill · Esc close"
-	content := strings.Join(append(lines, CommandPaletteHintStyle.Render(hint)), "\n")
-	box := CommandPaletteStyle.Width(width).Render(content)
+	out := strings.Join(lines, "\n")
 
-	// Pad below the box to keep total height stable (prevents input jumping).
+	// Pad below to keep total height stable (prevents input jumping when the
+	// candidate count changes between renders).
 	visibleRows := min(len(m.compItems), PaletteMaxVisible)
 	padLines := PaletteMaxVisible - visibleRows
 	if padLines > 0 {
-		box += strings.Repeat("\n", padLines)
+		out += strings.Repeat("\n", padLines)
 	}
-	return box
+	return out
 }
 
 func (m *Model) renderCommandPaletteList(width int) (string, int) {
@@ -144,6 +139,11 @@ func (m *Model) renderCommandPaletteList(width int) (string, int) {
 	return strings.Join(lines, "\n"), len(m.compItems) - end
 }
 
+// paletteTagSlotWidth reserves a fixed-width column at the right of every
+// row so that tagged and untagged rows align to the same desc column. The
+// longest tag is "[custom]" (8) and we want 2 cols of breathing room.
+const paletteTagSlotWidth = 10
+
 func renderCommandPaletteRow(item CompletionItem, width int, selected bool) string {
 	marker := " "
 	if selected {
@@ -155,14 +155,35 @@ func renderCommandPaletteRow(item CompletionItem, width int, selected bool) stri
 	// Pad name to fixed column width using display width.
 	nameText := name + strings.Repeat(" ", max(nameWidth-lipgloss.Width(name), 0))
 	// Truncate description by display width to prevent line wrapping.
-	// 6 = marker(1) + space(1) + gap(1) + padding(2) + safety(1)
-	descMaxWidth := max(width-nameWidth-6, 10)
+	// 4 = marker(1) + space(1) + gap(1) + safety(1)
+	descMaxWidth := max(width-nameWidth-4-paletteTagSlotWidth, 10)
 	desc := truncateByWidth(item.Description, descMaxWidth)
+	// Pad desc so the trailing tag column lines up across rows.
+	descText := desc + strings.Repeat(" ", max(descMaxWidth-lipgloss.Width(desc), 0))
+
+	var trailing string
+	if tag := paletteKindTag(item.Kind); tag != "" {
+		trailing = "  " + CommandPaletteTagStyle.Render(tag)
+	}
+
 	prefix := marker + " "
 	if selected {
-		return CommandPaletteSelectedStyle.Render(prefix) + CommandPaletteSelectedStyle.Render(nameText) + " " + CommandPaletteSelectedDescStyle.Render(desc)
+		return CommandPaletteSelectedStyle.Render(prefix) + CommandPaletteSelectedStyle.Render(nameText) + " " + CommandPaletteSelectedDescStyle.Render(descText) + trailing
 	}
-	return prefix + CommandPaletteItemStyle.Render(nameText) + " " + CommandPaletteDescStyle.Render(desc)
+	return prefix + CommandPaletteItemStyle.Render(nameText) + " " + CommandPaletteDescStyle.Render(descText) + trailing
+}
+
+// paletteKindTag returns the trailing label for a command Kind, or "" for
+// the builtin baseline (no tag → most rows stay visually quiet).
+func paletteKindTag(kind string) string {
+	switch kind {
+	case "skill":
+		return "[skill]"
+	case "custom":
+		return "[custom]"
+	default:
+		return ""
+	}
 }
 
 // truncateByWidth truncates s to fit within maxWidth display columns.
@@ -186,36 +207,25 @@ func truncateByWidth(s string, maxWidth int) string {
 	return b.String()
 }
 
+// renderCommandPaletteFooter is shown only when there is real metadata to
+// surface: hidden-overflow count and/or aliases for the selected item.
+// Returns "" when neither applies — the caller skips the line entirely.
 func renderCommandPaletteFooter(item CompletionItem, remaining, width int) string {
-	nameWidth := min(max(width/3, 12), 18)
-	descStart := 2 + nameWidth + 1
-	contentWidth := max(width-2, 20) // account for padding
-
-	left := "  "
+	var parts []string
 	if remaining > 0 {
-		left = "  " + fmt.Sprintf("… %d more commands", remaining)
+		parts = append(parts, fmt.Sprintf("… +%d more", remaining))
 	}
-	usage := "Usage: " + item.Usage
 	if len(item.Aliases) > 0 {
-		var aliases []string
+		aliases := make([]string, 0, len(item.Aliases))
 		for _, alias := range item.Aliases {
 			aliases = append(aliases, "/"+alias)
 		}
-		usage += " · Aliases: " + strings.Join(aliases, ", ")
+		parts = append(parts, strings.Join(aliases, ", "))
 	}
-
-	usageStart := descStart
-	if lipgloss.Width(left) >= descStart {
-		usageStart = lipgloss.Width(left) + 2
+	if len(parts) == 0 {
+		return ""
 	}
-	usageMax := max(contentWidth-usageStart, 10)
-	usage = truncateByWidth(usage, usageMax)
-
-	if lipgloss.Width(left) >= descStart {
-		return CommandPaletteHintStyle.Render(left) + "  " + MutedStyle.Render(usage)
-	}
-	padding := strings.Repeat(" ", descStart-lipgloss.Width(left))
-	return CommandPaletteHintStyle.Render(left) + padding + MutedStyle.Render(usage)
+	return MutedStyle.Render(truncateByWidth(strings.Join(parts, " · "), width))
 }
 
 func commandPaletteWindow(total, cursor, limit int) (start, end int) {

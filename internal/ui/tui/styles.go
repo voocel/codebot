@@ -158,15 +158,15 @@ var (
 // ---------------------------------------------------------------------------
 
 var (
-	CommandPaletteStyle = card(BrandSoft)
-
-	CommandPaletteTitleStyle        = lipgloss.NewStyle().Foreground(Title).Bold(true)
-	CommandPaletteSectionStyle      = lipgloss.NewStyle().Foreground(BrandSoft).Bold(true)
 	CommandPaletteSelectedStyle     = lipgloss.NewStyle().Foreground(Brand).Bold(true)
 	CommandPaletteItemStyle         = lipgloss.NewStyle().Foreground(Text)
 	CommandPaletteDescStyle         = lipgloss.NewStyle().Foreground(Muted)
 	CommandPaletteSelectedDescStyle = lipgloss.NewStyle().Foreground(RoleAssistant)
 	CommandPaletteHintStyle         = lipgloss.NewStyle().Foreground(Border)
+	// Trailing Kind tag rendered on the right of each row (skill / custom).
+	// Uses the Meta token (one step below desc's Muted) so the tag recedes
+	// to "dim metadata" weight — desc carries the meaning, tag just labels.
+	CommandPaletteTagStyle = lipgloss.NewStyle().Foreground(Meta)
 )
 
 // ---------------------------------------------------------------------------
@@ -189,41 +189,3 @@ var (
 	TagSubtleStyle = lipgloss.NewStyle().Foreground(Text)
 )
 
-// ---------------------------------------------------------------------------
-// Palette badges (functions because color depends on kind/category)
-// ---------------------------------------------------------------------------
-
-func CommandPaletteKindBadge(kind string) string {
-	label := "[" + kind + "]"
-	style := lipgloss.NewStyle().Foreground(Muted)
-	switch kind {
-	case "builtin":
-		style = style.Foreground(Info)
-	case "custom":
-		style = style.Foreground(Accent)
-	case "skill":
-		style = style.Foreground(Success)
-	}
-	return style.Render(label)
-}
-
-func CommandPaletteCategoryBadge(category string) string {
-	label := "[" + category + "]"
-	style := lipgloss.NewStyle().Foreground(Muted)
-	switch category {
-	case "session", "config":
-		style = style.Foreground(Accent)
-	case "plan":
-		style = style.Foreground(Accent)
-	case "exit":
-		style = style.Foreground(Danger)
-	}
-	return style.Render(label)
-}
-
-func CommandPaletteIdleBadge(needsIdle bool) string {
-	if !needsIdle {
-		return ""
-	}
-	return lipgloss.NewStyle().Foreground(Muted).Render("[idle]")
-}
