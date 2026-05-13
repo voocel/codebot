@@ -11,11 +11,19 @@ import (
 // cacheSnapshot captures enough state about one LLM request to diagnose a
 // cache-break on the following turn. It does NOT store the request itself —
 // only cheap fingerprints of the inputs and the observed cache_read figure.
+//
+// System blocks are hashed in two halves matching the layout in
+// sessionPromptManager.rebuildPrompt: the cached static prefix (block 1 +
+// block 2) and the uncached dynamic tail (block 3 if present). Hashing them
+// separately lets detectCacheBreak attribute a drop to the right segment —
+// a static-prefix change is alarming (it means something supposedly frozen
+// moved), a dynamic-block change is routine (plan toggle, MCP refresh).
 type cacheSnapshot struct {
-	SystemHash      uint64
-	ToolsHash       uint64
-	CacheReadTokens int
-	Valid           bool // false before the first turn
+	FrozenSystemHash  uint64
+	DynamicSystemHash uint64
+	ToolsHash         uint64
+	CacheReadTokens   int
+	Valid             bool // false before the first turn
 }
 
 // breakDropFraction is the minimum relative drop in cache_read (vs previous
@@ -26,13 +34,32 @@ const breakDropFraction = 0.05
 // at small context sizes.
 const breakDropAbsolute = 2000
 
-// hashSystemBlocks returns a stable fingerprint for the current system prompt.
-// The fingerprint covers every block's text; cache_control metadata is ignored
-// because flipping a cache-control TTL should not look like a content change.
-func hashSystemBlocks(blocks []agentcore.SystemBlock) uint64 {
+// hashFrozenBlocks fingerprints the cache-controlled static prefix (the
+// blocks carrying CacheControl != ""). Together these are what the server
+// caches; any change here invalidates the prefix on the next turn.
+func hashFrozenBlocks(blocks []agentcore.SystemBlock) uint64 {
 	h := fnv.New64a()
 	for _, b := range blocks {
-		h.Write([]byte{0}) // block separator
+		if b.CacheControl == "" {
+			continue
+		}
+		h.Write([]byte{0})
+		h.Write([]byte(b.Text))
+	}
+	return h.Sum64()
+}
+
+// hashDynamicBlock fingerprints the tail blocks that are NOT cache-controlled
+// (MCP tool directory, overlays, git snapshot). Changes here don't reduce
+// cache hits on the static prefix but explain visible byte differences in
+// the request and any extra write-cost on subsequent breakpoints downstream.
+func hashDynamicBlock(blocks []agentcore.SystemBlock) uint64 {
+	h := fnv.New64a()
+	for _, b := range blocks {
+		if b.CacheControl != "" {
+			continue
+		}
+		h.Write([]byte{0})
 		h.Write([]byte(b.Text))
 	}
 	return h.Sum64()
@@ -86,19 +113,27 @@ func detectCacheBreak(prev, curr cacheSnapshot) *storage.CacheBreakInfo {
 		return nil
 	}
 
+	frozenChanged := prev.FrozenSystemHash != curr.FrozenSystemHash
+	dynamicChanged := prev.DynamicSystemHash != curr.DynamicSystemHash
 	info := &storage.CacheBreakInfo{
 		PrevCacheReadTokens: prev.CacheReadTokens,
 		CurrCacheReadTokens: curr.CacheReadTokens,
 		DropAbsolute:        dropAbs,
 		DropFraction:        frac,
-		SystemChanged:       prev.SystemHash != curr.SystemHash,
+		SystemChanged:       frozenChanged || dynamicChanged,
+		FrozenChanged:       frozenChanged,
+		DynamicChanged:      dynamicChanged,
 		ToolsChanged:        prev.ToolsHash != curr.ToolsHash,
 	}
 	switch {
-	case info.SystemChanged && info.ToolsChanged:
-		info.Note = "system prompt and tool set both changed"
-	case info.SystemChanged:
-		info.Note = "system prompt changed between turns"
+	case frozenChanged && info.ToolsChanged:
+		info.Note = "frozen system prefix and tool set both changed (unexpected — investigate)"
+	case frozenChanged:
+		info.Note = "frozen system prefix changed (unexpected — investigate)"
+	case dynamicChanged && info.ToolsChanged:
+		info.Note = "dynamic system block and tool set changed (likely MCP/plan-mode toggle)"
+	case dynamicChanged:
+		info.Note = "dynamic system block changed (plan mode / MCP overlay)"
 	case info.ToolsChanged:
 		info.Note = "tool set changed between turns"
 	default:

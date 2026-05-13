@@ -136,6 +136,116 @@ func TestBuildReminders(t *testing.T) {
 	}
 }
 
+func TestSplitToolsByOrigin(t *testing.T) {
+	t.Parallel()
+
+	local, mcp := SplitToolsByOrigin([]ToolInfo{
+		{Name: "read", Description: "Read"},
+		{Name: "mcp__docs__search", Description: "Search docs"},
+		{Name: "bash", Description: "Run shell"},
+		{Name: "mcp__ops__deploy", Description: "Deploy"},
+	})
+
+	if got := names(local); !equal(got, []string{"read", "bash"}) {
+		t.Fatalf("local tools = %v, want [read bash]", got)
+	}
+	if got := names(mcp); !equal(got, []string{"mcp__docs__search", "mcp__ops__deploy"}) {
+		t.Fatalf("mcp tools = %v, want [mcp__docs__search mcp__ops__deploy]", got)
+	}
+}
+
+func TestBuildFrozenSystemPartsDoesNotIncludeMCP(t *testing.T) {
+	t.Parallel()
+
+	// MCP tools must be filtered out by callers — BuildFrozenSystemParts
+	// includes whatever is handed to it. This test verifies that callers
+	// passing pure local tools do not accidentally see an MCP entry.
+	_, frozen := BuildFrozenSystemParts("/tmp/ws", ContextFiles{}, []ToolInfo{
+		{Name: "read", Description: "Read"},
+	})
+	if strings.Contains(frozen, "mcp__") {
+		t.Fatalf("frozen instructions should not mention mcp tools when none are supplied: %q", frozen)
+	}
+}
+
+func TestBuildDynamicSystemPartEmpty(t *testing.T) {
+	t.Parallel()
+
+	if got := BuildDynamicSystemPart(nil, nil); got != "" {
+		t.Fatalf("empty inputs must produce empty string, got %q", got)
+	}
+}
+
+func TestBuildDynamicSystemPartCombinesToolsAndOverlays(t *testing.T) {
+	t.Parallel()
+
+	got := BuildDynamicSystemPart(
+		[]ToolInfo{{Name: "mcp__docs__search", Description: "Search"}},
+		[]string{"plan mode overlay", "mcp server instructions"},
+	)
+	for _, want := range []string{"## MCP Tools", "**mcp__docs__search**", "plan mode overlay", "mcp server instructions"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("dynamic part missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestBuildDynamicSystemPartStableForSameInputs(t *testing.T) {
+	t.Parallel()
+
+	// The dynamic block hashes into a cache fingerprint — same inputs must
+	// produce byte-identical output across calls.
+	tools := []ToolInfo{{Name: "mcp__a__one", Description: "A"}, {Name: "mcp__b__two", Description: "B"}}
+	overlays := []string{"x", "y"}
+	first := BuildDynamicSystemPart(tools, overlays)
+	second := BuildDynamicSystemPart(tools, overlays)
+	if first != second {
+		t.Fatal("identical inputs must yield identical output")
+	}
+}
+
+func TestBuildSystemBlockTextsRoutesMCPThroughDynamic(t *testing.T) {
+	t.Parallel()
+
+	// Backwards-compat wrapper: MCP tools handed in via the legacy single-
+	// argument API must end up in the dynamic ## MCP Tools section, not the
+	// frozen ## Tools section.
+	_, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, []ToolInfo{
+		{Name: "read", Description: "Read"},
+		{Name: "mcp__docs__search", Description: "Search docs"},
+	})
+	if !strings.Contains(instructions, "## Tools") {
+		t.Fatal("local tools section missing")
+	}
+	if !strings.Contains(instructions, "## MCP Tools") {
+		t.Fatal("MCP tools should be promoted to the dynamic section, even via the wrapper")
+	}
+	// Local section comes before MCP section.
+	if strings.Index(instructions, "## Tools") > strings.Index(instructions, "## MCP Tools") {
+		t.Fatal("local tools section should precede MCP tools section")
+	}
+}
+
+func names(infos []ToolInfo) []string {
+	out := make([]string, len(infos))
+	for i, t := range infos {
+		out[i] = t.Name
+	}
+	return out
+}
+
+func equal(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestBuildRemindersEmpty(t *testing.T) {
 	t.Parallel()
 

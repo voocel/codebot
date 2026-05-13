@@ -284,10 +284,11 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 	thinking := p.session.settings.ThinkingLevel
 	prevSnap := p.session.cacheSnap
 	currSnap := cacheSnapshot{
-		SystemHash:      p.session.cacheSnap.SystemHash,
-		ToolsHash:       p.session.cacheSnap.ToolsHash,
-		CacheReadTokens: u.CacheRead,
-		Valid:           true,
+		FrozenSystemHash:  p.session.cacheSnap.FrozenSystemHash,
+		DynamicSystemHash: p.session.cacheSnap.DynamicSystemHash,
+		ToolsHash:         p.session.cacheSnap.ToolsHash,
+		CacheReadTokens:   u.CacheRead,
+		Valid:             true,
 	}
 	p.session.cacheSnap = currSnap
 	p.session.mu.Unlock()

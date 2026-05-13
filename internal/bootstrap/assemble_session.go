@@ -23,6 +23,9 @@ type sessionAssembly struct {
 	tools                 []agentcore.Tool
 	baseTools             []agentcore.Tool
 	systemBlocks          []agentcore.SystemBlock
+	frozenIdentity        string // process-stable: block 1
+	frozenInstructions    string // process-stable: block 2
+	initialMCPOverlay     string // seed for session.overlays["mcp"]
 	deferredToolsPreamble string
 	reminders             []string
 	contextFiles          config.ContextFiles
@@ -59,6 +62,9 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		tools:                 tools,
 		baseTools:             baseTools,
 		systemBlocks:          parts.blocks,
+		frozenIdentity:        parts.frozenIdentity,
+		frozenInstructions:    parts.frozenInstructions,
+		initialMCPOverlay:     parts.initialMCPOverlay,
 		deferredToolsPreamble: parts.deferredMsg,
 		reminders:             parts.reminders,
 		contextFiles:          ctxFiles,
@@ -315,11 +321,26 @@ func applyToolSearch(allTools, baseTools []agentcore.Tool, provider, model strin
 }
 
 type systemParts struct {
-	blocks      []agentcore.SystemBlock
-	deferredMsg string
-	reminders   []string
+	blocks             []agentcore.SystemBlock
+	frozenIdentity     string
+	frozenInstructions string
+	initialMCPOverlay  string
+	deferredMsg        string
+	reminders          []string
 }
 
+// buildSystemParts assembles the initial system blocks plus the inputs
+// Session needs to keep rebuilding only the dynamic tail later:
+//
+//   - frozenIdentity / frozenInstructions are baked from local tools and
+//     ctxFiles and never recomputed during the process. Session reuses them
+//     verbatim on every rebuild.
+//   - initialMCPOverlay seeds session.overlays["mcp"] so the first rebuild
+//     after session creation reproduces the same dynamic block bytes.
+//   - blocks is the system layout for the initial agent request: block 1
+//     (identity) + block 2 (instructions) carry CacheControl: ephemeral;
+//     block 3 (dynamic) carries no cache_control because it changes when
+//     MCP refreshes or plan-mode toggles.
 func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.ContextFiles, skills []skill.Spec, usage map[string]float64, mcpManager *mcpclient.Manager) systemParts {
 	var filter agentcore.DeferFilter
 	for _, t := range tools {
@@ -329,28 +350,40 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 		}
 	}
 
-	var visibleInfos []config.ToolInfo
+	var localInfos, mcpInfos []config.ToolInfo
 	var deferredNames []string
 	for _, t := range tools {
-		if filter != nil && filter.IsDeferred(t.Name()) {
-			deferredNames = append(deferredNames, t.Name())
+		name := t.Name()
+		if filter != nil && filter.IsDeferred(name) {
+			deferredNames = append(deferredNames, name)
+			continue
+		}
+		info := config.ToolInfo{Name: name, Description: t.Description()}
+		if config.IsMCPTool(name) {
+			mcpInfos = append(mcpInfos, info)
 		} else {
-			visibleInfos = append(visibleInfos, config.ToolInfo{Name: t.Name(), Description: t.Description()})
+			localInfos = append(localInfos, info)
 		}
 	}
 
-	identity, instructions := config.BuildSystemBlockTexts(cwd, ctxFiles, visibleInfos)
+	identity, frozenInstructions := config.BuildFrozenSystemParts(cwd, ctxFiles, localInfos)
+
+	var mcpOverlay string
+	var overlayTexts []string
 	if mcpManager != nil {
-		if mcpInstructions := mcpManager.Instructions(); len(mcpInstructions) > 0 {
-			for _, inst := range mcpInstructions {
-				instructions += "\n\n" + inst
-			}
+		if inst := mcpManager.Instructions(); len(inst) > 0 {
+			mcpOverlay = strings.Join(inst, "\n\n")
+			overlayTexts = append(overlayTexts, mcpOverlay)
 		}
 	}
+	dynamic := config.BuildDynamicSystemPart(mcpInfos, overlayTexts)
 
 	blocks := []agentcore.SystemBlock{
 		{Text: identity, CacheControl: "ephemeral"},
-		{Text: instructions, CacheControl: "ephemeral"},
+		{Text: frozenInstructions, CacheControl: "ephemeral"},
+	}
+	if dynamic != "" {
+		blocks = append(blocks, agentcore.SystemBlock{Text: dynamic})
 	}
 	if ctxFiles.GitSnapshot != "" {
 		blocks = append(blocks, agentcore.SystemBlock{Text: ctxFiles.GitSnapshot})
@@ -362,8 +395,11 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 	}
 
 	return systemParts{
-		blocks:      blocks,
-		deferredMsg: deferredMsg,
-		reminders:   config.BuildReminders(ctxFiles, skill.OrderForPrompt(skills, cwd, usage)),
+		blocks:             blocks,
+		frozenIdentity:     identity,
+		frozenInstructions: frozenInstructions,
+		initialMCPOverlay:  mcpOverlay,
+		deferredMsg:        deferredMsg,
+		reminders:          config.BuildReminders(ctxFiles, skill.OrderForPrompt(skills, cwd, usage)),
 	}
 }

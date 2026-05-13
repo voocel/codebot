@@ -6,28 +6,62 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-func TestHashSystemBlocksStableAcrossCallOrder(t *testing.T) {
+func TestHashFrozenBlocksStableAcrossCallOrder(t *testing.T) {
 	t.Parallel()
 
-	a := []agentcore.SystemBlock{{Text: "identity"}, {Text: "instructions"}}
-	b := []agentcore.SystemBlock{{Text: "identity"}, {Text: "instructions"}}
-	if hashSystemBlocks(a) != hashSystemBlocks(b) {
-		t.Fatalf("identical blocks must hash to the same value")
+	a := []agentcore.SystemBlock{
+		{Text: "identity", CacheControl: "ephemeral"},
+		{Text: "instructions", CacheControl: "ephemeral"},
+	}
+	b := []agentcore.SystemBlock{
+		{Text: "identity", CacheControl: "ephemeral"},
+		{Text: "instructions", CacheControl: "ephemeral"},
+	}
+	if hashFrozenBlocks(a) != hashFrozenBlocks(b) {
+		t.Fatalf("identical frozen blocks must hash to the same value")
 	}
 
-	c := []agentcore.SystemBlock{{Text: "identity"}, {Text: "instructions v2"}}
-	if hashSystemBlocks(a) == hashSystemBlocks(c) {
+	c := []agentcore.SystemBlock{
+		{Text: "identity", CacheControl: "ephemeral"},
+		{Text: "instructions v2", CacheControl: "ephemeral"},
+	}
+	if hashFrozenBlocks(a) == hashFrozenBlocks(c) {
 		t.Fatalf("differing text must change the hash")
 	}
 }
 
-func TestHashSystemBlocksIgnoresCacheControl(t *testing.T) {
+func TestHashFrozenBlocksSkipsUncontrolled(t *testing.T) {
 	t.Parallel()
 
-	a := []agentcore.SystemBlock{{Text: "identity", CacheControl: "ephemeral"}}
-	b := []agentcore.SystemBlock{{Text: "identity"}}
-	if hashSystemBlocks(a) != hashSystemBlocks(b) {
-		t.Fatalf("cache_control metadata must not influence the fingerprint")
+	withTail := []agentcore.SystemBlock{
+		{Text: "identity", CacheControl: "ephemeral"},
+		{Text: "instructions", CacheControl: "ephemeral"},
+		{Text: "dynamic"}, // no cache_control → not part of frozen prefix
+	}
+	withoutTail := []agentcore.SystemBlock{
+		{Text: "identity", CacheControl: "ephemeral"},
+		{Text: "instructions", CacheControl: "ephemeral"},
+	}
+	if hashFrozenBlocks(withTail) != hashFrozenBlocks(withoutTail) {
+		t.Fatalf("dynamic tail must not influence the frozen fingerprint")
+	}
+}
+
+func TestHashDynamicBlockTracksTail(t *testing.T) {
+	t.Parallel()
+
+	base := []agentcore.SystemBlock{
+		{Text: "identity", CacheControl: "ephemeral"},
+		{Text: "instructions", CacheControl: "ephemeral"},
+	}
+	withA := append(base, agentcore.SystemBlock{Text: "overlay A"})
+	withB := append(base, agentcore.SystemBlock{Text: "overlay B"})
+
+	if hashDynamicBlock(withA) == hashDynamicBlock(withB) {
+		t.Fatalf("differing tail must change the dynamic hash")
+	}
+	if hashDynamicBlock(base) == hashDynamicBlock(withA) {
+		t.Fatalf("absence vs presence of tail must differ")
 	}
 }
 
@@ -55,7 +89,7 @@ func TestDetectCacheBreakIgnoresSmallDrops(t *testing.T) {
 
 	// 4% drop, well below breakDropFraction.
 	prev := cacheSnapshot{Valid: true, CacheReadTokens: 100000}
-	curr := cacheSnapshot{Valid: true, CacheReadTokens: 96000, SystemHash: prev.SystemHash}
+	curr := cacheSnapshot{Valid: true, CacheReadTokens: 96000}
 	if info := detectCacheBreak(prev, curr); info != nil {
 		t.Fatalf("small drop should not trigger, got %+v", info)
 	}
@@ -68,17 +102,23 @@ func TestDetectCacheBreakIgnoresSmallDrops(t *testing.T) {
 	}
 }
 
-func TestDetectCacheBreakReportsSystemChange(t *testing.T) {
+func TestDetectCacheBreakReportsFrozenChange(t *testing.T) {
 	t.Parallel()
 
-	prev := cacheSnapshot{Valid: true, SystemHash: 1, ToolsHash: 2, CacheReadTokens: 50000}
-	curr := cacheSnapshot{Valid: true, SystemHash: 9, ToolsHash: 2, CacheReadTokens: 0}
+	prev := cacheSnapshot{Valid: true, FrozenSystemHash: 1, DynamicSystemHash: 7, ToolsHash: 2, CacheReadTokens: 50000}
+	curr := cacheSnapshot{Valid: true, FrozenSystemHash: 9, DynamicSystemHash: 7, ToolsHash: 2, CacheReadTokens: 0}
 	info := detectCacheBreak(prev, curr)
 	if info == nil {
 		t.Fatal("expected a cache break to be reported")
 	}
-	if !info.SystemChanged || info.ToolsChanged {
-		t.Fatalf("expected system-only change, got %+v", info)
+	if !info.FrozenChanged {
+		t.Fatalf("expected frozen-prefix flag set, got %+v", info)
+	}
+	if info.DynamicChanged || info.ToolsChanged {
+		t.Fatalf("only frozen should flip, got %+v", info)
+	}
+	if !info.SystemChanged {
+		t.Fatal("legacy SystemChanged must reflect any system change")
 	}
 	if info.DropAbsolute != 50000 {
 		t.Fatalf("drop_absolute = %d, want 50000", info.DropAbsolute)
@@ -88,24 +128,41 @@ func TestDetectCacheBreakReportsSystemChange(t *testing.T) {
 	}
 }
 
+func TestDetectCacheBreakReportsDynamicChange(t *testing.T) {
+	t.Parallel()
+
+	prev := cacheSnapshot{Valid: true, FrozenSystemHash: 1, DynamicSystemHash: 7, ToolsHash: 2, CacheReadTokens: 50000}
+	curr := cacheSnapshot{Valid: true, FrozenSystemHash: 1, DynamicSystemHash: 8, ToolsHash: 2, CacheReadTokens: 0}
+	info := detectCacheBreak(prev, curr)
+	if info == nil {
+		t.Fatal("expected a cache break to be reported")
+	}
+	if info.FrozenChanged {
+		t.Fatalf("frozen prefix must not be flagged when only dynamic changed: %+v", info)
+	}
+	if !info.DynamicChanged {
+		t.Fatalf("expected dynamic flag set, got %+v", info)
+	}
+}
+
 func TestDetectCacheBreakReportsUnknownWhenHashesMatch(t *testing.T) {
 	t.Parallel()
 
-	prev := cacheSnapshot{Valid: true, SystemHash: 1, ToolsHash: 2, CacheReadTokens: 80000}
-	curr := cacheSnapshot{Valid: true, SystemHash: 1, ToolsHash: 2, CacheReadTokens: 0}
+	prev := cacheSnapshot{Valid: true, FrozenSystemHash: 1, DynamicSystemHash: 2, ToolsHash: 3, CacheReadTokens: 80000}
+	curr := cacheSnapshot{Valid: true, FrozenSystemHash: 1, DynamicSystemHash: 2, ToolsHash: 3, CacheReadTokens: 0}
 	info := detectCacheBreak(prev, curr)
 	if info == nil {
 		t.Fatal("expected a break to be reported even without hash diffs")
 	}
-	if info.SystemChanged || info.ToolsChanged {
-		t.Fatalf("expected neither hash to flip, got %+v", info)
+	if info.SystemChanged || info.FrozenChanged || info.DynamicChanged || info.ToolsChanged {
+		t.Fatalf("expected no hash flips, got %+v", info)
 	}
 }
 
 func TestCompactionEventInvalidatesCacheBaseline(t *testing.T) {
 	t.Parallel()
 
-	s := &Session{cacheSnap: cacheSnapshot{Valid: true, CacheReadTokens: 50000, SystemHash: 1}}
+	s := &Session{cacheSnap: cacheSnapshot{Valid: true, CacheReadTokens: 50000, FrozenSystemHash: 1}}
 
 	// An "unchanged" compaction must not reset the baseline — no rewrite happened.
 	s.emit(SessionEvent{Type: SEAutoCompactionEnd, CompactionChanged: false})

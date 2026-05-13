@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -56,6 +57,17 @@ type SessionConfig struct {
 	PreambleInjected bool
 	// SkillAllowsSetter updates temporary tool allows for the active skill.
 	SkillAllowsSetter func([]string)
+
+	// FrozenIdentity / FrozenInstructions are the process-stable parts of the
+	// system prompt (block 1 + block 2). Computed once at assembly time and
+	// reused on every rebuild — never recomputed during the session.
+	// See config.BuildFrozenSystemParts.
+	FrozenIdentity     string
+	FrozenInstructions string
+	// InitialMCPOverlay seeds the mcp overlay when the assembly already knows
+	// the MCP instructions (e.g. MCP managers that connect synchronously).
+	// Written directly into the overlay store without triggering a rebuild.
+	InitialMCPOverlay string
 }
 
 // Session is the business-logic core that wraps Agent + session persistence.
@@ -88,6 +100,9 @@ type Session struct {
 	taskStore         *storage.TaskStore
 	skillAllowsSetter func([]string)
 	skillRuntime      skillRuntimeState
+
+	frozenIdentity     string // block 1 — process-stable, never recomputed
+	frozenInstructions string // block 2 — process-stable, never recomputed
 
 	deferredToolsPreamble  string   // <available-deferred-tools> for first user message
 	staticReminders        []string // stable reminders derived from context files
@@ -148,8 +163,11 @@ type invokedSkillSnapshot struct {
 	Timestamp  time.Time
 }
 
+// overlayStore holds named instructions overlays appended to the dynamic
+// system block. Output is sorted by key so the byte sequence is stable
+// across rebuilds — insertion order would let plan-mode enter/exit cycles
+// or MCP reconnects shuffle the hash without changing meaning.
 type overlayStore struct {
-	order []string
 	byKey map[string]string
 }
 
@@ -159,26 +177,23 @@ func (o *overlayStore) set(key, text string) {
 	}
 	if text == "" {
 		delete(o.byKey, key)
-		for i, k := range o.order {
-			if k == key {
-				o.order = append(o.order[:i], o.order[i+1:]...)
-				break
-			}
-		}
 		return
-	}
-	if _, exists := o.byKey[key]; !exists {
-		o.order = append(o.order, key)
 	}
 	o.byKey[key] = text
 }
 
 func (o *overlayStore) texts() []string {
-	out := make([]string, 0, len(o.order))
-	for _, k := range o.order {
-		if v := o.byKey[k]; v != "" {
-			out = append(out, v)
-		}
+	if len(o.byKey) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(o.byKey))
+	for k := range o.byKey {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, o.byKey[k])
 	}
 	return out
 }
@@ -214,6 +229,9 @@ func NewSession(cfg SessionConfig) *Session {
 		skillUsage:        cfg.SkillUsage,
 		skillAllowsSetter: cfg.SkillAllowsSetter,
 
+		frozenIdentity:     cfg.FrozenIdentity,
+		frozenInstructions: cfg.FrozenInstructions,
+
 		deferredToolsPreamble:  cfg.DeferredToolsPreamble,
 		staticReminders:        cfg.Reminders,
 		runtimeReminderKeys:    make(map[string]struct{}),
@@ -221,6 +239,9 @@ func NewSession(cfg SessionConfig) *Session {
 		autoResumeReminderKeys: make(map[string]struct{}),
 		pendingToolCalls:       make(map[string]pendingToolCall),
 		preambleInjected:       cfg.PreambleInjected,
+	}
+	if cfg.InitialMCPOverlay != "" {
+		s.overlays.set("mcp", cfg.InitialMCPOverlay)
 	}
 
 	s.prompts = newSessionPromptManager(s)

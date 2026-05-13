@@ -17,16 +17,40 @@ type ToolInfo struct {
 	Description string
 }
 
-// BuildSystemBlockTexts returns the system prompt split into two stable segments:
-//   - identity: role description + environment info
-//   - instructions: tool descriptions + guidelines
+// mcpToolPrefix is the conventional prefix for MCP-sourced tools.
+// Keep in sync with agent.mcpToolPrefix.
+const mcpToolPrefix = "mcp__"
+
+// IsMCPTool reports whether a tool name belongs to an MCP server.
+func IsMCPTool(name string) bool {
+	return strings.HasPrefix(name, mcpToolPrefix)
+}
+
+// SplitToolsByOrigin partitions tools into local (session-stable) and MCP
+// (runtime-mutable) buckets so callers can route them to the right
+// frozen/dynamic system block.
+func SplitToolsByOrigin(all []ToolInfo) (local, mcp []ToolInfo) {
+	for _, t := range all {
+		if IsMCPTool(t.Name) {
+			mcp = append(mcp, t)
+		} else {
+			local = append(local, t)
+		}
+	}
+	return
+}
+
+// BuildFrozenSystemParts returns the static portions of the system prompt
+// that are fixed for the lifetime of the process: identity (cwd + OS) and
+// the instructions block (hardcoded guidance + autoMemory + local tool
+// directory + task-management section).
 //
-// Skills and context files are NOT included — they go into user-message reminders
-// via BuildReminders for better cache stability.
+// Inputs MUST be process-stable. MCP tools, plan_mode overlays, and any
+// runtime-mutable content belong in BuildDynamicSystemPart.
 //
-// When ctx.SystemOverride is set (SYSTEM.md), it replaces the default prompt entirely.
-// In this case identity is empty and instructions contains the full override.
-func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (identity, instructions string) {
+// When ctx.SystemOverride is set, identity is empty and frozenInstructions
+// is the override verbatim.
+func BuildFrozenSystemParts(cwd string, ctx ContextFiles, localTools []ToolInfo) (identity, frozenInstructions string) {
 	if ctx.SystemOverride != "" {
 		return "", ctx.SystemOverride
 	}
@@ -47,9 +71,9 @@ func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (iden
 	hasTaskCreate := false
 	hasTaskUpdate := false
 	hasTaskList := false
-	if len(tools) > 0 {
-		fmt.Fprintf(&toolsBody, "## Tools\nYou have %d tools:\n", len(tools))
-		for _, t := range tools {
+	if len(localTools) > 0 {
+		fmt.Fprintf(&toolsBody, "## Tools\nYou have %d tools:\n", len(localTools))
+		for _, t := range localTools {
 			fmt.Fprintf(&toolsBody, "- **%s**: %s\n", t.Name, t.Description)
 			switch t.Name {
 			case "task_create":
@@ -139,8 +163,57 @@ If you can say it in one sentence, don't use three. Prefer short, direct sentenc
 	if autoMemoryInstructions != "" {
 		instructionParts = append(instructionParts, autoMemoryInstructions)
 	}
-	instructions = strings.Join(instructionParts, "\n\n")
+	frozenInstructions = strings.Join(instructionParts, "\n\n")
 	return
+}
+
+// BuildDynamicSystemPart assembles the runtime-mutable portion of the system
+// prompt: late-arriving tool descriptions (MCP) and named overlays
+// (plan_mode, mcp instructions, etc.).
+//
+// Returns "" when neither input contributes content; callers should then
+// omit the third system block entirely.
+//
+// overlays must be passed in a deterministic order — the same content in a
+// different order changes the hash and uselessly breaks any cache placed on
+// this segment by the caller.
+func BuildDynamicSystemPart(mcpTools []ToolInfo, overlays []string) string {
+	var parts []string
+	if len(mcpTools) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "## MCP Tools\nYou have %d additional tools from MCP servers:\n", len(mcpTools))
+		for _, t := range mcpTools {
+			fmt.Fprintf(&b, "- **%s**: %s\n", t.Name, t.Description)
+		}
+		parts = append(parts, b.String())
+	}
+	for _, o := range overlays {
+		if o == "" {
+			continue
+		}
+		parts = append(parts, o)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// BuildSystemBlockTexts is a backward-compatible wrapper. It splits tools by
+// origin internally and concatenates frozen + dynamic into a single
+// instructions string for callers that haven't migrated to the two-block
+// layout yet.
+//
+// New code should call BuildFrozenSystemParts + BuildDynamicSystemPart
+// directly so the static prefix can be cached independently.
+func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (identity, instructions string) {
+	local, mcp := SplitToolsByOrigin(tools)
+	id, frozen := BuildFrozenSystemParts(cwd, ctx, local)
+	dyn := BuildDynamicSystemPart(mcp, nil)
+	if dyn == "" {
+		return id, frozen
+	}
+	if frozen == "" {
+		return id, dyn
+	}
+	return id, frozen + "\n\n" + dyn
 }
 
 // BuildReminders extracts skills and context files into <system-reminder>

@@ -172,24 +172,37 @@ func (m *sessionPromptManager) rebuildPrompt() {
 		}
 	}
 
-	var visibleInfos []config.ToolInfo
+	// Route active tools to the right system block:
+	//   - local tools → already baked into frozenInstructions; nothing to emit here
+	//   - MCP tools   → dynamic block (appear/disappear at runtime)
+	//   - deferred    → preamble user message, not in system at all
+	var mcpInfos []config.ToolInfo
 	var deferredNames []string
 	for _, t := range m.session.activeTools {
-		if filter != nil && filter.IsDeferred(t.Name()) {
-			deferredNames = append(deferredNames, t.Name())
-		} else {
-			visibleInfos = append(visibleInfos, config.ToolInfo{Name: t.Name(), Description: t.Description()})
+		name := t.Name()
+		if filter != nil && filter.IsDeferred(name) {
+			deferredNames = append(deferredNames, name)
+			continue
+		}
+		if config.IsMCPTool(name) {
+			mcpInfos = append(mcpInfos, config.ToolInfo{Name: name, Description: t.Description()})
 		}
 	}
 
-	// Build two-block system prompt (identity + instructions) for cache stability.
-	identity, instructions := config.BuildSystemBlockTexts(m.session.cwd, m.session.contextFiles, visibleInfos)
-	for _, overlay := range m.session.overlays.texts() {
-		instructions += "\n\n" + overlay
-	}
+	dynamicText := config.BuildDynamicSystemPart(mcpInfos, m.session.overlays.texts())
+
+	// Three-block layout for cache stability:
+	//   block 1 (identity):     ephemeral, frozen for the process
+	//   block 2 (instructions): ephemeral, frozen for the process
+	//   block 3 (dynamic):      no cache_control — changes on plan-toggle /
+	//                           MCP refresh; a breakpoint here would charge
+	//                           1.25x for writes that get invalidated soon.
 	blocks := []agentcore.SystemBlock{
-		{Text: identity, CacheControl: "ephemeral"},
-		{Text: instructions, CacheControl: "ephemeral"},
+		{Text: m.session.frozenIdentity, CacheControl: "ephemeral"},
+		{Text: m.session.frozenInstructions, CacheControl: "ephemeral"},
+	}
+	if dynamicText != "" {
+		blocks = append(blocks, agentcore.SystemBlock{Text: dynamicText})
 	}
 	if m.session.contextFiles.GitSnapshot != "" {
 		blocks = append(blocks, agentcore.SystemBlock{Text: m.session.contextFiles.GitSnapshot})
@@ -210,8 +223,10 @@ func (m *sessionPromptManager) rebuildPrompt() {
 	// Refresh cache-break fingerprints. CacheReadTokens / Valid are owned by
 	// persistLLMCall — only the input hashes are updated here, so a prompt
 	// rebuild mid-session leaves the "previous observed cache_read" intact
-	// and the next turn can still detect a drop.
-	m.session.cacheSnap.SystemHash = hashSystemBlocks(blocks)
+	// and the next turn can still detect a drop. Frozen and dynamic hash
+	// separately so detectCacheBreak can pinpoint which block churned.
+	m.session.cacheSnap.FrozenSystemHash = hashFrozenBlocks(blocks)
+	m.session.cacheSnap.DynamicSystemHash = hashDynamicBlock(blocks)
 	m.session.cacheSnap.ToolsHash = hashTools(m.session.activeTools)
 	m.session.mu.Unlock()
 }
@@ -226,12 +241,10 @@ func (m *sessionPromptManager) refreshSkillReminders() {
 	m.session.mu.Unlock()
 }
 
-const mcpToolPrefix = "mcp__"
-
 func replaceMCPToolsInSlice(base []agentcore.Tool, mcpTools []agentcore.Tool) []agentcore.Tool {
 	out := make([]agentcore.Tool, 0, len(base)+len(mcpTools))
 	for _, tool := range base {
-		if strings.HasPrefix(tool.Name(), mcpToolPrefix) {
+		if config.IsMCPTool(tool.Name()) {
 			continue
 		}
 		out = append(out, tool)
@@ -242,7 +255,7 @@ func replaceMCPToolsInSlice(base []agentcore.Tool, mcpTools []agentcore.Tool) []
 
 func hasMCPTools(tools []agentcore.Tool) bool {
 	for _, tool := range tools {
-		if strings.HasPrefix(tool.Name(), mcpToolPrefix) {
+		if config.IsMCPTool(tool.Name()) {
 			return true
 		}
 	}

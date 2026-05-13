@@ -725,7 +725,7 @@ func TestInjectInvokedSkillContextAddsPreservedReminder(t *testing.T) {
 	}
 }
 
-func TestPromptOverlaysAppendInFixedOrder(t *testing.T) {
+func TestPromptOverlaysAppendInSortedKeyOrder(t *testing.T) {
 	t.Parallel()
 
 	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
@@ -739,8 +739,10 @@ func TestPromptOverlaysAppendInFixedOrder(t *testing.T) {
 	})
 	t.Cleanup(s.Close)
 
-	s.SetMCPInstructions("mcp overlay")
+	// Register overlays in arbitrary order — output must be sorted by key
+	// so byte-level rebuilds are stable across insertion sequences.
 	s.OverlayPrompt("plan.mode", "plan overlay")
+	s.SetMCPInstructions("mcp overlay")
 	s.OverlayPrompt("plan.approved", "approved overlay")
 
 	systemPrompt := ag.State().SystemPrompt
@@ -750,8 +752,9 @@ func TestPromptOverlaysAppendInFixedOrder(t *testing.T) {
 	if mcpIdx < 0 || planIdx < 0 || approvedIdx < 0 {
 		t.Fatalf("missing overlays in system prompt: %q", systemPrompt)
 	}
-	if !(mcpIdx < planIdx && planIdx < approvedIdx) {
-		t.Fatalf("unexpected overlay order: %q", systemPrompt)
+	// Sorted by key: "mcp" < "plan.approved" < "plan.mode".
+	if !(mcpIdx < approvedIdx && approvedIdx < planIdx) {
+		t.Fatalf("unexpected overlay order (want mcp < plan.approved < plan.mode): %q", systemPrompt)
 	}
 }
 
