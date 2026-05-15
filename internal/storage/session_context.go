@@ -1,10 +1,8 @@
 package storage
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/voocel/agentcore"
 )
@@ -25,27 +23,19 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.path)
-	if err != nil {
-		return ContextSnapshot{}, err
-	}
-	defer f.Close()
-
-	// Read all entries into a map.
-	entries := make(map[string]Entry)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		var entry Entry
-		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.ID != "" {
-			if _, exists := entries[entry.ID]; exists {
-				return ContextSnapshot{}, fmt.Errorf("duplicate entry id: %s", entry.ID)
-			}
-			entries[entry.ID] = entry
+	// Reuse the open-time entries scan when available; otherwise re-read
+	// the file. Consume on read so subsequent BuildSnapshot calls (or any
+	// post-write call — appendEntry also clears it) get a fresh view.
+	var entries map[string]Entry
+	if s.openEntries != nil {
+		entries = s.openEntries
+		s.openEntries = nil
+	} else {
+		scanned, _, err := scanEntries(s.path)
+		if err != nil {
+			return ContextSnapshot{}, err
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return ContextSnapshot{}, err
+		entries = scanned
 	}
 
 	// Walk from leaf to root.
@@ -81,6 +71,20 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 		chain[i], chain[j] = chain[j], chain[i]
 	}
 
+	// Locate the last EntryCompaction so we can skip the JSON unmarshal of
+	// pre-compaction EntryMessage entries — the compaction case below runs
+	// msgs = nil, so any messages reduced before it are immediately discarded.
+	// State-bearing entries (model / thinking / plan / session-info) are
+	// kept because they may not have a post-compaction counterpart and
+	// dropping them would silently lose model/plan/thinking selection.
+	lastCompactionIdx := -1
+	for i := len(chain) - 1; i >= 0; i-- {
+		if chain[i].Kind == EntryCompaction {
+			lastCompactionIdx = i
+			break
+		}
+	}
+
 	// Build context from the chain.
 	var msgs []agentcore.AgentMessage
 	lastProvider := ""
@@ -90,7 +94,13 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	lastPlanPhase := ""
 	lastPlanPreMode := ""
 
-	for _, entry := range chain {
+	for i, entry := range chain {
+		// Pre-compaction messages are superseded by the compaction summary;
+		// skip their unmarshal to save work on long sessions with many
+		// /compact rounds. Other entry kinds still flow through reduce.
+		if lastCompactionIdx > 0 && i < lastCompactionIdx && entry.Kind == EntryMessage {
+			continue
+		}
 		switch entry.Kind {
 		case EntryMessage:
 			var msg agentcore.Message

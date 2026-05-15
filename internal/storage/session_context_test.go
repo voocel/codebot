@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/voocel/agentcore"
@@ -92,6 +93,81 @@ func TestBuildSnapshotRepairsMissingToolResult(t *testing.T) {
 	}
 	if got := toolMsg.Metadata["is_error"]; got != true {
 		t.Fatalf("is_error = %v, want true", got)
+	}
+}
+
+func TestBuildSnapshotPreservesPreCompactionStateWhileSkippingMessages(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := create(dir, "/workspace/project")
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	// State entries appear ONCE before the compaction; nothing resets them
+	// after. If chain truncation discards them, the snapshot loses them.
+	if err := store.AppendModelChange("anthropic", "claude-sonnet-4-5"); err != nil {
+		t.Fatalf("append model change: %v", err)
+	}
+	if err := store.AppendThinkingLevelChange("high"); err != nil {
+		t.Fatalf("append thinking change: %v", err)
+	}
+	if err := store.AppendPlanState("planning", "calm-river", "balanced"); err != nil {
+		t.Fatalf("append plan state: %v", err)
+	}
+
+	// Pre-compaction conversation: should be discarded by the snapshot.
+	for i := 0; i < 5; i++ {
+		if err := store.AppendMessage(agentcore.UserMsg("pre-compaction noise")); err != nil {
+			t.Fatalf("append pre msg: %v", err)
+		}
+	}
+
+	if err := store.AppendCompaction("summary of earlier work", nil); err != nil {
+		t.Fatalf("append compaction: %v", err)
+	}
+
+	// Post-compaction tail.
+	if err := store.AppendMessage(agentcore.UserMsg("post-compaction live message")); err != nil {
+		t.Fatalf("append post msg: %v", err)
+	}
+
+	snapshot, err := store.BuildSnapshot()
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+
+	// State must survive even though it was written before the compaction.
+	if snapshot.Provider != "anthropic" || snapshot.Model != "claude-sonnet-4-5" {
+		t.Fatalf("pre-compaction model lost: provider=%q model=%q", snapshot.Provider, snapshot.Model)
+	}
+	if snapshot.Thinking != "high" {
+		t.Fatalf("pre-compaction thinking lost: %q", snapshot.Thinking)
+	}
+	if snapshot.PlanPhase != "planning" || snapshot.PlanSlug != "calm-river" || snapshot.PlanPreMode != "balanced" {
+		t.Fatalf("pre-compaction plan state lost: %+v", snapshot)
+	}
+
+	// Pre-compaction messages must be gone; only summary + post-compaction tail.
+	// Snapshot.Messages = [summary user msg, post-compaction user msg] = 2.
+	if len(snapshot.Messages) != 2 {
+		t.Fatalf("messages len = %d, want 2 (summary + post-compaction tail)", len(snapshot.Messages))
+	}
+	first, ok := snapshot.Messages[0].(agentcore.Message)
+	if !ok {
+		t.Fatalf("messages[0] type = %T, want agentcore.Message", snapshot.Messages[0])
+	}
+	if !strings.Contains(first.TextContent(), "summary of earlier work") {
+		t.Fatalf("messages[0] should be compaction summary, got %q", first.TextContent())
+	}
+	last, ok := snapshot.Messages[1].(agentcore.Message)
+	if !ok {
+		t.Fatalf("messages[1] type = %T, want agentcore.Message", snapshot.Messages[1])
+	}
+	if !strings.Contains(last.TextContent(), "post-compaction live message") {
+		t.Fatalf("messages[1] should be post-compaction tail, got %q", last.TextContent())
 	}
 }
 

@@ -26,6 +26,15 @@ type Store struct {
 	file   *os.File
 	leafID string // ID of the most recent entry (tree tip)
 	mu     sync.Mutex
+
+	// openEntries caches the full entries map produced by the open-time
+	// scan so the first BuildSnapshot can reuse it instead of re-reading
+	// the whole file. Consumed (set to nil) on first BuildSnapshot read,
+	// and invalidated by any appendEntry — both paths ensure reads after
+	// a write fall back to a fresh scan, so cache staleness can't surface.
+	// create() leaves it nil; the new-session path's BuildSnapshot is
+	// cheap (header-only file) and not on a hot path.
+	openEntries map[string]Entry
 }
 
 // create creates a new session file in dir and returns the Store.
@@ -65,31 +74,36 @@ func create(dir, cwd string) (*Store, error) {
 }
 
 // open opens an existing session file and reads its header.
+//
+// Performs a single full-file scan up front to recover both the leaf ID and
+// the entries map; the latter is cached on the Store so the first
+// BuildSnapshot doesn't re-open and re-scan the same bytes (the prior
+// implementation paid for that scan twice — findLeafID at open + a fresh
+// read in BuildSnapshot).
 func open(path string) (*Store, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open session: %w", err)
 	}
 
-	// Read header from first line
-	scanner := bufio.NewScanner(f)
-	if !scanner.Scan() {
+	entries, leafID, err := scanEntries(path)
+	if err != nil {
 		f.Close()
-		return nil, fmt.Errorf("session file is empty")
+		return nil, fmt.Errorf("scan session: %w", err)
 	}
 
-	var entry Entry
-	if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+	headerEntry, ok := entries[headerEntryID]
+	if !ok {
 		f.Close()
-		return nil, fmt.Errorf("parse header: %w", err)
+		return nil, fmt.Errorf("session file missing header entry")
 	}
-	if entry.Kind != EntryHeader {
+	if headerEntry.Kind != EntryHeader {
 		f.Close()
-		return nil, fmt.Errorf("first entry is %q, expected header", entry.Kind)
+		return nil, fmt.Errorf("first entry is %q, expected header", headerEntry.Kind)
 	}
 
 	var h Header
-	if err := json.Unmarshal(entry.Data, &h); err != nil {
+	if err := json.Unmarshal(headerEntry.Data, &h); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("parse header data: %w", err)
 	}
@@ -98,7 +112,7 @@ func open(path string) (*Store, error) {
 		return nil, fmt.Errorf("unsupported session version: got %d, expected %d", h.Version, currentVersion)
 	}
 
-	return &Store{path: path, header: h, file: f, leafID: findLeafID(path)}, nil
+	return &Store{path: path, header: h, file: f, leafID: leafID, openEntries: entries}, nil
 }
 
 // AppendMessage serializes and appends an agentcore.Message.
@@ -249,6 +263,13 @@ func (s *Store) appendEntry(entry Entry) error {
 	if s.file == nil {
 		return fmt.Errorf("session store is closed")
 	}
+	// Any append invalidates the open-time entries cache. Race-safety:
+	// post-construction callers (appendChained, SetName) both hold s.mu;
+	// create() doesn't hold the lock but the Store hasn't been returned to
+	// any caller yet, so the assignment is still safe. A future caller
+	// added to a path that doesn't satisfy either invariant must take
+	// s.mu before calling appendEntry.
+	s.openEntries = nil
 	line, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("marshal entry: %w", err)
@@ -276,24 +297,46 @@ func (s *Store) appendChained(kind EntryKind, data json.RawMessage) error {
 	return nil
 }
 
-// findLeafID scans a JSONL file and returns the ID of the last entry.
-func findLeafID(path string) string {
+// scanEntries reads a JSONL session file once and returns all entries keyed
+// by ID along with the leaf ID (last entry with a non-empty ID). Replaces
+// the prior findLeafID + per-BuildSnapshot scan pair: callers that need
+// either the leaf or the full map can share a single IO pass.
+//
+// Tolerance policy mirrors the prior findLeafID + BuildSnapshot pair so
+// any session file the old code could open still opens here. The only
+// hard error is "file cannot be opened at all":
+//
+//   - Lines that fail json.Unmarshal or carry an empty ID are skipped.
+//   - Duplicate IDs overwrite (last-write-wins) instead of failing —
+//     mirrors old findLeafID. The chain walk in BuildSnapshot will still
+//     surface real corruption (missing parent, cycle), but a stray dup
+//     mid-file shouldn't lock a user out of an otherwise-recoverable
+//     session.
+//   - scanner.Err() is ignored. The most common trigger is a single
+//     entry serialised larger than the 1MB scanner buffer (huge tool
+//     results from read/grep/bash). Returning an error there would make
+//     resume fail entirely; instead we return the entries scanned so far
+//     and let downstream code work with what's recoverable.
+func scanEntries(path string) (map[string]Entry, string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return headerEntryID
+		return nil, headerEntryID, err
 	}
 	defer f.Close()
 
+	entries := make(map[string]Entry)
 	leafID := headerEntryID
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		var entry Entry
-		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.ID != "" {
-			leafID = entry.ID
+		if json.Unmarshal(scanner.Bytes(), &entry) != nil || entry.ID == "" {
+			continue
 		}
+		entries[entry.ID] = entry
+		leafID = entry.ID
 	}
-	return leafID
+	return entries, leafID, nil
 }
 
 func generateID() string {
