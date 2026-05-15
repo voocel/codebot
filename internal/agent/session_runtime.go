@@ -219,22 +219,44 @@ func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderK
 	})
 	return true
 }
+// PlanModeSignal describes the plan-mode state observed at the moment the
+// runtime polls before queueing a per-prompt reminder. Three distinct
+// situations need different behavior:
+//
+//   - Active=true: plan mode is on; emit the sparse "still read-only" reminder
+//     on its 5-turn cadence (PlanFilePath gives the writable plan file).
+//   - JustCancelled=true: plan mode was cancelled via /plan cancel since the
+//     last poll; emit a one-shot "you have exited plan mode" reminder so the
+//     model knows the MUST-NOT rules buried in the EnterPlanMode tool_result
+//     no longer apply. Mirrors CC's needsPlanModeExitAttachment flag
+//     (refer/claude-code-src/utils/attachments.ts:1252).
+//   - All zero: plan mode is off; no reminder needed.
+//
+// Active and JustCancelled are mutually exclusive — the producer (plan.Manager)
+// guarantees that. JustCancelled is consumed on read: a second poll without a
+// fresh Cancel() returns the zero value.
+type PlanModeSignal struct {
+	Active        bool
+	PlanFilePath  string
+	JustCancelled bool
+}
+
 // SetPlanModeSignal registers a callback the runtime polls before every user
 // prompt to decide whether to queue a plan-mode reminder. plan.Manager wires
 // this so the reminder cadence stays driven by the actual plan-mode state
 // rather than a side-channel boolean.
-func (s *Session) SetPlanModeSignal(fn func() (active bool, planFilePath string)) {
+func (s *Session) SetPlanModeSignal(fn func() PlanModeSignal) {
 	s.mu.Lock()
 	s.planModeSignal = fn
 	s.mu.Unlock()
 }
 
-func (s *Session) currentPlanModeSignal() (bool, string) {
+func (s *Session) currentPlanModeSignal() PlanModeSignal {
 	s.mu.Lock()
 	fn := s.planModeSignal
 	s.mu.Unlock()
 	if fn == nil {
-		return false, ""
+		return PlanModeSignal{}
 	}
 	return fn()
 }

@@ -95,7 +95,7 @@ type Session struct {
 	skillUsage        *skill.UsageTracker
 	overlays          overlayStore
 	beforePrompt      func()
-	planModeSignal    func() (active bool, planFilePath string)
+	planModeSignal    func() PlanModeSignal
 	hookRunner        *hooks.Runner
 	taskStore         *storage.TaskStore
 	skillAllowsSetter func([]string)

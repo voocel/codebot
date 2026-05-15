@@ -173,11 +173,14 @@ func (p *sessionRuntimePolicy) queueTaskManagementPromptReminder() {
 
 func (p *sessionRuntimePolicy) queuePlanModePromptReminder() {
 	s := p.session
-	active, planPath := s.currentPlanModeSignal()
-	if !active {
-		return
-	}
-	if key, reminder, ok := planModeReminderForNextPrompt(s.agent.Messages(), planPath); ok {
+	sig := s.currentPlanModeSignal()
+	switch {
+	case sig.Active:
+		if key, reminder, ok := planModeReminderForNextPrompt(s.agent.Messages(), sig.PlanFilePath); ok {
+			s.queueRuntimeReminder(key, ReminderPlanMode, reminder)
+		}
+	case sig.JustCancelled:
+		key, reminder := planModeCancelledReminderForNextPrompt()
 		s.queueRuntimeReminder(key, ReminderPlanMode, reminder)
 	}
 }

@@ -111,6 +111,13 @@ func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine
 		agentcore.WithMaxToolConcurrency(4),
 		agentcore.WithContextManager(contextEngine),
 		agentcore.WithToolGate(services.approvalEngine.AsToolGate()),
+		// Place the single message-level cache write breakpoint on the freshest
+		// non-system turn (user input, tool_result, or assistant). System
+		// blocks 1/2 already carry their own cache_control; this breakpoint
+		// covers the growing prefix so each LLM call inside a tool loop reads
+		// the previous tool_use+tool_result pair from cache instead of
+		// re-uploading them.
+		agentcore.WithCacheLastMessage("ephemeral"),
 	}
 	if assembly.hookMiddleware != nil {
 		opts = append(opts, agentcore.WithMiddlewares(assembly.hookMiddleware))

@@ -283,6 +283,35 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	}
 }
 
+// TestPlanModeContractCarriesEssentialRules locks the contract slice
+// returned by Enter(). The workflow guidance was moved to the first plan
+// reminder, but these elements MUST stay in the per-Enter tool_result
+// because the model needs them on every entry — losing them is how
+// "the model edited code in plan mode" regressions ship.
+func TestPlanModeContractCarriesEssentialRules(t *testing.T) {
+	t.Parallel()
+
+	contract := buildPlanModeContract("/tmp/plan-xyz.md")
+
+	for _, want := range []string{
+		"Plan mode is active",
+		"MUST NOT make any edits",
+		"/tmp/plan-xyz.md",
+		"exit_plan_mode",
+		"ask_user",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("contract missing essential phrase %q, got:\n%s", want, contract)
+		}
+	}
+
+	// Workflow guidance MUST NOT be in the contract — that ships via the
+	// first plan reminder. Duplicating it here defeats the split.
+	if strings.Contains(contract, "Iterative Planning Workflow") {
+		t.Fatalf("contract leaked workflow guidance — should ship only via first plan reminder")
+	}
+}
+
 // TestEnterPlanToolSynchronouslyEntersPlanMode verifies enter_plan_mode
 // performs the state transition inside its handler so the next turn already
 // sees PlanMode=true.
@@ -319,6 +348,76 @@ func TestEnterPlanToolSynchronouslyEntersPlanMode(t *testing.T) {
 	}
 	if !strings.Contains(string(result), controller.CurrentPlanPath()) {
 		t.Fatalf("expected plan file path in result prompt, got %s", result)
+	}
+}
+
+// TestCancelEmitsOneShotJustCancelledSignal locks the gap that motivated
+// Step 7's exit-signal patch: /plan cancel has no tool_result to carry an
+// "exit signal" into history, so the next user prompt must pick up a
+// one-shot reminder. The cancel flag must be consumed on the first poll
+// (signal() acts as compare-and-swap) and Enter() must drop a stale flag
+// so a re-entered plan session doesn't fire the "you exited" reminder.
+func TestCancelEmitsOneShotJustCancelledSignal(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := storage.NewManager(dir).Create(dir)
+	if err != nil {
+		t.Fatalf("create session store: %v", err)
+	}
+	defer store.Close()
+
+	engine, err := approval.NewEngine(dir, approval.ModeBalanced, nil, nil)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	session, _ := newTestSession(t, dir, []agentcore.Tool{&stubTool{name: "read"}})
+	defer session.Close()
+
+	planStore := storage.NewPlanStore(dir)
+	controller := NewManager(session, engine, planStore, store)
+	if err := controller.Restore(State{Phase: PhaseOff}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	// Off state: zero signal.
+	if sig := controller.signal(); sig.Active || sig.JustCancelled {
+		t.Fatalf("off state should emit zero signal, got %+v", sig)
+	}
+
+	// Active state: signal carries plan path.
+	if _, err := controller.Enter(); err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+	if sig := controller.signal(); !sig.Active || sig.JustCancelled || sig.PlanFilePath == "" {
+		t.Fatalf("planning state should be Active with plan path, got %+v", sig)
+	}
+
+	// Cancel: next poll returns JustCancelled exactly once.
+	if err := controller.Cancel(); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	sig := controller.signal()
+	if !sig.JustCancelled || sig.Active {
+		t.Fatalf("post-cancel signal must be JustCancelled, got %+v", sig)
+	}
+	if sig2 := controller.signal(); sig2.JustCancelled || sig2.Active {
+		t.Fatalf("JustCancelled must consume on read, second poll got %+v", sig2)
+	}
+
+	// Re-enter cancels any stale pending flag.
+	if _, err := controller.Enter(); err != nil {
+		t.Fatalf("re-enter: %v", err)
+	}
+	if err := controller.Cancel(); err != nil {
+		t.Fatalf("cancel #2: %v", err)
+	}
+	if _, err := controller.Enter(); err != nil {
+		t.Fatalf("re-enter #2: %v", err)
+	}
+	if sig := controller.signal(); sig.JustCancelled {
+		t.Fatalf("Enter() after Cancel() should drop pending flag; got %+v", sig)
 	}
 }
 

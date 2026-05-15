@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
@@ -11,67 +12,34 @@ import (
 	localtools "github.com/voocel/codebot/internal/tools"
 )
 
-// buildModePrompt produces the plan-mode system overlay. The plan file is the
-// canonical artifact: the model edits it incrementally with write/edit; the
-// permission engine denies all other writes (and Subagent dispatch) while
-// PlanMode=true. exit_plan_mode signals readiness and routes through the
-// permission ask flow for user approval.
+// buildPlanModeContract produces the plan-mode behavioral contract: the
+// MUST-NOT rules, the writable plan file path, and the end-of-turn obligation.
+// This is the *constraint* slice of plan-mode instructions — the part that
+// must be salient on every model turn. The complementary *guidance* slice
+// (iterative loop, asking-good-questions, plan-file-structure, etc.) is
+// delivered once as the first plan-mode system-reminder by
+// agent.planModeReminderForNextPrompt; re-reading workflow tips on every
+// re-entry has no salience benefit and just burns tokens. See plan.Manager.Enter
+// and agent/plan_reminders.go for how the two slices flow into the model.
 //
 // Wording mirrors CC's iterative plan-mode instructions
 // (claude-code-src/utils/messages.ts:getPlanModeInterviewInstructions) so the
-// model gets the same MUST-NOT framing, the explore→update→ask loop, and the
-// strict end-of-turn contract.
-func buildModePrompt(planFilePath string) string {
+// model gets the same MUST-NOT framing and end-of-turn contract.
+func buildPlanModeContract(planFilePath string) string {
 	return `Plan mode is active. The user indicated that they do not want you to execute yet — you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
 
 ## Plan File Info:
-A plan file exists at ` + planFilePath + `. Use the write tool to populate it (if empty) or the edit tool to refine it incrementally as your understanding grows.
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit — other than this you are only allowed to take READ-ONLY actions.
+A plan file exists at ` + planFilePath + `. Use the write tool to populate it (if empty) or the edit tool to refine it incrementally as your understanding grows. NOTE that this is the only file you are allowed to edit — other than this you are only allowed to take READ-ONLY actions.
 
-## Iterative Planning Workflow
-
-You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you can't make alone, and write your findings into the plan file as you go. The plan file (above) is the ONLY file you may edit — it starts as a rough skeleton and gradually becomes the final plan.
-
-### The Loop
-
-Repeat this cycle until the plan is complete:
-
-1. **Explore** — Use read, grep, glob, ls (and bash for read-only commands like ` + "`git status`" + `, ` + "`find`" + `, ` + "`cat`" + `, ` + "`sed -n`" + `) to read code. Look for existing functions, utilities, and patterns to reuse.
-2. **Update the plan file** — After each discovery, immediately capture what you learned. Don't wait until the end.
-3. **Ask the user** — When you hit an ambiguity or decision you can't resolve from code alone, use ask_user. Then go back to step 1.
-
-### First Turn
-
-Start by quickly scanning a few key files to form an initial understanding of the task scope. Then write a skeleton plan (headers and rough notes) and ask the user your first round of questions. Don't explore exhaustively before engaging the user.
-
-### Asking Good Questions
-
-- Never ask what you could find out by reading the code
-- Batch related questions together (single ask_user call with multiple questions when applicable)
-- Focus on things only the user can answer: requirements, preferences, tradeoffs, edge case priorities
-- Scale depth to the task — a vague feature request needs many rounds; a focused bug fix may need one or none
-
-### Plan File Structure
-
-Your plan file should be divided into clear sections using markdown headers, based on the request. Fill out these sections as you go.
-- Begin with a **Context** section: explain why this change is being made — the problem or need it addresses, what prompted it, and the intended outcome
-- Include only your recommended approach, not all alternatives
-- Ensure that the plan file is concise enough to scan quickly, but detailed enough to execute effectively
-- Include the paths of critical files to be modified
-- Reference existing functions and utilities you found that should be reused, with their file paths
-- Include a verification section describing how to test the changes end-to-end (run the code, run tests, manual checks)
-
-### When to Converge
-
-Your plan is ready when you've addressed all ambiguities and it covers: what to change, which files to modify, what existing code to reuse (with file paths), and how to verify the changes. Call exit_plan_mode when the plan is ready for approval.
-
-### Ending Your Turn
+## Ending Your Turn
 
 Your turn should only end by either:
 - Using ask_user to gather more information
 - Calling exit_plan_mode when the plan is ready for approval
 
-**Important:** Use exit_plan_mode to request plan approval. Do NOT ask about plan approval via text or ask_user. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?" MUST go through exit_plan_mode.`
+**Important:** Use exit_plan_mode to request plan approval. Do NOT ask about plan approval via text or ask_user. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?" MUST go through exit_plan_mode.
+
+Detailed planning workflow guidance arrives in the next system-reminder.`
 }
 
 type Manager struct {
@@ -80,6 +48,15 @@ type Manager struct {
 	planStore    *storage.PlanStore
 	sessionStore *storage.Store
 	state        *Store
+
+	// cancelPending is a one-shot flag set by Cancel() and consumed on the
+	// next signal() poll. Mirrors CC's needsPlanModeExitAttachment: when the
+	// user aborts plan mode via /plan cancel there is no tool_result to
+	// carry an "exit signal" into history, so we inject a one-time reminder
+	// telling the model the read-only contract from the EnterPlanMode
+	// tool_result no longer applies. Intentionally process-local (not
+	// persisted): a restart after cancellation is itself a clean break.
+	cancelPending atomic.Bool
 }
 
 func NewManager(session *agent.Session, approvalEngine *approval.Engine, planStore *storage.PlanStore, sessionStore *storage.Store) *Manager {
@@ -98,12 +75,18 @@ func NewManager(session *agent.Session, approvalEngine *approval.Engine, planSto
 	return m
 }
 
-func (c *Manager) signal() (bool, string) {
+// signal answers the runtime poll before every user prompt. Three possible
+// shapes (see agent.PlanModeSignal). Cancel-pending wins over off; active is
+// mutually exclusive with both.
+func (c *Manager) signal() agent.PlanModeSignal {
 	state := c.state.Snapshot()
-	if state.Phase != PhasePlanning || c.planStore == nil {
-		return false, ""
+	if state.Phase == PhasePlanning && c.planStore != nil {
+		return agent.PlanModeSignal{Active: true, PlanFilePath: c.planStore.Path(state.Slug)}
 	}
-	return true, c.planStore.Path(state.Slug)
+	if c.cancelPending.CompareAndSwap(true, false) {
+		return agent.PlanModeSignal{JustCancelled: true}
+	}
+	return agent.PlanModeSignal{}
 }
 
 func (c *Manager) Snapshot() State {
@@ -126,6 +109,9 @@ func (c *Manager) Enter() (string, error) {
 	if state.Phase != PhaseOff {
 		return "", fmt.Errorf("plan mode already active")
 	}
+	// Drop any pending cancel reminder — we're re-entering plan mode before
+	// it could fire, so the "you have exited plan mode" signal would be a lie.
+	c.cancelPending.Store(false)
 
 	slug := storage.GenerateName()
 	if err := c.ensurePlanFile(slug); err != nil {
@@ -149,7 +135,15 @@ func (c *Manager) Enter() (string, error) {
 	}
 
 	planPath := c.planStore.Path(slug)
-	return "Entered plan mode. Build your plan in " + planPath + " using the write or edit tool, then call exit_plan_mode for approval.", nil
+	// Return only the contract (MUST-NOT + plan path + end-of-turn rules).
+	// The complementary workflow guidance is delivered as the first
+	// plan-mode system-reminder by agent.planModeReminderForNextPrompt on
+	// the next user prompt. Splitting the two slices keeps the per-Enter
+	// tool_result small (~200 tokens vs ~950) so re-entering plan mode in
+	// the same session doesn't pile up duplicate guidance in history.
+	// System prompt (SB1/SB2/SB3) stays byte-stable across plan toggles —
+	// see Step 7 perf: optimize prompt cache and the applyState comment.
+	return buildPlanModeContract(planPath), nil
 }
 
 // Exit unconditionally transitions out of plan mode and returns the plan
@@ -176,7 +170,10 @@ func (c *Manager) Exit() (string, error) {
 }
 
 // Cancel is invoked from /plan cancel: ends plan mode without expecting any
-// plan file to exist.
+// plan file to exist. Sets cancelPending so the next user prompt picks up a
+// one-shot "you have exited plan mode" reminder — exit_plan_mode carries an
+// equivalent signal in its tool_result, but /plan cancel has no tool_result
+// to ride on, so the reminder pipeline closes that gap.
 func (c *Manager) Cancel() error {
 	state := c.state.Snapshot()
 	if state.Phase == PhaseOff {
@@ -185,6 +182,7 @@ func (c *Manager) Cancel() error {
 	next := State{Phase: PhaseOff, PreMode: state.PreMode}
 	c.state.Replace(next)
 	c.applyState(next)
+	c.cancelPending.Store(true)
 	return c.persist(next)
 }
 
@@ -210,21 +208,27 @@ func (c *Manager) applyState(state State) {
 	}
 	c.wireValidators()
 
-	const planModeOverlay = "plan.mode"
-
-	planPath := ""
-	if c.planStore != nil && state.Slug != "" {
-		planPath = c.planStore.Path(state.Slug)
-	}
+	// Plan mode instructions are NOT written into the system prompt anymore.
+	// Mutating SB3 on every enter/exit would invalidate the marker#3 prefix
+	// and force re-write of tools+history (Step 7). Instead the rules flow
+	// in via two channels:
+	//   1. Contract (MUST-NOT + plan path + end-of-turn) → Enter() return
+	//      value, surfaces as the enter_plan_mode tool_result (or as the
+	//      slash-command user message). Small (~200 tokens), repeats per
+	//      Enter but cheap to duplicate.
+	//   2. Workflow guidance (explore loop, asking-good-questions, plan
+	//      structure, when-to-converge) → first plan-mode system-reminder
+	//      injected by plan_reminders.go on the next user prompt, then
+	//      sparse refresh on a 5-turn cadence.
+	// The system prompt stays byte-stable across plan toggles, so SB cache
+	// entries survive intact.
 	switch state.Phase {
 	case PhasePlanning:
-		c.session.OverlayPrompt(planModeOverlay, buildModePrompt(planPath))
 		if c.approval != nil {
 			c.approval.SetPlanMode(true)
 			c.approval.SetPlanContentProvider(c.CurrentPlan)
 		}
 	default:
-		c.session.OverlayPrompt(planModeOverlay, "")
 		if c.approval != nil {
 			c.approval.SetPlanMode(false)
 			c.approval.SetPlanContentProvider(nil)
