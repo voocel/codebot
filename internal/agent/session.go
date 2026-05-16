@@ -104,13 +104,9 @@ type Session struct {
 	frozenIdentity     string // block 1 — process-stable, never recomputed
 	frozenInstructions string // block 2 — process-stable, never recomputed
 
-	deferredToolsPreamble  string   // <available-deferred-tools> for first user message
-	staticReminders        []string // stable reminders derived from context files
-	runtimeReminders       []string // one-shot reminders injected at runtime
-	runtimeReminderKeys    map[string]struct{}
-	steeredReminderKeys    map[string]struct{}
-	autoResumeReminderKeys map[string]struct{}
-	preambleInjected       bool // true after first preamble injection
+	deferredToolsPreamble string // <available-deferred-tools> for first user message
+	reminders             reminderState
+	preambleInjected      bool // true after first preamble injection
 
 	listeners []func(SessionEvent)
 	unsub     func()
@@ -119,23 +115,22 @@ type Session struct {
 
 	chatModel agentcore.ChatModel
 
-	lazyPersist             bool
-	pendingUserMsg          []agentcore.Message
-	autoNamed               bool
-	lastAssistantStart      time.Time          // set at EventMessageStart (assistant), consumed at EventMessageEnd for latency_ms
-	cacheSnap               cacheSnapshot      // previous turn's system/tools fingerprint + cache_read, updated after every LLM call
-	sessionMemory           sessionMemoryState // background extraction bookkeeping — see session_memory.go
-	pendingToolCalls        map[string]pendingToolCall
-	recentToolCalls         []toolCallFingerprint
-	pendingReminderContinue bool
-	currentTurn             TurnOutcomeSnapshot
-	lastTurn                TurnOutcomeSnapshot
-	lastRunSummary          *agentcore.RunSummary
-	lastReminder            *ReminderSnapshot
-	lastCompaction          *CompactionSnapshot
-	recentErrors            []ErrorSnapshot
-	dirtySeq                uint64 // incremented each time a repo-mutating tool succeeds; hook goroutine captures this and only clears if unchanged
-	generation              uint64 // incremented on session switch; async goroutines check this to avoid cross-session callbacks
+	lazyPersist        bool
+	pendingUserMsg     []agentcore.Message
+	autoNamed          bool
+	lastAssistantStart time.Time          // set at EventMessageStart (assistant), consumed at EventMessageEnd for latency_ms
+	cacheSnap          cacheSnapshot      // previous turn's system/tools fingerprint + cache_read, updated after every LLM call
+	sessionMemory      sessionMemoryState // background extraction bookkeeping — see session_memory.go
+	pendingToolCalls   map[string]pendingToolCall
+	recentToolCalls    []toolCallFingerprint
+	currentTurn        TurnOutcomeSnapshot
+	lastTurn           TurnOutcomeSnapshot
+	lastRunSummary     *agentcore.RunSummary
+	lastReminder       *ReminderSnapshot
+	lastCompaction     *CompactionSnapshot
+	recentErrors       []ErrorSnapshot
+	dirtySeq           uint64 // incremented each time a repo-mutating tool succeeds; hook goroutine captures this and only clears if unchanged
+	generation         uint64 // incremented on session switch; async goroutines check this to avoid cross-session callbacks
 
 	prompts     *sessionPromptManager
 	persistence *sessionPersistence
@@ -161,6 +156,52 @@ type invokedSkillSnapshot struct {
 	PromptText string
 	Paths      []string
 	Timestamp  time.Time
+}
+
+// reminderState bundles all reminder bookkeeping for a Session.
+//
+//   - static: persistent across turns (context-file derived), never cleared
+//   - runtime: one-shot queue consumed on the next user prompt
+//   - runtimeKeys: dedup for the queue
+//   - steeredKeys / autoResumeKeys: per-turn dedup for the two in-flight
+//     delivery paths (Steer / Inject) — reset every beginTurn
+//   - pendingContinue: marks that a Steer'd reminder needs a Continue() call
+//     after the current run finishes
+type reminderState struct {
+	static          []string
+	runtime         []string
+	runtimeKeys     map[string]struct{}
+	steeredKeys     map[string]struct{}
+	autoResumeKeys  map[string]struct{}
+	pendingContinue bool
+}
+
+func newReminderState(static []string) reminderState {
+	return reminderState{
+		static:         static,
+		runtimeKeys:    make(map[string]struct{}),
+		steeredKeys:    make(map[string]struct{}),
+		autoResumeKeys: make(map[string]struct{}),
+	}
+}
+
+// resetAll clears every transient field. 'static' is preserved.
+// Used by Session.resetHarnessStateLocked on session reset/switch.
+func (r *reminderState) resetAll() {
+	r.runtime = nil
+	r.runtimeKeys = make(map[string]struct{})
+	r.steeredKeys = make(map[string]struct{})
+	r.autoResumeKeys = make(map[string]struct{})
+	r.pendingContinue = false
+}
+
+// resetTurnDelivery clears per-turn delivery dedup state. The runtime queue
+// is preserved (queued reminders fire on the next user prompt).
+// Used by Session.beginTurn at the start of each turn.
+func (r *reminderState) resetTurnDelivery() {
+	r.steeredKeys = make(map[string]struct{})
+	r.autoResumeKeys = make(map[string]struct{})
+	r.pendingContinue = false
 }
 
 // overlayStore holds named instructions overlays appended to the dynamic
@@ -232,13 +273,10 @@ func NewSession(cfg SessionConfig) *Session {
 		frozenIdentity:     cfg.FrozenIdentity,
 		frozenInstructions: cfg.FrozenInstructions,
 
-		deferredToolsPreamble:  cfg.DeferredToolsPreamble,
-		staticReminders:        cfg.Reminders,
-		runtimeReminderKeys:    make(map[string]struct{}),
-		steeredReminderKeys:    make(map[string]struct{}),
-		autoResumeReminderKeys: make(map[string]struct{}),
-		pendingToolCalls:       make(map[string]pendingToolCall),
-		preambleInjected:       cfg.PreambleInjected,
+		deferredToolsPreamble: cfg.DeferredToolsPreamble,
+		reminders:             newReminderState(cfg.Reminders),
+		pendingToolCalls:      make(map[string]pendingToolCall),
+		preambleInjected:      cfg.PreambleInjected,
 	}
 	if cfg.InitialMCPOverlay != "" {
 		s.overlays.set("mcp", cfg.InitialMCPOverlay)
@@ -277,13 +315,9 @@ func (s *Session) ResetTaskList() error {
 
 func (s *Session) resetHarnessStateLocked() {
 	s.generation++
-	s.runtimeReminders = nil
-	s.runtimeReminderKeys = make(map[string]struct{})
-	s.steeredReminderKeys = make(map[string]struct{})
-	s.autoResumeReminderKeys = make(map[string]struct{})
+	s.reminders.resetAll()
 	s.pendingToolCalls = make(map[string]pendingToolCall)
 	s.recentToolCalls = nil
-	s.pendingReminderContinue = false
 	s.currentTurn = TurnOutcomeSnapshot{}
 	s.lastTurn = TurnOutcomeSnapshot{}
 	s.lastRunSummary = nil

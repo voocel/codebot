@@ -219,9 +219,7 @@ func hasToolNamed(tools []agentcore.Tool, name string) bool {
 func (s *Session) beginTurn() {
 	s.mu.Lock()
 	s.currentTurn = TurnOutcomeSnapshot{}
-	s.steeredReminderKeys = make(map[string]struct{})
-	s.autoResumeReminderKeys = make(map[string]struct{})
-	s.pendingReminderContinue = false
+	s.reminders.resetTurnDelivery()
 	s.mu.Unlock()
 }
 
@@ -250,15 +248,15 @@ func (s *Session) finalizeTurnOutcome() {
 	s.mu.Lock()
 	s.lastTurn = s.currentTurn
 	s.currentTurn = TurnOutcomeSnapshot{}
-	s.steeredReminderKeys = make(map[string]struct{})
+	s.reminders.steeredKeys = make(map[string]struct{})
 	s.mu.Unlock()
 }
 
 func (p *sessionRuntimePolicy) continuePendingReminder() bool {
 	s := p.session
 	s.mu.Lock()
-	pending := s.pendingReminderContinue
-	s.pendingReminderContinue = false
+	pending := s.reminders.pendingContinue
+	s.reminders.pendingContinue = false
 	gen := s.generation
 	s.mu.Unlock()
 	if !pending {

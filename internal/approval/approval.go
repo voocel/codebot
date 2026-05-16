@@ -48,10 +48,6 @@ func ParseRuleSet(allow, deny []string) (*RuleSet, error) {
 	return permission.ParseRuleSet(allow, deny)
 }
 
-func ParseRule(raw string) (Rule, error) {
-	return permission.ParseRule(raw)
-}
-
 type CommandCategory string
 
 const (

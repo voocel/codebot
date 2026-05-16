@@ -2,11 +2,6 @@ package provider
 
 import "strings"
 
-// SameModelID reports whether two model IDs refer to the same canonical model.
-func SameModelID(a, b string) bool {
-	return modelLookupMatches(normalizeModelLookupID(a), normalizeModelLookupID(b))
-}
-
 func lookupGeneratedModel(providerName, modelID string) (ModelEntry, bool) {
 	return lookupModelEntry(generatedModels, providerName, modelID)
 }

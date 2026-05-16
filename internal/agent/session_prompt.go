@@ -219,7 +219,7 @@ func (m *sessionPromptManager) rebuildPrompt() {
 	// Update reminders (skills + context files, injected per user message).
 	m.session.mu.Lock()
 	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, m.session.skillUsageScoresLocked())
-	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
+	m.session.reminders.static = config.BuildReminders(m.session.contextFiles, orderedSkills)
 	// Refresh cache-break fingerprints. CacheReadTokens / Valid are owned by
 	// persistLLMCall — only the input hashes are updated here, so a prompt
 	// rebuild mid-session leaves the "previous observed cache_read" intact
@@ -237,7 +237,7 @@ func (m *sessionPromptManager) refreshSkillReminders() {
 		m.session.skills = m.session.skillCatalog.List()
 	}
 	orderedSkills := skill.OrderForPrompt(m.session.skills, m.session.cwd, m.session.skillUsageScoresLocked())
-	m.session.staticReminders = config.BuildReminders(m.session.contextFiles, orderedSkills)
+	m.session.reminders.static = config.BuildReminders(m.session.contextFiles, orderedSkills)
 	m.session.mu.Unlock()
 }
 

@@ -104,7 +104,7 @@ func (s *Session) postCompactRecoveryMessages(_ context.Context, _ agentctx.Summ
 	// 2. Deferred tools + static reminders
 	s.mu.Lock()
 	preamble := s.deferredToolsPreamble
-	staticReminders := append([]string(nil), s.staticReminders...)
+	staticReminders := append([]string(nil), s.reminders.static...)
 	s.mu.Unlock()
 
 	if preamble != "" {

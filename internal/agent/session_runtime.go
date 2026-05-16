@@ -58,10 +58,10 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 // buildUserMessage creates a user message with reminders prepended as text blocks.
 func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentcore.Message {
 	s.mu.Lock()
-	runtimeReminders := append([]string(nil), s.runtimeReminders...)
-	s.runtimeReminders = nil
-	s.runtimeReminderKeys = make(map[string]struct{})
-	staticReminders := append([]string(nil), s.staticReminders...)
+	runtimeReminders := append([]string(nil), s.reminders.runtime...)
+	s.reminders.runtime = nil
+	s.reminders.runtimeKeys = make(map[string]struct{})
+	staticReminders := append([]string(nil), s.reminders.static...)
 	s.mu.Unlock()
 
 	if len(runtimeReminders) == 0 && len(staticReminders) == 0 {
@@ -93,15 +93,15 @@ func (s *Session) queueRuntimeReminder(key string, kind RuntimeReminderKind, rem
 	}
 
 	s.mu.Lock()
-	if s.runtimeReminderKeys == nil {
-		s.runtimeReminderKeys = make(map[string]struct{})
+	if s.reminders.runtimeKeys == nil {
+		s.reminders.runtimeKeys = make(map[string]struct{})
 	}
-	if _, exists := s.runtimeReminderKeys[key]; exists {
+	if _, exists := s.reminders.runtimeKeys[key]; exists {
 		s.mu.Unlock()
 		return
 	}
-	s.runtimeReminderKeys[key] = struct{}{}
-	s.runtimeReminders = append(s.runtimeReminders, reminder)
+	s.reminders.runtimeKeys[key] = struct{}{}
+	s.reminders.runtime = append(s.reminders.runtime, reminder)
 	s.mu.Unlock()
 	s.recordReminderMetric(kind)
 	s.recordReminderSnapshot(kind, "next_prompt")
@@ -156,15 +156,15 @@ func (s *Session) trySteerRuntimeReminder(key string, kind RuntimeReminderKind, 
 	}
 
 	s.mu.Lock()
-	if s.steeredReminderKeys == nil {
-		s.steeredReminderKeys = make(map[string]struct{})
+	if s.reminders.steeredKeys == nil {
+		s.reminders.steeredKeys = make(map[string]struct{})
 	}
-	if _, exists := s.steeredReminderKeys[key]; exists {
+	if _, exists := s.reminders.steeredKeys[key]; exists {
 		s.mu.Unlock()
 		return true
 	}
-	s.steeredReminderKeys[key] = struct{}{}
-	s.pendingReminderContinue = true
+	s.reminders.steeredKeys[key] = struct{}{}
+	s.reminders.pendingContinue = true
 	s.mu.Unlock()
 
 	s.recordReminderMetric(kind)
@@ -189,10 +189,10 @@ func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderK
 	}
 
 	s.mu.Lock()
-	if s.autoResumeReminderKeys == nil {
-		s.autoResumeReminderKeys = make(map[string]struct{})
+	if s.reminders.autoResumeKeys == nil {
+		s.reminders.autoResumeKeys = make(map[string]struct{})
 	}
-	if _, exists := s.autoResumeReminderKeys[key]; exists {
+	if _, exists := s.reminders.autoResumeKeys[key]; exists {
 		s.mu.Unlock()
 		return false
 	}
@@ -207,7 +207,7 @@ func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderK
 	}
 
 	s.mu.Lock()
-	s.autoResumeReminderKeys[key] = struct{}{}
+	s.reminders.autoResumeKeys[key] = struct{}{}
 	s.mu.Unlock()
 
 	s.recordReminderMetric(kind)
@@ -219,6 +219,7 @@ func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderK
 	})
 	return true
 }
+
 // PlanModeSignal describes the plan-mode state observed at the moment the
 // runtime polls before queueing a per-prompt reminder. Three distinct
 // situations need different behavior:

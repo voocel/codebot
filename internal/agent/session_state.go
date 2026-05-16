@@ -56,7 +56,7 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 			s.persistence.handleMessageEnd(msg)
 			if isRuntimeReminderMessage(msg) {
 				s.mu.Lock()
-				s.pendingReminderContinue = false
+				s.reminders.pendingContinue = false
 				s.mu.Unlock()
 			}
 			if msg.Role == agentcore.RoleAssistant {

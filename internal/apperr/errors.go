@@ -63,24 +63,12 @@ func (e *Error) ErrorKind() Kind {
 	return e.Kind
 }
 
-func New(display string) error {
-	return &Error{Display: display}
-}
-
 func NewKind(kind Kind, display string) error {
 	return &Error{Display: display, Kind: kind}
 }
 
-func Newf(format string, args ...any) error {
-	return &Error{Display: fmt.Sprintf(format, args...)}
-}
-
 func NewKindf(kind Kind, format string, args ...any) error {
 	return &Error{Display: fmt.Sprintf(format, args...), Kind: kind}
-}
-
-func Wrap(display string, err error) error {
-	return &Error{Display: display, Err: err}
 }
 
 func WrapKind(kind Kind, display string, err error) error {
@@ -102,10 +90,6 @@ func KindOf(err error) Kind {
 		return KindCanceled
 	}
 	return KindUnknown
-}
-
-func IsKind(err error, kind Kind) bool {
-	return KindOf(err) == kind
 }
 
 func Format(err error, fallbackPrefix string) string {

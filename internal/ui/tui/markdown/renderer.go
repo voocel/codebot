@@ -465,14 +465,6 @@ func tableTooWide(width int, columns []int) bool {
 	return total > max(width-4, 20)
 }
 
-func padVisible(text string, width int) string {
-	padding := width - lipgloss.Width(text)
-	if padding <= 0 {
-		return text
-	}
-	return text + strings.Repeat(" ", padding)
-}
-
 func padAlignedVisible(text string, width int, align string) string {
 	padding := width - lipgloss.Width(text)
 	if padding <= 0 {

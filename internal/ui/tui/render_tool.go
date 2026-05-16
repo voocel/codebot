@@ -173,16 +173,6 @@ func extractToolSummary(tool string, args json.RawMessage) string {
 	return ""
 }
 
-// FormatToolHeader returns a one-line tool header like "Bash(git diff --stat)".
-func FormatToolHeader(tool string, args json.RawMessage) string {
-	name := toolDisplayName(tool)
-	summary := extractToolSummary(tool, args)
-	if summary != "" {
-		return name + "(" + truncateRunes(summary, 60) + ")"
-	}
-	return name
-}
-
 // RenderToolHeader styles the tool name while keeping the summary muted.
 func RenderToolHeader(tool string, args json.RawMessage) string {
 	name := toolDisplayName(tool)
@@ -310,21 +300,6 @@ func looksLikePathToken(token string) bool {
 		return true
 	}
 	return false
-}
-
-// FormatToolArgs formats tool arguments for display, truncating if needed.
-func FormatToolArgs(args json.RawMessage) string {
-	if len(args) == 0 {
-		return ""
-	}
-	s := strings.TrimSpace(string(args))
-	if s == "{}" || s == "null" {
-		return ""
-	}
-	if len([]rune(s)) > 100 {
-		s = string([]rune(s)[:97]) + "..."
-	}
-	return s
 }
 
 // FormatToolResult extracts displayable text from a tool result.

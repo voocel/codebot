@@ -124,10 +124,10 @@ type Resolved struct {
 	SmallModel string                    // sub-agent model; equals Model when not configured
 	Providers  map[string]ProviderConfig // per-provider credentials
 
-	ContextWindow int // effective window after applying CompactWindow cap
-	CompactWindow int // user-configured cap on effective window; 0 = disabled
-	CompactRatio  float64 // usage ratio that triggers compaction; 0 = engine default
-	ThinkingLevel string
+	ContextWindow  int     // effective window after applying CompactWindow cap
+	CompactWindow  int     // user-configured cap on effective window; 0 = disabled
+	CompactRatio   float64 // usage ratio that triggers compaction; 0 = engine default
+	ThinkingLevel  string
 	MaxTurns       int
 	SearchProvider string
 	SearchAPIKey   string
@@ -201,10 +201,10 @@ func FormatModelID(provider, model string) string {
 // Resolve converts Settings to Resolved using defaults for unset fields.
 func (s Settings) Resolve() Resolved {
 	r := Resolved{
-		Provider:       "openai",
-		Providers:      make(map[string]ProviderConfig),
+		Provider:      "openai",
+		Providers:     make(map[string]ProviderConfig),
 		ThinkingLevel: "low",
-		MaxTurns:       200,
+		MaxTurns:      200,
 	}
 	if s.Provider != nil && *s.Provider != "" {
 		r.Provider = *s.Provider
@@ -315,11 +315,6 @@ func TasksDir() string {
 	return filepath.Join(UserConfigDir(), "tasks")
 }
 
-// SkillsDir returns <cwd>/.codebot/skills/.
-func SkillsDir(cwd string) string {
-	return filepath.Join(cwd, ConfigDir, "skills")
-}
-
 // AuditLogPath returns ~/.codebot/audit.log.
 func AuditLogPath() string {
 	return filepath.Join(UserConfigDir(), "audit.log")
@@ -347,19 +342,9 @@ func UserConfigDir() string {
 	return filepath.Join(home, ConfigDir)
 }
 
-// LoadSettings loads and merges settings from global (~/.codebot/settings.json)
-// and project (<cwd>/.codebot/settings.json). Project-level values override global.
-func LoadSettings(cwd string) Resolved {
-	var global Settings
-	if dir := UserConfigDir(); dir != "" {
-		global = loadSettingsFile(filepath.Join(dir, "settings.json"))
-	}
-	project := loadSettingsFile(SettingsPath(cwd))
-	return mergeSettings(global, project).Resolve()
-}
-
-// LoadSettingsStrict loads and merges settings like LoadSettings, but returns
-// an error when either settings file exists and cannot be parsed.
+// LoadSettingsStrict loads and merges settings from global (~/.codebot/settings.json)
+// and project (<cwd>/.codebot/settings.json). Project-level values override
+// global. Returns an error when either settings file exists and cannot be parsed.
 func LoadSettingsStrict(cwd string) (Resolved, error) {
 	var global Settings
 	if dir := UserConfigDir(); dir != "" {
@@ -588,40 +573,8 @@ func DefaultModelName(prov string) string {
 	}
 }
 
-// ResolveAll merges global and project settings, applies defaults,
-// and returns a fully resolved configuration.
-func ResolveAll(cwd string) Resolved {
-	settings := LoadSettings(cwd)
-
-	// Model: settings > default per provider
-	if settings.Model == "" {
-		settings.Model = DefaultModelName(settings.Provider)
-	}
-
-	// SmallModel: settings > provider config > main model.
-	if settings.SmallModel == "" {
-		if pc, ok := settings.Providers[settings.Provider]; ok && pc.SmallModel != "" {
-			settings.SmallModel = pc.SmallModel
-		} else {
-			settings.SmallModel = settings.Model
-		}
-	}
-
-	// Normalize search provider name.
-	switch strings.ToLower(strings.TrimSpace(settings.SearchProvider)) {
-	case "jina", "jina.ai", "jinaai":
-		settings.SearchProvider = "jina"
-	}
-	if settings.SearchAPIKey == "" {
-		settings.SearchAPIKey = searchAPIKeyFromEnv(settings.SearchProvider)
-	}
-
-	settings.Permissions = normalizePermissionRoots(cwd, settings.Permissions)
-
-	return settings
-}
-
-// ResolveAllStrict resolves settings like ResolveAll, but refuses to continue
+// ResolveAllStrict merges global and project settings, applies defaults, and
+// returns a fully resolved configuration. Refuses to continue
 // when an existing settings file is malformed.
 func ResolveAllStrict(cwd string) (Resolved, error) {
 	settings, err := LoadSettingsStrict(cwd)
