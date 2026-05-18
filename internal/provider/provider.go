@@ -1,7 +1,7 @@
 package provider
 
 import (
-	"slices"
+	"fmt"
 	"strings"
 
 	"github.com/voocel/agentcore"
@@ -9,71 +9,31 @@ import (
 	"github.com/voocel/codebot/internal/apperr"
 )
 
-var supportedTypeNames = []string{"openai", "anthropic", "gemini", "openrouter", "deepseek"}
-
-type modelFactory func(name, apiKey, baseURL string) (agentcore.ChatModel, error)
-
-var modelFactories = map[string]modelFactory{
-	"anthropic": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-		if baseURL != "" {
-			return llm.NewAnthropicModel(name, apiKey, baseURL)
-		}
-		return llm.NewAnthropicModel(name, apiKey)
-	},
-	"gemini": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-		if baseURL != "" {
-			return llm.NewGeminiModel(name, apiKey, baseURL)
-		}
-		return llm.NewGeminiModel(name, apiKey)
-	},
-	"openrouter": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-		if baseURL != "" {
-			return llm.NewOpenRouterModel(name, apiKey, baseURL)
-		}
-		return llm.NewOpenRouterModel(name, apiKey)
-	},
-	"openai": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-		if baseURL != "" {
-			return llm.NewOpenAIModel(name, apiKey, baseURL)
-		}
-		return llm.NewOpenAIModel(name, apiKey)
-	},
-	"deepseek": func(name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-		if baseURL != "" {
-			return llm.NewDeepSeekModel(name, apiKey, baseURL)
-		}
-		return llm.NewDeepSeekModel(name, apiKey)
-	},
-}
-
-// SupportedTypeNames returns the supported LiteLLM provider type names in stable order.
-func SupportedTypeNames() []string {
-	return slices.Clone(supportedTypeNames)
-}
-
-// IsSupportedType reports whether the given provider type is supported.
+// IsSupportedType reports whether the given provider type is registered in
+// litellm (built-in or custom). The check is delegated to agentcore/litellm so
+// codebot does not maintain a duplicate whitelist.
 func IsSupportedType(name string) bool {
-	_, ok := modelFactories[strings.ToLower(strings.TrimSpace(name))]
-	return ok
+	return llm.IsProviderRegistered(name)
+}
+
+// SupportedTypeNames returns all provider names known to litellm, sorted.
+func SupportedTypeNames() []string {
+	return llm.RegisteredProviders()
 }
 
 // CreateModel creates a ChatModel for the given provider, model name, API key, and optional base URL.
 func CreateModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
 	normalizedProvider := strings.ToLower(strings.TrimSpace(prov))
-	model, err := newProviderModel(normalizedProvider, name, apiKey, baseURL)
+	model, err := llm.NewModel(normalizedProvider, name,
+		llm.WithAPIKey(apiKey),
+		llm.WithBaseURL(baseURL),
+	)
 	if err != nil {
-		return nil, err
+		return nil, apperr.WrapKind(apperr.KindProvider,
+			fmt.Sprintf("create model %s/%s", normalizedProvider, name), err)
 	}
 	applyProviderDefaults(normalizedProvider, name, model)
 	return WrapStreamSafe(model), nil
-}
-
-func newProviderModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-	factory, ok := modelFactories[prov]
-	if !ok {
-		return nil, apperr.NewKindf(apperr.KindProvider, "unsupported provider type %q", prov)
-	}
-	return factory(name, apiKey, baseURL)
 }
 
 func applyProviderDefaults(prov, modelName string, model agentcore.ChatModel) {

@@ -16,18 +16,9 @@ import (
 // ConfigDir is the project-level config directory name.
 const ConfigDir = ".codebot"
 
-// KnownProviderTypes maps well-known provider names to their protocol type.
-var KnownProviderTypes = map[string]string{
-	"anthropic":  "anthropic",
-	"openai":     "openai",
-	"openrouter": "openrouter",
-	"gemini":     "gemini",
-	"deepseek":   "deepseek",
-}
-
 // ProviderConfig holds credentials and model configuration for a single provider.
 type ProviderConfig struct {
-	Type       string   `json:"type,omitempty"` // LiteLLM provider type: openai/anthropic/gemini/openrouter; required for custom providers
+	Type       string   `json:"type,omitempty"` // LiteLLM protocol type; required only when the provider name is not a known litellm provider
 	APIKey     string   `json:"api_key,omitempty"`
 	BaseURL    string   `json:"base_url,omitempty"`
 	Models     []string `json:"models,omitempty"`      // available model list for this provider
@@ -35,14 +26,14 @@ type ProviderConfig struct {
 }
 
 // ProviderType resolves the protocol type for this provider.
-// Built-in providers infer their type from the provider name.
-// Custom providers must declare providers.<name>.type explicitly.
+// The protocol type maps to a name registered in litellm's provider registry.
 func (pc ProviderConfig) ProviderType(name string) (string, error) {
 	return ResolveProviderType(name, pc.Type)
 }
 
-// ResolveProviderType resolves a provider's protocol type.
-// The type value maps directly to the underlying LiteLLM provider name.
+// ResolveProviderType resolves a provider's protocol type. When explicitType
+// is set it wins (and must be registered); otherwise the provider name itself
+// must be a registered litellm provider.
 func ResolveProviderType(name, explicitType string) (string, error) {
 	provType := strings.ToLower(strings.TrimSpace(explicitType))
 	if provType != "" {
@@ -51,8 +42,9 @@ func ResolveProviderType(name, explicitType string) (string, error) {
 		}
 		return "", apperr.NewKindf(apperr.KindConfig, "configuration error: providers.%s.type=%q is unsupported", name, explicitType)
 	}
-	if t, ok := KnownProviderTypes[name]; ok {
-		return t, nil
+	lowered := strings.ToLower(strings.TrimSpace(name))
+	if provider.IsSupportedType(lowered) {
+		return lowered, nil
 	}
 	return "", apperr.NewKindf(apperr.KindConfig, "configuration error: providers.%s.type is required for custom providers", name)
 }
@@ -137,15 +129,6 @@ type Resolved struct {
 	Permissions PermissionsConfig // user-defined permission rules
 }
 
-// providerEnvVars maps provider names to their standard environment variable names.
-var providerEnvVars = map[string]struct{ key, base string }{
-	"anthropic":  {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"},
-	"openai":     {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
-	"openrouter": {"OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"},
-	"gemini":     {"GEMINI_API_KEY", "GEMINI_BASE_URL"},
-	"deepseek":   {"DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"},
-}
-
 // ProviderCredentials returns API key and base URL for the given provider.
 // It checks the providers map first, then falls back to standard environment variables.
 func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
@@ -155,38 +138,53 @@ func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
 	return EnvCredentials(prov)
 }
 
-// ProviderEnvKey returns the standard environment variable name for a provider's API key.
+// ProviderEnvKey derives the standard env var name for a provider's API key
+// (e.g. "openai" → "OPENAI_API_KEY"). All provider env conventions follow the
+// same UPPER(name)_API_KEY / UPPER(name)_BASE_URL pattern.
 func ProviderEnvKey(prov string) string {
-	if ev, ok := providerEnvVars[prov]; ok {
-		return ev.key
-	}
-	return strings.ToUpper(prov) + "_API_KEY"
+	return providerEnvVar(prov, "API_KEY")
 }
 
-// EnvCredentials returns API key and base URL from standard environment variables
-// for the given provider (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY).
+// EnvCredentials reads the API key and base URL from the standard env vars
+// derived from the provider name.
 func EnvCredentials(prov string) (apiKey, baseURL string) {
-	envVars, ok := providerEnvVars[prov]
-	if !ok {
+	prov = strings.TrimSpace(prov)
+	if prov == "" {
 		return "", ""
 	}
-	apiKey = os.Getenv(envVars.key)
-	if envVars.base != "" {
-		baseURL = os.Getenv(envVars.base)
-	}
+	apiKey = os.Getenv(providerEnvVar(prov, "API_KEY"))
+	baseURL = os.Getenv(providerEnvVar(prov, "BASE_URL"))
 	return apiKey, baseURL
 }
 
-// DetectEnvProvider scans known providers for available environment variable credentials.
-// Returns the provider name and env var key of the first match, or empty if none found.
-func DetectEnvProvider() (provider, envKey string) {
-	order := []string{"anthropic", "openai", "gemini", "openrouter", "deepseek"}
-	for _, prov := range order {
+// DetectEnvProvider scans every registered litellm provider for available env
+// credentials. Returns the first match's provider name and env var key.
+func DetectEnvProvider() (providerName, envKey string) {
+	for _, prov := range provider.SupportedTypeNames() {
 		if key, _ := EnvCredentials(prov); key != "" {
-			return prov, providerEnvVars[prov].key
+			return prov, providerEnvVar(prov, "API_KEY")
 		}
 	}
 	return "", ""
+}
+
+// providerEnvVar returns UPPER(name)_SUFFIX, with non-alphanumeric chars in
+// the provider name collapsed to underscores so names like "open-router" map
+// cleanly to "OPEN_ROUTER_API_KEY".
+func providerEnvVar(prov, suffix string) string {
+	var b strings.Builder
+	b.Grow(len(prov) + 1 + len(suffix))
+	for _, r := range strings.ToUpper(strings.TrimSpace(prov)) {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	b.WriteByte('_')
+	b.WriteString(suffix)
+	return b.String()
 }
 
 // FormatModelID combines provider and model into "provider/model".
