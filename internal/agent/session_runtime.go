@@ -285,6 +285,11 @@ func (s *Session) IsRunning() bool {
 func (s *Session) ClearConversation() {
 	s.agent.ClearMessages()
 	s.agent.ClearAllQueues()
+	// Conversation gone → LLM lost its read history. Drop file-read stamps
+	// so the next write/edit forces a fresh read.
+	if s.fileReadState != nil {
+		s.fileReadState.Reset()
+	}
 }
 
 func (s *Session) applyTemporarySkillModel(model string) error {

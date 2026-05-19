@@ -33,6 +33,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		reserveTokens = assembly.settings.ContextWindow - int(float64(assembly.settings.ContextWindow)*r)
 	}
 	contextEngine, summaryCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens, input.cwd)
+
 	agentCore, err := buildAgent(assembly, services, contextEngine, tools)
 	if err != nil {
 		return nil, err
@@ -166,6 +167,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		Reminders:             assembly.reminders,
 		PreambleInjected:      len(input.sessionSnapshot.Messages) > 0,
 		SkillAllowsSetter:     services.approvalEngine.SetSkillAllows,
+		FileReadState:         assembly.fileReadState,
 	})
 }
 

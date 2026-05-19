@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/tools"
 )
 
 type fakeTool struct {
@@ -24,9 +25,9 @@ func (t *fakeTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessag
 func TestBuildToolsDefaults(t *testing.T) {
 	t.Parallel()
 
-	tools := buildTools("/tmp/ws", nil)
-	if len(tools) < 7 {
-		t.Fatalf("expected at least 7 default tools, got %d", len(tools))
+	built := buildTools("/tmp/ws", defaultToolFactories(tools.NewFileReadState()))
+	if len(built) < 7 {
+		t.Fatalf("expected at least 7 default tools, got %d", len(built))
 	}
 }
 

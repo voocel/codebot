@@ -149,9 +149,13 @@ func resolveProviderType(providers map[string]config.ProviderConfig, prov string
 }
 
 // readOnlyTools constructs a read-only tool set for explore/plan sub-agents.
+// Each call returns tools bound to a fresh FileReadState — sub-agents have
+// their own conversation history and should not share read stamps with the
+// parent agent or with each other.
 func readOnlyTools(cwd string) []agentcore.Tool {
+	state := tools.NewFileReadState()
 	return []agentcore.Tool{
-		tools.NewRead(cwd),
+		tools.NewRead(cwd, state),
 		tools.NewGlob(cwd),
 		tools.NewGrep(cwd),
 		tools.NewLs(cwd),

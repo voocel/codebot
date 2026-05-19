@@ -428,7 +428,10 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			text := FormatToolResult(ev.Result, ev.IsError)
 			text = m.wrapTextForIndent(text, 4)
 			if ev.IsError {
-				body = indentBlock(FormatToolOutput(text, ToolResultMaxLines, ErrorStyle), 2)
+				// Failure signal is carried by the red bullet (header). Body
+				// text stays muted so the eye doesn't get hit twice — error
+				// detail is supporting info, not a second alarm.
+				body = indentBlock(FormatToolOutput(text, ToolResultMaxLines, MutedStyle), 2)
 			} else {
 				body = indentBlock(FormatToolOutput(text, ToolResultMaxLines), 2)
 			}

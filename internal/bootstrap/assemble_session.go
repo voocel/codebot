@@ -33,6 +33,7 @@ type sessionAssembly struct {
 	hookRunner            *hooks.Runner
 	subagentTool          *subagent.Tool
 	bashTool              *agentcoretools.BashTool
+	fileReadState         *agentcoretools.FileReadState
 }
 
 func buildSessionAssembly(input *resolvedInput, services *bootServices, factories []ToolFactory) (*sessionAssembly, error) {
@@ -45,6 +46,13 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 	ctxFiles.GitSnapshot = config.CollectGitSnapshot(input.cwd)
 	ctxFiles.Memory, ctxFiles.MemoryDir = config.LoadMemory(input.cwd)
 	config.EnsureMemoryDir(input.cwd)
+
+	// Per-session file read state. Shared by Read (writes stamps) and
+	// Write/Edit (Validators read stamps to enforce read-before-write).
+	fileReadState := agentcoretools.NewFileReadState()
+	if factories == nil {
+		factories = defaultToolFactories(fileReadState)
+	}
 
 	tools, baseTools, subagentTool, bashTool, err := buildToolset(input, services, settings, activeProvider, chatModel, factories)
 	if err != nil {
@@ -72,6 +80,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		hookRunner:            hookRunner,
 		subagentTool:          subagentTool,
 		bashTool:              bashTool,
+		fileReadState:         fileReadState,
 	}, nil
 }
 

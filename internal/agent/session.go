@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	agenttools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/provider"
@@ -58,6 +59,12 @@ type SessionConfig struct {
 	// SkillAllowsSetter updates temporary tool allows for the active skill.
 	SkillAllowsSetter func([]string)
 
+	// FileReadState records read timestamps consumed by write/edit Validators.
+	// Held on the Session so Clear / Reset / SwitchSession can drop stale
+	// stamps — otherwise the LLM may write based on stamps from a read it
+	// no longer has in its conversation history.
+	FileReadState *agenttools.FileReadState
+
 	// FrozenIdentity / FrozenInstructions are the process-stable parts of the
 	// system prompt (block 1 + block 2). Computed once at assembly time and
 	// reused on every rebuild — never recomputed during the session.
@@ -100,6 +107,7 @@ type Session struct {
 	taskStore         *storage.TaskStore
 	skillAllowsSetter func([]string)
 	skillRuntime      skillRuntimeState
+	fileReadState     *agenttools.FileReadState
 
 	frozenIdentity     string // block 1 — process-stable, never recomputed
 	frozenInstructions string // block 2 — process-stable, never recomputed
@@ -269,6 +277,7 @@ func NewSession(cfg SessionConfig) *Session {
 		skillCatalog:      cfg.SkillCatalog,
 		skillUsage:        cfg.SkillUsage,
 		skillAllowsSetter: cfg.SkillAllowsSetter,
+		fileReadState:     cfg.FileReadState,
 
 		frozenIdentity:     cfg.FrozenIdentity,
 		frozenInstructions: cfg.FrozenInstructions,
@@ -327,4 +336,10 @@ func (s *Session) resetHarnessStateLocked() {
 	s.dirtySeq = 0
 	s.metrics = newRuntimeMetrics()
 	s.skillRuntime = skillRuntimeState{}
+	// Drop file-read stamps along with the rest of the harness state. After
+	// a reset the LLM has no read history; keeping stamps would let write/edit
+	// validate against reads the LLM no longer remembers.
+	if s.fileReadState != nil {
+		s.fileReadState.Reset()
+	}
 }
