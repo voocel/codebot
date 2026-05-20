@@ -113,7 +113,8 @@ User: "What files handle routing?"
 ## Important Notes
 
 - If unsure whether to use it, err on the side of planning - it's better to get alignment upfront than to redo work
-- Users appreciate being consulted before significant changes are made to their codebase`
+- Users appreciate being consulted before significant changes are made to their codebase
+- When in doubt for a *specific* question (e.g. "which library?", "which auth method?"), prefer starting work and asking with ask_user over entering a full planning phase. Plan mode is for shaping a whole approach, not for resolving one decision.`
 }
 
 func (t *EnterPlanModeTool) Schema() map[string]any {

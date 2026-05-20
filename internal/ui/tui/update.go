@@ -315,6 +315,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	if m.AskUser != nil {
+		// Ctrl+C aborts the entire turn: drop the channel (handler returns
+		// canceled error → model sees a degraded prompt) and stop the agent.
+		// Esc, by contrast, sends a Cancelled response with any partial
+		// answers so the model can continue with what it learned. The two
+		// gestures are deliberately distinct.
 		if msg.String() == "ctrl+c" {
 			close(m.AskUser.respCh)
 			m.AskUser = nil
@@ -327,9 +332,6 @@ func (m *Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		if handled {
 			if m.AskUser.done {
 				m.AskUser = nil
-				if msg.String() == "esc" && m.Running && m.Driver != nil {
-					m.Driver.Abort()
-				}
 			}
 			return m, cmd, true
 		}

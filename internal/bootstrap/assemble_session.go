@@ -132,12 +132,10 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 		}
 	}
 
-	askTool := localtools.NewAskUser()
 	_, cronTools := localtools.NewCronTools()
 	builtTools = append(builtTools,
 		localtools.NewWebFetch(settings.SearchProvider, settings.SearchAPIKey),
 		localtools.NewWebSearch(settings.SearchProvider, settings.SearchAPIKey),
-		askTool,
 		localtools.NewEnterPlanMode(),
 		// Keep exit_plan_mode in the base toolset: agentcore captures the tool
 		// list at run start, so adding it dynamically after enter_plan_mode is
@@ -145,6 +143,12 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 		// visible active toolset and validates out-of-phase calls.
 		localtools.NewExitPlanMode(),
 	)
+	// ask_user requires an interactive UI to relay questions to the user.
+	// In non-TTY mode there is no one watching, so we hide the tool entirely
+	// rather than exposing a stub that the model would still try to call.
+	if !input.nonTTY {
+		builtTools = append(builtTools, localtools.NewAskUser())
+	}
 	builtTools = append(builtTools, cronTools...)
 
 	toolOutputDir := filepath.Join(config.SessionsDir(input.cwd), input.sessionStore.Header().SessionID, "tool-outputs")
