@@ -6,7 +6,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
-	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/diag"
 )
 
 // IsSupportedType reports whether the given provider type is registered in
@@ -29,8 +29,8 @@ func CreateModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error
 		llm.WithBaseURL(baseURL),
 	)
 	if err != nil {
-		return nil, apperr.WrapKind(apperr.KindProvider,
-			fmt.Sprintf("create model %s/%s", normalizedProvider, name), err)
+		return nil, fmt.Errorf("create model %s/%s: %w: %w",
+			normalizedProvider, name, diag.ErrProvider, err)
 	}
 	applyProviderDefaults(normalizedProvider, name, model)
 	return WrapStreamSafe(model), nil

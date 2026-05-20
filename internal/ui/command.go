@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
+	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/commands"
@@ -35,7 +35,7 @@ func (a *App) handleCommand(input string) tea.Cmd {
 func validateCommand(ctx context.Context, engine *approval.Engine, spec commands.Spec, isRunning bool) error {
 	if engine == nil {
 		if spec.NeedsIdle && isRunning {
-			return apperr.NewKind(apperr.KindPermission, "command requires idle agent; press Esc to abort current run")
+			return fmt.Errorf("command requires idle agent; press Esc to abort current run: %w", diag.ErrPermission)
 		}
 		return nil
 	}
@@ -46,7 +46,7 @@ func validateCommand(ctx context.Context, engine *approval.Engine, spec commands
 		IsRunning: isRunning,
 		Summary:   "/" + spec.Name,
 	}); err != nil {
-		return apperr.WrapKind(apperr.KindPermission, err.Error(), err)
+		return fmt.Errorf("%w: %w", diag.ErrPermission, err)
 	}
 	return nil
 }

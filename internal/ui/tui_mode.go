@@ -10,7 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
-	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/config"
@@ -120,7 +119,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 				select {
 				case resp, ok := <-respCh:
 					if !ok || resp == nil {
-						return nil, apperr.NewKind(apperr.KindCanceled, "user cancelled")
+						return nil, context.Canceled
 					}
 					return resp, nil
 				case <-ctx.Done():

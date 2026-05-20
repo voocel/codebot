@@ -6,7 +6,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
-	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -77,26 +77,24 @@ func FormatCompactionSavings(savings map[agent.CompactionKind]int) string {
 	return strings.Join(parts, ", ")
 }
 
-// FormatErrorCounts renders error kind tallies in a stable order.
-func FormatErrorCounts(counts map[apperr.Kind]int) string {
-	order := []apperr.Kind{
-		apperr.KindCanceled,
-		apperr.KindConfig,
-		apperr.KindPermission,
-		apperr.KindProvider,
-		apperr.KindSession,
-		apperr.KindToolInput,
-		apperr.KindToolExec,
-		apperr.KindUnknown,
+// FormatErrorCounts renders error category tallies in a stable order.
+func FormatErrorCounts(counts map[diag.Category]int) string {
+	order := []diag.Category{
+		diag.CatCanceled,
+		diag.CatConfig,
+		diag.CatPermission,
+		diag.CatProvider,
+		diag.CatSession,
+		diag.CatToolInput,
+		diag.CatToolExec,
+		diag.CatLLM,
+		diag.CatAgent,
+		diag.CatUnknown,
 	}
 	parts := make([]string, 0, len(counts))
-	for _, kind := range order {
-		if count := counts[kind]; count > 0 {
-			label := string(kind)
-			if kind == apperr.KindUnknown {
-				label = "unknown"
-			}
-			parts = append(parts, fmt.Sprintf("%s=%d", label, count))
+	for _, cat := range order {
+		if count := counts[cat]; count > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", cat, count))
 		}
 	}
 	if len(parts) == 0 {
@@ -137,18 +135,11 @@ func FormatRecentErrors(errors []agent.ErrorSnapshot) []string {
 	}
 	lines := make([]string, 0, len(errors))
 	for _, snapshot := range errors {
-		kind := string(snapshot.Kind)
-		if snapshot.Kind == apperr.KindUnknown {
-			kind = "unknown"
-		}
 		line := fmt.Sprintf("%s  %-12s %s",
 			snapshot.Timestamp.Format("15:04:05"),
-			kind,
+			snapshot.Category,
 			snapshot.Message,
 		)
-		if snapshot.Detail != "" {
-			line += " | " + snapshot.Detail
-		}
 		lines = append(lines, line)
 	}
 	return lines

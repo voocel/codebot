@@ -13,7 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
-	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/plugin"
@@ -737,10 +737,10 @@ func TestFormatRecentToolCalls(t *testing.T) {
 func TestFormatErrorCounts(t *testing.T) {
 	t.Parallel()
 
-	text := commands.FormatErrorCounts(map[apperr.Kind]int{
-		apperr.KindCanceled: 2,
-		apperr.KindProvider: 1,
-		apperr.KindUnknown:  3,
+	text := commands.FormatErrorCounts(map[diag.Category]int{
+		diag.CatCanceled: 2,
+		diag.CatProvider: 1,
+		diag.CatUnknown:  3,
 	})
 
 	for _, want := range []string{"canceled=2", "provider=1", "unknown=3"} {
@@ -755,13 +755,12 @@ func TestFormatRecentErrors(t *testing.T) {
 
 	lines := commands.FormatRecentErrors([]agent.ErrorSnapshot{
 		{
-			Kind:      apperr.KindProvider,
-			Message:   "provider unavailable",
-			Detail:    "dial tcp timeout",
+			Category:  diag.CatProvider,
+			Message:   "provider unavailable: dial tcp timeout",
 			Timestamp: time.Date(2026, 3, 27, 15, 4, 5, 0, time.Local),
 		},
 		{
-			Kind:      apperr.KindUnknown,
+			Category:  diag.CatUnknown,
 			Message:   "plain failure",
 			Timestamp: time.Date(2026, 3, 27, 15, 4, 6, 0, time.Local),
 		},

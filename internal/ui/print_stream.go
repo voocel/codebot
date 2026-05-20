@@ -14,7 +14,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
-	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -24,12 +24,12 @@ func RunPrint(sess *agent.Session, args []string, jsonMode bool) error {
 	if prompt == "" {
 		stdinPrompt, err := ReadStdinPrompt()
 		if err != nil {
-			return apperr.WrapKind(apperr.KindToolInput, "stdin error", err)
+			return fmt.Errorf("stdin error: %w: %w", diag.ErrToolInput, err)
 		}
 		prompt = strings.TrimSpace(stdinPrompt)
 	}
 	if prompt == "" {
-		return apperr.NewKind(apperr.KindToolInput, "print mode requires a prompt (argument or stdin pipe)")
+		return fmt.Errorf("print mode requires a prompt (argument or stdin pipe): %w", diag.ErrToolInput)
 	}
 	if err := RunPrintMode(sess, prompt, jsonMode); err != nil {
 		return fmt.Errorf("print mode: %w", err)

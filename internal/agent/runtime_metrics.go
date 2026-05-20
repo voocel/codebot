@@ -4,11 +4,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/diag"
 )
 
 type ErrorSnapshot struct {
-	Kind      apperr.Kind
+	Category  diag.Category
 	Message   string
 	Detail    string
 	Timestamp time.Time
@@ -23,7 +23,7 @@ type RuntimeMetricsSnapshot struct {
 	CompactionByKind      map[CompactionKind]int
 	CompactionSavedByKind map[CompactionKind]int
 	ErrorTotal            int
-	ErrorByKind           map[apperr.Kind]int
+	ErrorByCategory       map[diag.Category]int
 }
 
 type runtimeMetrics struct {
@@ -35,7 +35,7 @@ type runtimeMetrics struct {
 	compactionByKind      map[CompactionKind]int
 	compactionSavedByKind map[CompactionKind]int
 	errorTotal            int
-	errorByKind           map[apperr.Kind]int
+	errorByCategory       map[diag.Category]int
 }
 
 func newRuntimeMetrics() *runtimeMetrics {
@@ -43,7 +43,7 @@ func newRuntimeMetrics() *runtimeMetrics {
 		reminderByKind:        make(map[RuntimeReminderKind]int),
 		compactionByKind:      make(map[CompactionKind]int),
 		compactionSavedByKind: make(map[CompactionKind]int),
-		errorByKind:           make(map[apperr.Kind]int),
+		errorByCategory:       make(map[diag.Category]int),
 	}
 }
 
@@ -63,9 +63,9 @@ func (s *Session) RuntimeMetrics() RuntimeMetricsSnapshot {
 	for k, v := range s.metrics.compactionSavedByKind {
 		compactionSavedByKind[k] = v
 	}
-	errorByKind := make(map[apperr.Kind]int, len(s.metrics.errorByKind))
-	for k, v := range s.metrics.errorByKind {
-		errorByKind[k] = v
+	errorByCategory := make(map[diag.Category]int, len(s.metrics.errorByCategory))
+	for k, v := range s.metrics.errorByCategory {
+		errorByCategory[k] = v
 	}
 	return RuntimeMetricsSnapshot{
 		ReminderTotal:         s.metrics.reminderTotal,
@@ -76,7 +76,7 @@ func (s *Session) RuntimeMetrics() RuntimeMetricsSnapshot {
 		CompactionByKind:      compactionByKind,
 		CompactionSavedByKind: compactionSavedByKind,
 		ErrorTotal:            s.metrics.errorTotal,
-		ErrorByKind:           errorByKind,
+		ErrorByCategory:       errorByCategory,
 	}
 }
 
@@ -157,7 +157,7 @@ func (s *Session) recordErrorDiagnostic(err error) {
 		s.metrics = newRuntimeMetrics()
 	}
 	s.metrics.errorTotal++
-	s.metrics.errorByKind[snapshot.Kind]++
+	s.metrics.errorByCategory[snapshot.Category]++
 
 	s.recentErrors = append(s.recentErrors, snapshot)
 	if len(s.recentErrors) > maxRecentErrors {
@@ -166,20 +166,13 @@ func (s *Session) recordErrorDiagnostic(err error) {
 }
 
 func buildErrorSnapshot(err error) ErrorSnapshot {
-	message := strings.TrimSpace(apperr.Format(err, ""))
+	message := strings.TrimSpace(err.Error())
 	if message == "" {
 		message = "error"
 	}
-	detail := strings.TrimSpace(err.Error())
-	if detail == message {
-		detail = ""
-	} else if strings.HasPrefix(detail, message+": ") {
-		detail = strings.TrimSpace(strings.TrimPrefix(detail, message+": "))
-	}
 	return ErrorSnapshot{
-		Kind:      apperr.KindOf(err),
+		Category:  diag.Categorize(err),
 		Message:   message,
-		Detail:    detail,
 		Timestamp: time.Now(),
 	}
 }

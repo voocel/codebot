@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/diag"
 )
 
 func TestParseMode(t *testing.T) {
@@ -128,7 +130,10 @@ func TestBootCustomProviderRequiresExplicitType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected boot error for custom provider without type")
 	}
-	if err.Error() != `configuration error: providers.myproxy.type is required for custom providers` {
+	if !errors.Is(err, diag.ErrConfig) {
+		t.Fatalf("expected diag.ErrConfig in chain, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "providers.myproxy.type is required for custom providers") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

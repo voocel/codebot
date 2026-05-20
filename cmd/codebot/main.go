@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/voocel/codebot/internal/apperr"
 	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/ui"
 )
@@ -60,9 +59,9 @@ func main() {
 }
 
 func formatBootError(err error) string {
-	return apperr.Format(err, "boot error")
+	return ui.FormatError(err, "boot error")
 }
 
 func formatCLIError(err error) string {
-	return apperr.Format(err, "error")
+	return ui.FormatError(err, "error")
 }

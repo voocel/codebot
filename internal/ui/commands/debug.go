@@ -192,7 +192,7 @@ func (c *DebugHarnessCommand) renderMetrics(width int) string {
 
 	p.Section("Errors")
 	p.Row("Total", fmt.Sprintf("%d", s.metrics.ErrorTotal))
-	p.Hint("By kind", FormatErrorCounts(s.metrics.ErrorByKind))
+	p.Hint("By category", FormatErrorCounts(s.metrics.ErrorByCategory))
 
 	p.Blank()
 	p.Hint("Note", "Metrics accumulate since this session was created or loaded in the current process.")

@@ -10,7 +10,7 @@ import (
 
 	"github.com/voocel/agentcore/permission"
 	"github.com/voocel/agentcore/schema"
-	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/diag"
 )
 
 // AskUserResponse carries the outcome of an ask_user interaction.
@@ -106,7 +106,7 @@ type askUserArgs struct {
 func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a askUserArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, apperr.WrapKind(apperr.KindToolInput, "invalid args", err)
+		return nil, fmt.Errorf("invalid args: %w: %w", diag.ErrToolInput, err)
 	}
 
 	if err := validateQuestions(a.Questions); err != nil {

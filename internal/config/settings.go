@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/provider"
 )
 
@@ -40,13 +40,13 @@ func ResolveProviderType(name, explicitType string) (string, error) {
 		if provider.IsSupportedType(provType) {
 			return provType, nil
 		}
-		return "", apperr.NewKindf(apperr.KindConfig, "configuration error: providers.%s.type=%q is unsupported", name, explicitType)
+		return "", fmt.Errorf("configuration error: providers.%s.type=%q is unsupported: %w", name, explicitType, diag.ErrConfig)
 	}
 	lowered := strings.ToLower(strings.TrimSpace(name))
 	if provider.IsSupportedType(lowered) {
 		return lowered, nil
 	}
-	return "", apperr.NewKindf(apperr.KindConfig, "configuration error: providers.%s.type is required for custom providers", name)
+	return "", fmt.Errorf("configuration error: providers.%s.type is required for custom providers: %w", name, diag.ErrConfig)
 }
 
 // ResolveConfiguredProviderType resolves the protocol type for a configured provider.
@@ -463,7 +463,7 @@ func SaveSettings(s Settings) error {
 func PatchGlobalSettings(patch Settings) error {
 	dir := UserConfigDir()
 	if dir == "" {
-		return fmt.Errorf("cannot determine user config directory")
+		return fmt.Errorf("cannot determine user config directory: %w", diag.ErrConfig)
 	}
 	settingsWriteMu.Lock()
 	defer settingsWriteMu.Unlock()
@@ -552,7 +552,7 @@ func loadSettingsFileStrict(path string) (Settings, error) {
 		return s, err
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
-		return s, apperr.WrapKind(apperr.KindConfig, "configuration error: malformed settings.json", fmt.Errorf("%s: %w", path, err))
+		return s, fmt.Errorf("configuration error: malformed settings.json (%s): %w: %w", path, diag.ErrConfig, err)
 	}
 	return s, nil
 }

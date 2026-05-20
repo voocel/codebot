@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore/schema"
-	"github.com/voocel/codebot/internal/apperr"
+	"github.com/voocel/codebot/internal/diag"
 )
 
 const (
@@ -72,20 +72,20 @@ type webFetchArgs struct {
 func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a webFetchArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, apperr.WrapKind(apperr.KindToolInput, "invalid args", err)
+		return nil, fmt.Errorf("invalid args: %w: %w", diag.ErrToolInput, err)
 	}
 	if a.URL == "" {
-		return nil, apperr.NewKind(apperr.KindToolInput, "url is required")
+		return nil, fmt.Errorf("url is required: %w", diag.ErrToolInput)
 	}
 
 	targetURL, err := url.Parse(strings.TrimSpace(a.URL))
 	if err != nil {
-		return nil, apperr.WrapKind(apperr.KindToolInput, "invalid url", err)
+		return nil, fmt.Errorf("invalid url: %w: %w", diag.ErrToolInput, err)
 	}
 	switch strings.ToLower(targetURL.Scheme) {
 	case "http", "https":
 	default:
-		return nil, apperr.NewKind(apperr.KindToolInput, "only http/https URLs are supported")
+		return nil, fmt.Errorf("only http/https URLs are supported: %w", diag.ErrToolInput)
 	}
 
 	if t.provider == nil {
@@ -97,7 +97,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (json.
 
 	content, err := t.provider.Fetch(ctx, targetURL.String())
 	if err != nil {
-		return nil, apperr.WrapKind(apperr.KindToolExec, "fetch failed", err)
+		return nil, fmt.Errorf("fetch failed: %w: %w", diag.ErrToolExec, err)
 	}
 
 	var sb strings.Builder
