@@ -7,22 +7,29 @@ import (
 	"github.com/voocel/agentcore/permission"
 )
 
-// CheckDangerousPath classifies a permission request's target path into
-// three buckets:
+// CheckDangerousPath classifies a permission request's target path:
 //
-//	hard-deny  → reason != "", hardDeny=true.  Mode, rules, and stored
-//	             approvals are all bypassed. Reserved for paths where data
-//	             leak / auth compromise is irrecoverable even with consent
-//	             (SSH private keys, cloud credentials, authorized_keys).
+//	reason != ""  → force-ask. Mode auto-pass and stored approvals are
+//	                bypassed; the approver is invoked with the "restricted"
+//	                option set (Allow Once / Deny only). Two flavours of
+//	                path qualify:
 //
-//	force-ask  → reason != "", hardDeny=false. Mode auto-pass and stored
-//	             approvals are bypassed; the approver is invoked with the
-//	             "restricted" option set (Allow Once / Deny only). Used for
-//	             persistence-class paths whose autoallow would propagate
-//	             forever (shell rc, git config, MCP/Claude config, .git/hooks).
+//	                  leak-class (read or write): SSH keys, AWS / gcloud
+//	                  credentials, .netrc, .pgpass — auto-allowing once
+//	                  would let later turns silently re-read them.
 //
-//	clean      → reason == "". The request falls through to the regular
-//	             permission pipeline.
+//	                  implant-class (write only): shell rc, .git/hooks,
+//	                  .gitconfig, .mcp.json, .claude.json, .ssh / .aws /
+//	                  .gnupg dirs, IDE & agent loader configs. A single
+//	                  Allow Always would propagate the implant forever.
+//
+//	reason == ""  → clean. The request falls through to the regular
+//	                permission pipeline.
+//
+// We deliberately do NOT hard-deny anything: the model is cooperative, the
+// user can see the prompt, and a one-time Allow Once is a fine answer to
+// "yes, look at my ~/.ssh/config to debug auth". The cost of asking is one
+// click; the cost of a wrong hard-deny is the user can't get help at all.
 //
 // All comparisons are case-insensitive (macOS / Windows filesystems collapse
 // case) and check both the raw user-supplied path AND the symlink-resolved
@@ -36,50 +43,47 @@ import (
 //	project/innocent → /etc/passwd  (attacker):
 //	  raw would miss;
 //	  resolved catches the real target.
-func CheckDangerousPath(workspace string, req permission.Request) (reason string, hardDeny bool) {
+func CheckDangerousPath(workspace string, req permission.Request) string {
 	// bash needs special handling: paths are embedded in the command string,
 	// not exposed as a structured argument. Without this, `bash cat ~/.ssh/id_rsa`
 	// would bypass the read-side checks entirely (cat is on the readonly
 	// whitelist, the bash tool itself has no `file_path` field).
 	if req.ToolName == "bash" {
 		cmd := stringField(req.Args, "command")
-		if r := scanBashForHardDenyRead(workspace, cmd); r != "" {
-			return r + " referenced in bash command", true
+		if r := scanBashForSensitiveRead(workspace, cmd); r != "" {
+			return r + " referenced in bash command"
 		}
-		return "", false
+		return ""
 	}
 
 	raw := pathField(req.Args)
 	if raw == "" {
-		return "", false
+		return ""
 	}
 	candidates := dangerousPathCandidates(workspace, raw)
 
 	switch req.ToolName {
 	case "read", "glob", "grep", "ls":
 		for _, p := range candidates {
-			if r := matchHardDenyRead(p); r != "" {
-				return r + " (" + p + ") cannot be read by the agent", true
+			if r := matchSensitiveRead(p); r != "" {
+				return r + " (" + p + ") requires per-invocation approval"
 			}
 		}
 	case "write", "edit":
 		for _, p := range candidates {
-			if r := matchHardDenyWrite(p); r != "" {
-				return r + " (" + p + ") cannot be modified by the agent", true
-			}
-		}
-		for _, p := range candidates {
-			if r := matchForceAskWrite(p); r != "" {
-				return r + " (" + p + ") requires per-invocation approval", false
+			if r := matchSensitiveWrite(p); r != "" {
+				return r + " (" + p + ") requires per-invocation approval"
 			}
 		}
 	}
-	return "", false
+	return ""
 }
 
-// scanBashForHardDenyRead walks a bash command looking for path-like tokens
-// that match the hard-deny read list (SSH keys, cloud credentials, .netrc,
-// .pgpass). Returns the matched-reason on first hit, or "" if clean.
+// scanBashForSensitiveRead walks a bash command looking for path-like tokens
+// that match the sensitive-read list (SSH keys, cloud credentials, .netrc,
+// .pgpass). Returns the matched-reason on first hit, or "" if clean. Used
+// both to poison the readonly bash fast-path and to force-ask once the
+// request reaches the engine.
 //
 // Tokenisation is intentionally simple (whitespace split, strip quotes) —
 // good enough to catch:
@@ -92,10 +96,10 @@ func CheckDangerousPath(workspace string, req permission.Request) (reason string
 // Misses things a determined attacker could construct (here-docs, command
 // substitution rewriting paths). For those the regular Exec ask flow still
 // catches them in balanced mode.
-func scanBashForHardDenyRead(workspace, cmd string) string {
+func scanBashForSensitiveRead(workspace, cmd string) string {
 	for _, tok := range bashPathTokens(cmd) {
 		for _, p := range dangerousPathCandidates(workspace, tok) {
-			if r := matchHardDenyRead(p); r != "" {
+			if r := matchSensitiveRead(p); r != "" {
 				return r + " at " + p
 			}
 		}
@@ -120,10 +124,11 @@ func bashPathTokens(cmd string) []string {
 	return out
 }
 
-// matchHardDenyRead: reading these leaks credentials immediately — once the
-// content enters the LLM transcript a later tool call (web_fetch, bash curl)
-// can ship it out.
-func matchHardDenyRead(p string) string {
+// matchSensitiveRead: paths whose contents are credential material. Reading
+// these leaks secrets into the LLM transcript, from which a later tool call
+// (web_fetch, bash curl) could exfiltrate. Force-ask catches both directions:
+// the user sees the prompt and can decide.
+func matchSensitiveRead(p string) string {
 	base, parent := splitLower(p)
 
 	if parent == ".ssh" {
@@ -146,38 +151,20 @@ func matchHardDenyRead(p string) string {
 	return ""
 }
 
-// matchHardDenyWrite: writes that grant attacker durable authentication state.
-// More conservative than the read list — we hard-deny only the credential
-// files themselves; surrounding directory configs (.ssh/config etc.) are
-// merely force-ask, because users do legitimately ask the agent to tweak them.
-func matchHardDenyWrite(p string) string {
+// matchSensitiveWrite: write requests that earn a forced ask. Two cohorts:
+//
+//   - credentials (leak-class on write too — overwrite = lockout): SSH keys,
+//     AWS / gcloud credentials, .netrc, .pgpass.
+//   - persistence (implant-class): shell rc, .git/hooks, .gitconfig,
+//     .mcp.json, .claude.json, IDE & agent loader configs. A single Allow
+//     Always would propagate the implant forever, so we require per-call
+//     consent regardless.
+func matchSensitiveWrite(p string) string {
+	if r := matchSensitiveRead(p); r != "" {
+		return r
+	}
+
 	base, parent := splitLower(p)
-
-	if parent == ".ssh" {
-		if base == "authorized_keys" {
-			return "SSH authorized_keys"
-		}
-		if strings.HasPrefix(base, "id_") && !strings.HasSuffix(base, ".pub") {
-			return "SSH private key"
-		}
-	}
-	if parent == ".aws" && base == "credentials" {
-		return "AWS credentials"
-	}
-	if hasPathSegment(p, "gcloud") && strings.HasPrefix(base, "credentials") {
-		return "gcloud credentials"
-	}
-	if base == ".netrc" || base == ".pgpass" {
-		return "credentials"
-	}
-	return ""
-}
-
-// matchForceAskWrite: persistence-class. A single Allow Always autoallow
-// would propagate forever, so we require per-invocation consent.
-func matchForceAskWrite(p string) string {
-	base, parent := splitLower(p)
-
 	if reason, ok := forceAskBasenames[base]; ok {
 		return reason
 	}

@@ -15,14 +15,14 @@ func mkReq(tool, key, path string) permission.Request {
 	return permission.Request{ToolName: tool, Args: args}
 }
 
-func TestCheckDangerousPath_HardDeny(t *testing.T) {
+func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 	home := t.TempDir()
 
 	tests := []struct {
 		name string
 		req  permission.Request
 	}{
-		// read = leak
+		// leak-class on read
 		{"read ssh rsa key", mkReq("read", "file_path", filepath.Join(home, ".ssh", "id_rsa"))},
 		{"read ssh ed25519 key", mkReq("read", "file_path", filepath.Join(home, ".ssh", "id_ed25519"))},
 		{"read authorized_keys", mkReq("read", "file_path", filepath.Join(home, ".ssh", "authorized_keys"))},
@@ -33,33 +33,13 @@ func TestCheckDangerousPath_HardDeny(t *testing.T) {
 		{"glob authorized_keys", mkReq("glob", "path", filepath.Join(home, ".ssh", "authorized_keys"))},
 		{"read gcloud creds", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "credentials.db"))},
 
-		// write = auth state implant
+		// leak-class on write
 		{"write authorized_keys", mkReq("write", "file_path", filepath.Join(home, ".ssh", "authorized_keys"))},
 		{"write ssh private key", mkReq("write", "file_path", filepath.Join(home, ".ssh", "id_rsa"))},
 		{"write aws credentials", mkReq("write", "file_path", filepath.Join(home, ".aws", "credentials"))},
 		{"write netrc", mkReq("edit", "file_path", filepath.Join(home, ".netrc"))},
-	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			reason, hard := CheckDangerousPath(home, tc.req)
-			if reason == "" {
-				t.Fatalf("expected hard-deny, got allow")
-			}
-			if !hard {
-				t.Fatalf("expected hardDeny=true, got force-ask (reason=%q)", reason)
-			}
-		})
-	}
-}
-
-func TestCheckDangerousPath_ForceAsk(t *testing.T) {
-	home := t.TempDir()
-
-	tests := []struct {
-		name string
-		req  permission.Request
-	}{
+		// implant-class on write
 		{"write bashrc", mkReq("write", "file_path", filepath.Join(home, ".bashrc"))},
 		{"write zshrc", mkReq("write", "file_path", filepath.Join(home, ".zshrc"))},
 		{"write profile", mkReq("write", "file_path", filepath.Join(home, ".profile"))},
@@ -75,12 +55,8 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			reason, hard := CheckDangerousPath(home, tc.req)
-			if reason == "" {
+			if reason := CheckDangerousPath(home, tc.req); reason == "" {
 				t.Fatalf("expected force-ask, got allow")
-			}
-			if hard {
-				t.Fatalf("expected force-ask (hardDeny=false), got hard-deny (reason=%q)", reason)
 			}
 		})
 	}
@@ -105,8 +81,7 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			reason, _ := CheckDangerousPath(home, tc.req)
-			if reason != "" {
+			if reason := CheckDangerousPath(home, tc.req); reason != "" {
 				t.Fatalf("expected allow, got reason=%q", reason)
 			}
 		})
@@ -121,7 +96,7 @@ func TestCheckDangerousPath_CaseInsensitive(t *testing.T) {
 	for _, name := range tests {
 		t.Run(name, func(t *testing.T) {
 			req := mkReq("write", "file_path", filepath.Join(home, name))
-			if reason, _ := CheckDangerousPath(home, req); reason == "" {
+			if reason := CheckDangerousPath(home, req); reason == "" {
 				t.Fatalf("case-variant %q should still match force-ask", name)
 			}
 		})
@@ -132,12 +107,8 @@ func TestCheckDangerousPath_RelativeResolvedAgainstWorkspace(t *testing.T) {
 	ws := t.TempDir()
 	req := mkReq("write", "file_path", ".bashrc")
 
-	reason, hard := CheckDangerousPath(ws, req)
-	if reason == "" {
+	if reason := CheckDangerousPath(ws, req); reason == "" {
 		t.Fatalf("relative .bashrc under workspace should match, got allow")
-	}
-	if hard {
-		t.Fatalf(".bashrc should be force-ask not hard-deny")
 	}
 }
 
@@ -163,7 +134,7 @@ func TestCheckDangerousPath_SymlinkDotfilesPattern(t *testing.T) {
 	}
 
 	req := mkReq("write", "file_path", link)
-	if reason, _ := CheckDangerousPath(home, req); reason == "" {
+	if reason := CheckDangerousPath(home, req); reason == "" {
 		t.Fatalf("symlinked ~/.bashrc → ~/dotfiles/bashrc must still match force-ask")
 	}
 }
@@ -192,13 +163,10 @@ func TestCheckDangerousPath_BashCommandReferencesSSHKey(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := mkReq("bash", "command", tc.cmd)
-			reason, hard := CheckDangerousPath(home, req)
+			reason := CheckDangerousPath(home, req)
 			gotHit := reason != ""
 			if gotHit != tc.wantHit {
 				t.Fatalf("hit=%v want=%v reason=%q", gotHit, tc.wantHit, reason)
-			}
-			if gotHit && !hard {
-				t.Fatalf("bash leak detection must be hard-deny, got force-ask")
 			}
 		})
 	}
@@ -225,12 +193,8 @@ func TestCheckDangerousPath_IDEAndAgentLoaderDirs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := mkReq("write", "file_path", tc.path)
-			reason, hard := CheckDangerousPath(home, req)
-			if reason == "" {
+			if reason := CheckDangerousPath(home, req); reason == "" {
 				t.Fatalf("expected force-ask, got allow")
-			}
-			if hard {
-				t.Fatalf("expected force-ask (hardDeny=false), got hard-deny")
 			}
 		})
 	}
@@ -248,7 +212,7 @@ func TestCheckDangerousPath_CodebotMemoryAndPlansAreNotForceAsk(t *testing.T) {
 	for _, p := range cases {
 		t.Run(filepath.Base(filepath.Dir(p)), func(t *testing.T) {
 			req := mkReq("write", "file_path", p)
-			if reason, _ := CheckDangerousPath(home, req); reason != "" {
+			if reason := CheckDangerousPath(home, req); reason != "" {
 				t.Fatalf("harness-managed %q should not match dangerous-path (reason=%q)", p, reason)
 			}
 		})
@@ -276,11 +240,7 @@ func TestCheckDangerousPath_SymlinkAttackPattern(t *testing.T) {
 	}
 
 	req := mkReq("read", "file_path", innocent)
-	reason, hard := CheckDangerousPath(home, req)
-	if reason == "" {
+	if reason := CheckDangerousPath(home, req); reason == "" {
 		t.Fatalf("symlink to SSH private key must be caught via resolved form")
-	}
-	if !hard {
-		t.Fatalf("SSH private key read must be hard-deny, got force-ask")
 	}
 }

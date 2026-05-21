@@ -81,54 +81,26 @@ func (e *Engine) SetPlanContentProvider(fn func() (string, error)) {
 // Decide routes a tool permission request. exit_plan_mode in plan mode is
 // intercepted here and surfaced through the standard approver path with the
 // plan content as preview — matching CC's `checkPermissions: 'ask'` design.
-// Dangerous paths are split into two layers ahead of the agentcore engine:
-//
-//   - hard-deny: credential files (SSH keys, AWS / gcloud creds, authorized_keys,
-//     .netrc, .pgpass). Cannot be overridden by any mode, rule, or stored
-//     approval — the data leak is irrecoverable even with consent.
-//
-//   - force-ask: persistence-class paths (shell rc, .git/hooks, .gitconfig,
-//     .mcp.json / .claude.json, .ssh / .aws / .gnupg dirs). Bypasses mode
-//     auto-pass and stored approvals; the approver is invoked with Allow Once /
-//     Deny only. Prevents a single Allow Always from propagating forever.
+// Dangerous paths (credential files, shell rc, .git/hooks, IDE/agent loader
+// configs, ...) bypass mode auto-pass and stored approvals; the approver is
+// invoked with Allow Once / Deny only so a single Allow Always cannot turn
+// into a persistent backdoor. Nothing is hard-denied — the model is
+// cooperative and the user is in the loop.
 //
 // All other tools delegate to the agentcore permission engine.
 func (e *Engine) Decide(ctx context.Context, req permission.Request) (*permission.Decision, error) {
 	if req.ToolName == "exit_plan_mode" && e.PlanMode() {
 		return e.decidePlanExit(ctx, req)
 	}
-	if reason, hardDeny := CheckDangerousPath(e.cwd, req); reason != "" {
-		if hardDeny {
-			return e.denyDangerousPath(req, reason), nil
-		}
-		// In plan mode the agentcore engine will deny writes outright; surfacing
-		// a force-ask here would just create a wasted prompt the user couldn't
-		// usefully act on. hard-deny still applies — reading SSH keys is
-		// disallowed regardless of mode.
-		if !e.PlanMode() {
+	// In plan mode the agentcore engine will deny writes outright; routing
+	// the force-ask here would just create a wasted prompt the user couldn't
+	// usefully act on.
+	if !e.PlanMode() {
+		if reason := CheckDangerousPath(e.cwd, req); reason != "" {
 			return e.askDangerousPath(ctx, req, reason)
 		}
 	}
 	return e.tool.Decide(ctx, req)
-}
-
-// denyDangerousPath builds a hard-deny decision and audits it.
-func (e *Engine) denyDangerousPath(req permission.Request, reason string) *permission.Decision {
-	cap, summary := dangerousPathContext(req)
-	info := toolInfo{
-		tool:       req.ToolName,
-		capability: cap,
-		summary:    summary,
-		reason:     reason,
-	}
-	e.audit(info, e.Mode(), e.PlanMode(), "deny", false, reason)
-	return &permission.Decision{
-		Kind:       permission.DecisionDeny,
-		Source:     permission.DecisionSourceRoots,
-		Reason:     reason,
-		Capability: cap,
-		Summary:    summary,
-	}
 }
 
 // askDangerousPath routes the request through the approver, ignoring mode

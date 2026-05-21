@@ -41,7 +41,7 @@ func isReadonlyBash(cmd string) bool {
 	// as Read would skip the dangerous-path check. `cat ~/.ssh/id_rsa` is
 	// not "readonly" in the sense we want for an auto-pass — it leaks a
 	// credential. Force it back to Exec so the regular ask flow runs.
-	if scanBashForHardDenyRead("", cmd) != "" {
+	if scanBashForSensitiveRead("", cmd) != "" {
 		return false
 	}
 	return true
