@@ -164,11 +164,16 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 	if approvalEngine != nil {
 		approvalEngine.SetApprover(func(ctx context.Context, prompt approval.Prompt) (approval.Choice, error) {
 			respCh := make(chan tui.PermitChoice, 1)
+			warning := ""
+			if prompt.Tool == "bash" {
+				warning = approval.DestructiveCommandWarning(prompt.Summary)
+			}
 			p.Send(tui.PermissionMsg{
 				Tool:         prompt.Tool,
 				Command:      prompt.Summary,
 				Reason:       prompt.Reason,
 				Preview:      prompt.Preview,
+				Warning:      warning,
 				OutsideRoots: prompt.OutsideRoots,
 				RespCh:       respCh,
 			})

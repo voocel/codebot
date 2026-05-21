@@ -2,6 +2,8 @@ package approval
 
 import (
 	"encoding/json"
+	"net/url"
+	"strings"
 
 	"github.com/voocel/agentcore/permission"
 )
@@ -14,7 +16,10 @@ import (
 //   - read/glob/grep/ls       → Read  (path checked against ReadRoots)
 //   - write/edit              → Write (path checked against WriteRoots)
 //   - bash                    → Exec  (command + optional workdir)
-//   - web_fetch / web_search  → Network
+//   - web_fetch / web_search  → Read  (no local side effect; LLM cannot
+//     send arbitrary payloads — web_fetch is GET-only behind Tavily, and
+//     web_search only takes a query string. Users who want air-gapped
+//     execution can add `deny: WebFetch(*)` rules)
 //   - Skill, ask_user, plan/task/cron control, tool_search, subagent
 //                             → Internal
 //
@@ -39,20 +44,30 @@ func classify(req permission.Request) permission.Classification {
 			Path:       pathField(req.Args),
 		}
 	case "bash":
+		cmd := stringField(req.Args, "command")
+		capability := permission.CapabilityExec
+		keyPrefix := "exec:"
+		if isReadonlyBash(cmd) {
+			capability = permission.CapabilityRead
+			keyPrefix = "exec:readonly:"
+		}
 		return permission.Classification{
-			Capability: permission.CapabilityExec,
-			Command:    stringField(req.Args, "command"),
+			Capability: capability,
+			Command:    cmd,
 			Workdir:    stringField(req.Args, "workdir"),
+			Key:        keyPrefix + bashPrefix(cmd),
 		}
 	case "web_fetch":
+		target := stringField(req.Args, "url")
 		return permission.Classification{
-			Capability: permission.CapabilityNetwork,
-			URL:        stringField(req.Args, "url"),
+			Capability: permission.CapabilityRead,
+			URL:        target,
+			Key:        "web_fetch:" + hostOf(target),
 		}
 	case "web_search":
 		return permission.Classification{
-			Capability: permission.CapabilityNetwork,
-			Key:        "network:search",
+			Capability: permission.CapabilityRead,
+			Key:        "web_search",
 		}
 	case "ask_user",
 		"enter_plan_mode", "exit_plan_mode",
@@ -84,4 +99,18 @@ func pathField(raw json.RawMessage) string {
 		return v
 	}
 	return stringField(raw, "path")
+}
+
+// hostOf returns a lower-cased hostname for store-key bucketing. Returns
+// "unknown" when the raw string is empty or unparseable — keeps the store
+// key stable instead of leaking a malformed URL into it.
+func hostOf(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "unknown"
+	}
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return strings.ToLower(u.Host)
+	}
+	return "unknown"
 }

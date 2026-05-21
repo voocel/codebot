@@ -31,7 +31,8 @@ type PermissionMsg struct {
 	Command      string
 	Reason       string
 	Preview      string
-	OutsideRoots bool // when true, only AllowOnce and Deny are shown
+	Warning      string // UI-only destructive-action hint; "" suppresses the row
+	OutsideRoots bool   // when true, only AllowOnce and Deny are shown
 	RespCh       chan<- PermitChoice
 }
 
@@ -41,6 +42,7 @@ type PermissionDismissMsg struct{}
 type permissionState struct {
 	tool, command, reason string
 	preview               string
+	warning               string
 	outsideRoots          bool
 	respCh                chan<- PermitChoice
 	options               []struct {
@@ -63,12 +65,16 @@ var permissionOptionsFull = []struct {
 	{"Deny", "reject this invocation", PermitChoiceDeny},
 }
 
+// permissionOptionsRestricted is used whenever automatic approval is
+// off-limits — outside-roots writes and dangerous-path force-asks both
+// route here. The desc stays neutral ("this invocation only") so the
+// engine-provided Reason carries the why.
 var permissionOptionsRestricted = []struct {
 	label  string
 	desc   string
 	choice PermitChoice
 }{
-	{"Allow once", "path outside authorized roots", PermitChoiceAllowOnce},
+	{"Allow once", "this invocation only", PermitChoiceAllowOnce},
 	{"Deny", "reject this invocation", PermitChoiceDeny},
 }
 
@@ -96,6 +102,7 @@ func initPermission(msg PermissionMsg) *permissionState {
 		command:      msg.Command,
 		reason:       msg.Reason,
 		preview:      msg.Preview,
+		warning:      msg.Warning,
 		outsideRoots: msg.OutsideRoots,
 		respCh:       msg.RespCh,
 		options:      opts,
@@ -154,6 +161,11 @@ func renderPermission(s *permissionState, md *markdown.Renderer) string {
 		cmd = string(runes[:117]) + "..."
 	}
 	b.WriteString(valueStyle.Render(cmd))
+	if s.warning != "" {
+		warningStyle := lipgloss.NewStyle().Foreground(Accent).Bold(true)
+		b.WriteByte('\n')
+		b.WriteString(warningStyle.Render("  Warning: " + s.warning))
+	}
 	if s.reason != "" {
 		b.WriteByte('\n')
 		b.WriteString(labelStyle.Render("  Reason:  "))
