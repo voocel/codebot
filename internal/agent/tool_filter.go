@@ -26,18 +26,23 @@ const (
 //     sub-agents report results and the main agent updates state.
 //   - cron_create / cron_delete: persistent scheduled jobs are a user-facing
 //     concept; sub-agents may inspect via cron_list but not mutate.
+//   - send_to_subagent: parent→child runtime steering. Sibling-to-sibling
+//     coordination uses a different tool (added when team support lands), so
+//     send_to_subagent stays strictly parent→child even after that. Letting
+//     a sub-agent call it would conflate the two channels.
 //
 // The `subagent` tool itself is always filtered out by FilterToolsForAgent
 // regardless of this map — see the function for the recursion guard.
 var allAgentDisallowed = map[string]bool{
-	"ask_user":        true,
-	"enter_plan_mode": true,
-	"exit_plan_mode":  true,
-	"task_create":     true,
-	"task_update":     true,
-	"task_stop":       true,
-	"cron_create":     true,
-	"cron_delete":     true,
+	"ask_user":         true,
+	"enter_plan_mode":  true,
+	"exit_plan_mode":   true,
+	"task_create":      true,
+	"task_update":      true,
+	"task_stop":        true,
+	"cron_create":      true,
+	"cron_delete":      true,
+	"send_to_subagent": true,
 }
 
 // customAgentDisallowed adds a stricter floor for sub-agents loaded from

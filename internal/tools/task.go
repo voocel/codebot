@@ -585,6 +585,7 @@ func NewTaskTools(store *storage.TaskStore, rt *task.Runtime, hookRunner *hooks.
 		tools = append(tools,
 			&TaskOutputTool{rt: rt},
 			&TaskStopTool{rt: rt},
+			NewSendToSubAgentTool(rt),
 		)
 	}
 	return tools
