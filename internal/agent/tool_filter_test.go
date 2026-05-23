@@ -22,7 +22,7 @@ func (t *fakeTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessag
 	return nil, nil
 }
 
-func tools(names ...string) []agentcore.Tool {
+func mkTools(names ...string) []agentcore.Tool {
 	out := make([]agentcore.Tool, 0, len(names))
 	for _, n := range names {
 		out = append(out, &fakeTool{name: n})
@@ -48,7 +48,7 @@ func contains(xs []string, x string) bool {
 // assemble_session.go) so the filter never sees them. Keeping the test pool
 // in sync with the real input keeps the asyncAgentAllowed list honest.
 func fullMainPool() []agentcore.Tool {
-	return tools(
+	return mkTools(
 		"read", "write", "edit", "bash", "glob", "grep", "ls",
 		"web_search", "web_fetch",
 		"task_create", "task_get", "task_update", "task_list", "task_output", "task_stop",
@@ -190,7 +190,7 @@ func TestFilter_CustomAsync(t *testing.T) {
 // they are dropped regardless. This split lets a user-defined agent that
 // declares zero MCP intent stay isolated from the parent's MCP surface.
 func TestFilter_MCPGate(t *testing.T) {
-	pool := tools("read", "mcp__a__x", "mcp__b__y", "ask_user")
+	pool := mkTools("read", "mcp__a__x", "mcp__b__y", "ask_user")
 
 	allowed := names(FilterToolsForAgent(pool, FilterOpts{
 		IsBuiltIn: true, IsAsync: true, AllowMCP: true,
@@ -218,4 +218,43 @@ func TestFilter_PreservesInstances(t *testing.T) {
 	if len(out) != 1 || out[0] != read {
 		t.Fatalf("filter must preserve tool instance identity, got %#v", out)
 	}
+}
+
+// BuildToolPool must return INDEPENDENT read/write/edit instances on each
+// call. Two sub-agent kinds (e.g. explore and coder) share their input tool
+// list — if they also share the read instance, a read in one silences a
+// missing read-before-write check in the other. The pool is the linchpin of
+// that invariant; this test pins it down.
+//
+// Conversely, tools the pool does NOT replace (bash here) should alias
+// across calls — they are stateless from the pool's perspective and
+// duplicating them would diverge sub-agents from the parent's output-limit
+// wrapper.
+func TestBuildToolPool_PerCallIndependence(t *testing.T) {
+	main := []agentcore.Tool{&fakeTool{name: "read"}, &fakeTool{name: "bash"}}
+
+	a := BuildToolPool("/tmp/ws", main)
+	b := BuildToolPool("/tmp/ws", main)
+
+	readA, readB := findByName(a, "read"), findByName(b, "read")
+	if readA == nil || readB == nil {
+		t.Fatal("read missing from pool output")
+	}
+	if readA == readB {
+		t.Fatal("two pool calls returned the same read instance; FileReadState would be shared across sub-agents")
+	}
+
+	bashA, bashB := findByName(a, "bash"), findByName(b, "bash")
+	if bashA != bashB {
+		t.Errorf("bash instance should be reused across pool calls, got %p vs %p", bashA, bashB)
+	}
+}
+
+func findByName(in []agentcore.Tool, name string) agentcore.Tool {
+	for _, t := range in {
+		if t.Name() == name {
+			return t
+		}
+	}
+	return nil
 }

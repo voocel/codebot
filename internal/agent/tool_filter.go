@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/tools"
 )
 
 // Tool name constants used by the filter rules. Strings (not type-imports) are
@@ -136,4 +137,32 @@ func toSet(xs []string) map[string]bool {
 		m[x] = true
 	}
 	return m
+}
+
+// BuildToolPool returns a tool list suitable as input to FilterToolsForAgent.
+// Read / write / edit are replaced with fresh instances sharing a sub-agent-
+// local FileReadState so a read in a sub-agent cannot poison the parent's
+// read-stamp cache (which would let the parent's next write of the same file
+// silently skip its own read-before-write check). Other tools are passed
+// through by reference — they are either stateless or already keyed by cwd.
+//
+// Call this ONCE PER SUB-AGENT KIND. Two sub-agent kinds (e.g. explore and
+// coder) must NOT share the returned slice: doing so re-introduces the same
+// cross-pollination of read state that we created this function to prevent.
+func BuildToolPool(cwd string, mainTools []agentcore.Tool) []agentcore.Tool {
+	state := tools.NewFileReadState()
+	out := make([]agentcore.Tool, 0, len(mainTools))
+	for _, t := range mainTools {
+		switch t.Name() {
+		case "read":
+			out = append(out, tools.NewRead(cwd, state))
+		case "write":
+			out = append(out, tools.NewWrite(cwd, state))
+		case "edit":
+			out = append(out, tools.NewEdit(cwd, state))
+		default:
+			out = append(out, t)
+		}
+	}
+	return out
 }

@@ -1,12 +1,14 @@
 package bootstrap
 
 import (
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/agentcore/subagent"
-	"github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
 )
@@ -14,140 +16,156 @@ import (
 // subAgentDeps holds everything needed to build and configure the SubAgentTool.
 type subAgentDeps struct {
 	Cwd           string
-	Model         agentcore.ChatModel // main agent's model (inherited by plan/coder)
+	Model         agentcore.ChatModel // main agent's model (default for inherit)
 	AllTools      []agentcore.Tool    // main agent's tools BEFORE subagent is appended
 	ContextWindow int
 
-	// For creating alternative models (e.g. a cheaper model for explore).
+	// For creating alternative models (e.g. a cheaper model for explore,
+	// or arbitrary models named in a custom agent's frontmatter).
 	CreateModel agent.ModelFactory
 	Provider    string                           // main provider name
 	Providers   map[string]config.ProviderConfig // per-provider credentials
-	SmallModel  string                           // model name for explore sub-agent
+	SmallModel  string                           // model name preferred for the explore sub-agent
 }
 
-// readOnlyDisallowed are the mutating tools excluded from read-only agents
-// (explore, plan). They cover every way a sub-agent could touch disk or
-// shell state. Listed here rather than at the call site so adding a new
-// mutating tool elsewhere triggers a single review point.
-var readOnlyDisallowed = []string{"write", "edit", "bash"}
-
-// buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
+// buildSubAgentTool constructs a SubAgentTool with every sub-agent registered.
 //
-// Every sub-agent's tool pool flows through the same pipeline:
+// The pipeline:
 //
-//	deps.AllTools  ──►  subagentToolPool (per-agent independent read/write/edit)
-//	               ──►  agent.FilterToolsForAgent (three-layer rules)
+//	BuiltinDefinitions  ─┐
+//	                     ├─►  MergeAgents  ─►  BuildConfig  ─►  subagent.New(cfgs...)
+//	LoadAgentsDir(proj) ─┤      (later src
+//	LoadAgentsDir(user) ─┘       overrides)
 //
-// The pool step is invoked once per agent so each gets its own FileReadState
-// — that prevents a read in explore from masking a missing read-before-write
-// in coder, both of which run as different sub-agent kinds but share the
-// same builtTools input. The filter step enforces global / async / per-agent
-// denies and strips the `subagent` tool itself to prevent recursive spawn.
+// Built-in, project (.codebot/agents/), and user (~/.codebot/agents/)
+// definitions all go through the same Validate → BuildConfig path. Name
+// collisions are resolved by source: user overrides project overrides
+// builtin. A broken agent file does not abort startup — the loader returns
+// errors per file and we log and skip them.
 func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
-	exploreTools := agent.FilterToolsForAgent(
-		subagentToolPool(deps.Cwd, deps.AllTools),
-		agent.FilterOpts{
-			IsBuiltIn:       true,
-			IsAsync:         true,
-			AllowMCP:        true,
-			ExtraDisallowed: readOnlyDisallowed,
-		},
-	)
-	planTools := agent.FilterToolsForAgent(
-		subagentToolPool(deps.Cwd, deps.AllTools),
-		agent.FilterOpts{
-			IsBuiltIn:       true,
-			IsAsync:         true,
-			AllowMCP:        true,
-			ExtraDisallowed: readOnlyDisallowed,
-		},
-	)
-	coderTools := agent.FilterToolsForAgent(
-		subagentToolPool(deps.Cwd, deps.AllTools),
-		agent.FilterOpts{
-			IsBuiltIn: true,
-			IsAsync:   false,
-			AllowMCP:  true,
-		},
-	)
+	resolveModel := buildModelResolver(deps)
 
-	exploreModel := deps.Model
-	if deps.SmallModel != "" && deps.CreateModel != nil {
-		prov := deps.Provider
-		apiKey, baseURL := resolveFromProviders(deps.Providers, prov)
-		provType, err := resolveProviderType(deps.Providers, prov)
-		if err == nil {
-			if m, err := deps.CreateModel(provType, deps.SmallModel, apiKey, baseURL); err == nil {
-				exploreModel = m
-			}
-		}
+	builtin := agent.BuiltinDefinitions(deps.Cwd)
+	applyExploreSmallModel(builtin, deps.SmallModel)
+
+	project, errs := agent.LoadAgentsDir(projectAgentsDir(deps.Cwd), agent.SourceProject)
+	logAgentLoadErrors(errs)
+	user, errs := agent.LoadAgentsDir(userAgentsDir(), agent.SourceUser)
+	logAgentLoadErrors(errs)
+
+	defs := agent.MergeAgents(builtin, project, user)
+
+	buildDeps := agent.BuildDeps{
+		Cwd:           deps.Cwd,
+		MainTools:     deps.AllTools,
+		DefaultModel:  deps.Model,
+		ContextWindow: deps.ContextWindow,
+		ResolveModel:  resolveModel,
+	}
+	ctxFactory := func(model agentcore.ChatModel) agentcore.ContextManager {
+		return newSubAgentContextManager(model, deps.ContextWindow)
 	}
 
-	sat := subagent.New(
-		subagent.Config{
-			Name:         "explore",
-			Description:  "Fast codebase exploration agent. Use when you need to find files by patterns, search code for keywords, or answer questions about the codebase (e.g. 'how does authentication work?'). Read-only, no modifications.",
-			Model:        exploreModel,
-			SystemPrompt: config.ExploreSubAgentPrompt(deps.Cwd),
-			Tools:        exploreTools,
-			MaxTurns:     20,
-			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
-				return newSubAgentContextManager(model, deps.ContextWindow)
-			},
-			ConvertToLLM: agentctx.ContextConvertToLLM,
-		},
-		subagent.Config{
-			Name:         "plan",
-			Description:  "Software architect. Explore code and design implementation strategies with step-by-step plans.",
-			Model:        deps.Model,
-			SystemPrompt: config.PlanSubAgentPrompt(deps.Cwd),
-			Tools:        planTools,
-			MaxTurns:     25,
-			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
-				return newSubAgentContextManager(model, deps.ContextWindow)
-			},
-			ConvertToLLM: agentctx.ContextConvertToLLM,
-		},
-		subagent.Config{
-			Name:         "coder",
-			Description:  "General-purpose coding agent. Independently search, read, and write code to complete subtasks.",
-			Model:        deps.Model,
-			SystemPrompt: config.CoderSubAgentPrompt(deps.Cwd),
-			Tools:        coderTools,
-			MaxTurns:     30,
-			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
-				return newSubAgentContextManager(model, deps.ContextWindow)
-			},
-			ConvertToLLM: agentctx.ContextConvertToLLM,
-		},
-	)
+	cfgs := make([]subagent.Config, 0, len(defs))
+	for _, def := range defs {
+		cfg, err := def.BuildConfig(buildDeps, ctxFactory)
+		if err != nil {
+			log.Printf("subagent %q: skipped (%v)", def.Name, err)
+			continue
+		}
+		cfgs = append(cfgs, cfg)
+	}
 
-	// Enable LLM to override model at call time via the "model" parameter.
-	if deps.CreateModel != nil {
-		factory := deps.CreateModel
-		providers := deps.Providers
-		defaultProv := deps.Provider
-		sat.SetCreateModel(func(name string) (agentcore.ChatModel, error) {
-			// Search all providers' model lists for an exact match.
-			prov := defaultProv
-			for provName, pc := range providers {
-				for _, m := range pc.Models {
-					if strings.EqualFold(m, name) {
-						prov = provName
-						break
-					}
-				}
-			}
-			apiKey, baseURL := resolveFromProviders(providers, prov)
-			provType, err := resolveProviderType(providers, prov)
-			if err != nil {
-				return nil, err
-			}
-			return factory(provType, name, apiKey, baseURL)
-		})
+	sat := subagent.New(cfgs...)
+
+	if resolveModel != nil {
+		sat.SetCreateModel(resolveModel)
 	}
 
 	return sat
+}
+
+// applyExploreSmallModel reassigns the explore agent's Model to the
+// configured small-model preset if set. We mutate in place rather than
+// passing the small-model name down to BuildConfig because "small model for
+// explore" is a UX preset, not a property of the explore agent's spec —
+// users who write their own .codebot/agents/explore.md keep full control.
+//
+// No-op when SmallModel is empty or the explore definition is absent.
+func applyExploreSmallModel(defs []agent.AgentDefinition, smallModel string) {
+	if smallModel == "" {
+		return
+	}
+	for i := range defs {
+		if defs[i].Name == "explore" {
+			defs[i].Model = smallModel
+			return
+		}
+	}
+}
+
+// buildModelResolver returns a function that maps a model name string to a
+// ChatModel, by looking through every configured provider for a model with
+// that name. Returns nil when the bootstrap path has no model factory wired
+// (in which case BuildConfig will refuse any non-inherit model name).
+func buildModelResolver(deps subAgentDeps) func(string) (agentcore.ChatModel, error) {
+	if deps.CreateModel == nil {
+		return nil
+	}
+	factory := deps.CreateModel
+	providers := deps.Providers
+	defaultProv := deps.Provider
+	return func(name string) (agentcore.ChatModel, error) {
+		// Stop at the FIRST matching provider. A labelled break is needed
+		// because map iteration over `providers` is unordered and a plain
+		// `break` would only exit the inner loop — letting a later provider
+		// silently overwrite the choice and producing non-deterministic
+		// routing when two providers list the same model name (e.g. an
+		// OpenRouter alias for an OpenAI model).
+	search:
+		for provName, pc := range providers {
+			for _, m := range pc.Models {
+				if strings.EqualFold(m, name) {
+					defaultProv = provName
+					break search
+				}
+			}
+		}
+		prov := defaultProv
+		apiKey, baseURL := resolveFromProviders(providers, prov)
+		provType, err := resolveProviderType(providers, prov)
+		if err != nil {
+			return nil, err
+		}
+		return factory(provType, name, apiKey, baseURL)
+	}
+}
+
+// projectAgentsDir is the conventional location for team-shared sub-agent
+// definitions. Living under the workspace means they version-control with
+// the project and apply on every collaborator's machine.
+func projectAgentsDir(cwd string) string {
+	return filepath.Join(cwd, ".codebot", "agents")
+}
+
+// userAgentsDir is the per-machine location for personal sub-agent
+// definitions. They override project definitions at MergeAgents time so a
+// developer can iterate on a tweak without committing it.
+func userAgentsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codebot", "agents")
+}
+
+// logAgentLoadErrors emits a line per broken agent file. We log instead of
+// aborting startup: one bad file in ~/.codebot/agents/ should not block the
+// session.
+func logAgentLoadErrors(errs []error) {
+	for _, err := range errs {
+		log.Printf("agent load error: %v", err)
+	}
 }
 
 func newSubAgentContextManager(model agentcore.ChatModel, window int) agentcore.ContextManager {
@@ -184,26 +202,3 @@ func resolveProviderType(providers map[string]config.ProviderConfig, prov string
 	return config.ResolveConfiguredProviderType(providers, prov)
 }
 
-// subagentToolPool returns a tool list suitable as input to
-// FilterToolsForAgent. Read / write / edit are replaced with fresh instances
-// sharing a sub-agent-local FileReadState so the sub-agent cannot poison the
-// parent's read-stamp cache (a read in a sub-agent must not let the parent
-// silently skip the next read of the same file). Other tools are passed
-// through by reference — they are either stateless or already keyed by cwd.
-func subagentToolPool(cwd string, mainTools []agentcore.Tool) []agentcore.Tool {
-	state := tools.NewFileReadState()
-	out := make([]agentcore.Tool, 0, len(mainTools))
-	for _, t := range mainTools {
-		switch t.Name() {
-		case "read":
-			out = append(out, tools.NewRead(cwd, state))
-		case "write":
-			out = append(out, tools.NewWrite(cwd, state))
-		case "edit":
-			out = append(out, tools.NewEdit(cwd, state))
-		default:
-			out = append(out, t)
-		}
-	}
-	return out
-}
