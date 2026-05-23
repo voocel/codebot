@@ -25,10 +25,51 @@ type subAgentDeps struct {
 	SmallModel  string                           // model name for explore sub-agent
 }
 
+// readOnlyDisallowed are the mutating tools excluded from read-only agents
+// (explore, plan). They cover every way a sub-agent could touch disk or
+// shell state. Listed here rather than at the call site so adding a new
+// mutating tool elsewhere triggers a single review point.
+var readOnlyDisallowed = []string{"write", "edit", "bash"}
+
 // buildSubAgentTool constructs a SubAgentTool with all sub-agent types registered.
+//
+// Every sub-agent's tool pool flows through the same pipeline:
+//
+//	deps.AllTools  ──►  subagentToolPool (per-agent independent read/write/edit)
+//	               ──►  agent.FilterToolsForAgent (three-layer rules)
+//
+// The pool step is invoked once per agent so each gets its own FileReadState
+// — that prevents a read in explore from masking a missing read-before-write
+// in coder, both of which run as different sub-agent kinds but share the
+// same builtTools input. The filter step enforces global / async / per-agent
+// denies and strips the `subagent` tool itself to prevent recursive spawn.
 func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
-	readOnly := readOnlyTools(deps.Cwd)
-	coderTools := filterOutSubagent(deps.AllTools)
+	exploreTools := agent.FilterToolsForAgent(
+		subagentToolPool(deps.Cwd, deps.AllTools),
+		agent.FilterOpts{
+			IsBuiltIn:       true,
+			IsAsync:         true,
+			AllowMCP:        true,
+			ExtraDisallowed: readOnlyDisallowed,
+		},
+	)
+	planTools := agent.FilterToolsForAgent(
+		subagentToolPool(deps.Cwd, deps.AllTools),
+		agent.FilterOpts{
+			IsBuiltIn:       true,
+			IsAsync:         true,
+			AllowMCP:        true,
+			ExtraDisallowed: readOnlyDisallowed,
+		},
+	)
+	coderTools := agent.FilterToolsForAgent(
+		subagentToolPool(deps.Cwd, deps.AllTools),
+		agent.FilterOpts{
+			IsBuiltIn: true,
+			IsAsync:   false,
+			AllowMCP:  true,
+		},
+	)
 
 	exploreModel := deps.Model
 	if deps.SmallModel != "" && deps.CreateModel != nil {
@@ -48,7 +89,7 @@ func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
 			Description:  "Fast codebase exploration agent. Use when you need to find files by patterns, search code for keywords, or answer questions about the codebase (e.g. 'how does authentication work?'). Read-only, no modifications.",
 			Model:        exploreModel,
 			SystemPrompt: config.ExploreSubAgentPrompt(deps.Cwd),
-			Tools:        readOnly,
+			Tools:        exploreTools,
 			MaxTurns:     20,
 			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 				return newSubAgentContextManager(model, deps.ContextWindow)
@@ -60,18 +101,13 @@ func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
 			Description:  "Software architect. Explore code and design implementation strategies with step-by-step plans.",
 			Model:        deps.Model,
 			SystemPrompt: config.PlanSubAgentPrompt(deps.Cwd),
-			Tools:        readOnly,
+			Tools:        planTools,
 			MaxTurns:     25,
 			ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 				return newSubAgentContextManager(model, deps.ContextWindow)
 			},
 			ConvertToLLM: agentctx.ContextConvertToLLM,
 		},
-		// NOTE: coder subagent intentionally does NOT have task_* tools.
-		// The main agent owns the task list; short-lived subagents report
-		// results back and the main agent updates task status.
-		// TODO(team): when teammate (long-running agent) is implemented,
-		// grant task_* tools so teammates can coordinate via shared tasks.
 		subagent.Config{
 			Name:         "coder",
 			Description:  "General-purpose coding agent. Independently search, read, and write code to complete subtasks.",
@@ -148,27 +184,26 @@ func resolveProviderType(providers map[string]config.ProviderConfig, prov string
 	return config.ResolveConfiguredProviderType(providers, prov)
 }
 
-// readOnlyTools constructs a read-only tool set for explore/plan sub-agents.
-// Each call returns tools bound to a fresh FileReadState — sub-agents have
-// their own conversation history and should not share read stamps with the
-// parent agent or with each other.
-func readOnlyTools(cwd string) []agentcore.Tool {
+// subagentToolPool returns a tool list suitable as input to
+// FilterToolsForAgent. Read / write / edit are replaced with fresh instances
+// sharing a sub-agent-local FileReadState so the sub-agent cannot poison the
+// parent's read-stamp cache (a read in a sub-agent must not let the parent
+// silently skip the next read of the same file). Other tools are passed
+// through by reference — they are either stateless or already keyed by cwd.
+func subagentToolPool(cwd string, mainTools []agentcore.Tool) []agentcore.Tool {
 	state := tools.NewFileReadState()
-	return []agentcore.Tool{
-		tools.NewRead(cwd, state),
-		tools.NewGlob(cwd),
-		tools.NewGrep(cwd),
-		tools.NewLs(cwd),
-	}
-}
-
-// filterOutSubagent removes the subagent tool from a tool list to prevent nesting.
-func filterOutSubagent(all []agentcore.Tool) []agentcore.Tool {
-	filtered := make([]agentcore.Tool, 0, len(all))
-	for _, t := range all {
-		if t.Name() != "subagent" {
-			filtered = append(filtered, t)
+	out := make([]agentcore.Tool, 0, len(mainTools))
+	for _, t := range mainTools {
+		switch t.Name() {
+		case "read":
+			out = append(out, tools.NewRead(cwd, state))
+		case "write":
+			out = append(out, tools.NewWrite(cwd, state))
+		case "edit":
+			out = append(out, tools.NewEdit(cwd, state))
+		default:
+			out = append(out, t)
 		}
 	}
-	return filtered
+	return out
 }

@@ -706,6 +706,9 @@ func formatBgEntry(entry *task.Entry, output string, withVerification bool) map[
 		result["tool_count"] = entry.ToolCount
 		result["tokens_in"] = entry.TokensIn
 		result["tokens_out"] = entry.TokensOut
+		if entry.Result != "" {
+			result["result"] = entry.Result
+		}
 	}
 	if withVerification && entry.Status != task.Running {
 		result["verification_needed"] = true
