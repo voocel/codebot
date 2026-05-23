@@ -1054,9 +1054,25 @@ func injectedUserMsg(text string) agentcore.Message {
 }
 
 // ephemeralQuery sends a one-shot query to the current model using the full
-// conversation context. Tool definitions are omitted and tool-related messages
-// are stripped so the request reuses the parent conversation's prompt cache
-// without breaking cache alignment. The result is never persisted.
+// conversation context. Tool-related blocks are stripped from messages
+// (assistant tool_call blocks + tool_result messages) so a thinking-only
+// assistant from the parent doesn't arrive empty and get rejected by OpenAI.
+//
+// The tools array itself IS forwarded verbatim — even though we don't expect
+// the model to call any of them — because Anthropic's prompt-cache prefix is
+// `tools → system → messages`, and the cache breakpoint we set sits on the
+// last system block. Omitting tools here breaks the prefix even though the
+// system blocks are byte-identical to the main loop, costing the entire
+// system-block cache (~10K tokens) on every /btw and post-turn suggestion.
+// The model is steered away from tool use by the suggestion/question prompt
+// rather than by tool_choice, because tool_choice "none" is wire-different
+// between OpenAI (bare string) and Anthropic (object) and litellm does not
+// normalise. If a model ignores the prompt and tries to call a tool we just
+// discard the tool_call block from the response — the cache savings outweigh
+// the rare false call.
+//
+// The result is never persisted.
+//
 // Both SideQuestion (/btw) and GenerateSuggestion share this path.
 func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	s.mu.Lock()
@@ -1104,8 +1120,13 @@ func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...a
 		Content: []agentcore.ContentBlock{agentcore.TextBlock(userText)},
 	})
 
+	// Same tools the main loop sent on its last turn — keeping the `tools`
+	// field byte-identical preserves the prompt-cache prefix up to the
+	// system-block breakpoint. See the docstring for why we don't also set
+	// tool_choice: "none".
+	toolSpecs := s.agent.BuildLLMTools()
 	defaults := []agentcore.CallOption{agentcore.WithThinking(agentcore.ThinkingOff)}
-	return model.Generate(ctx, msgs, nil, append(defaults, opts...)...)
+	return model.Generate(ctx, msgs, toolSpecs, append(defaults, opts...)...)
 }
 
 // GenerateSuggestion calls the current model with a condensed conversation

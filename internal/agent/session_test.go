@@ -288,18 +288,20 @@ func (m *countingChatModel) Calls() int {
 }
 
 type captureChatModel struct {
-	mu       sync.Mutex
-	captured []agentcore.Message
+	mu            sync.Mutex
+	captured      []agentcore.Message
+	capturedTools []agentcore.ToolSpec
 }
 
 func (m *captureChatModel) Generate(
 	_ context.Context,
 	msgs []agentcore.Message,
-	_ []agentcore.ToolSpec,
+	tools []agentcore.ToolSpec,
 	_ ...agentcore.CallOption,
 ) (*agentcore.LLMResponse, error) {
 	m.mu.Lock()
 	m.captured = append([]agentcore.Message(nil), msgs...)
+	m.capturedTools = append([]agentcore.ToolSpec(nil), tools...)
 	m.mu.Unlock()
 	return &agentcore.LLMResponse{Message: assistantTextMessage("ok")}, nil
 }
@@ -330,6 +332,12 @@ func (m *captureChatModel) Captured() []agentcore.Message {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]agentcore.Message(nil), m.captured...)
+}
+
+func (m *captureChatModel) CapturedTools() []agentcore.ToolSpec {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]agentcore.ToolSpec(nil), m.capturedTools...)
 }
 
 type stubExecTool struct {
@@ -1054,6 +1062,53 @@ func TestHandleProjectedRewriteUpdatesMetrics(t *testing.T) {
 	metrics := s.RuntimeMetrics()
 	if metrics.CompactionByKind[CompactionKindTrim] != 1 || metrics.CompactionSavedByKind[CompactionKindTrim] != 400 {
 		t.Fatalf("unexpected trim compaction metrics: %#v", metrics)
+	}
+}
+
+// Regression: ephemeralQuery must forward the parent agent's tool specs so
+// Anthropic's prompt cache hits the system-block prefix. The wire order is
+// `tools → system → messages`, and we set the cache breakpoint on the last
+// system block — sending `tools: nil` (the previous behaviour) made the
+// prefix byte-different from the main loop and forfeited a ~10K-token cache
+// read on every /btw and post-turn suggestion call.
+func TestEphemeralQueryForwardsToolsForCacheHit(t *testing.T) {
+	t.Parallel()
+
+	model := &captureChatModel{}
+	noopTool := agentcore.NewFuncTool("noop", "does nothing",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+			return json.Marshal("ok")
+		})
+	ag := agentcore.NewAgent(
+		agentcore.WithModel(model),
+		agentcore.WithTools(noopTool),
+	)
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "hi"),
+		textMessage(agentcore.RoleAssistant, "hello"),
+	}); err != nil {
+		t.Fatalf("seed messages: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent:     ag,
+		ChatModel: model,
+		Settings:  config.Resolved{MaxTurns: 10},
+		Cwd:       t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	if _, err := s.SideQuestion(context.Background(), "follow-up?"); err != nil {
+		t.Fatalf("SideQuestion: %v", err)
+	}
+
+	tools := model.CapturedTools()
+	if len(tools) != 1 {
+		t.Fatalf("CapturedTools length = %d, want 1 (the parent's noop tool)", len(tools))
+	}
+	if tools[0].Name != "noop" {
+		t.Errorf("CapturedTools[0].Name = %q, want %q", tools[0].Name, "noop")
 	}
 }
 
