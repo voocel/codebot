@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
@@ -38,6 +39,11 @@ type Config struct {
 	Overlay              func(m *Model) *OverlayState         // interactive command overlay
 	Completions          func(prefix string) []CompletionItem // slash command completions
 	OnBtwResult          func(msg BtwResultMsg)               // called when /btw side question completes
+
+	// TeammateEvents is the optional fan-out hub for teammate AgentLoop
+	// events. When non-nil the Ctrl+T modal subscribes to it to render a
+	// teammate's live transcript. nil disables the modal entirely.
+	TeammateEvents *agent.TeammateEventHub
 }
 
 // CompletionItem is a single command completion candidate.
@@ -192,6 +198,17 @@ type State struct {
 	history   *storage.History // input history store (nil = disabled)
 	histIdx   int              // -1 = not browsing; 0+ = current position (0 = most recent)
 	histDraft string           // stashed input before history navigation
+
+	// TranscriptModal renders the live transcript of a teammate when the
+	// user opens the popup (Ctrl+T). nil = closed; non-nil = open and
+	// full-screen, taking over all keyboard input except Esc / Ctrl+T /
+	// Ctrl+C and the scroll keys.
+	TranscriptModal *TranscriptView
+	// TranscriptAgent is the teammate currently shown in the modal.
+	TranscriptAgent string
+	// transcriptUnsubscribe drops the hub subscription that feeds the
+	// modal; nil when no modal is open.
+	transcriptUnsubscribe func()
 }
 
 // Model is the bubbletea Model for the agent TUI.

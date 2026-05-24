@@ -15,6 +15,15 @@ func (m *Model) View() string {
 		return "\n  Initializing..."
 	}
 
+	// Transcript modal takes over the entire viewport when open. We do not
+	// emit any scrollback content (status bar, streaming bullets, input
+	// panel) so the modal renders against an effectively blank canvas —
+	// terminal scrollback above it stays untouched and reappears when the
+	// modal closes.
+	if body := m.transcriptViewBody(); body != "" {
+		return body
+	}
+
 	var parts []string
 	overlay, overlayReplacesInput := m.overlayView()
 	appendInputArea := func() {

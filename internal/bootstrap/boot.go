@@ -37,6 +37,7 @@ type Runtime struct {
 	ApprovalEngine *approval.Engine
 	TaskRuntime    *task.Runtime
 	TeamRegistry   *team.Registry
+	TeammateEvents *agent.TeammateEventHub
 
 	Settings      config.Resolved
 	ModelName     string // display form: "provider/model" or session-restored name

@@ -58,6 +58,11 @@ type App struct {
 	// degrade to "no team" when nil or HasTeam() returns false.
 	TeamRegistry *team.Registry
 
+	// TeammateEvents is the per-session fan-out hub for teammate AgentLoop
+	// events. The TUI's teammate-transcript modal subscribes here. May be
+	// nil in headless / non-TUI flows; nil is a valid no-op publisher.
+	TeammateEvents *agent.TeammateEventHub
+
 	// PlanStore persists plans to ~/.codebot/plans/.
 	PlanStore *storage.PlanStore
 
@@ -230,20 +235,21 @@ func (a *App) Config() tui.Config {
 		plansDir = a.PlanStore.Dir()
 	}
 	return tui.Config{
-		Cwd:         a.Cwd,
-		PlansDir:    plansDir,
-		GitBranch:   a.GitBranch,
-		History:     a.History,
-		OnKey:       a.onKey(),
-		OnPaste:     a.onPaste,
-		OnDrop:      a.onDrop,
-		OnEvent:     a.planOnEvent,
-		StatusRight: a.statusRight,
-		StatusMode:  a.statusMode,
-		StatusTeam:  a.statusTeam,
-		Overlay:     a.overlayState,
-		Completions: a.completions,
-		OnBtwResult: a.onBtwResult,
+		Cwd:            a.Cwd,
+		PlansDir:       plansDir,
+		GitBranch:      a.GitBranch,
+		History:        a.History,
+		OnKey:          a.onKey(),
+		OnPaste:        a.onPaste,
+		OnDrop:         a.onDrop,
+		OnEvent:        a.planOnEvent,
+		StatusRight:    a.statusRight,
+		StatusMode:     a.statusMode,
+		StatusTeam:     a.statusTeam,
+		Overlay:        a.overlayState,
+		Completions:    a.completions,
+		OnBtwResult:    a.onBtwResult,
+		TeammateEvents: a.TeammateEvents,
 	}
 }
 
@@ -315,7 +321,8 @@ func (a *App) statusRight(m *tui.Model) string {
 // pre-created at session startup, an empty team is noise the user does not
 // need to see. Format: "△ <name> · <idle>/<total>" where idle counts
 // teammates parked on their mailbox and total is the number of live (Running)
-// teammates (leader excluded).
+// teammates (leader excluded). When at least one teammate is registered we
+// also append a "Ctrl+T" hint so the user knows the modal is available.
 func (a *App) statusTeam(_ *tui.Model) string {
 	if a.TeamRegistry == nil || !a.TeamRegistry.HasTeam() {
 		return ""
@@ -328,7 +335,7 @@ func (a *App) statusTeam(_ *tui.Model) string {
 	if total == 0 {
 		return ""
 	}
-	return fmt.Sprintf("△ %s · %d/%d idle", ctx.Name, idle, total)
+	return fmt.Sprintf("△ %s · %d/%d idle · Ctrl+T to view", ctx.Name, idle, total)
 }
 
 // countLiveTeammates walks the task runtime once for both numbers so the

@@ -30,7 +30,7 @@ const maxAgentNameSuffixAttempts = 1000
 // strips from every sub-agent's pool by default. Keeping the list explicit
 // rather than reaching into a shared bag avoids accidentally leaking tools
 // (like team_create) that should stay leader-only.
-func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool) subagent.TeamSpawner {
+func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub) subagent.TeamSpawner {
 	return func(ctx context.Context, req subagent.TeamSpawnRequest) (*subagent.TeamSpawnResult, error) {
 		if reg == nil || rt == nil {
 			return nil, errors.New("teammate spawner: registry and runtime are required")
@@ -55,18 +55,26 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		}
 
 		tools := mergeTeammateTools(req.Config.Tools, extraTools)
-		executor := buildTeammateExecutor(req.Config, tools, model)
+
+		// Resolve a unique name BEFORE building the executor so the hub
+		// publishes under the final id; the model is told the same id back.
+		agentName := uniqueAgentName(reg, req.Name)
+
+		// onEvent fans every AgentLoop event into the hub. Capturing
+		// agentName in the closure keeps buildTeammateExecutor agnostic of
+		// hub/name plumbing — it only knows "tell me about each event".
+		var onEvent func(agentcore.Event)
+		if hub != nil {
+			onEvent = func(ev agentcore.Event) {
+				hub.Publish(agentName, ev)
+			}
+		}
+		executor := buildTeammateExecutor(req.Config, tools, model, onEvent)
 
 		depth := task.DepthFromContext(ctx) + 1
 		if depth > task.MaxAgentDepth {
 			return nil, fmt.Errorf("agent nesting depth %d exceeds max %d", depth, task.MaxAgentDepth)
 		}
-
-		// Resolve a unique name BEFORE spawning so the model is told the real
-		// id back rather than getting ErrAgentExists. The model often forgets
-		// it already spawned "tester" and asks for another; matching cc's
-		// generateUniqueTeammateName behaviour avoids that footgun.
-		agentName := uniqueAgentName(reg, req.Name)
 
 		// Spawn off background context, not the caller's tool-call ctx: the
 		// teammate must outlive the leader's current turn. Session-level
@@ -165,7 +173,12 @@ func mergeTeammateTools(base, extras []agentcore.Tool) []agentcore.Tool {
 // turn would forget any prior compaction and either re-summarise from scratch
 // every turn or fail to summarise at all, neither of which is acceptable for
 // teammates that may run hundreds of turns.
-func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel) team.TurnExecutor {
+// onEvent is an optional observer invoked once for every event emitted by
+// the teammate's AgentLoop, after the executor has done its own bookkeeping
+// (produced collection / error capture). It is the integration seam that
+// lets the spawner publish to TeammateEventHub without buildTeammateExecutor
+// needing to know about hubs or agent names. nil disables the callback.
+func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event)) team.TurnExecutor {
 	var ctxMgr agentcore.ContextManager
 	switch {
 	case cfg.ContextManagerFactory != nil:
@@ -210,15 +223,19 @@ func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model ag
 			case agentcore.EventMessageEnd:
 				if promptEndsToSkip > 0 {
 					promptEndsToSkip--
-					continue
-				}
-				if ev.Message != nil {
+				} else if ev.Message != nil {
 					produced = append(produced, ev.Message)
 				}
 			case agentcore.EventError:
 				if ev.Err != nil {
 					loopErr = ev.Err
 				}
+			}
+			// Fan out AFTER bookkeeping so observer drops never cause us to
+			// lose a produced message. onEvent is required to be
+			// non-blocking by contract (the hub uses drop-oldest).
+			if onEvent != nil {
+				onEvent(ev)
 			}
 		}
 		return produced, loopErr

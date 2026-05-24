@@ -127,6 +127,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Input.Placeholder = msg.Text
 		}
 		return m, nil
+	case transcriptEventEnvelope:
+		return m.handleTranscriptEvent(msg.Msg, msg.Ch)
+	case TranscriptChannelClosedMsg:
+		// Subscription dropped — usually from closeTranscriptModal calling
+		// our cancel closure. If the modal happens to still be open with
+		// the same target (e.g. teammate disappeared without a user
+		// gesture), tear it down so we don't show a frozen view.
+		if m.TranscriptModal != nil && m.TranscriptAgent == msg.Agent {
+			m.closeTranscriptModal()
+		}
+		return m, nil
 	case RetryStatusMsg:
 		m.RetryPrefix = msg.Prefix
 		m.RetryDeadline = msg.Deadline
@@ -229,6 +240,14 @@ func tasksFullyCompleted(snap storage.TaskSnapshot) bool {
 // handleKey processes keyboard input.
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if next, cmd, handled := m.handleModalKey(msg); handled {
+		return next, cmd
+	}
+	// Transcript modal takes precedence over overlays / completions /
+	// textarea so its full-screen render isn't undermined by a stray key
+	// landing in the hidden input area. It runs AFTER AskUser/Permission
+	// because those dialogs require user input and the transcript modal is
+	// read-only — we never want to block them.
+	if next, cmd, handled := m.handleTranscriptKey(msg); handled {
 		return next, cmd
 	}
 	if next, cmd, handled := m.handleOverlayKey(msg); handled {
@@ -643,6 +662,7 @@ func (m *Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		m.AskUser.width = m.Width
 		m.AskUser.height = m.Height
 	}
+	m.transcriptOnResize()
 
 	needsReplay := prevWidth != 0 && (prevWidth != m.Width || m.Height < prevHeight)
 	if !needsReplay {

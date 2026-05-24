@@ -23,6 +23,7 @@ import (
 func assembleRuntime(input *resolvedInput, services *bootServices, assembly *sessionAssembly) (*Runtime, error) {
 	taskRT := task.NewRuntime()
 	teamReg := team.NewRegistry()
+	teammateEvents := agent.NewTeammateEventHub()
 	sessionID := input.sessionStore.Header().SessionID
 	// Pre-create a default team so the leader can spawn teammates immediately
 	// (subagent { name: ... }) without a separate team_create step. The team
@@ -69,6 +70,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			teamReg,
 			taskRT,
 			[]agentcore.Tool{localtools.NewSendMessageTool(taskRT, teamReg)},
+			teammateEvents,
 		))
 	}
 
@@ -86,6 +88,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		ApprovalEngine: services.approvalEngine,
 		TaskRuntime:    taskRT,
 		TeamRegistry:   teamReg,
+		TeammateEvents: teammateEvents,
 		Settings:       assembly.settings,
 		ModelName:      modelName,
 		Session:        session,

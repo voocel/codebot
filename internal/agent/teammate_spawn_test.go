@@ -107,7 +107,7 @@ func TestMergeTeammateTools_NilExtras(t *testing.T) {
 func TestBuildTeammateExecutor_ProducesAssistantMessage(t *testing.T) {
 	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
 	model := newScriptModel("first turn output")
-	exec := buildTeammateExecutor(cfg, nil, model)
+	exec := buildTeammateExecutor(cfg, nil, model, nil)
 
 	prompt := agentcore.UserMsg("go investigate")
 	produced, err := exec(context.Background(), []agentcore.AgentMessage{prompt})
@@ -129,7 +129,7 @@ func TestBuildTeammateExecutor_ProducesAssistantMessage(t *testing.T) {
 }
 
 func TestBuildTeammateExecutor_RejectsEmpty(t *testing.T) {
-	exec := buildTeammateExecutor(subagent.Config{}, nil, newScriptModel())
+	exec := buildTeammateExecutor(subagent.Config{}, nil, newScriptModel(), nil)
 	_, err := exec(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error on empty msgs")
@@ -174,7 +174,7 @@ func TestBuildTeammateExecutor_ReusesContextManagerAcrossTurns(t *testing.T) {
 			return mgr
 		},
 	}
-	exec := buildTeammateExecutor(cfg, nil, newScriptModel("turn1", "turn2", "turn3"))
+	exec := buildTeammateExecutor(cfg, nil, newScriptModel("turn1", "turn2", "turn3"), nil)
 
 	// Drive three turns. Each turn calls AgentLoop once → ContextManager.Project
 	// is invoked at least once per turn. The factory must only fire once.
@@ -207,7 +207,7 @@ func TestTeammateSpawner_HappyPath(t *testing.T) {
 		SystemPrompt: "you are a researcher",
 		Tools:        []agentcore.Tool{&fakeNamedTool{n: "read"}},
 	}
-	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}})
+	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -250,10 +250,80 @@ func TestTeammateSpawner_HappyPath(t *testing.T) {
 	})
 }
 
+// End-to-end: a hub wired to the spawner must receive the teammate's
+// AgentLoop events. We don't assert exact event order (that's agentcore's
+// contract, not ours) — just that something flows through.
+func TestTeammateSpawner_PublishesToHub(t *testing.T) {
+	reg := team.NewRegistry()
+	rt := task.NewRuntime()
+	hub := NewTeammateEventHub()
+	if err := reg.CreateTeam("alpha", "", "leader-1"); err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+
+	pres, cancelPres := hub.SubscribePresence()
+	defer cancelPres()
+
+	cfg := subagent.Config{
+		Name:         "researcher",
+		Model:        newScriptModel("done"),
+		SystemPrompt: "you are a researcher",
+	}
+	spawner := TeammateSpawner(reg, rt, nil, hub)
+
+	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
+		Config:        cfg,
+		Name:          "alice",
+		TeamName:      "alpha",
+		InitialPrompt: "go",
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	// Presence: alice should announce Started on the first published event.
+	select {
+	case ev := <-pres:
+		if !ev.Started || ev.AgentName != "alice" {
+			t.Errorf("first presence = %+v, want Started alice", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no presence event within 1s")
+	}
+
+	// Events: subscribe AFTER spawn — we only need to see new events from
+	// the next teammate turn. To force a second turn, send the teammate a
+	// message and wait for it to go idle again. The hub is the source of
+	// truth, not task.Entry.
+	ch, cancel := hub.Subscribe("alice")
+	defer cancel()
+
+	// Trigger a second turn by sending a peer message.
+	mb := reg.Mailbox("alice")
+	if mb == nil {
+		t.Fatal("mailbox missing for alice")
+	}
+	if err := mb.Send(team.Message{From: team.TeamLeadName, Text: "ping"}); err != nil {
+		t.Fatalf("mailbox send: %v", err)
+	}
+
+	// Drain a few events; we just need to see SOMETHING from agentcore.
+	got := drainEvents(t, ch, 1, 2*time.Second)
+	if len(got) == 0 {
+		t.Error("no events delivered through hub within 2s")
+	}
+
+	_ = reg.DeleteTeam()
+	waitFor(t, time.Second, func() bool {
+		e := rt.Get(res.TaskID)
+		return e != nil && e.Status.IsTerminal()
+	})
+}
+
 func TestTeammateSpawner_RejectsWhenNoTeam(t *testing.T) {
 	reg := team.NewRegistry()
 	rt := task.NewRuntime()
-	spawner := TeammateSpawner(reg, rt, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -272,7 +342,7 @@ func TestTeammateSpawner_RejectsWrongTeamName(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -291,7 +361,7 @@ func TestTeammateSpawner_RejectsMissingModel(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher"}, // no Model
@@ -310,7 +380,7 @@ func TestTeammateSpawner_DepthGuard(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil)
 
 	// Caller already sits at MaxAgentDepth → spawn would push past it.
 	ctx := task.WithDepth(context.Background(), task.MaxAgentDepth)
@@ -401,7 +471,7 @@ func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
 		Model:        newScriptModel("first", "second", "third", "fourth"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil)
 
 	first, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
