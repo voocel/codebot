@@ -20,8 +20,9 @@ import (
 //     send arbitrary payloads — web_fetch is GET-only behind Tavily, and
 //     web_search only takes a query string. Users who want air-gapped
 //     execution can add `deny: WebFetch(*)` rules)
-//   - Skill, ask_user, plan/task/cron control, tool_search, subagent
-//                             → Internal
+//   - Skill, ask_user, plan/task/cron/team control, tool_search, subagent,
+//     send_message            → Internal (pure in-memory state changes
+//     authored by the model; no external side effects to gate on)
 //
 // read/edit/write expose `file_path`; glob/grep/ls expose `path`. We probe
 // `file_path` first so the canonical argument wins when both are present.
@@ -72,6 +73,7 @@ func classify(req permission.Request) permission.Classification {
 		"enter_plan_mode", "exit_plan_mode",
 		"task_create", "task_get", "task_update", "task_list", "task_output", "task_stop",
 		"cron_create", "cron_delete", "cron_list",
+		"team_create", "team_dismiss", "send_message",
 		"tool_search", "subagent", "Skill":
 		return permission.Classification{Capability: permission.CapabilityInternal}
 	}

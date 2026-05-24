@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/voocel/agentcore/team"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 func TestTeamCreate_CreatesTeamAndRegistersLeader(t *testing.T) {
@@ -77,7 +78,10 @@ func TestTeamCreate_ValidationErrors(t *testing.T) {
 	}
 }
 
-func TestTeamCreate_RejectsDuplicate(t *testing.T) {
+// When the team is empty (no teammates yet) a second team_create call is
+// treated as a rename — that's the whole point of the tool now that bootstrap
+// pre-creates a default team.
+func TestTeamCreate_RenamesEmptyTeam(t *testing.T) {
 	reg := team.NewRegistry()
 	tool := NewTeamCreateTool(reg, "s1")
 
@@ -89,18 +93,107 @@ func TestTeamCreate_RejectsDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Execute: %v", err)
 	}
+	var resp map[string]any
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, string(out))
+	}
+	if resp["success"] != true {
+		t.Errorf("expected success=true, got %+v", resp)
+	}
+	if resp["team_name"] != "beta" {
+		t.Errorf("team_name = %v, want beta", resp["team_name"])
+	}
+	if ctx := reg.Team(); ctx == nil || ctx.Name != "beta" {
+		t.Errorf("registry team = %+v, want beta", ctx)
+	}
+	// Coming from a model-chosen name: the wording is the literal rename so
+	// the model sees what it actually did.
+	if msg, _ := resp["message"].(string); !strings.Contains(msg, "renamed from") {
+		t.Errorf("message = %q, want 'renamed from' wording", msg)
+	}
+}
+
+// The most common bootstrap path: registry starts on "default", model calls
+// team_create with a meaningful name. From the model's point of view that
+// IS the team's creation event — the result message must say "created"
+// rather than leak the "default" implementation detail.
+func TestTeamCreate_HidesDefaultRenameAsCreation(t *testing.T) {
+	reg := team.NewRegistry()
+	// Mirror bootstrap: pre-create the default team before the tool fires.
+	if err := reg.CreateTeam(cbteam.DefaultTeamName, "", "s1"); err != nil {
+		t.Fatalf("CreateTeam default: %v", err)
+	}
+	tool := NewTeamCreateTool(reg, "s1")
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"team_name":"alpha"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, string(out))
+	}
+	if resp["success"] != true {
+		t.Errorf("expected success=true, got %+v", resp)
+	}
+	msg, _ := resp["message"].(string)
+	if !strings.Contains(msg, "created") {
+		t.Errorf("message = %q, want 'created' wording", msg)
+	}
+	if strings.Contains(msg, cbteam.DefaultTeamName) {
+		t.Errorf("message %q must not leak %q to the model", msg, cbteam.DefaultTeamName)
+	}
+}
+
+// Calling team_create with the same name should not error — it's a no-op
+// confirmation, which the model occasionally does at session start.
+func TestTeamCreate_SameNameIsNoop(t *testing.T) {
+	reg := team.NewRegistry()
+	tool := NewTeamCreateTool(reg, "s1")
+
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"team_name":"alpha"}`)); err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"team_name":"alpha"}`))
+	if err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, string(out))
+	}
+	if resp["success"] != true {
+		t.Errorf("expected success=true, got %+v", resp)
+	}
+}
+
+// Once a teammate is registered the rename must be rejected — teammate
+// agent IDs embed the team name at spawn time, so renaming would silently
+// invalidate them.
+func TestTeamCreate_RejectsRenameWithTeammates(t *testing.T) {
+	reg := team.NewRegistry()
+	tool := NewTeamCreateTool(reg, "s1")
+
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"team_name":"alpha"}`)); err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	if err := reg.RegisterAgent("researcher", "tm-1"); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"team_name":"beta"}`))
+	if err != nil {
+		t.Fatalf("rename Execute: %v", err)
+	}
 	var msg string
 	if err := json.Unmarshal(out, &msg); err != nil {
 		t.Fatalf("unmarshal: %v: %s", err, string(out))
 	}
-	if !strings.Contains(msg, "already active") {
-		t.Errorf("duplicate error = %q, want 'already active'", msg)
+	if !strings.Contains(msg, "Cannot rename") {
+		t.Errorf("error = %q, want 'Cannot rename'", msg)
 	}
-
-	// Registry still has the original team, not the second attempt.
-	ctx := reg.Team()
-	if ctx == nil || ctx.Name != "alpha" {
-		t.Errorf("registry team = %+v, want alpha", ctx)
+	if ctx := reg.Team(); ctx == nil || ctx.Name != "alpha" {
+		t.Errorf("registry team = %+v, want alpha (unchanged)", ctx)
 	}
 }
 

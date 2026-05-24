@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/subagent"
@@ -11,6 +12,12 @@ import (
 	"github.com/voocel/agentcore/team"
 	cbteam "github.com/voocel/codebot/internal/team"
 )
+
+// maxAgentNameSuffixAttempts caps the rename retry loop so a registry with an
+// implausibly large run of `name-2`, `name-3`, … doesn't spin forever. The
+// real ceiling is the model's willingness to spawn that many same-named
+// teammates, which is far below this number.
+const maxAgentNameSuffixAttempts = 1000
 
 // TeammateSpawner returns a subagent.TeamSpawner closure that turns the
 // `subagent { team_name: ... }` tool call into an actual long-lived teammate.
@@ -32,7 +39,10 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		if teamCtx == nil {
 			return nil, errors.New("no active team — call team_create first")
 		}
-		if req.TeamName != teamCtx.Name {
+		// team_name is optional: a default team is pre-created at session
+		// startup, so most callers just want to drop the teammate into the
+		// active team. Only validate when the model explicitly named a team.
+		if req.TeamName != "" && req.TeamName != teamCtx.Name {
 			return nil, fmt.Errorf("team_name %q does not match the active team %q", req.TeamName, teamCtx.Name)
 		}
 
@@ -52,6 +62,12 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 			return nil, fmt.Errorf("agent nesting depth %d exceeds max %d", depth, task.MaxAgentDepth)
 		}
 
+		// Resolve a unique name BEFORE spawning so the model is told the real
+		// id back rather than getting ErrAgentExists. The model often forgets
+		// it already spawned "tester" and asks for another; matching cc's
+		// generateUniqueTeammateName behaviour avoids that footgun.
+		agentName := uniqueAgentName(reg, req.Name)
+
 		// Spawn off background context, not the caller's tool-call ctx: the
 		// teammate must outlive the leader's current turn. Session-level
 		// shutdown is handled by Runtime.Close (DeleteTeam closes mailboxes
@@ -59,7 +75,7 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		spawnCtx := task.WithDepth(context.Background(), depth)
 
 		res, err := team.Spawn(spawnCtx, team.SpawnConfig{
-			AgentName:     req.Name,
+			AgentName:     agentName,
 			InitialPrompt: req.InitialPrompt,
 			Description:   req.Description,
 			Color:         req.Color,
@@ -77,6 +93,36 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 			AgentID: res.AgentID,
 		}, nil
 	}
+}
+
+// uniqueAgentName returns base when no live agent in reg already uses it
+// (case-insensitive); otherwise appends "-2", "-3", … until it finds a free
+// slot. Comparison is case-insensitive so the model can't accidentally split
+// a logical "Tester" + "tester" into two routing targets.
+//
+// There is a benign TOCTOU window between this check and team.Spawn's own
+// RegisterAgent: a concurrent spawn could grab the chosen name first. Spawn
+// itself will then return ErrAgentExists and the caller sees the original
+// error path — this helper only optimises the common single-leader case.
+func uniqueAgentName(reg *team.Registry, base string) string {
+	if reg == nil || base == "" {
+		return base
+	}
+	taken := make(map[string]bool)
+	for _, n := range reg.AgentNames() {
+		taken[strings.ToLower(n)] = true
+	}
+	if !taken[strings.ToLower(base)] {
+		return base
+	}
+	for i := 2; i < maxAgentNameSuffixAttempts; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !taken[strings.ToLower(candidate)] {
+			return candidate
+		}
+	}
+	// Fall through to base; team.Spawn will surface ErrAgentExists cleanly.
+	return base
 }
 
 // mergeTeammateTools appends extras to base, skipping any duplicates by tool

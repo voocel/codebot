@@ -16,6 +16,7 @@ import (
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	cbteam "github.com/voocel/codebot/internal/team"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
 
@@ -23,6 +24,13 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	taskRT := task.NewRuntime()
 	teamReg := team.NewRegistry()
 	sessionID := input.sessionStore.Header().SessionID
+	// Pre-create a default team so the leader can spawn teammates immediately
+	// (subagent { name: ... }) without a separate team_create step. The team
+	// name is purely cosmetic until the model decides to rename via team_create
+	// for a meaningful project label.
+	if err := teamReg.CreateTeam(cbteam.DefaultTeamName, "", sessionID); err != nil {
+		return nil, fmt.Errorf("pre-create default team: %w", err)
+	}
 	taskTools := localtools.NewTaskTools(services.taskStore, taskRT, assembly.hookRunner)
 	teamTools := localtools.NewTeamTools(teamReg, taskRT, sessionID)
 	tools := make([]agentcore.Tool, 0, len(assembly.tools)+len(taskTools)+len(teamTools))

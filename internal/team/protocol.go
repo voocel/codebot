@@ -26,6 +26,12 @@ import (
 // teammate model sees. Kept as a single constant so format/parse can't drift.
 const xmlTeammateMessageTag = "teammate-message"
 
+// DefaultTeamName is the placeholder name bootstrap assigns to the team
+// pre-created at session startup. Tools that surface team state to the model
+// (team_create's result message in particular) use it to recognise the
+// "still on the default name" case and word their response accordingly.
+const DefaultTeamName = "default"
+
 // Message kinds carried in the JSON "type" field. Plain peer messages have no
 // envelope at all — their text flows through verbatim.
 const (

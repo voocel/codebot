@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -322,6 +323,117 @@ func TestTeammateSpawner_DepthGuard(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exceeds max") {
 		t.Errorf("expected depth error, got %v", err)
 	}
+}
+
+func TestUniqueAgentName(t *testing.T) {
+	tests := []struct {
+		name       string
+		registered []string // pre-registered teammate names (besides leader)
+		base       string
+		want       string
+	}{
+		{
+			name:       "no conflict returns base",
+			registered: nil,
+			base:       "researcher",
+			want:       "researcher",
+		},
+		{
+			name:       "one conflict gets -2",
+			registered: []string{"researcher"},
+			base:       "researcher",
+			want:       "researcher-2",
+		},
+		{
+			name:       "consecutive conflicts skip to first free slot",
+			registered: []string{"tester", "tester-2", "tester-3"},
+			base:       "tester",
+			want:       "tester-4",
+		},
+		{
+			name:       "case-insensitive: existing Tester blocks tester",
+			registered: []string{"Tester"},
+			base:       "tester",
+			want:       "tester-2",
+		},
+		{
+			name:       "empty base returned as-is",
+			registered: nil,
+			base:       "",
+			want:       "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := team.NewRegistry()
+			if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
+				t.Fatalf("CreateTeam: %v", err)
+			}
+			for i, n := range tt.registered {
+				if err := reg.RegisterAgent(n, fmt.Sprintf("tm-%d", i)); err != nil {
+					t.Fatalf("RegisterAgent %q: %v", n, err)
+				}
+			}
+			if got := uniqueAgentName(reg, tt.base); got != tt.want {
+				t.Errorf("uniqueAgentName(%q) = %q, want %q", tt.base, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUniqueAgentName_NilRegistry(t *testing.T) {
+	if got := uniqueAgentName(nil, "x"); got != "x" {
+		t.Errorf("uniqueAgentName(nil, %q) = %q, want %q", "x", got, "x")
+	}
+}
+
+// End-to-end: spawning the same logical name twice must auto-suffix instead
+// of bubbling ErrAgentExists up to the model, matching cc's UX.
+func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
+	reg := team.NewRegistry()
+	rt := task.NewRuntime()
+	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+
+	cfg := subagent.Config{
+		Name:         "researcher",
+		Model:        newScriptModel("first", "second", "third", "fourth"),
+		SystemPrompt: "you are a researcher",
+	}
+	spawner := TeammateSpawner(reg, rt, nil)
+
+	first, err := spawner(context.Background(), subagent.TeamSpawnRequest{
+		Config:        cfg,
+		Name:          "researcher",
+		InitialPrompt: "go",
+	})
+	if err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	if first.AgentID != "researcher@alpha" {
+		t.Errorf("first AgentID = %q, want researcher@alpha", first.AgentID)
+	}
+
+	second, err := spawner(context.Background(), subagent.TeamSpawnRequest{
+		Config:        cfg,
+		Name:          "researcher",
+		InitialPrompt: "go again",
+	})
+	if err != nil {
+		t.Fatalf("second spawn: %v", err)
+	}
+	if second.AgentID != "researcher-2@alpha" {
+		t.Errorf("second AgentID = %q, want researcher-2@alpha", second.AgentID)
+	}
+
+	// Tear down so the test exits cleanly.
+	_ = reg.DeleteTeam()
+	waitFor(t, time.Second, func() bool {
+		e1 := rt.Get(first.TaskID)
+		e2 := rt.Get(second.TaskID)
+		return e1 != nil && e2 != nil && e1.Status.IsTerminal() && e2.Status.IsTerminal()
+	})
 }
 
 // --- helpers -----------------------------------------------------------------

@@ -310,11 +310,12 @@ func (a *App) statusRight(m *tui.Model) string {
 	return tui.TokenStyle.Render(strings.Join(parts, " · "))
 }
 
-// statusTeam returns the active-team chip for the context bar. Empty when no
-// team has been created in this session. Format: "△ <name> · <idle>/<total>"
-// where idle is the count of teammates parked on their mailbox and total is
-// the number of registered teammates (leader excluded). Teammates with
-// terminal status (completed, killed) are not counted.
+// statusTeam returns the active-team chip for the context bar. Empty when
+// no teammates have been spawned yet — even though a default team is
+// pre-created at session startup, an empty team is noise the user does not
+// need to see. Format: "△ <name> · <idle>/<total>" where idle counts
+// teammates parked on their mailbox and total is the number of live (Running)
+// teammates (leader excluded).
 func (a *App) statusTeam(_ *tui.Model) string {
 	if a.TeamRegistry == nil || !a.TeamRegistry.HasTeam() {
 		return ""
@@ -325,8 +326,7 @@ func (a *App) statusTeam(_ *tui.Model) string {
 	}
 	total, idle := a.countLiveTeammates()
 	if total == 0 {
-		// Just the leader so far — show the team name without a count.
-		return fmt.Sprintf("△ %s", ctx.Name)
+		return ""
 	}
 	return fmt.Sprintf("△ %s · %d/%d idle", ctx.Name, idle, total)
 }

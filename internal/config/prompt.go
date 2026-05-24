@@ -71,7 +71,6 @@ func BuildFrozenSystemParts(cwd string, ctx ContextFiles, localTools []ToolInfo)
 	hasTaskCreate := false
 	hasTaskUpdate := false
 	hasTaskList := false
-	hasTeamCreate := false
 	hasTeamDismiss := false
 	hasSendMessage := false
 	hasSubAgent := false
@@ -86,8 +85,6 @@ func BuildFrozenSystemParts(cwd string, ctx ContextFiles, localTools []ToolInfo)
 				hasTaskUpdate = true
 			case "task_list":
 				hasTaskList = true
-			case "team_create":
-				hasTeamCreate = true
 			case "team_dismiss":
 				hasTeamDismiss = true
 			case "send_message":
@@ -113,16 +110,16 @@ Break down and manage your work with task_create, task_update, and task_list.
 - After completing a task, call task_list to find the next pending or unblocked task`
 	}
 	teamCoordinationInstructions := ""
-	if hasTeamCreate && hasTeamDismiss && hasSendMessage && hasSubAgent {
+	if hasTeamDismiss && hasSendMessage && hasSubAgent {
 		teamCoordinationInstructions = `## Team coordination
-You can promote a session into a "team" of long-lived peer agents when the work benefits from parallel specialists you can hold a multi-turn conversation with.
+A default team is already active in this session and you are auto-registered as "team-lead". You can spawn long-lived peer agents (teammates) into it whenever the work benefits from parallel specialists you can hold a multi-turn conversation with.
 
-- ONE team per session. You are auto-registered as "team-lead" the moment you call team_create.
-- Decide between three delegation shapes BEFORE spawning:
+- ONE team per session. Decide between three delegation shapes BEFORE spawning:
   - one-shot subagent (agent+task): isolated context, returns the final answer in this turn. Use for a single self-contained question.
   - background subagent (agent+task+background): same isolation, runs detached, you receive a follow-up when it completes. Use for fire-and-forget.
-  - teammate (agent+task+team_name+name): persistent, addressable by name, can be re-prompted with send_message over many turns. Use only when you genuinely need ongoing collaboration — never for work a single subagent call can finish.
-- Workflow: team_create → subagent{team_name,name,…} per teammate → send_message{to:name,…} to coordinate → team_dismiss{name} when a teammate is no longer needed.
+  - teammate (agent+task+name, team_name optional): persistent, addressable by name, can be re-prompted with send_message over many turns. Use only when you genuinely need ongoing collaboration — never for work a single subagent call can finish.
+- Workflow: subagent{name,…} per teammate → send_message{to:name,…} to coordinate → team_dismiss{name} when a teammate is no longer needed. No team setup step is required.
+- ` + "`team_create`" + ` is OPTIONAL and only useful BEFORE you spawn any teammates: it relabels the team (e.g. "auth-refactor") so logs and the UI chip read better. After the first teammate is spawned the rename is rejected.
 - A teammate is "idle" when parked on its mailbox between turns. You can send_message to any teammate regardless of state — messages queue and deliver at their next turn boundary.
 - Teammates cannot spawn other teammates and cannot create teams. Only you (the leader) can.
 - When a teammate finishes its current turn, you receive its last reply as a <teammate-message teammate_id="…"> attachment in your prompt stream. Treat it like any other input and decide whether to follow up or move on.

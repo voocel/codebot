@@ -12,13 +12,14 @@ import (
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
-// TeamCreateTool activates a Team in the current session. A Team is the home
-// for long-lived peer agents (teammates) that communicate via the team
-// mailbox. The leader (this agent) is auto-registered with the reserved name
-// "team-lead". Subsequent teammates are spawned via the subagent tool with a
-// team_name parameter (wired in Stage B).
+// TeamCreateTool renames the session's pre-created team to a meaningful
+// label. A default team is always active from session start, so this tool's
+// job is no longer "activate" — it's "give the team a name that reflects
+// what we're working on". Once teammates have been spawned the rename is
+// rejected (their agentIds would silently break).
 //
 // Only one team can be active per session — the leader's role is single-team
 // to keep the coordination surface small.
@@ -44,17 +45,17 @@ func (t *TeamCreateTool) Name() string  { return "team_create" }
 func (t *TeamCreateTool) Label() string { return "Create Team" }
 
 func (t *TeamCreateTool) Description() string {
-	return `Create a team in the current session. A team is a group of long-lived peer agents that can talk to each other through a shared mailbox.
+	return `Rename the session's team to a meaningful label that reflects the current project (e.g. "auth-refactor", "bug-triage").
 
-Use this when the user asks to coordinate multiple agents, or when a task is large enough that parallel agents (e.g. researcher + tester + coder) would clearly speed it up. For one-shot exploration or a single background task, use the subagent tool instead.
+A default team is always active from session start — you don't need to call this before spawning teammates. Use it only when you want a clearer label than the default. The rename succeeds only before any teammate has been spawned (teammates' agent IDs embed the team name at spawn time, so renaming after the fact would silently break message routing).
 
-After creating a team you are the team-lead. Spawn teammates via the subagent tool with a team_name parameter, then send messages to them with send_message. Only ONE team can be active per session.`
+Spawn teammates via the subagent tool (team_name is optional and defaults to the active team); coordinate with them via send_message.`
 }
 
 func (t *TeamCreateTool) Schema() map[string]any {
 	return schema.Object(
 		schema.Property("team_name", schema.String(
-			"Short identifier for the team (letters, digits, '.', '_', '-'; up to 64 chars). Used as the routing prefix for agent IDs.",
+			"New short identifier for the team (letters, digits, '.', '_', '-'; up to 64 chars). Used as the routing suffix for agent IDs.",
 		)).Required(),
 		schema.Property("description", schema.String(
 			"Optional one-line purpose of the team (shown in listings).",
@@ -78,20 +79,55 @@ func (t *TeamCreateTool) Execute(_ context.Context, args json.RawMessage) (json.
 	if !teamNameRegexp.MatchString(name) {
 		return json.Marshal("Validation error: team_name must start with a letter or digit and contain only letters, digits, '.', '_', '-' (max 64 chars)")
 	}
+	description := strings.TrimSpace(a.Description)
 
-	if err := t.reg.CreateTeam(name, strings.TrimSpace(a.Description), t.leaderID); err != nil {
-		if errors.Is(err, team.ErrTeamExists) {
-			existing := t.reg.Team()
-			return json.Marshal(fmt.Sprintf("A team is already active in this session (%q). Use team_delete first if you need to start a new one.", existing.Name))
+	// Default team is pre-created at session startup, so this is always a
+	// rename in practice. CreateTeam is kept as a fallback for the unlikely
+	// case the registry has no team (e.g. after a future team_dismiss).
+	existing := t.reg.Team()
+	if existing == nil {
+		if err := t.reg.CreateTeam(name, description, t.leaderID); err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{
+			"success":     true,
+			"team_name":   name,
+			"leader_name": team.TeamLeadName,
+			"message":     fmt.Sprintf("Team %q created. You are %q. Spawn teammates via the subagent tool.", name, team.TeamLeadName),
+		})
+	}
+
+	if existing.Name == name {
+		return json.Marshal(map[string]any{
+			"success":     true,
+			"team_name":   name,
+			"leader_name": team.TeamLeadName,
+			"message":     fmt.Sprintf("Team is already named %q. Spawn teammates via the subagent tool.", name),
+		})
+	}
+
+	if err := t.reg.RenameTeam(name, description); err != nil {
+		if errors.Is(err, team.ErrTeamHasMembers) {
+			return json.Marshal(fmt.Sprintf("Cannot rename team %q — teammates are already registered and their agent IDs embed the team name. Dismiss the team first if you really need to rename.", existing.Name))
 		}
 		return nil, err
 	}
 
+	// Wording: from the model's perspective, renaming the still-default team
+	// is the very first naming event — surface it as "created" to match the
+	// user's mental model. A rename away from a name the model itself chose
+	// gets the literal wording so the model sees what actually changed.
+	var message string
+	if existing.Name == cbteam.DefaultTeamName {
+		message = fmt.Sprintf("Team %q created. Spawn teammates via the subagent tool.", name)
+	} else {
+		message = fmt.Sprintf("Team renamed from %q to %q. Spawn teammates via the subagent tool.", existing.Name, name)
+	}
 	return json.Marshal(map[string]any{
 		"success":     true,
 		"team_name":   name,
 		"leader_name": team.TeamLeadName,
-		"message":     fmt.Sprintf("Team %q created. You are %q. Spawn teammates via the subagent tool with team_name=%q.", name, team.TeamLeadName, name),
+		"message":     message,
 	})
 }
 
