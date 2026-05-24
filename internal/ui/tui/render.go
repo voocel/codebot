@@ -140,6 +140,20 @@ func (m *Model) renderUserMessage(text string) string {
 	return strings.Join(out, "\n")
 }
 
+// renderTeammateMessage renders a message that came from a teammate (injected
+// by the leader-inbox pump) as a distinct block — purple icon + bold sender
+// header above the body — so users can tell at a glance "this came from
+// another agent, not from me".
+//
+// The model still sees the raw `<teammate-message>` XML in its history;
+// rendering only changes what the human sees in scrollback.
+func (m *Model) renderTeammateMessage(from, body string) string {
+	headerStyle := lipgloss.NewStyle().Foreground(RoleTeammate).Bold(true)
+	bodyText := m.RenderMarkdownBlock(body, 2)
+	bodyTrimmed := strings.TrimPrefix(bodyText, "  ")
+	return headerStyle.Render("◆ "+from) + "\n  " + bodyTrimmed
+}
+
 // ---------------------------------------------------------------------------
 // Markdown helpers
 // ---------------------------------------------------------------------------

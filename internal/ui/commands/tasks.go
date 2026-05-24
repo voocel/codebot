@@ -213,8 +213,8 @@ func (c *TasksCommand) viewList(_ int) string {
 	inactiveStyle := tui.MutedStyle
 	groupStyle := lipgloss.NewStyle().Foreground(tui.Muted)
 
-	var shellEntries, agentEntries []int
-	var shellRunning, agentRunning int
+	var shellEntries, agentEntries, teammateEntries []int
+	var shellRunning, agentRunning, teammateRunning int
 	for i := range s.entries {
 		switch s.entries[i].Type {
 		case task.TypeShell:
@@ -227,10 +227,15 @@ func (c *TasksCommand) viewList(_ int) string {
 			if s.entries[i].Status == task.Running {
 				agentRunning++
 			}
+		case task.TypeTeammate:
+			teammateEntries = append(teammateEntries, i)
+			if s.entries[i].Status == task.Running {
+				teammateRunning++
+			}
 		}
 	}
 
-	totalRunning := shellRunning + agentRunning
+	totalRunning := shellRunning + agentRunning + teammateRunning
 
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("  Background tasks"))
@@ -243,6 +248,9 @@ func (c *TasksCommand) viewList(_ int) string {
 		}
 		if agentRunning > 0 {
 			parts = append(parts, fmt.Sprintf("%d active agent(s)", agentRunning))
+		}
+		if teammateRunning > 0 {
+			parts = append(parts, fmt.Sprintf("%d active teammate(s)", teammateRunning))
 		}
 		sb.WriteString(tui.MutedStyle.Render("  " + strings.Join(parts, " · ")))
 	} else {
@@ -268,6 +276,22 @@ func (c *TasksCommand) viewList(_ int) string {
 		}
 	}
 
+	if len(teammateEntries) > 0 {
+		// Show the team name once in the group header — every teammate in
+		// this session belongs to the single active team, so repeating it on
+		// each line would be noise.
+		header := fmt.Sprintf("    Teammates (%d)", len(teammateEntries))
+		if teamName := teammateTeamName(s.entries, teammateEntries); teamName != "" {
+			header = fmt.Sprintf("    Teammates · %s (%d)", teamName, len(teammateEntries))
+		}
+		sb.WriteString("\n")
+		sb.WriteString(groupStyle.Render(header))
+		sb.WriteString("\n")
+		for _, idx := range teammateEntries {
+			c.renderListEntry(&sb, idx, activeStyle, inactiveStyle)
+		}
+	}
+
 	sb.WriteString("\n")
 	hints := "  ↑/↓ to select · Enter to view · x to stop · r to refresh · Esc to close"
 	if totalRunning > 0 {
@@ -284,7 +308,29 @@ func (c *TasksCommand) renderListEntry(sb *strings.Builder, idx int, activeStyle
 	if desc == "" && e.Command != "" {
 		desc = truncateStr(e.Command, 50)
 	}
+	// Teammates display as `<name> (<role>) — <prompt-snippet>` so the user
+	// can tell apart two teammates spawned from the same definition.
+	if e.Type == task.TypeTeammate && e.Identity != nil {
+		head := e.Identity.AgentName
+		if e.Agent != "" && e.Agent != head {
+			head = fmt.Sprintf("%s (%s)", head, e.Agent)
+		}
+		if desc == "" && e.Prompt != "" {
+			desc = truncateStr(e.Prompt, 50)
+		}
+		if desc == "" {
+			desc = head
+		} else {
+			desc = head + " — " + desc
+		}
+	}
 	status := renderTaskStatus(e.Status)
+	if e.Type == task.TypeTeammate && e.Status == task.Running {
+		// Idle/active distinction matters more than running/not for a
+		// teammate that lives across many turns. Override the generic
+		// "(running)" with a finer-grained label.
+		status = renderTeammateLiveStatus(e.IsIdle)
+	}
 	line := fmt.Sprintf("    %s %s", desc, status)
 	if idx == c.state.cursor {
 		sb.WriteString(activeStyle.Render("  > " + line[4:]))
@@ -308,6 +354,8 @@ func (c *TasksCommand) viewDetail(width int) string {
 		return c.viewShellDetail(e, width)
 	case task.TypeSubAgent:
 		return c.viewAgentDetail(e, width)
+	case task.TypeTeammate:
+		return c.viewTeammateDetail(e, width)
 	}
 	return ""
 }
@@ -466,6 +514,115 @@ func renderTaskStatus(status task.Status) string {
 	default:
 		return tui.MutedStyle.Render("(" + string(status) + ")")
 	}
+}
+
+// renderTeammateLiveStatus formats a running teammate's idle/active label.
+// "idle" means the teammate finished its current turn and is parked on its
+// mailbox waiting for the next message — the leader can address it freely.
+// "active" means a turn is in progress; sending now still works (mailbox
+// queues) but the reply will only arrive after the current turn completes.
+func renderTeammateLiveStatus(isIdle bool) string {
+	if isIdle {
+		return lipgloss.NewStyle().Foreground(tui.Success).Render("(idle)")
+	}
+	return lipgloss.NewStyle().Foreground(tui.Brand).Render("(active)")
+}
+
+// teammateTeamName returns the team name shared by the listed teammate
+// entries. Returns "" when no teammate carries an Identity (defensive — a
+// well-formed teammate Entry always has one), so the caller can fall back
+// to the bare "Teammates (N)" header without showing a misleading name.
+func teammateTeamName(entries []task.Entry, idxs []int) string {
+	for _, i := range idxs {
+		if i < len(entries) && entries[i].Identity != nil && entries[i].Identity.TeamName != "" {
+			return entries[i].Identity.TeamName
+		}
+	}
+	return ""
+}
+
+// viewTeammateDetail renders a live teammate's identity, prompt, last
+// assistant text (refreshed by the runner each turn into Entry.Result), and
+// the same stop/back affordances every detail view shares.
+func (c *TasksCommand) viewTeammateDetail(e task.Entry, width int) string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.Text)
+	labelStyle := lipgloss.NewStyle().Foreground(tui.Muted)
+	valueStyle := lipgloss.NewStyle().Foreground(tui.Text)
+
+	var sb strings.Builder
+
+	header := e.Agent
+	if e.Identity != nil {
+		header = e.Identity.AgentID
+		if e.Agent != "" && e.Agent != e.Identity.AgentName {
+			header += " (" + e.Agent + ")"
+		}
+	}
+	sb.WriteString(titleStyle.Render("  " + header))
+	sb.WriteString("\n")
+
+	status := renderTaskStatus(e.Status)
+	if e.Status == task.Running {
+		status = renderTeammateLiveStatus(e.IsIdle)
+	}
+	sb.WriteString(labelStyle.Render("  Status:  "))
+	sb.WriteString(valueStyle.Render(status))
+	sb.WriteString("\n")
+
+	sb.WriteString(labelStyle.Render("  Runtime: "))
+	sb.WriteString(valueStyle.Render(formatTaskDuration(e.StartedAt, e.EndedAt)))
+	sb.WriteString("\n\n")
+
+	if e.Prompt != "" {
+		sb.WriteString(labelStyle.Render("  Initial prompt"))
+		sb.WriteString("\n")
+		for _, line := range strings.Split(e.Prompt, "\n") {
+			sb.WriteString(valueStyle.Render("  " + line))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	if e.Result != "" {
+		sb.WriteString(labelStyle.Render("  Last response:"))
+		sb.WriteString("\n")
+
+		outLines := strings.Split(strings.TrimRight(e.Result, "\n"), "\n")
+		maxShow := 10
+		start := 0
+		if len(outLines) > maxShow {
+			start = len(outLines) - maxShow
+		}
+		var boxLines []string
+		for _, line := range outLines[start:] {
+			boxLines = append(boxLines, valueStyle.Render(line))
+		}
+		innerWidth := max(width-8, 40)
+		box := tui.DrawBox(boxLines, innerWidth, maxShow)
+		for _, line := range strings.Split(box, "\n") {
+			sb.WriteString("  " + line)
+			sb.WriteString("\n")
+		}
+		if start > 0 {
+			sb.WriteString(tui.MutedStyle.Italic(true).Render(fmt.Sprintf("  ── %d earlier lines hidden ──", start)))
+			sb.WriteString("\n")
+		}
+	}
+
+	if e.Status == task.Failed && e.Error != "" {
+		sb.WriteString("\n")
+		sb.WriteString(tui.ErrorStyle.Render("  Error: " + e.Error))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
+	hint := "  Esc to go back"
+	if e.Status == task.Running {
+		hint += " · x to stop"
+	}
+	sb.WriteString(tui.MutedStyle.Italic(true).Render(hint))
+
+	return sb.String()
 }
 
 func formatTaskDuration(start, end time.Time) string {

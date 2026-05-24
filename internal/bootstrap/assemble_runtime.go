@@ -13,6 +13,7 @@ import (
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/agentcore/task"
+	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
 	localtools "github.com/voocel/codebot/internal/tools"
@@ -20,13 +21,18 @@ import (
 
 func assembleRuntime(input *resolvedInput, services *bootServices, assembly *sessionAssembly) (*Runtime, error) {
 	taskRT := task.NewRuntime()
+	teamReg := team.NewRegistry()
+	sessionID := input.sessionStore.Header().SessionID
 	taskTools := localtools.NewTaskTools(services.taskStore, taskRT, assembly.hookRunner)
-	tools := make([]agentcore.Tool, 0, len(assembly.tools)+len(taskTools))
+	teamTools := localtools.NewTeamTools(teamReg, taskRT, sessionID)
+	tools := make([]agentcore.Tool, 0, len(assembly.tools)+len(taskTools)+len(teamTools))
 	tools = append(tools, assembly.tools...)
 	tools = append(tools, taskTools...)
-	baseTools := make([]agentcore.Tool, 0, len(assembly.baseTools)+len(taskTools))
+	tools = append(tools, teamTools...)
+	baseTools := make([]agentcore.Tool, 0, len(assembly.baseTools)+len(taskTools)+len(teamTools))
 	baseTools = append(baseTools, assembly.baseTools...)
 	baseTools = append(baseTools, taskTools...)
+	baseTools = append(baseTools, teamTools...)
 
 	reserveTokens := 0 // 0 = engine default (fixed buffer)
 	if r := assembly.settings.CompactRatio; r > 0 && r < 1 {
@@ -46,6 +52,21 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	session := buildSession(input, services, assembly, contextEngine, agentCore, tools)
 	wireSessionRuntime(input, assembly, services, session, baseTools, tools, agentCore, taskRT, contextEngine, summaryCompact)
 
+	// Wire team spawn on the subagent tool. Each spawned teammate gets its
+	// own send_message instance — a per-spawn instance keeps the tool
+	// stateless from the registry's POV and avoids accidentally sharing a
+	// captured ctx across teammates.
+	if assembly.subagentTool != nil {
+		assembly.subagentTool.SetTeamSpawner(agent.TeammateSpawner(
+			teamReg,
+			taskRT,
+			[]agentcore.Tool{localtools.NewSendMessageTool(taskRT, teamReg)},
+		))
+	}
+
+	pumpCtx, stopPump := context.WithCancel(context.Background())
+	go agent.NewLeaderInboxPump(teamReg, agentCore, 0).Run(pumpCtx)
+
 	modelName := config.FormatModelID(assembly.settings.Provider, assembly.settings.Model)
 	if session != nil && session.ModelName() != "" {
 		modelName = session.ModelName()
@@ -56,6 +77,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		GitBranch:      detectGitBranch(input.cwd),
 		ApprovalEngine: services.approvalEngine,
 		TaskRuntime:    taskRT,
+		TeamRegistry:   teamReg,
 		Settings:       assembly.settings,
 		ModelName:      modelName,
 		Session:        session,
@@ -69,6 +91,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		PlanSlug:       input.sessionSnapshot.PlanSlug,
 		PlanPhase:      input.sessionSnapshot.PlanPhase,
 		PlanPreMode:    input.sessionSnapshot.PlanPreMode,
+		stopTeamPump:   stopPump,
 	}, nil
 }
 

@@ -10,8 +10,8 @@ import (
 // TestPlanModeFirstReminderEmitsFullGuidance locks the first-injection rule:
 // when history carries no prior plan-mode reminder tag, the runtime emits the
 // full-form reminder (workflow guidance + contract refresher) immediately,
-// bypassing the 5-turn throttle. Mirrors CC's "always attach on first turn
-// in plan mode" policy (utils/attachments.ts:1196).
+// bypassing the 5-turn throttle so the model sees the workflow before its
+// first planning move.
 func TestPlanModeFirstReminderEmitsFullGuidance(t *testing.T) {
 	t.Parallel()
 
@@ -107,7 +107,7 @@ func TestPlanModeCancelledReminderHasExitWording(t *testing.T) {
 		t.Fatalf("reminder must carry exit tag for dedupe, got %q", reminder)
 	}
 	if !strings.Contains(reminder, "exited plan mode") {
-		t.Fatalf("reminder must announce plan-mode exit (mirrors CC messages.ts:3854), got %q", reminder)
+		t.Fatalf("reminder must announce plan-mode exit, got %q", reminder)
 	}
 	// Critical: must revoke the MUST-NOT contract that the EnterPlanMode
 	// tool_result still asserts in history. If this phrase regresses the

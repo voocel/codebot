@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore/task"
+	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
@@ -51,6 +52,11 @@ type App struct {
 
 	// TaskRuntime provides unified access to all background tasks (shells + agents).
 	TaskRuntime *task.Runtime
+
+	// TeamRegistry is the session-wide team registry. nil before any
+	// team_create call; the chrome's team chip and any team-aware command
+	// degrade to "no team" when nil or HasTeam() returns false.
+	TeamRegistry *team.Registry
 
 	// PlanStore persists plans to ~/.codebot/plans/.
 	PlanStore *storage.PlanStore
@@ -234,6 +240,7 @@ func (a *App) Config() tui.Config {
 		OnEvent:     a.planOnEvent,
 		StatusRight: a.statusRight,
 		StatusMode:  a.statusMode,
+		StatusTeam:  a.statusTeam,
 		Overlay:     a.overlayState,
 		Completions: a.completions,
 		OnBtwResult: a.onBtwResult,
@@ -301,6 +308,46 @@ func (a *App) statusRight(m *tui.Model) string {
 		return ""
 	}
 	return tui.TokenStyle.Render(strings.Join(parts, " · "))
+}
+
+// statusTeam returns the active-team chip for the context bar. Empty when no
+// team has been created in this session. Format: "△ <name> · <idle>/<total>"
+// where idle is the count of teammates parked on their mailbox and total is
+// the number of registered teammates (leader excluded). Teammates with
+// terminal status (completed, killed) are not counted.
+func (a *App) statusTeam(_ *tui.Model) string {
+	if a.TeamRegistry == nil || !a.TeamRegistry.HasTeam() {
+		return ""
+	}
+	ctx := a.TeamRegistry.Team()
+	if ctx == nil {
+		return ""
+	}
+	total, idle := a.countLiveTeammates()
+	if total == 0 {
+		// Just the leader so far — show the team name without a count.
+		return fmt.Sprintf("△ %s", ctx.Name)
+	}
+	return fmt.Sprintf("△ %s · %d/%d idle", ctx.Name, idle, total)
+}
+
+// countLiveTeammates walks the task runtime once for both numbers so the
+// status chip is rendered from one consistent snapshot. Returns (totalLive,
+// idleLive) where "live" means Status == Running.
+func (a *App) countLiveTeammates() (total, idle int) {
+	if a.TaskRuntime == nil {
+		return 0, 0
+	}
+	for _, e := range a.TaskRuntime.List() {
+		if e.Type != task.TypeTeammate || e.Status != task.Running {
+			continue
+		}
+		total++
+		if e.IsIdle {
+			idle++
+		}
+	}
+	return total, idle
 }
 
 // statusMode returns the mode indicator string for the context bar.

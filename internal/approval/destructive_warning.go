@@ -8,9 +8,8 @@ import "regexp"
 // especially in trust / always-allow modes where the engine would otherwise
 // pass silently.
 //
-// Mirrors claude-code-src/tools/BashTool/destructiveCommandWarning.ts. Go's
-// RE2 lacks lookahead, so CC patterns that exclude dry-run forms are
-// simplified to warn unconditionally — a false-positive warning on
+// Go's RE2 lacks lookahead, so dry-run forms are not excluded — we warn
+// unconditionally on the matching shape. A false-positive warning on
 // `git clean -nf` is acceptable; missing the warning on `git clean -f` is not.
 type destructivePattern struct {
 	re      *regexp.Regexp

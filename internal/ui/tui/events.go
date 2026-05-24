@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 // isPlanFileTool reports whether a write/edit tool call targets a file under
@@ -241,6 +242,16 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 			}
 			if block.Len() > 0 {
 				cmds = append(cmds, m.printBlock(block.String()))
+			}
+		} else if ev.Message.GetRole() == agentcore.RoleUser {
+			// Regular user input is already rendered eagerly at submit time
+			// via RenderPromptOutput, so we skip it. The exception is a
+			// pump-injected teammate message — those bypass the submit path,
+			// so without this branch the user never sees them in scrollback
+			// even though they shape the leader's next reply.
+			text := ev.Message.TextContent()
+			if from, body, ok := cbteam.ParseTeammateAttachment(text); ok && body != "" {
+				cmds = append(cmds, m.printBlock(m.renderTeammateMessage(from, body)))
 			}
 		}
 

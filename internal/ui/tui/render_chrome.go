@@ -68,6 +68,11 @@ func (m *Model) RenderContextBar() string {
 			chips = append(chips, ContextChipAccentStyle.Render(mode))
 		}
 	}
+	if m.config.StatusTeam != nil {
+		if t := m.config.StatusTeam(m); t != "" {
+			chips = append(chips, ContextChipTeamStyle.Render(t))
+		}
+	}
 	if m.Cwd != "" {
 		chips = append(chips, ContextChipPathStyle.Render(filepath.Base(m.Cwd)))
 	}

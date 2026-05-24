@@ -24,8 +24,7 @@ import (
 //                             → Internal
 //
 // read/edit/write expose `file_path`; glob/grep/ls expose `path`. We probe
-// `file_path` first so the canonical CC-style argument wins when both are
-// present.
+// `file_path` first so the canonical argument wins when both are present.
 func classify(req permission.Request) permission.Classification {
 	switch req.ToolName {
 	case "read":
@@ -91,9 +90,8 @@ func stringField(raw json.RawMessage, key string) string {
 	return value
 }
 
-// pathField reads the file path field, preferring file_path (CC-style,
-// used by read/edit/write) and falling back to path (legacy, still used
-// by glob/grep/ls).
+// pathField reads the file path field, preferring file_path (used by
+// read/edit/write) and falling back to path (still used by glob/grep/ls).
 func pathField(raw json.RawMessage) string {
 	if v := stringField(raw, "file_path"); v != "" {
 		return v

@@ -60,12 +60,11 @@ var (
 // background-only lets the body's existing foreground (syntax highlighting,
 // path tokens, etc.) survive intact.
 //
-// Dark-mode tints are tuned to roughly match Claude Code's diff bands: a
-// previous iteration used #0E2A1A / #3A1416 (~11% lightness) which read as
-// near-black with a faint hue cast and made the foreground feel dim by
-// association. The current values land near 18-20% lightness — clearly
-// red/green, but still calm enough that fg tokens (Name #D4D4D4) hold
-// AAA-level contrast (~9:1).
+// Dark-mode tints went through a tuning pass: an earlier iteration used
+// #0E2A1A / #3A1416 (~11% lightness) which read as near-black with a faint
+// hue cast and made the foreground feel dim by association. The current
+// values land near 18-20% lightness — clearly red/green, but still calm
+// enough that fg tokens (Name #D4D4D4) hold AAA-level contrast (~9:1).
 var (
 	DiffAddBg          = lipgloss.AdaptiveColor{Light: "#DAFBE1", Dark: "#1A4529"}
 	DiffRemoveBg       = lipgloss.AdaptiveColor{Light: "#FFEBE9", Dark: "#5A1F23"}
@@ -78,6 +77,7 @@ var (
 	RoleUser      = lipgloss.AdaptiveColor{Light: "31", Dark: "#9CC2F9"}
 	RoleAssistant = lipgloss.AdaptiveColor{Light: "#3A6F6B", Dark: "#B8E1DD"}
 	RoleShell     = lipgloss.AdaptiveColor{Light: "#A04870", Dark: "#D16D9E"}
+	RoleTeammate  = lipgloss.AdaptiveColor{Light: "#7A4D9C", Dark: "#C5A3E5"}
 )
 
 // Highlights.

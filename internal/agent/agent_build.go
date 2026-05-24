@@ -96,8 +96,9 @@ func (d *AgentDefinition) BuildConfig(deps BuildDeps, ctxFactory func(agentcore.
 //	"inherit" → DefaultModel
 //	<name>    → deps.ResolveModel(name)
 //
-// The "inherit" alias is included for forward compatibility with cc-style
-// frontmatter; in practice both empty and "inherit" mean the same thing.
+// The "inherit" alias is accepted for ergonomics — frontmatter authors often
+// write it out explicitly even though it's the default; both empty and
+// "inherit" mean the same thing.
 func resolveModel(name string, deps BuildDeps) (agentcore.ChatModel, error) {
 	if name == "" || name == "inherit" {
 		if deps.DefaultModel == nil {

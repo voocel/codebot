@@ -127,8 +127,8 @@ func TestRenderEditResultDiffColoring(t *testing.T) {
 
 	// Regression guard: the bg band must cover the *whole* row, gutter
 	// included — an earlier revision left the gutter on the terminal
-	// default, which doesn't match Claude Code's layout. Check that a bg
-	// SGR appears before any visible character on each diff line.
+	// default, which broke the single-band look. Check that a bg SGR
+	// appears before any visible character on each diff line.
 	for _, idx := range []int{2, 3} {
 		if !startsInBgScope(lines[idx]) {
 			t.Fatalf("diff line %d gutter not painted (expected bg ANSI before any visible char): %q", idx, lines[idx])

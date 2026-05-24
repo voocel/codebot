@@ -26,23 +26,33 @@ const (
 //     sub-agents report results and the main agent updates state.
 //   - cron_create / cron_delete: persistent scheduled jobs are a user-facing
 //     concept; sub-agents may inspect via cron_list but not mutate.
-//   - send_to_subagent: parent→child runtime steering. Sibling-to-sibling
-//     coordination uses a different tool (added when team support lands), so
-//     send_to_subagent stays strictly parent→child even after that. Letting
-//     a sub-agent call it would conflate the two channels.
+//   - send_message: parent→child / peer-to-peer message delivery. The MAIN
+//     agent and teammates both use it; one-shot subagents do not — they have
+//     no peer surface and cannot inject into the leader's run safely.
+//     Teammates DO get send_message added back via their force-injected tool
+//     set in the runner (Stage D); for now it's all-disallowed at the filter
+//     layer because no teammate spawn path exists yet.
+//   - team_create: there is exactly one team per session, and only the main
+//     agent (the leader) creates it. A sub-agent or teammate creating a
+//     nested team would split the coordination surface in two.
+//   - team_dismiss: only the leader gets to retire teammates. A teammate
+//     dismissing peers would re-introduce the same coordination-surface
+//     split team_create avoids.
 //
 // The `subagent` tool itself is always filtered out by FilterToolsForAgent
 // regardless of this map — see the function for the recursion guard.
 var allAgentDisallowed = map[string]bool{
-	"ask_user":         true,
-	"enter_plan_mode":  true,
-	"exit_plan_mode":   true,
-	"task_create":      true,
-	"task_update":      true,
-	"task_stop":        true,
-	"cron_create":      true,
-	"cron_delete":      true,
-	"send_to_subagent": true,
+	"ask_user":        true,
+	"enter_plan_mode": true,
+	"exit_plan_mode":  true,
+	"task_create":     true,
+	"task_update":     true,
+	"task_stop":       true,
+	"cron_create":     true,
+	"cron_delete":     true,
+	"send_message":    true,
+	"team_create":     true,
+	"team_dismiss":    true,
 }
 
 // customAgentDisallowed adds a stricter floor for sub-agents loaded from

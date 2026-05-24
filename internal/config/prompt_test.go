@@ -87,6 +87,60 @@ func TestBuildSystemBlockTextsAddsTaskManagementSection(t *testing.T) {
 	}
 }
 
+// Team coordination section is only useful when ALL four team-related tools
+// are present — partial sets (e.g. just team_create without send_message)
+// would describe a workflow the LLM cannot actually execute, and that's
+// worse than no documentation.
+func TestBuildSystemBlockTextsAddsTeamSectionOnlyWithFullToolset(t *testing.T) {
+	t.Parallel()
+
+	full := []ToolInfo{
+		{Name: "team_create"},
+		{Name: "team_dismiss"},
+		{Name: "send_message"},
+		{Name: "subagent"},
+	}
+	_, withFull := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, full)
+	if !strings.Contains(withFull, "## Team coordination") {
+		t.Fatal("expected team coordination section when all four tools present")
+	}
+	// Spot-check critical workflow phrases so trivial wording changes don't
+	// silently delete the section the LLM relies on.
+	for _, marker := range []string{
+		"ONE team per session",
+		"team_create",
+		"team_dismiss",
+		"send_message",
+		"team_name",
+		`<teammate-message`,
+	} {
+		if !strings.Contains(withFull, marker) {
+			t.Errorf("team section missing marker %q", marker)
+		}
+	}
+
+	// Drop one of the four — section must disappear.
+	partial := []ToolInfo{
+		{Name: "team_create"},
+		{Name: "send_message"},
+		{Name: "subagent"},
+		// no team_dismiss
+	}
+	_, withoutDismiss := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, partial)
+	if strings.Contains(withoutDismiss, "## Team coordination") {
+		t.Error("team coordination section should NOT appear when team_dismiss is absent")
+	}
+}
+
+func TestBuildSystemBlockTextsOmitsTeamSectionWithoutTeamTools(t *testing.T) {
+	t.Parallel()
+
+	_, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}})
+	if strings.Contains(instructions, "## Team coordination") {
+		t.Error("team coordination section leaked into prompt without team tools")
+	}
+}
+
 func TestBuildSystemBlockTextsSystemOverride(t *testing.T) {
 	t.Parallel()
 

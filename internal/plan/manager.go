@@ -22,9 +22,9 @@ import (
 // re-entry has no salience benefit and just burns tokens. See plan.Manager.Enter
 // and agent/plan_reminders.go for how the two slices flow into the model.
 //
-// Wording mirrors CC's iterative plan-mode instructions
-// (claude-code-src/utils/messages.ts:getPlanModeInterviewInstructions) so the
-// model gets the same MUST-NOT framing and end-of-turn contract.
+// Wording is deliberately strict — "MUST NOT" framing + an explicit end-of-
+// turn contract — to keep the model from drifting into action mode while
+// it's supposed to be drafting.
 func buildPlanModeContract(planFilePath string) string {
 	return `Plan mode is active. The user indicated that they do not want you to execute yet — you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
 
@@ -50,12 +50,12 @@ type Manager struct {
 	state        *Store
 
 	// cancelPending is a one-shot flag set by Cancel() and consumed on the
-	// next signal() poll. Mirrors CC's needsPlanModeExitAttachment: when the
-	// user aborts plan mode via /plan cancel there is no tool_result to
-	// carry an "exit signal" into history, so we inject a one-time reminder
-	// telling the model the read-only contract from the EnterPlanMode
-	// tool_result no longer applies. Intentionally process-local (not
-	// persisted): a restart after cancellation is itself a clean break.
+	// next signal() poll. When the user aborts plan mode via /plan cancel
+	// there is no tool_result to carry an "exit signal" into history, so
+	// we inject a one-time reminder telling the model the read-only contract
+	// from the EnterPlanMode tool_result no longer applies. Intentionally
+	// process-local (not persisted): a restart after cancellation is itself
+	// a clean break.
 	cancelPending atomic.Bool
 }
 
@@ -148,8 +148,9 @@ func (c *Manager) Enter() (string, error) {
 
 // Exit unconditionally transitions out of plan mode and returns the plan
 // content. User approval is enforced upstream by approval.Engine.Decide
-// (matching CC's checkPermissions:'ask' design): when this method is reached
-// the user has already approved or the call is from /plan cancel.
+// (ask-style: the tool declares it needs approval and the engine handles
+// the prompt). When this method is reached the user has already approved
+// or the call is from /plan cancel.
 func (c *Manager) Exit() (string, error) {
 	state := c.state.Snapshot()
 	if state.Phase != PhasePlanning {

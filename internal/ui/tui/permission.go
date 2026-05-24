@@ -215,10 +215,10 @@ func renderPlanApproval(s *permissionState, _ *markdown.Renderer) string {
 
 // renderPlanScrollback formats the plan body as a scrollback block so it
 // stays visible (and scrollable in the user's terminal) regardless of plan
-// length. Called once when the plan-approval prompt is opened. Mirrors CC's
-// PlanApprovalRequestDisplay: a header, then the plan body fenced by top/
-// bottom rules and indented two columns so it reads as a self-contained
-// section rather than a wall of text flush against the margin.
+// length. Called once when the plan-approval prompt is opened. Layout: a
+// header, then the plan body fenced by top/bottom rules and indented two
+// columns so it reads as a self-contained section rather than a wall of
+// text flush against the margin.
 func renderPlanScrollback(plan string, md *markdown.Renderer, width int) string {
 	body := strings.TrimSpace(plan)
 	if body == "" {

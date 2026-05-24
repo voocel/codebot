@@ -84,10 +84,10 @@ var (
 // Diff (edit result)
 // ---------------------------------------------------------------------------
 
-// The whole row — gutter + body — sits on the same colored band, matching
-// Claude Code's diff layout. Gutter additionally carries a fg so the line
-// number / sigil stand out; body has bg only, leaving the existing foreground
-// (syntax highlighting, path tokens) untouched.
+// The whole row — gutter + body — sits on the same colored band so the
+// diff reads as a single visual unit. Gutter additionally carries a fg so
+// the line number / sigil stand out; body has bg only, leaving the existing
+// foreground (syntax highlighting, path tokens) untouched.
 var (
 	DiffAddGutterStyle    = lipgloss.NewStyle().Foreground(Success).Background(DiffAddBg)
 	DiffRemoveGutterStyle = lipgloss.NewStyle().Foreground(Danger).Background(DiffRemoveBg)
@@ -177,6 +177,7 @@ var (
 	ContextChipStyle       = lipgloss.NewStyle().Foreground(Muted)
 	ContextChipAccentStyle = lipgloss.NewStyle().Foreground(Brand)
 	ContextChipPathStyle   = lipgloss.NewStyle().Foreground(BrandSoft)
+	ContextChipTeamStyle   = lipgloss.NewStyle().Foreground(RoleTeammate)
 	// Transient hints like "Press Ctrl+C again to exit" or "bash mode" — muted
 	// gray, not a loud warning.
 	ContextChipWarnStyle = lipgloss.NewStyle().Foreground(Muted)

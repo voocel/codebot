@@ -155,10 +155,10 @@ func NewExitPlanMode() *ExitPlanModeTool { return &ExitPlanModeTool{} }
 func (t *ExitPlanModeTool) SetValidator(fn func() error) { t.validate = fn }
 
 // SetExiter wires the plan-mode state transition. Called only after the
-// permission engine has approved the exit (CC-style: ExitPlanMode declares
-// checkPermissions:'ask', so the user has already seen the plan and chosen
-// approve before the tool runs). The callback returns the approved plan
-// content so it can be echoed in the tool result for the model.
+// permission engine has approved the exit — ExitPlanMode is an ask-style
+// tool, so the user has already seen the plan and chosen approve before the
+// tool runs. The callback returns the approved plan content so it can be
+// echoed in the tool result for the model.
 func (t *ExitPlanModeTool) SetExiter(fn func() (string, error)) {
 	t.exiter = fn
 }

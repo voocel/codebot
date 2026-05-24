@@ -52,10 +52,10 @@ func newTestSession(t *testing.T, dir string, tools []agentcore.Tool) (*agent.Se
 	return session, ag
 }
 
-// TestExitPlanModeApprovedFlow drives the full CC-style lifecycle: enter
-// plan mode, the model writes the plan, exit_plan_mode is intercepted by
-// engine.Decide which surfaces the plan to the approver, the approver
-// approves, the tool runs and unwinds plan mode.
+// TestExitPlanModeApprovedFlow drives the full lifecycle: enter plan mode,
+// the model writes the plan, exit_plan_mode is intercepted by engine.Decide
+// which surfaces the plan to the approver, the approver approves, the tool
+// runs and unwinds plan mode.
 func TestExitPlanModeApprovedFlow(t *testing.T) {
 	t.Parallel()
 

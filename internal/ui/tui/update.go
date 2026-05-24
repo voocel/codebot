@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/storage"
+	cbteam "github.com/voocel/codebot/internal/team"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
@@ -774,7 +775,47 @@ func (m *Model) handleRestore(msg RestoreMsg) (tea.Model, tea.Cmd) {
 
 	sb.WriteString("\n\n")
 	sb.WriteString(MutedStyle.Render("  ── end of history ──"))
+
+	// Teams are pure in-memory state — they cannot survive a process restart.
+	// If the prior session created one, the agent's history still references
+	// teammates that no longer exist (any send_message to them will fail).
+	// Surface a one-line hint so the user knows to recreate the team if they
+	// still need it, instead of discovering the loss via an obscure error.
+	if name := lastTeamNameFromHistory(msg.Msgs); name != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(MutedStyle.Render(fmt.Sprintf("  ⓘ Team %q from the previous session is not active. Recreate it with team_create if you still need it.", name)))
+	}
+
 	return m, m.Emit(sb.String())
+}
+
+// lastTeamNameFromHistory scans assistant tool_use blocks in restored history
+// for the most recent team_create call and returns the team_name argument.
+// Returns "" when no team was created in the prior session.
+//
+// Walks in reverse so a session that recreated the team after a previous
+// team_dismiss still surfaces the latest name. Cheap because tool_use blocks
+// already live on the assistant Message — no extra parsing of tool results
+// (which would also need their own indexing).
+func lastTeamNameFromHistory(msgs []agentcore.AgentMessage) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		concrete, ok := msgs[i].(agentcore.Message)
+		if !ok || concrete.GetRole() != agentcore.RoleAssistant {
+			continue
+		}
+		for _, tc := range concrete.ToolCalls() {
+			if tc.Name != "team_create" {
+				continue
+			}
+			var a struct {
+				TeamName string `json:"team_name"`
+			}
+			if err := json.Unmarshal(tc.Args, &a); err == nil && a.TeamName != "" {
+				return a.TeamName
+			}
+		}
+	}
+	return ""
 }
 
 type restoredToolCall struct {
@@ -813,6 +854,12 @@ func (m *Model) appendRestoredUserMessage(sb *strings.Builder, am agentcore.Agen
 		return
 	}
 	sb.WriteString("\n\n")
+	// Teammate-injected user messages must restore with the same purple-bubble
+	// styling they had live, not as a "this is what you typed" echo.
+	if from, body, ok := cbteam.ParseTeammateAttachment(text); ok && body != "" {
+		sb.WriteString(m.renderTeammateMessage(from, body))
+		return
+	}
 	sb.WriteString(m.renderUserMessage(text))
 }
 

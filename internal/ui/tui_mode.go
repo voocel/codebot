@@ -38,6 +38,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		Version:        version,
 		ApprovalEngine: approvalEngine,
 		TaskRuntime:    rt.TaskRuntime,
+		TeamRegistry:   rt.TeamRegistry,
 		Commands:       nil,
 		Skills:         sess.Skills(),
 		PluginCatalog:  rt.PluginCatalog,

@@ -229,8 +229,7 @@ func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderK
 //   - JustCancelled=true: plan mode was cancelled via /plan cancel since the
 //     last poll; emit a one-shot "you have exited plan mode" reminder so the
 //     model knows the MUST-NOT rules buried in the EnterPlanMode tool_result
-//     no longer apply. Mirrors CC's needsPlanModeExitAttachment flag
-//     (refer/claude-code-src/utils/attachments.ts:1252).
+//     no longer apply.
 //   - All zero: plan mode is off; no reminder needed.
 //
 // Active and JustCancelled are mutually exclusive — the producer (plan.Manager)

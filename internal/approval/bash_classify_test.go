@@ -63,7 +63,7 @@ func TestIsReadonlyBash(t *testing.T) {
 		{"bash invoked", "bash -c 'ls'", false},
 		{"sudo", "sudo ls", false},
 
-		// --- sensitive paths poison readonly fast-path (CC parity) ---
+		// --- sensitive paths poison readonly fast-path ---
 		{"cat ssh key", "cat ~/.ssh/id_rsa", false},
 		{"grep into netrc", "grep secret ~/.netrc", false},
 		{"head aws creds", "head /Users/x/.aws/credentials", false},

@@ -185,9 +185,9 @@ func matchSensitiveWrite(p string) string {
 	// Whole-subtree force-ask: identity / credentials parent dirs +
 	// IDE & agent loader configs. .vscode/tasks.json autorun on file open,
 	// .idea/runConfigurations/*.xml are JetBrains autorun, .claude/ hosts
-	// hooks for CC users sharing the project. All "edit me once → execute
-	// on every future open" patterns. Uses hasPathSegment so deeper paths
-	// like .idea/runConfigurations/x.xml still match.
+	// agent hooks. All "edit me once → execute on every future open"
+	// patterns. Uses hasPathSegment so deeper paths like
+	// .idea/runConfigurations/x.xml still match.
 	for _, seg := range []string{".ssh", ".aws", ".gnupg"} {
 		if parent == seg || hasPathSegment(p, seg) {
 			return seg + " config"

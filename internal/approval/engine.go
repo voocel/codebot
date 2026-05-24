@@ -80,7 +80,8 @@ func (e *Engine) SetPlanContentProvider(fn func() (string, error)) {
 
 // Decide routes a tool permission request. exit_plan_mode in plan mode is
 // intercepted here and surfaced through the standard approver path with the
-// plan content as preview — matching CC's `checkPermissions: 'ask'` design.
+// plan content as preview — ask-style: the tool declares it needs approval
+// and the engine handles the prompt.
 // Dangerous paths (credential files, shell rc, .git/hooks, IDE/agent loader
 // configs, ...) bypass mode auto-pass and stored approvals; the approver is
 // invoked with Allow Once / Deny only so a single Allow Always cannot turn

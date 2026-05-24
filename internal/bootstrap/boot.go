@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/voocel/agentcore/task"
+	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
@@ -35,6 +36,7 @@ type Runtime struct {
 
 	ApprovalEngine *approval.Engine
 	TaskRuntime    *task.Runtime
+	TeamRegistry   *team.Registry
 
 	Settings      config.Resolved
 	ModelName     string // display form: "provider/model" or session-restored name
@@ -49,6 +51,11 @@ type Runtime struct {
 	PlanSlug      string                            // restored plan slug (empty if no plan)
 	PlanPhase     string                            // restored plan phase
 	PlanPreMode   string                            // restored plan pre-mode
+
+	// stopTeamPump cancels the leader-inbox pump goroutine. Set by
+	// assembleRuntime, called by Close so the pump exits before the team
+	// registry is torn down.
+	stopTeamPump context.CancelFunc
 }
 
 // Close releases runtime resources.
@@ -58,6 +65,15 @@ func (r *Runtime) Close() {
 	}
 	if r.TaskRuntime != nil {
 		r.TaskRuntime.StopAll()
+	}
+	// Stop the leader inbox pump before tearing down the team so it doesn't
+	// race a closing mailbox.
+	if r.stopTeamPump != nil {
+		r.stopTeamPump()
+	}
+	// DeleteTeam closes all mailboxes; skip if no team was ever created.
+	if r.TeamRegistry != nil && r.TeamRegistry.HasTeam() {
+		_ = r.TeamRegistry.DeleteTeam()
 	}
 	if r.MCPManager != nil {
 		r.MCPManager.Close()

@@ -14,13 +14,12 @@ import (
 //     (explore loop, asking-good-questions, plan-file-structure,
 //     when-to-converge) plus a short contract refresher. Bypasses the
 //     5-turn cadence so the model sees the workflow before its first
-//     planning move. Mirrors CC's "always attach on first turn in plan
-//     mode" rule (utils/attachments.ts:1196 — only throttle once an
-//     attachment exists).
+//     planning move (throttling only kicks in once at least one reminder
+//     has landed).
 //   - Subsequent reminders: sparse form — just the read-only contract
-//     refresher, throttled to TURNS_BETWEEN_REMINDERS=5
-//     (utils/attachments.ts:259) so the rule stays salient as the
-//     enter_plan_mode tool_result drifts toward the tail of context.
+//     refresher, throttled to TURNS_BETWEEN_REMINDERS=5 so the rule stays
+//     salient as the enter_plan_mode tool_result drifts toward the tail
+//     of context.
 //
 // The plan.Manager.Enter() return value carries the contract slice
 // (MUST-NOT, plan path, end-of-turn rules) — that ships per Enter via
@@ -74,8 +73,7 @@ func buildPlanModeFullReminder() string {
 	return sb.String()
 }
 
-// planModeWorkflowGuidance is the iterative-planning workflow text. Mirrors
-// CC's getPlanModeInterviewInstructions (claude-code-src/utils/messages.ts).
+// planModeWorkflowGuidance is the iterative-planning workflow text.
 // Delivered once per session via the first plan-mode reminder; re-reading
 // these tips every Enter has no salience benefit.
 const planModeWorkflowGuidance = `## Iterative Planning Workflow
@@ -120,10 +118,9 @@ Your plan is ready when you've addressed all ambiguities and it covers: what to 
 // after /plan cancel. The EnterPlanMode tool_result (still in history) tells
 // the model "MUST NOT make any edits, MUST stay read-only" — this reminder
 // invalidates those rules so the model knows it can resume normal tool use.
-// Mirrors CC's plan_mode_exit attachment text (refer/claude-code-src/utils/
-// messages.ts:3854). exit_plan_mode already carries an equivalent message in
-// its own tool_result, so this path is reserved for the slash-command cancel
-// route which has no tool_result to ride on.
+// exit_plan_mode already carries an equivalent message in its own tool_result,
+// so this path is reserved for the slash-command cancel route which has no
+// tool_result to ride on.
 func planModeCancelledReminderForNextPrompt() (key, reminder string) {
 	var sb strings.Builder
 	sb.WriteString("<system-reminder>\n")

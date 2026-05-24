@@ -56,7 +56,9 @@ func fullMainPool() []agentcore.Tool {
 		"ask_user",
 		"cron_create", "cron_delete", "cron_list",
 		"subagent",
-		"send_to_subagent",
+		"send_message",
+		"team_create",
+		"team_dismiss",
 		"mcp__github__create_issue",
 	)
 }
@@ -106,7 +108,9 @@ func TestFilter_BuiltInSync_Coder(t *testing.T) {
 		"task_create", "task_update", "task_stop",
 		"cron_create", "cron_delete",
 		"subagent",
-		"send_to_subagent",
+		"send_message",
+		"team_create",
+		"team_dismiss",
 	} {
 		if contains(got, deny) {
 			t.Errorf("coder pool should not contain %q", deny)
@@ -146,7 +150,9 @@ func TestFilter_BuiltInAsync_ExploreReadOnly(t *testing.T) {
 		"cron_create", "cron_delete", "cron_list",
 		"enter_plan_mode", "exit_plan_mode",
 		"subagent",
-		"send_to_subagent",
+		"send_message",
+		"team_create",
+		"team_dismiss",
 	} {
 		if contains(got, deny) {
 			t.Errorf("explore pool should not contain %q", deny)
