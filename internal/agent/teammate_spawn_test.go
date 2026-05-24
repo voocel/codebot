@@ -295,7 +295,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 	// the next teammate turn. To force a second turn, send the teammate a
 	// message and wait for it to go idle again. The hub is the source of
 	// truth, not task.Entry.
-	ch, cancel := hub.Subscribe("alice")
+	_, ch, cancel := hub.Subscribe("alice")
 	defer cancel()
 
 	// Trigger a second turn by sending a peer message.

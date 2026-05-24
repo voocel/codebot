@@ -6,12 +6,13 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/agent"
 )
 
 // Transcript modal — full-screen popup that lets the user observe a
-// teammate's live AgentLoop output. Activated with Ctrl+T (toggle) when at
+// teammate's live AgentLoop output. Activated with Ctrl+O (toggle) when at
 // least one teammate is registered with the event hub; closed with Esc or
-// the same Ctrl+T. While open, the modal owns the entire viewport and
+// the same Ctrl+O. While open, the modal owns the entire viewport and
 // intercepts all keys except shutdown/abort gestures (Ctrl+C) and modal
 // navigation (Tab/Shift+Tab, j/k/PgUp/PgDn, g/G).
 //
@@ -50,12 +51,40 @@ type TranscriptChannelClosedMsg struct {
 }
 
 // transcriptModalOpenable reports whether the modal can open right now:
-// the hub must exist and at least one teammate must have published events.
+// the hub must exist and at least one teammate must have published events
+// (live or already finished — finished agents still have a readable history).
 func (m *Model) transcriptModalOpenable() bool {
 	if m.config.TeammateEvents == nil {
 		return false
 	}
-	return len(m.config.TeammateEvents.ActiveAgents()) > 0
+	return len(m.config.TeammateEvents.KnownAgents()) > 0
+}
+
+// knownAgentNames returns the sorted list of all teammates the hub has ever
+// seen (active + stopped). Sorting keeps Ctrl+O and Tab/Shift+Tab order
+// deterministic across redraws.
+func knownAgentNames(hub *agent.TeammateEventHub) []string {
+	if hub == nil {
+		return nil
+	}
+	infos := hub.KnownAgents()
+	names := make([]string, len(infos))
+	for i, info := range infos {
+		names[i] = info.Name
+	}
+	slices.Sort(names)
+	return names
+}
+
+// modalTitleFor renders the title shown at the top of the transcript modal.
+// Active teammates appear plain; stopped teammates get an "(ended)" suffix
+// so the user can tell at a glance whether they're watching live output or
+// a frozen replay.
+func modalTitleFor(hub *agent.TeammateEventHub, agentName string) string {
+	if hub != nil && !hub.IsActive(agentName) {
+		return fmt.Sprintf("teammate: %s (ended)", agentName)
+	}
+	return fmt.Sprintf("teammate: %s", agentName)
 }
 
 // openTranscriptModal subscribes to the named teammate's event stream and
@@ -64,20 +93,23 @@ func (m *Model) transcriptModalOpenable() bool {
 // and transcriptModalOpenable() returned true.
 func (m *Model) openTranscriptModal(agentName string) tea.Cmd {
 	if agentName == "" {
-		// Pick the first active teammate if none was provided. Sorted so
-		// repeated Ctrl+T always lands on the same teammate.
-		names := m.config.TeammateEvents.ActiveAgents()
+		// Pick the first known teammate if none was provided. Sorted so
+		// repeated Ctrl+O always lands on the same teammate.
+		names := knownAgentNames(m.config.TeammateEvents)
 		if len(names) == 0 {
 			return nil
 		}
-		slices.Sort(names)
 		agentName = names[0]
 	}
 
-	ch, cancel := m.config.TeammateEvents.Subscribe(agentName)
-	view := NewTranscriptView(fmt.Sprintf("teammate: %s", agentName))
+	view := NewTranscriptView(modalTitleFor(m.config.TeammateEvents, agentName))
 	view.SetSize(m.Width, m.Height)
 	view.SetStatus("Esc to close · Tab to cycle · j/k/PgUp/PgDn to scroll")
+
+	history, ch, cancel := m.config.TeammateEvents.Subscribe(agentName)
+	for _, ev := range history {
+		view.HandleEvent(ev)
+	}
 
 	m.TranscriptModal = view
 	m.TranscriptAgent = agentName
@@ -96,12 +128,16 @@ func (m *Model) switchTranscriptAgent(agentName string) tea.Cmd {
 	if m.transcriptUnsubscribe != nil {
 		m.transcriptUnsubscribe()
 	}
-	ch, cancel := m.config.TeammateEvents.Subscribe(agentName)
+	view := NewTranscriptView(modalTitleFor(m.config.TeammateEvents, agentName))
+	view.SetSize(m.Width, m.Height)
+	view.SetStatus("Esc to close · Tab to cycle · j/k/PgUp/PgDn to scroll")
+	history, ch, cancel := m.config.TeammateEvents.Subscribe(agentName)
+	for _, ev := range history {
+		view.HandleEvent(ev)
+	}
 	m.TranscriptAgent = agentName
 	m.transcriptUnsubscribe = cancel
-	m.TranscriptModal = NewTranscriptView(fmt.Sprintf("teammate: %s", agentName))
-	m.TranscriptModal.SetSize(m.Width, m.Height)
-	m.TranscriptModal.SetStatus("Esc to close · Tab to cycle · j/k/PgUp/PgDn to scroll")
+	m.TranscriptModal = view
 	return waitForTranscriptEvent(agentName, ch)
 }
 
@@ -117,17 +153,16 @@ func (m *Model) closeTranscriptModal() {
 }
 
 // cycleTranscriptAgent advances the modal target by `step` positions (1 for
-// Tab, -1 for Shift+Tab) through the sorted active-agent list. Wraps at
+// Tab, -1 for Shift+Tab) through the sorted known-agent list. Wraps at
 // either end. Returns nil cmd if there are no teammates to cycle to.
 func (m *Model) cycleTranscriptAgent(step int) tea.Cmd {
 	if m.TranscriptModal == nil || m.config.TeammateEvents == nil {
 		return nil
 	}
-	names := m.config.TeammateEvents.ActiveAgents()
+	names := knownAgentNames(m.config.TeammateEvents)
 	if len(names) <= 1 {
 		return nil
 	}
-	slices.Sort(names)
 	cur := max(slices.Index(names, m.TranscriptAgent), 0)
 	next := (cur + step + len(names)) % len(names)
 	return m.switchTranscriptAgent(names[next])
@@ -141,12 +176,12 @@ func (m *Model) cycleTranscriptAgent(step int) tea.Cmd {
 // silently swallowed so they can't leak into the textarea behind the
 // modal.
 //
-// Open path: when the modal is CLOSED, only Ctrl+T is recognised; everything
+// Open path: when the modal is CLOSED, only Ctrl+O is recognised; everything
 // else falls through.
 func (m *Model) handleTranscriptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	// Toggle from closed → open.
 	if m.TranscriptModal == nil {
-		if msg.String() != "ctrl+t" {
+		if msg.String() != "ctrl+o" {
 			return m, nil, false
 		}
 		// No hub wired → the feature is disabled; let the keystroke fall
@@ -165,7 +200,7 @@ func (m *Model) handleTranscriptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	}
 
 	switch msg.String() {
-	case "ctrl+t", "esc":
+	case "ctrl+o", "esc":
 		m.closeTranscriptModal()
 		return m, nil, true
 	case "ctrl+c":

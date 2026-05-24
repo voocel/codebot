@@ -322,7 +322,7 @@ func (a *App) statusRight(m *tui.Model) string {
 // need to see. Format: "△ <name> · <idle>/<total>" where idle counts
 // teammates parked on their mailbox and total is the number of live (Running)
 // teammates (leader excluded). When at least one teammate is registered we
-// also append a "Ctrl+T" hint so the user knows the modal is available.
+// also append a "Ctrl+O" hint so the user knows the modal is available.
 func (a *App) statusTeam(_ *tui.Model) string {
 	if a.TeamRegistry == nil || !a.TeamRegistry.HasTeam() {
 		return ""
@@ -335,7 +335,7 @@ func (a *App) statusTeam(_ *tui.Model) string {
 	if total == 0 {
 		return ""
 	}
-	return fmt.Sprintf("△ %s · %d/%d idle · Ctrl+T to view", ctx.Name, idle, total)
+	return fmt.Sprintf("△ %s · %d/%d idle · Ctrl+O to view", ctx.Name, idle, total)
 }
 
 // countLiveTeammates walks the task runtime once for both numbers so the

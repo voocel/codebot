@@ -76,13 +76,18 @@ func (m *Model) RenderContextBar() string {
 	if m.Cwd != "" {
 		chips = append(chips, ContextChipPathStyle.Render(filepath.Base(m.Cwd)))
 	}
-	chips = append(chips, ContextChipStyle.Render("· "+m.formatModelChip()))
+	chips = append(chips, ContextChipStyle.Render(m.formatModelChip()))
 	if m.config.StatusRight != nil {
 		if extra := m.config.StatusRight(m); extra != "" {
-			chips = append(chips, ContextChipStyle.Render("· "+extra))
+			chips = append(chips, ContextChipStyle.Render(extra))
 		}
 	}
-	line := strings.Join(chips, " ")
+	// Join chips with a dim vertical bar so adjacent ones don't visually
+	// merge — previously each chip prefixed itself with "· " which read as
+	// part of the chip content (e.g. "Ctrl+O to view" ran into "agent" of
+	// the model chip behind it).
+	separator := contextChipSeparatorStyle.Render(" │ ")
+	line := strings.Join(chips, separator)
 	if m.Width > 0 {
 		line = truncate.StringWithTail(line, uint(max(m.Width-2, 1)), "…")
 	}

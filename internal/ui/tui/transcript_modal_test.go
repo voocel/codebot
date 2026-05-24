@@ -26,8 +26,8 @@ func modalTestModel(t *testing.T) (*Model, *agent.TeammateEventHub) {
 // matching the cases in handleKey.
 func keyMsg(s string) tea.KeyMsg {
 	switch s {
-	case "ctrl+t":
-		return tea.KeyMsg{Type: tea.KeyCtrlT}
+	case "ctrl+o":
+		return tea.KeyMsg{Type: tea.KeyCtrlO}
 	case "ctrl+c":
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "esc":
@@ -45,12 +45,12 @@ func keyMsg(s string) tea.KeyMsg {
 	}
 }
 
-func TestTranscriptModal_CtrlTNoTeammatesHintsButDoesNotOpen(t *testing.T) {
+func TestTranscriptModal_CtrlONoTeammatesHintsButDoesNotOpen(t *testing.T) {
 	m, _ := modalTestModel(t)
 	// Hub has no active agents yet.
-	_, _, handled := m.handleTranscriptKey(keyMsg("ctrl+t"))
+	_, _, handled := m.handleTranscriptKey(keyMsg("ctrl+o"))
 	if !handled {
-		t.Fatal("ctrl+t should be handled (closed → tries to open)")
+		t.Fatal("ctrl+o should be handled (closed → tries to open)")
 	}
 	if m.TranscriptModal != nil {
 		t.Error("modal opened despite no active teammates")
@@ -60,13 +60,13 @@ func TestTranscriptModal_CtrlTNoTeammatesHintsButDoesNotOpen(t *testing.T) {
 	}
 }
 
-func TestTranscriptModal_CtrlTOpensWhenTeammateActive(t *testing.T) {
+func TestTranscriptModal_CtrlOOpensWhenTeammateActive(t *testing.T) {
 	m, hub := modalTestModel(t)
 	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
 
-	_, _, handled := m.handleTranscriptKey(keyMsg("ctrl+t"))
+	_, _, handled := m.handleTranscriptKey(keyMsg("ctrl+o"))
 	if !handled {
-		t.Fatal("ctrl+t not handled")
+		t.Fatal("ctrl+o not handled")
 	}
 	if m.TranscriptModal == nil {
 		t.Fatal("modal did not open")
@@ -79,7 +79,7 @@ func TestTranscriptModal_CtrlTOpensWhenTeammateActive(t *testing.T) {
 func TestTranscriptModal_EscClosesModal(t *testing.T) {
 	m, hub := modalTestModel(t)
 	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
-	m.handleTranscriptKey(keyMsg("ctrl+t"))
+	m.handleTranscriptKey(keyMsg("ctrl+o"))
 	if m.TranscriptModal == nil {
 		t.Fatal("setup failed: modal did not open")
 	}
@@ -96,13 +96,13 @@ func TestTranscriptModal_EscClosesModal(t *testing.T) {
 	}
 }
 
-func TestTranscriptModal_CtrlTToggles(t *testing.T) {
+func TestTranscriptModal_CtrlOToggles(t *testing.T) {
 	m, hub := modalTestModel(t)
 	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
-	m.handleTranscriptKey(keyMsg("ctrl+t"))
-	m.handleTranscriptKey(keyMsg("ctrl+t"))
+	m.handleTranscriptKey(keyMsg("ctrl+o"))
+	m.handleTranscriptKey(keyMsg("ctrl+o"))
 	if m.TranscriptModal != nil {
-		t.Error("second ctrl+t did not toggle modal closed")
+		t.Error("second ctrl+o did not toggle modal closed")
 	}
 }
 
@@ -112,7 +112,7 @@ func TestTranscriptModal_TabCyclesAcrossTeammates(t *testing.T) {
 	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
 	hub.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
 
-	m.handleTranscriptKey(keyMsg("ctrl+t"))
+	m.handleTranscriptKey(keyMsg("ctrl+o"))
 	if m.TranscriptAgent != "alice" {
 		t.Fatalf("initial agent = %q, want alice (first sorted)", m.TranscriptAgent)
 	}
@@ -134,7 +134,7 @@ func TestTranscriptModal_TabCyclesAcrossTeammates(t *testing.T) {
 func TestTranscriptModal_ScrollKeysAreSwallowed(t *testing.T) {
 	m, hub := modalTestModel(t)
 	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
-	m.handleTranscriptKey(keyMsg("ctrl+t"))
+	m.handleTranscriptKey(keyMsg("ctrl+o"))
 	if m.TranscriptModal == nil {
 		t.Fatal("setup failed")
 	}
@@ -150,7 +150,7 @@ func TestTranscriptModal_ScrollKeysAreSwallowed(t *testing.T) {
 func TestTranscriptModal_ViewTakesOverWhenOpen(t *testing.T) {
 	m, hub := modalTestModel(t)
 	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
-	m.handleTranscriptKey(keyMsg("ctrl+t"))
+	m.handleTranscriptKey(keyMsg("ctrl+o"))
 
 	body := m.View()
 	if !strings.Contains(body, "teammate: researcher") {
@@ -173,11 +173,11 @@ func TestTranscriptModal_NilHubDisablesEverything(t *testing.T) {
 	m.Width = 100
 	m.Height = 30
 
-	_, _, handled := m.handleTranscriptKey(keyMsg("ctrl+t"))
-	// Closed with no hub: ctrl+t falls through (not handled here) so the
+	_, _, handled := m.handleTranscriptKey(keyMsg("ctrl+o"))
+	// Closed with no hub: ctrl+o falls through (not handled here) so the
 	// rest of handleKey can do its usual thing.
 	if handled {
-		t.Error("ctrl+t should fall through when no hub is configured")
+		t.Error("ctrl+o should fall through when no hub is configured")
 	}
 	if m.TranscriptModal != nil {
 		t.Error("modal opened without hub")
@@ -187,7 +187,7 @@ func TestTranscriptModal_NilHubDisablesEverything(t *testing.T) {
 func TestTranscriptModal_HandleEventRoutesToOpenModal(t *testing.T) {
 	m, hub := modalTestModel(t)
 	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
-	m.handleTranscriptKey(keyMsg("ctrl+t"))
+	m.handleTranscriptKey(keyMsg("ctrl+o"))
 	if m.TranscriptModal == nil {
 		t.Fatal("setup failed: modal not open")
 	}
@@ -212,12 +212,53 @@ func TestTranscriptModal_HandleEventRoutesToOpenModal(t *testing.T) {
 	}
 }
 
+func TestTranscriptModal_StoppedAgentStillOpensWithHistory(t *testing.T) {
+	m, hub := modalTestModel(t)
+	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.Publish("researcher", agentcore.Event{
+		Type: agentcore.EventMessageEnd,
+		Message: agentcore.Message{
+			Role:    agentcore.RoleAssistant,
+			Content: []agentcore.ContentBlock{{Type: agentcore.ContentText, Text: "final answer"}},
+		},
+	})
+	hub.MarkStopped("researcher")
+
+	_, _, handled := m.handleTranscriptKey(keyMsg("ctrl+o"))
+	if !handled || m.TranscriptModal == nil {
+		t.Fatalf("ctrl+o on stopped agent did not open modal (handled=%v modal=%v)", handled, m.TranscriptModal)
+	}
+	body := m.View()
+	if !strings.Contains(body, "final answer") {
+		t.Errorf("history replay missing assistant message; View()=%q", body)
+	}
+	if !strings.Contains(body, "(ended)") {
+		t.Errorf("title should mark stopped agent as ended; View()=%q", body)
+	}
+}
+
+func TestTranscriptModal_TabCyclesAcrossStoppedAgents(t *testing.T) {
+	m, hub := modalTestModel(t)
+	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.MarkStopped("alice") // alice ended, bob still live
+
+	m.handleTranscriptKey(keyMsg("ctrl+o"))
+	if m.TranscriptAgent != "alice" {
+		t.Fatalf("initial agent = %q, want alice (sorted first, even though stopped)", m.TranscriptAgent)
+	}
+	m.handleTranscriptKey(keyMsg("tab"))
+	if m.TranscriptAgent != "bob" {
+		t.Errorf("after tab = %q, want bob", m.TranscriptAgent)
+	}
+}
+
 func TestTranscriptModal_StaleEventForOldAgentIsDropped(t *testing.T) {
 	m, hub := modalTestModel(t)
 	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
 	hub.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
 
-	m.handleTranscriptKey(keyMsg("ctrl+t")) // alice
+	m.handleTranscriptKey(keyMsg("ctrl+o")) // alice
 	m.handleTranscriptKey(keyMsg("tab"))    // bob
 
 	// In-flight event for alice arriving after we switched should not

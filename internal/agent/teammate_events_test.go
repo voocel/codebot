@@ -16,7 +16,10 @@ func TestEventHub_NilReceiverIsNoop(t *testing.T) {
 	if got := h.ActiveAgents(); got != nil {
 		t.Errorf("ActiveAgents on nil = %v, want nil", got)
 	}
-	ch, cancel := h.Subscribe("x")
+	history, ch, cancel := h.Subscribe("x")
+	if history != nil {
+		t.Errorf("Subscribe on nil hub returned history %+v, want nil", history)
+	}
 	if _, ok := <-ch; ok {
 		t.Error("Subscribe on nil hub returned a non-closed channel")
 	}
@@ -30,7 +33,7 @@ func TestEventHub_NilReceiverIsNoop(t *testing.T) {
 
 func TestEventHub_DeliversToSubscribers(t *testing.T) {
 	h := NewTeammateEventHub()
-	ch, cancel := h.Subscribe("researcher")
+	_, ch, cancel := h.Subscribe("researcher")
 	defer cancel()
 
 	h.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
@@ -55,9 +58,9 @@ func TestEventHub_DeliversToSubscribers(t *testing.T) {
 
 func TestEventHub_RoutesByAgentName(t *testing.T) {
 	h := NewTeammateEventHub()
-	chA, cancelA := h.Subscribe("alice")
+	_, chA, cancelA := h.Subscribe("alice")
 	defer cancelA()
-	chB, cancelB := h.Subscribe("bob")
+	_, chB, cancelB := h.Subscribe("bob")
 	defer cancelB()
 
 	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
@@ -75,7 +78,7 @@ func TestEventHub_RoutesByAgentName(t *testing.T) {
 
 func TestEventHub_UnsubscribeStopsDelivery(t *testing.T) {
 	h := NewTeammateEventHub()
-	ch, cancel := h.Subscribe("researcher")
+	_, ch, cancel := h.Subscribe("researcher")
 
 	h.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
 	cancel()
@@ -107,7 +110,7 @@ func TestEventHub_UnsubscribeStopsDelivery(t *testing.T) {
 // many more events, and assert Publish returns quickly each time.
 func TestEventHub_NonBlockingOnSlowConsumer(t *testing.T) {
 	h := NewTeammateEventHub()
-	_, cancel := h.Subscribe("researcher") // never read from it
+	_, _, cancel := h.Subscribe("researcher") // never read from it
 	defer cancel()
 
 	start := time.Now()
@@ -196,7 +199,7 @@ func TestEventHub_Concurrent(t *testing.T) {
 
 	// 4 subscribers consuming in tight loops.
 	for range 4 {
-		ch, cancel := h.Subscribe("a")
+		_, ch, cancel := h.Subscribe("a")
 		wg.Go(func() {
 			for range ch {
 				// drain
@@ -231,6 +234,128 @@ func TestEventHub_ActiveAgentsReflectsState(t *testing.T) {
 	got = h.ActiveAgents()
 	if len(got) != 1 || got[0] != "bob" {
 		t.Errorf("ActiveAgents after stop = %v, want [bob]", got)
+	}
+}
+
+func TestEventHub_LateSubscriberReplaysHistory(t *testing.T) {
+	h := NewTeammateEventHub()
+	// Publish a few events BEFORE any subscriber attaches — these must be
+	// replayed when Subscribe is called.
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventToolExecStart})
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentEnd})
+
+	history, ch, cancel := h.Subscribe("alice")
+	defer cancel()
+
+	if len(history) != 3 {
+		t.Fatalf("history len = %d, want 3: %+v", len(history), history)
+	}
+	want := []agentcore.EventType{
+		agentcore.EventAgentStart,
+		agentcore.EventToolExecStart,
+		agentcore.EventAgentEnd,
+	}
+	for i, ev := range history {
+		if ev.Type != want[i] {
+			t.Errorf("history[%d] = %v, want %v", i, ev.Type, want[i])
+		}
+	}
+
+	// Subsequent live events still arrive on the channel, picking up where
+	// history left off — no duplicates.
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventError})
+	live := drainEvents(t, ch, 1, time.Second)
+	if len(live) != 1 || live[0].Type != agentcore.EventError {
+		t.Errorf("live events = %+v, want [Error]", live)
+	}
+}
+
+func TestEventHub_HistorySurvivesMarkStopped(t *testing.T) {
+	h := NewTeammateEventHub()
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentEnd})
+	h.MarkStopped("alice")
+
+	// Subscribing to a stopped teammate still yields the recorded history.
+	history, ch, cancel := h.Subscribe("alice")
+	defer cancel()
+	if len(history) != 2 {
+		t.Errorf("history after stop = %d events, want 2: %+v", len(history), history)
+	}
+	// No live events should arrive — alice is no longer publishing.
+	select {
+	case ev := <-ch:
+		t.Errorf("unexpected live event after stop: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestEventHub_HistoryRingTruncatesOldest(t *testing.T) {
+	h := NewTeammateEventHub()
+	// Publish capacity+10 events; the ring should retain only the last
+	// `historyCapacity` of them in chronological order.
+	const overshoot = 10
+	for range historyCapacity + overshoot {
+		h.Publish("alice", agentcore.Event{Type: agentcore.EventToolExecStart})
+	}
+	history, _, cancel := h.Subscribe("alice")
+	defer cancel()
+	if len(history) != historyCapacity {
+		t.Errorf("history len = %d, want %d (overshoot dropped)", len(history), historyCapacity)
+	}
+}
+
+func TestEventHub_KnownAgentsIncludesStopped(t *testing.T) {
+	h := NewTeammateEventHub()
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+	h.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
+	h.MarkStopped("alice")
+
+	known := h.KnownAgents()
+	if len(known) != 2 {
+		t.Fatalf("KnownAgents = %+v, want 2 entries", known)
+	}
+	gotActive := map[string]bool{}
+	for _, info := range known {
+		gotActive[info.Name] = info.Active
+	}
+	if gotActive["alice"] {
+		t.Errorf("alice reported active after MarkStopped")
+	}
+	if !gotActive["bob"] {
+		t.Errorf("bob should still be active")
+	}
+
+	// IsActive mirrors the per-name flag.
+	if h.IsActive("alice") {
+		t.Errorf("IsActive(alice) = true, want false")
+	}
+	if !h.IsActive("bob") {
+		t.Errorf("IsActive(bob) = false, want true")
+	}
+	if h.IsActive("eve") {
+		t.Errorf("IsActive(unknown) should be false")
+	}
+}
+
+func TestEventHub_PresenceRebroadcastsAfterRestart(t *testing.T) {
+	// A teammate that publishes, gets MarkStopped'd, then publishes again
+	// should emit Started a second time so an auto-attach UI re-focuses.
+	h := NewTeammateEventHub()
+	pch, cancel := h.SubscribePresence()
+	defer cancel()
+
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+	h.MarkStopped("alice")
+	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+
+	got := drainPresence(t, pch, 3, time.Second)
+	if len(got) != 3 {
+		t.Fatalf("presence stream = %+v, want 3 events", got)
+	}
+	if !got[0].Started || got[1].Started || !got[2].Started {
+		t.Errorf("expected [Started, Stopped, Started], got %+v", got)
 	}
 }
 

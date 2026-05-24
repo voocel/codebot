@@ -178,6 +178,10 @@ var (
 	ContextChipAccentStyle = lipgloss.NewStyle().Foreground(Brand)
 	ContextChipPathStyle   = lipgloss.NewStyle().Foreground(BrandSoft)
 	ContextChipTeamStyle   = lipgloss.NewStyle().Foreground(RoleTeammate)
+	// contextChipSeparatorStyle paints the vertical bar between chips. Dim
+	// foreground keeps the bar present but not loud — it should feel like
+	// negative space, not another chip.
+	contextChipSeparatorStyle = lipgloss.NewStyle().Foreground(Muted).Faint(true)
 	// Transient hints like "Press Ctrl+C again to exit" or "bash mode" — muted
 	// gray, not a loud warning.
 	ContextChipWarnStyle = lipgloss.NewStyle().Foreground(Muted)

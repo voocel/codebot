@@ -82,6 +82,15 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		// → Run exits) and by task.Runtime.StopAll.
 		spawnCtx := task.WithDepth(context.Background(), depth)
 
+		// onExit flips the hub's active flag when the teammate goroutine
+		// returns. The history ring is preserved so an observer can still
+		// open this teammate's transcript afterwards; the UI distinguishes
+		// "live" vs "ended" via hub.IsActive.
+		var onExit func(error)
+		if hub != nil {
+			onExit = func(error) { hub.MarkStopped(agentName) }
+		}
+
 		res, err := team.Spawn(spawnCtx, team.SpawnConfig{
 			AgentName:     agentName,
 			InitialPrompt: req.InitialPrompt,
@@ -92,6 +101,7 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 			Execute:       executor,
 			Protocol:      cbteam.Hooks(),
 			Depth:         depth,
+			OnExit:        onExit,
 		})
 		if err != nil {
 			return nil, err
