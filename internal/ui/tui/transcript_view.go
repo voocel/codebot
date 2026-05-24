@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
 	reflowwrap "github.com/muesli/reflow/wrap"
 )
@@ -60,6 +59,13 @@ type TranscriptView struct {
 
 	// title is the top-bar text, e.g. "teammate: researcher".
 	title string
+
+	// liveBadge is a short prefix prepended to the status line — typically a
+	// spinner frame while the teammate is publishing, an idle glyph once it
+	// has stopped. Updated per frame by the modal so the user sees motion.
+	// Stored on the view (rather than passed into View()) so the existing
+	// View() signature stays single-argument and tests don't need updating.
+	liveBadge string
 }
 
 type transcriptToolState struct {
@@ -101,6 +107,13 @@ func (t *TranscriptView) SetStatus(status string) {
 	t.applyLayout()
 }
 
+// SetLiveBadge swaps the spinner/idle marker shown at the head of the
+// status line. Cheap on purpose: no layout recompute, no repaint — only the
+// next View() call picks up the new badge. Pass "" to hide.
+func (t *TranscriptView) SetLiveBadge(badge string) {
+	t.liveBadge = badge
+}
+
 // SetSize records new outer dimensions and recomputes the viewport area.
 // Width 0 or height < 2 makes the view effectively invisible.
 func (t *TranscriptView) SetSize(width, height int) {
@@ -117,14 +130,22 @@ func (t *TranscriptView) SetSize(width, height int) {
 // SetSize, SetTitle, and SetStatus stay in sync — earlier versions only
 // recomputed in SetSize, so a SetStatus call after SetSize left the
 // viewport oversized and overlapped the status bar by one row.
+//
+// Each chrome row carries its own blank-line spacer (title beneath itself,
+// status above) so the body never bumps directly against the colored strip.
+// reserved therefore counts 2 rows per visible chrome, not 1.
+//
+// SetLiveBadge piggybacks on the status row's reservation — the caller
+// must set a non-empty status before showing a badge, otherwise the badge
+// will overflow into the viewport area.
 func (t *TranscriptView) applyLayout() {
 	t.vp.Width = t.width
 	reserved := 0
 	if t.title != "" {
-		reserved++
+		reserved += 2
 	}
 	if t.status != "" {
-		reserved++
+		reserved += 2
 	}
 	t.vp.Height = max(0, t.height-reserved)
 	t.repaint()
@@ -328,6 +349,11 @@ func (t *TranscriptView) replaceProvisional(provisional, finalBlock string) {
 // repaint rebuilds the viewport content from blocks + live streaming/tool
 // state. Cheap enough at our scale; if profiling ever shows it on top,
 // switch to an incremental append model.
+//
+// Scroll-follow: when the viewport was already at the bottom we re-pin to
+// the bottom after SetContent so new events stream in like a tail -f. If
+// the user has scrolled up to read history we leave the offset alone — the
+// "auto-follow only while at the bottom" pattern most terminal viewers use.
 func (t *TranscriptView) repaint() {
 	var body strings.Builder
 	for i, b := range t.blocks {
@@ -357,24 +383,41 @@ func (t *TranscriptView) repaint() {
 		}
 	}
 
+	wasAtBottom := t.vp.AtBottom()
 	t.vp.SetContent(body.String())
+	if wasAtBottom {
+		t.vp.GotoBottom()
+	}
 }
 
 // View renders the title + viewport + status into a single string sized to
 // (width, height). Returns "" if the view has no room to draw.
+//
+// Each visible chrome row is followed (title) or preceded (status) by a
+// blank spacer line so the colored title strip and the status text never
+// touch the body content. applyLayout reserves the matching rows.
 func (t *TranscriptView) View() string {
 	if t.width <= 0 || t.height <= 0 {
 		return ""
 	}
-	pieces := make([]string, 0, 3)
+	pieces := make([]string, 0, 5)
 	if t.title != "" {
-		pieces = append(pieces, transcriptTitleStyle.Render(t.title))
+		pieces = append(pieces, TranscriptTitleStyle.Width(t.width).Render(t.title))
+		pieces = append(pieces, "")
 	}
 	pieces = append(pieces, t.vp.View())
-	if t.status != "" {
-		pieces = append(pieces, MutedStyle.Render(t.status))
+	if t.status != "" || t.liveBadge != "" {
+		line := t.status
+		if t.liveBadge != "" {
+			if line != "" {
+				line = t.liveBadge + "  " + line
+			} else {
+				line = t.liveBadge
+			}
+		}
+		pieces = append(pieces, "", MutedStyle.Render(line))
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, pieces...)
+	return strings.Join(pieces, "\n")
 }
 
 // ScrollUp / ScrollDown / GotoBottom proxy to the viewport. The repaint that
@@ -385,11 +428,6 @@ func (t *TranscriptView) ScrollDown(n int) { t.vp.ScrollDown(n) }
 func (t *TranscriptView) PageUp()          { t.vp.PageUp() }
 func (t *TranscriptView) PageDown()        { t.vp.PageDown() }
 func (t *TranscriptView) GotoBottom()      { t.vp.GotoBottom() }
-
-// transcriptTitleStyle is the inline header style used at the top of the
-// modal. Bold + foreground emphasis without a border keeps it visually
-// distinct from the body without consuming extra vertical space.
-var transcriptTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(Strong)
 
 // bodyWidth returns the column budget the renderer uses for wrapping. Falls
 // back to 80 before the first SetSize so unit tests have a sane default.

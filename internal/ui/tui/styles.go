@@ -188,6 +188,19 @@ var (
 
 	SubagentCardStyle = card(Accent)
 
+	// TranscriptTitleStyle is the header row of the teammate-transcript
+	// modal. Painted with RoleTeammate (purple — the same token used for
+	// teammate chips elsewhere) over SurfaceAccent (the same low-contrast
+	// strip the user-echo row uses) so the title reads as "you are now
+	// observing a teammate" at a glance without shouting. Padding adds a
+	// single-column gutter inside the band; the caller fills .Width(...)
+	// before Render so the strip stretches edge to edge.
+	TranscriptTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(RoleTeammate).
+				Background(SurfaceAccent).
+				Padding(0, 1)
+
 	PermissionTitleStyle = lipgloss.NewStyle().Foreground(Accent).Bold(true)
 	AskCardStyle         = card(BrandSoft)
 

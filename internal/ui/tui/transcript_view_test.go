@@ -218,18 +218,19 @@ func TestTranscriptView_StatusAndTitleSettable(t *testing.T) {
 // Regression: SetStatus called AFTER SetSize used to leave the viewport
 // height unchanged, so its rendering would clobber the newly-introduced
 // status row. The fix routes both setters through applyLayout, so the
-// viewport gives up one row to make room.
+// viewport gives up rows to make room. Each chrome row (title, status)
+// pulls 2 lines — the row itself plus a blank spacer above/below.
 func TestTranscriptView_SetStatusAfterSetSizeKeepsRoom(t *testing.T) {
-	v := NewTranscriptView("t") // title set => reserves 1 row already
-	v.SetSize(80, 10)
-	before := v.vp.Height // expect 10 - 1 (title) = 9
+	v := NewTranscriptView("t") // title set => reserves title + spacer = 2 rows
+	v.SetSize(80, 12)
+	before := v.vp.Height // 12 - 2 = 10
 	v.SetStatus("bottom hint")
-	after := v.vp.Height // expect 10 - 2 (title + status) = 8
-	if before != 9 {
-		t.Errorf("vp.Height before SetStatus = %d, want 9", before)
+	after := v.vp.Height // 12 - 2 (title) - 2 (status) = 8
+	if before != 10 {
+		t.Errorf("vp.Height before SetStatus = %d, want 10", before)
 	}
 	if after != 8 {
-		t.Errorf("vp.Height after SetStatus = %d, want 8 (one row reserved for status)", after)
+		t.Errorf("vp.Height after SetStatus = %d, want 8 (status + spacer reserved)", after)
 	}
 }
 

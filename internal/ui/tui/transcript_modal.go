@@ -287,11 +287,31 @@ type transcriptEventEnvelope struct {
 // transcriptViewBody returns the modal's rendered output for View().
 // Returns "" when no modal is open so callers can fall back to the normal
 // view path.
+//
+// Before each render we refresh the live-badge: a spinner frame while the
+// teammate is still publishing (so the user knows it's working), or a
+// static ✓ once it has ended. We piggyback on the leader's m.Spinner —
+// it's already tick'd by spinner.TickMsg in update.go, so the modal
+// inherits the same cadence without spawning a second ticker.
 func (m *Model) transcriptViewBody() string {
 	if m.TranscriptModal == nil {
 		return ""
 	}
+	m.TranscriptModal.SetLiveBadge(m.transcriptLiveBadge())
 	return m.TranscriptModal.View()
+}
+
+// transcriptLiveBadge returns the badge shown at the head of the modal
+// status line. Empty when no agent is selected, a styled spinner frame
+// while the teammate is active, or a styled "✓ ended" when it has stopped.
+func (m *Model) transcriptLiveBadge() string {
+	if m.TranscriptAgent == "" {
+		return ""
+	}
+	if m.config.TeammateEvents != nil && m.config.TeammateEvents.IsActive(m.TranscriptAgent) {
+		return CommandStyle.Render(m.Spinner.View() + " running")
+	}
+	return MutedStyle.Render("✓ ended")
 }
 
 // transcriptOnResize forwards a window-size change to the open modal so
