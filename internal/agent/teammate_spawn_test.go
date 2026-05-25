@@ -65,6 +65,28 @@ func (m *scriptModel) GenerateStream(_ context.Context, _ []agentcore.Message, _
 
 func (m *scriptModel) SupportsTools() bool { return true }
 
+// captureModel is a scriptModel variant that records every Generate /
+// GenerateStream input. Tests use it to assert what the loop actually fed
+// to the LLM (system prompt shape, cache_control metadata, message order).
+type captureModel struct {
+	*scriptModel
+	captured [][]agentcore.Message
+}
+
+func newCaptureModel(texts ...string) *captureModel {
+	return &captureModel{scriptModel: newScriptModel(texts...)}
+}
+
+func (m *captureModel) Generate(ctx context.Context, msgs []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	m.captured = append(m.captured, append([]agentcore.Message(nil), msgs...))
+	return m.scriptModel.Generate(ctx, msgs, tools, opts...)
+}
+
+func (m *captureModel) GenerateStream(ctx context.Context, msgs []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	m.captured = append(m.captured, append([]agentcore.Message(nil), msgs...))
+	return m.scriptModel.GenerateStream(ctx, msgs, tools, opts...)
+}
+
 // fakeNamedTool is a stand-in for tools we need by Name only (the executor
 // passes tools through to the loop, but our stub model never invokes them).
 type fakeNamedTool struct{ n string }
@@ -133,6 +155,53 @@ func TestBuildTeammateExecutor_RejectsEmpty(t *testing.T) {
 	_, err := exec(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error on empty msgs")
+	}
+}
+
+// Verifies the teammate's system prompt reaches the LLM as a SystemBlock
+// with cache_control=ephemeral metadata, so Anthropic's prompt cache covers
+// it across the teammate's many turns. Without this, every mailbox-driven
+// turn would re-pay the full system+tools input-token bill.
+func TestBuildTeammateExecutor_SystemPromptCarriesCacheControl(t *testing.T) {
+	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
+	model := newCaptureModel("done")
+	exec := buildTeammateExecutor(cfg, nil, model, nil)
+
+	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
+		t.Fatalf("executor: %v", err)
+	}
+	if len(model.captured) == 0 {
+		t.Fatal("model never invoked")
+	}
+	first := model.captured[0]
+	if len(first) == 0 || first[0].Role != agentcore.RoleSystem {
+		t.Fatalf("first LLM message is not system role: %+v", first)
+	}
+	if first[0].TextContent() != "you are a researcher" {
+		t.Errorf("system text = %q, want %q", first[0].TextContent(), "you are a researcher")
+	}
+	got, _ := first[0].Metadata["cache_control"].(string)
+	if got != "ephemeral" {
+		t.Errorf("cache_control metadata = %q, want \"ephemeral\"", got)
+	}
+}
+
+// Empty SystemPrompt must not produce a blank SystemBlock — some providers
+// reject an empty system message. We assert that no system message is sent
+// at all when cfg.SystemPrompt is empty.
+func TestBuildTeammateExecutor_EmptySystemPromptSendsNoSystemBlock(t *testing.T) {
+	cfg := subagent.Config{Name: "anon"} // SystemPrompt left blank
+	model := newCaptureModel("done")
+	exec := buildTeammateExecutor(cfg, nil, model, nil)
+
+	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("hi")}); err != nil {
+		t.Fatalf("executor: %v", err)
+	}
+	first := model.captured[0]
+	for _, m := range first {
+		if m.Role == agentcore.RoleSystem {
+			t.Errorf("unexpected system message when SystemPrompt is empty: %+v", m)
+		}
 	}
 }
 

@@ -204,8 +204,24 @@ func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model ag
 		history := msgs[:len(msgs)-1]
 		prompt := msgs[len(msgs)-1]
 
+		// Wrap the teammate system prompt in a SystemBlock with ephemeral
+		// cache_control so Anthropic's prompt cache covers it across the
+		// teammate's many turns. The system prompt is byte-stable from spawn
+		// onward (agent role + tool docs + base instructions), so every
+		// follow-up turn after the first reads it from cache instead of
+		// paying the full input-token cost.
+		//
+		// Empty SystemPrompt → leave SystemBlocks nil so AgentLoop falls
+		// through its "no system" branch instead of injecting an empty
+		// block, which some providers reject.
+		var systemBlocks []agentcore.SystemBlock
+		if cfg.SystemPrompt != "" {
+			systemBlocks = []agentcore.SystemBlock{
+				{Text: cfg.SystemPrompt, CacheControl: "ephemeral"},
+			}
+		}
 		agentCtx := agentcore.AgentContext{
-			SystemPrompt: cfg.SystemPrompt,
+			SystemBlocks: systemBlocks,
 			Tools:        tools,
 			Messages:     append([]agentcore.AgentMessage(nil), history...),
 		}
