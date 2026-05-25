@@ -65,12 +65,35 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	// own send_message instance — a per-spawn instance keeps the tool
 	// stateless from the registry's POV and avoids accidentally sharing a
 	// captured ctx across teammates.
+	//
+	// baseBlocks reuses the leader's already-computed universal-base text
+	// (assembly.frozenIdentity = BuildUniversalBase output). Sharing the
+	// exact same bytes is the precondition for cross-agent prompt cache
+	// reuse — Anthropic keys its cache on the byte string, so a teammate's
+	// first request hits the same entry the leader's turns wrote.
+	// SystemOverride sessions leave frozenIdentity empty; in that case we
+	// pass nil so teammates degrade to their role block as the only system
+	// content rather than carrying an empty cache-controlled block.
 	if assembly.subagentTool != nil {
+		var baseBlocks []agentcore.SystemBlock
+		if assembly.frozenIdentity != "" {
+			baseBlocks = []agentcore.SystemBlock{
+				{Text: assembly.frozenIdentity, CacheControl: "ephemeral"},
+			}
+		}
+		// dynamicProvider is evaluated lazily on each spawn so teammates pick
+		// up the leader's CURRENT MCP / overlay state (cc parity: cc rebuilds
+		// the full system prompt at every teammate spawn via getSystemPrompt).
+		// Snapshot is frozen into the teammate at spawn time — later changes
+		// on the leader side do not propagate, which matches cc's behavior.
+		dynamicProvider := session.DynamicSystemBlock
 		assembly.subagentTool.SetTeamSpawner(agent.TeammateSpawner(
 			teamReg,
 			taskRT,
 			[]agentcore.Tool{localtools.NewSendMessageTool(taskRT, teamReg)},
 			teammateEvents,
+			baseBlocks,
+			dynamicProvider,
 		))
 	}
 
@@ -197,6 +220,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		FrozenIdentity:        assembly.frozenIdentity,
 		FrozenInstructions:    assembly.frozenInstructions,
 		InitialMCPOverlay:     assembly.initialMCPOverlay,
+		InitialDynamic:        assembly.initialDynamic,
 		DeferredToolsPreamble: assembly.deferredToolsPreamble,
 		Reminders:             assembly.reminders,
 		PreambleInjected:      len(input.sessionSnapshot.Messages) > 0,

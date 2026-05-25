@@ -10,6 +10,7 @@ import (
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
+	"github.com/voocel/codebot/internal/config"
 	cbteam "github.com/voocel/codebot/internal/team"
 )
 
@@ -30,7 +31,24 @@ const maxAgentNameSuffixAttempts = 1000
 // strips from every sub-agent's pool by default. Keeping the list explicit
 // rather than reaching into a shared bag avoids accidentally leaking tools
 // (like team_create) that should stay leader-only.
-func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub) subagent.TeamSpawner {
+//
+// `baseBlocks` is the universal base prefix shared with the leader — the
+// host computes it once at session startup (BuildUniversalBase + cache_control
+// ephemeral) and the spawner prepends it to every teammate's SystemBlocks in
+// Default/Append modes. Pass nil to disable base sharing entirely (teammate
+// then runs with its role block as the only system content); pass the
+// leader's actual base for cross-agent prompt cache reuse. agentcore stays
+// unaware of this — base assembly is purely host-side concern.
+//
+// `dynamicProvider` is invoked once per spawn to fetch the leader's CURRENT
+// dynamic block (MCP tool inventory + active overlays). The returned block —
+// which carries NO cache_control by design — is appended after the role block
+// in Default/Append modes, mirroring cc's `getSystemPrompt(tools, model,
+// undefined, mcpClients)` call that produces a teammate prompt including the
+// leader's MCP descriptions. Pass nil to skip dynamic propagation. The
+// teammate freezes the snapshot at spawn — subsequent leader-side overlay /
+// MCP changes do not propagate (cc parity).
+func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock) subagent.TeamSpawner {
 	return func(ctx context.Context, req subagent.TeamSpawnRequest) (*subagent.TeamSpawnResult, error) {
 		if reg == nil || rt == nil {
 			return nil, errors.New("teammate spawner: registry and runtime are required")
@@ -69,7 +87,13 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 				hub.Publish(agentName, ev)
 			}
 		}
-		executor := buildTeammateExecutor(req.Config, tools, model, onEvent)
+		// Snapshot the dynamic block once per spawn — the teammate freezes it
+		// at construction and ignores subsequent leader-side changes (cc parity).
+		var dynamicBlock *agentcore.SystemBlock
+		if dynamicProvider != nil {
+			dynamicBlock = dynamicProvider()
+		}
+		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, baseBlocks, dynamicBlock)
 
 		depth := task.DepthFromContext(ctx) + 1
 		if depth > task.MaxAgentDepth {
@@ -188,7 +212,21 @@ func mergeTeammateTools(base, extras []agentcore.Tool) []agentcore.Tool {
 // (produced collection / error capture). It is the integration seam that
 // lets the spawner publish to TeammateEventHub without buildTeammateExecutor
 // needing to know about hubs or agent names. nil disables the callback.
-func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event)) team.TurnExecutor {
+//
+// baseBlocks is the universal base prefix the teammate shares with the
+// leader. Captured at executor-construction time (not per-turn) because
+// BuildUniversalBase output depends only on session-stable inputs (cwd /
+// OS); per-turn evaluation would either be wasted work or — worse — pull in
+// a transient input that breaks cross-turn byte equality and invalidates
+// the prompt cache.
+//
+// dynamicBlock is the spawn-time snapshot of the leader's dynamic content
+// (MCP descriptions + active overlays). Appended after the role block in
+// Default/Append modes; nil skips it. No CacheControl by design — it sits
+// after the cached prefix so a churning dynamic does not invalidate the
+// stable head, and message-level cache (WithCacheLastMessage) still covers
+// the growing tail.
+func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event), baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock) team.TurnExecutor {
 	var ctxMgr agentcore.ContextManager
 	switch {
 	case cfg.ContextManagerFactory != nil:
@@ -197,6 +235,12 @@ func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model ag
 		ctxMgr = cfg.ContextManager
 	}
 
+	// Assemble SystemBlocks once at spawn — depends only on cfg + tools +
+	// baseBlocks + dynamicBlock, all of which are fixed for the teammate's
+	// lifetime. Doing it inside the per-turn closure would rebuild identical
+	// bytes every wake-up for no benefit.
+	systemBlocks := assembleTeammateSystemBlocks(cfg, tools, baseBlocks, dynamicBlock)
+
 	return func(ctx context.Context, msgs []agentcore.AgentMessage) ([]agentcore.AgentMessage, error) {
 		if len(msgs) == 0 {
 			return nil, errors.New("teammate executor called with empty messages")
@@ -204,22 +248,6 @@ func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model ag
 		history := msgs[:len(msgs)-1]
 		prompt := msgs[len(msgs)-1]
 
-		// Wrap the teammate system prompt in a SystemBlock with ephemeral
-		// cache_control so Anthropic's prompt cache covers it across the
-		// teammate's many turns. The system prompt is byte-stable from spawn
-		// onward (agent role + tool docs + base instructions), so every
-		// follow-up turn after the first reads it from cache instead of
-		// paying the full input-token cost.
-		//
-		// Empty SystemPrompt → leave SystemBlocks nil so AgentLoop falls
-		// through its "no system" branch instead of injecting an empty
-		// block, which some providers reject.
-		var systemBlocks []agentcore.SystemBlock
-		if cfg.SystemPrompt != "" {
-			systemBlocks = []agentcore.SystemBlock{
-				{Text: cfg.SystemPrompt, CacheControl: "ephemeral"},
-			}
-		}
 		agentCtx := agentcore.AgentContext{
 			SystemBlocks: systemBlocks,
 			Tools:        tools,
@@ -266,4 +294,83 @@ func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model ag
 		}
 		return produced, loopErr
 	}
+}
+
+// assembleTeammateSystemBlocks composes the teammate's AgentContext.SystemBlocks
+// based on cfg.SystemPromptMode. Modes mirror cc's
+// `systemPromptMode: 'default' | 'replace' | 'append'` semantics:
+//
+//   - Default (empty string or "default"): baseBlocks... + role block (with
+//     cfg.SystemPrompt wrapped as "# Custom Agent Instructions" when set —
+//     H1 mirrors cc's inProcessRunner.ts:944 byte-for-byte) + dynamicBlock
+//     (if any, NO cache_control). Teammate inherits the host's conventions
+//     AND shares the universal-base cache prefix with the leader.
+//
+//   - Replace: a single SystemBlock containing cfg.SystemPrompt verbatim,
+//     dropping baseBlocks, the teammate addendum, AND the dynamic block.
+//     For agent definitions that already include everything they need
+//     (legacy .agents/*.md, named-subagent-style fully isolated agents).
+//
+//   - Append: same as Default plus cfg.SystemPrompt appended at the end of
+//     the role block (NOT a separate cache block — avoids burning a
+//     precious cache_control marker; Anthropic caps system cache_control
+//     count and extras are wasted on per-teammate stable content). Dynamic
+//     block still appended as the uncached tail.
+//
+// Unknown mode values fall through to Default (with a host-side log it would
+// be nice to add later) so a typo in agent metadata degrades to the safest
+// composition instead of erroring spawn.
+//
+// Dynamic block placement: AFTER the cache-controlled role block, with no
+// cache_control of its own. This mirrors how the leader's session_prompt.go
+// lays out its blocks (frozen identity + frozen instructions cached, dynamic
+// uncached) so leader and teammate share the same cache-frontier shape.
+func assembleTeammateSystemBlocks(cfg subagent.Config, tools []agentcore.Tool, baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock) []agentcore.SystemBlock {
+	switch cfg.SystemPromptMode {
+	case config.SystemPromptModeReplace:
+		if cfg.SystemPrompt == "" {
+			return nil
+		}
+		return []agentcore.SystemBlock{
+			{Text: cfg.SystemPrompt, CacheControl: "ephemeral"},
+		}
+
+	case config.SystemPromptModeAppend:
+		role := config.BuildTeammateRoleBlock(toolInfosFromTools(tools), "")
+		if cfg.SystemPrompt != "" {
+			role = role + "\n\n" + cfg.SystemPrompt
+		}
+		out := make([]agentcore.SystemBlock, 0, len(baseBlocks)+2)
+		out = append(out, baseBlocks...)
+		out = append(out, agentcore.SystemBlock{Text: role, CacheControl: "ephemeral"})
+		if dynamicBlock != nil && dynamicBlock.Text != "" {
+			out = append(out, *dynamicBlock)
+		}
+		return out
+
+	default:
+		// Default mode (empty string, "default", or any unrecognized value).
+		role := config.BuildTeammateRoleBlock(toolInfosFromTools(tools), cfg.SystemPrompt)
+		out := make([]agentcore.SystemBlock, 0, len(baseBlocks)+2)
+		out = append(out, baseBlocks...)
+		out = append(out, agentcore.SystemBlock{Text: role, CacheControl: "ephemeral"})
+		if dynamicBlock != nil && dynamicBlock.Text != "" {
+			out = append(out, *dynamicBlock)
+		}
+		return out
+	}
+}
+
+// toolInfosFromTools projects agentcore.Tool into the lighter config.ToolInfo
+// shape that prompt builders accept. Returns nil for an empty input so the
+// builder's "no tools section" branch fires cleanly.
+func toolInfosFromTools(tools []agentcore.Tool) []config.ToolInfo {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]config.ToolInfo, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, config.ToolInfo{Name: t.Name(), Description: t.Description()})
+	}
+	return out
 }

@@ -46,7 +46,10 @@ func TestBuildSystemBlockTextsNoTools(t *testing.T) {
 func TestBuildSystemBlockTextsIncludesDoingTasksGuardrails(t *testing.T) {
 	t.Parallel()
 
-	_, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}})
+	// After the universal-base / role-block split these guardrails live in
+	// the agent-agnostic identity block (so teammates inherit them too), not
+	// the leader-only instructions block.
+	identity, _ := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}})
 
 	for _, marker := range []string{
 		"## Doing tasks",
@@ -61,8 +64,8 @@ func TestBuildSystemBlockTextsIncludesDoingTasksGuardrails(t *testing.T) {
 		"## Output efficiency",
 		"Go straight to the point",
 	} {
-		if !strings.Contains(instructions, marker) {
-			t.Errorf("instructions missing guardrail %q", marker)
+		if !strings.Contains(identity, marker) {
+			t.Errorf("identity (universal base) missing guardrail %q", marker)
 		}
 	}
 }
@@ -298,6 +301,149 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestBuildUniversalBase_ByteStable guards the precondition for cross-agent
+// prompt cache reuse: same cwd → byte-identical output, every call. Any
+// future drift here (e.g. inserting a time.Now() or randomized ordering)
+// silently destroys teammate cache hits, so the test is intentionally strict.
+func TestBuildUniversalBase_ByteStable(t *testing.T) {
+	t.Parallel()
+
+	first := BuildUniversalBase("/tmp/ws")
+	second := BuildUniversalBase("/tmp/ws")
+	if first != second {
+		t.Fatal("BuildUniversalBase must be byte-stable for the same input")
+	}
+	if !strings.Contains(first, "/tmp/ws") {
+		t.Errorf("base must contain cwd, got %q", first[:200])
+	}
+	// Neutral identity preamble — leader-specific framing must NOT leak here.
+	if strings.Contains(first, "expert coding assistant") {
+		t.Error("universal base must stay role-neutral; leader identity leaked")
+	}
+	// Tool inventory belongs to the role block, not the shared base
+	// (leader/teammate tool sets differ, so listing tools here would break
+	// cross-agent byte equality).
+	if strings.Contains(first, "## Tools") {
+		t.Error("universal base must not include the tool inventory")
+	}
+}
+
+// TestBuildLeaderAndTeammateShareUniversalBase enforces that leader and
+// teammate render the same universal base — this is the cache-key contract.
+// If this drifts, every teammate spawn after warm-up loses its base
+// cache_read.
+func TestBuildLeaderAndTeammateShareUniversalBase(t *testing.T) {
+	t.Parallel()
+
+	cwd := "/tmp/ws"
+	// Leader path: identity returned by BuildFrozenSystemParts is the
+	// universal base under the hood.
+	leaderBase, _ := BuildFrozenSystemParts(cwd, ContextFiles{}, []ToolInfo{
+		{Name: "read"}, {Name: "task_create"}, {Name: "subagent"},
+	})
+	// Teammate path: spawner reuses BuildUniversalBase directly (no tools
+	// argument — base is intentionally tool-agnostic).
+	teammateBase := BuildUniversalBase(cwd)
+	if leaderBase != teammateBase {
+		t.Fatal("leader and teammate must share the exact same universal base bytes — cache will not hit otherwise")
+	}
+}
+
+// TestBuildLeaderRoleBlock_ToolGating covers the conditional sections that
+// only render when the corresponding tools are wired.
+func TestBuildLeaderRoleBlock_ToolGating(t *testing.T) {
+	t.Parallel()
+
+	// No conditional tools → identity + (no Task/Team sections).
+	bare := BuildLeaderRoleBlock(ContextFiles{}, []ToolInfo{{Name: "read"}})
+	if strings.Contains(bare, "## Task Management") {
+		t.Error("Task Management leaked without task_* tools")
+	}
+	if strings.Contains(bare, "## Team coordination") {
+		t.Error("Team coordination leaked without team tools")
+	}
+	if !strings.Contains(bare, "expert coding assistant") {
+		t.Error("leader identity missing")
+	}
+
+	// Full task-management toolset → section appears.
+	withTasks := BuildLeaderRoleBlock(ContextFiles{}, []ToolInfo{
+		{Name: "task_create"}, {Name: "task_update"}, {Name: "task_list"},
+	})
+	if !strings.Contains(withTasks, "## Task Management") {
+		t.Error("Task Management should render with full task toolset")
+	}
+
+	// Full team toolset → section appears.
+	withTeam := BuildLeaderRoleBlock(ContextFiles{}, []ToolInfo{
+		{Name: "team_dismiss"}, {Name: "send_message"}, {Name: "subagent"},
+	})
+	if !strings.Contains(withTeam, "## Team coordination") {
+		t.Error("Team coordination should render with full team toolset")
+	}
+}
+
+// TestBuildTeammateRoleBlock_OmitsCustomMarkerWhenEmpty makes sure the
+// "# Custom Agent Instructions" header does not appear when the agent
+// definition has no custom prompt — an empty heading would be a useless
+// section and would also bloat the cache fingerprint.
+func TestBuildTeammateRoleBlock_OmitsCustomMarkerWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	got := BuildTeammateRoleBlock(nil, "")
+	if strings.Contains(got, "Custom Agent Instructions") {
+		t.Error("empty agentRolePrompt must not emit the custom-instructions header")
+	}
+	if !strings.Contains(got, "Mailbox") {
+		t.Error("mailbox addendum missing")
+	}
+	if !strings.Contains(got, "team lead") {
+		t.Error("teammate identity preamble missing")
+	}
+}
+
+// TestBuildTeammateRoleBlock_AppendsCustomPrompt verifies the standard
+// composition path: identity → tools → mailbox → custom agent.
+//
+// The custom-instructions header MUST be H1 ("# Custom Agent Instructions"),
+// matching cc's inProcessRunner.ts:944. Using H2 here would silently diverge
+// from cc and any future byte-level comparison would fail.
+func TestBuildTeammateRoleBlock_AppendsCustomPrompt(t *testing.T) {
+	t.Parallel()
+
+	got := BuildTeammateRoleBlock(
+		[]ToolInfo{{Name: "read", Description: "Read files"}, {Name: "send_message", Description: "Send"}},
+		"You are a researcher. Cite sources.",
+	)
+	for _, marker := range []string{
+		"team lead",                  // identity
+		"## Tools",                   // tool inventory
+		"**read**",                   // a specific tool
+		"## Mailbox & Coordination",  // addendum
+		"\n# Custom Agent Instructions\n", // H1 wrapper, with the leading "\n" cc emits
+		"You are a researcher",       // role prompt body
+	} {
+		if !strings.Contains(got, marker) {
+			t.Errorf("teammate role block missing %q", marker)
+		}
+	}
+	// Guard against a future regression to H2.
+	if strings.Contains(got, "## Custom Agent Instructions") {
+		t.Error("custom-instructions header must be H1, not H2 (cc parity)")
+	}
+	// Ordering: identity comes before tools, tools before mailbox, mailbox
+	// before custom. A reordering would change the bytes and break cache.
+	wantOrder := []string{"team lead", "## Tools", "## Mailbox & Coordination", "# Custom Agent Instructions"}
+	prev := -1
+	for _, m := range wantOrder {
+		idx := strings.Index(got, m)
+		if idx <= prev {
+			t.Fatalf("section %q appeared out of order (got=%d, previous=%d)", m, idx, prev)
+		}
+		prev = idx
+	}
 }
 
 func TestBuildRemindersEmpty(t *testing.T) {

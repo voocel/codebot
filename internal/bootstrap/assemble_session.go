@@ -26,6 +26,7 @@ type sessionAssembly struct {
 	frozenIdentity        string // process-stable: block 1
 	frozenInstructions    string // process-stable: block 2
 	initialMCPOverlay     string // seed for session.overlays["mcp"]
+	initialDynamic        string // seed for session.dynamicText (teammate spawn snapshot)
 	deferredToolsPreamble string
 	reminders             []string
 	contextFiles          config.ContextFiles
@@ -73,6 +74,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		frozenIdentity:        parts.frozenIdentity,
 		frozenInstructions:    parts.frozenInstructions,
 		initialMCPOverlay:     parts.initialMCPOverlay,
+		initialDynamic:        parts.initialDynamic,
 		deferredToolsPreamble: parts.deferredMsg,
 		reminders:             parts.reminders,
 		contextFiles:          ctxFiles,
@@ -338,6 +340,7 @@ type systemParts struct {
 	frozenIdentity     string
 	frozenInstructions string
 	initialMCPOverlay  string
+	initialDynamic     string
 	deferredMsg        string
 	reminders          []string
 }
@@ -412,6 +415,7 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 		frozenIdentity:     identity,
 		frozenInstructions: frozenInstructions,
 		initialMCPOverlay:  mcpOverlay,
+		initialDynamic:     dynamic,
 		deferredMsg:        deferredMsg,
 		reminders:          config.BuildReminders(ctxFiles, skill.OrderForPrompt(skills, cwd, usage)),
 	}

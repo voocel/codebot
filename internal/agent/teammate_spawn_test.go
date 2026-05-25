@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
+	"github.com/voocel/codebot/internal/config"
 )
 
 // scriptModel returns predetermined assistant messages in order — one per
@@ -129,7 +130,7 @@ func TestMergeTeammateTools_NilExtras(t *testing.T) {
 func TestBuildTeammateExecutor_ProducesAssistantMessage(t *testing.T) {
 	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
 	model := newScriptModel("first turn output")
-	exec := buildTeammateExecutor(cfg, nil, model, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil)
 
 	prompt := agentcore.UserMsg("go investigate")
 	produced, err := exec(context.Background(), []agentcore.AgentMessage{prompt})
@@ -151,48 +152,59 @@ func TestBuildTeammateExecutor_ProducesAssistantMessage(t *testing.T) {
 }
 
 func TestBuildTeammateExecutor_RejectsEmpty(t *testing.T) {
-	exec := buildTeammateExecutor(subagent.Config{}, nil, newScriptModel(), nil)
+	exec := buildTeammateExecutor(subagent.Config{}, nil, newScriptModel(), nil, nil, nil)
 	_, err := exec(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error on empty msgs")
 	}
 }
 
-// Verifies the teammate's system prompt reaches the LLM as a SystemBlock
-// with cache_control=ephemeral metadata, so Anthropic's prompt cache covers
-// it across the teammate's many turns. Without this, every mailbox-driven
-// turn would re-pay the full system+tools input-token bill.
-func TestBuildTeammateExecutor_SystemPromptCarriesCacheControl(t *testing.T) {
-	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
+// Replace mode is the legacy single-block path: SystemPrompt is the only
+// system content the teammate gets (no universal base, no addendum). Used
+// by .agents/*.md definitions that already include everything they need.
+// Asserts the single block carries cache_control=ephemeral so Anthropic's
+// prompt cache covers it across the teammate's many turns.
+func TestBuildTeammateExecutor_ReplaceMode_SingleBlockWithCacheControl(t *testing.T) {
+	cfg := subagent.Config{
+		Name:             "researcher",
+		SystemPrompt:     "you are a researcher",
+		SystemPromptMode: config.SystemPromptModeReplace,
+	}
 	model := newCaptureModel("done")
-	exec := buildTeammateExecutor(cfg, nil, model, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil)
 
 	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
 		t.Fatalf("executor: %v", err)
 	}
-	if len(model.captured) == 0 {
-		t.Fatal("model never invoked")
-	}
 	first := model.captured[0]
-	if len(first) == 0 || first[0].Role != agentcore.RoleSystem {
-		t.Fatalf("first LLM message is not system role: %+v", first)
+	var systemMsgs []agentcore.Message
+	for _, m := range first {
+		if m.Role == agentcore.RoleSystem {
+			systemMsgs = append(systemMsgs, m)
+		}
 	}
-	if first[0].TextContent() != "you are a researcher" {
-		t.Errorf("system text = %q, want %q", first[0].TextContent(), "you are a researcher")
+	if len(systemMsgs) != 1 {
+		t.Fatalf("Replace mode must produce exactly 1 system block, got %d", len(systemMsgs))
 	}
-	got, _ := first[0].Metadata["cache_control"].(string)
+	if systemMsgs[0].TextContent() != "you are a researcher" {
+		t.Errorf("system text = %q, want %q", systemMsgs[0].TextContent(), "you are a researcher")
+	}
+	got, _ := systemMsgs[0].Metadata["cache_control"].(string)
 	if got != "ephemeral" {
 		t.Errorf("cache_control metadata = %q, want \"ephemeral\"", got)
 	}
 }
 
-// Empty SystemPrompt must not produce a blank SystemBlock — some providers
-// reject an empty system message. We assert that no system message is sent
-// at all when cfg.SystemPrompt is empty.
-func TestBuildTeammateExecutor_EmptySystemPromptSendsNoSystemBlock(t *testing.T) {
-	cfg := subagent.Config{Name: "anon"} // SystemPrompt left blank
+// Replace mode + empty SystemPrompt → no system block at all (some providers
+// reject empty system messages, and a blank block carrying cache_control
+// would still consume a marker for zero value).
+func TestBuildTeammateExecutor_ReplaceMode_EmptyPromptSendsNoSystemBlock(t *testing.T) {
+	cfg := subagent.Config{
+		Name:             "anon",
+		SystemPromptMode: config.SystemPromptModeReplace,
+	}
 	model := newCaptureModel("done")
-	exec := buildTeammateExecutor(cfg, nil, model, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil)
 
 	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("hi")}); err != nil {
 		t.Fatalf("executor: %v", err)
@@ -200,8 +212,170 @@ func TestBuildTeammateExecutor_EmptySystemPromptSendsNoSystemBlock(t *testing.T)
 	first := model.captured[0]
 	for _, m := range first {
 		if m.Role == agentcore.RoleSystem {
-			t.Errorf("unexpected system message when SystemPrompt is empty: %+v", m)
+			t.Errorf("unexpected system message when SystemPrompt is empty in Replace mode: %+v", m)
 		}
+	}
+}
+
+// Default mode (the new zero-value default, matching cc) produces two
+// system blocks: baseBlocks[0] verbatim, then a teammate role block that
+// wraps cfg.SystemPrompt under "# Custom Agent Instructions" (H1, matches
+// cc's inProcessRunner.ts:944). Both carry cache_control=ephemeral.
+func TestBuildTeammateExecutor_DefaultMode_PrependsBaseBlocks(t *testing.T) {
+	baseText := "## Environment\n- universal base content\n"
+	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
+	// Zero-value SystemPromptMode → falls back to default.
+	model := newCaptureModel("done")
+	baseBlocks := []agentcore.SystemBlock{{Text: baseText, CacheControl: "ephemeral"}}
+	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil)
+
+	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
+		t.Fatalf("executor: %v", err)
+	}
+	first := model.captured[0]
+	var systemMsgs []agentcore.Message
+	for _, m := range first {
+		if m.Role == agentcore.RoleSystem {
+			systemMsgs = append(systemMsgs, m)
+		}
+	}
+	if len(systemMsgs) != 2 {
+		t.Fatalf("Default mode must produce exactly 2 system blocks, got %d", len(systemMsgs))
+	}
+	if systemMsgs[0].TextContent() != baseText {
+		t.Errorf("first block must be the base verbatim; got %q", systemMsgs[0].TextContent())
+	}
+	roleText := systemMsgs[1].TextContent()
+	for _, marker := range []string{"team lead", "Mailbox", "\n# Custom Agent Instructions\n", "you are a researcher"} {
+		if !strings.Contains(roleText, marker) {
+			t.Errorf("role block missing %q; got %q", marker, roleText)
+		}
+	}
+	// Header must be H1, not H2 (cc parity).
+	if strings.Contains(roleText, "## Custom Agent Instructions") {
+		t.Error("custom-instructions header must be H1, not H2 (cc parity)")
+	}
+	for i, m := range systemMsgs {
+		cc, _ := m.Metadata["cache_control"].(string)
+		if cc != "ephemeral" {
+			t.Errorf("system block %d cache_control = %q, want ephemeral", i, cc)
+		}
+	}
+}
+
+// Default mode + a dynamic block snapshot produces 3 system blocks:
+// [base ephemeral][role ephemeral][dynamic no-cache]. The dynamic block
+// MUST NOT carry cache_control — it sits after the cached prefix as the
+// uncached tail (leader does the same in session_prompt.go).
+func TestBuildTeammateExecutor_DefaultMode_AppendsDynamicBlock(t *testing.T) {
+	baseText := "BASE"
+	dynamicText := "## MCP Tools\n- **mcp__docs__search**: Search docs\n"
+	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
+	model := newCaptureModel("done")
+	baseBlocks := []agentcore.SystemBlock{{Text: baseText, CacheControl: "ephemeral"}}
+	dynamic := &agentcore.SystemBlock{Text: dynamicText}
+	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, dynamic)
+
+	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
+		t.Fatalf("executor: %v", err)
+	}
+	first := model.captured[0]
+	var systemMsgs []agentcore.Message
+	for _, m := range first {
+		if m.Role == agentcore.RoleSystem {
+			systemMsgs = append(systemMsgs, m)
+		}
+	}
+	if len(systemMsgs) != 3 {
+		t.Fatalf("Default+dynamic must produce 3 system blocks, got %d", len(systemMsgs))
+	}
+	if systemMsgs[2].TextContent() != dynamicText {
+		t.Errorf("third block must be dynamic verbatim; got %q", systemMsgs[2].TextContent())
+	}
+	if cc, ok := systemMsgs[2].Metadata["cache_control"].(string); ok && cc != "" {
+		t.Errorf("dynamic block must NOT carry cache_control; got %q", cc)
+	}
+	// And the first two MUST still be cached.
+	for i := range 2 {
+		cc, _ := systemMsgs[i].Metadata["cache_control"].(string)
+		if cc != "ephemeral" {
+			t.Errorf("system block %d cache_control = %q, want ephemeral", i, cc)
+		}
+	}
+}
+
+// An empty / nil dynamic block must NOT add a third entry — we don't want
+// to send a blank block.
+func TestBuildTeammateExecutor_DefaultMode_NilDynamicSkipsThirdBlock(t *testing.T) {
+	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
+	model := newCaptureModel("done")
+	baseBlocks := []agentcore.SystemBlock{{Text: "BASE", CacheControl: "ephemeral"}}
+
+	// nil dynamic
+	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil)
+	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
+		t.Fatalf("executor: %v", err)
+	}
+	systemBlocks := countSystemMessages(model.captured[0])
+	if systemBlocks != 2 {
+		t.Errorf("nil dynamic should yield 2 system blocks, got %d", systemBlocks)
+	}
+
+	// empty-Text dynamic
+	model2 := newCaptureModel("done")
+	emptyDyn := &agentcore.SystemBlock{Text: ""}
+	exec2 := buildTeammateExecutor(cfg, nil, model2, nil, baseBlocks, emptyDyn)
+	if _, err := exec2(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
+		t.Fatalf("executor: %v", err)
+	}
+	if got := countSystemMessages(model2.captured[0]); got != 2 {
+		t.Errorf("empty-text dynamic should yield 2 system blocks, got %d", got)
+	}
+}
+
+func countSystemMessages(msgs []agentcore.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == agentcore.RoleSystem {
+			n++
+		}
+	}
+	return n
+}
+
+// Append mode = Default + cfg.SystemPrompt at the end of the role block.
+// Crucially the cache-controlled portion stays at 2 blocks (we do NOT open
+// a third cache_control marker — Anthropic's cap is tight). A dynamic block
+// can still tail on uncached, just like Default mode.
+func TestBuildTeammateExecutor_AppendMode_NoExtraCacheBlock(t *testing.T) {
+	cfg := subagent.Config{
+		Name:             "researcher",
+		SystemPrompt:     "EXTRA APPEND CONTENT",
+		SystemPromptMode: config.SystemPromptModeAppend,
+	}
+	model := newCaptureModel("done")
+	baseBlocks := []agentcore.SystemBlock{{Text: "BASE", CacheControl: "ephemeral"}}
+	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil)
+
+	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
+		t.Fatalf("executor: %v", err)
+	}
+	first := model.captured[0]
+	var systemMsgs []agentcore.Message
+	for _, m := range first {
+		if m.Role == agentcore.RoleSystem {
+			systemMsgs = append(systemMsgs, m)
+		}
+	}
+	if len(systemMsgs) != 2 {
+		t.Fatalf("Append mode must produce exactly 2 system blocks, got %d", len(systemMsgs))
+	}
+	roleText := systemMsgs[1].TextContent()
+	if !strings.Contains(roleText, "EXTRA APPEND CONTENT") {
+		t.Errorf("role block must contain appended content; got %q", roleText)
+	}
+	if strings.Contains(roleText, "## Custom Agent Instructions") {
+		t.Error("Append mode must NOT wrap content under '## Custom Agent Instructions' (that header is Default-mode only)")
 	}
 }
 
@@ -243,7 +417,7 @@ func TestBuildTeammateExecutor_ReusesContextManagerAcrossTurns(t *testing.T) {
 			return mgr
 		},
 	}
-	exec := buildTeammateExecutor(cfg, nil, newScriptModel("turn1", "turn2", "turn3"), nil)
+	exec := buildTeammateExecutor(cfg, nil, newScriptModel("turn1", "turn2", "turn3"), nil, nil, nil)
 
 	// Drive three turns. Each turn calls AgentLoop once → ContextManager.Project
 	// is invoked at least once per turn. The factory must only fire once.
@@ -276,7 +450,7 @@ func TestTeammateSpawner_HappyPath(t *testing.T) {
 		SystemPrompt: "you are a researcher",
 		Tools:        []agentcore.Tool{&fakeNamedTool{n: "read"}},
 	}
-	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil)
+	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -338,7 +512,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 		Model:        newScriptModel("done"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, hub)
+	spawner := TeammateSpawner(reg, rt, nil, hub, nil, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -392,7 +566,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 func TestTeammateSpawner_RejectsWhenNoTeam(t *testing.T) {
 	reg := team.NewRegistry()
 	rt := task.NewRuntime()
-	spawner := TeammateSpawner(reg, rt, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -411,7 +585,7 @@ func TestTeammateSpawner_RejectsWrongTeamName(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -430,7 +604,7 @@ func TestTeammateSpawner_RejectsMissingModel(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher"}, // no Model
@@ -449,7 +623,7 @@ func TestTeammateSpawner_DepthGuard(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
 
 	// Caller already sits at MaxAgentDepth → spawn would push past it.
 	ctx := task.WithDepth(context.Background(), task.MaxAgentDepth)
@@ -540,7 +714,7 @@ func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
 		Model:        newScriptModel("first", "second", "third", "fourth"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
 
 	first, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,

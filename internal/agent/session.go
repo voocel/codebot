@@ -75,6 +75,12 @@ type SessionConfig struct {
 	// the MCP instructions (e.g. MCP managers that connect synchronously).
 	// Written directly into the overlay store without triggering a rebuild.
 	InitialMCPOverlay string
+
+	// InitialDynamic is the assembly-time dynamic block text (MCP tool list +
+	// overlays). Stored on the session so teammate spawn can read the current
+	// snapshot via DynamicSystemBlock() without re-computing. Updated when
+	// rebuildPrompt runs (overlay change / MCP refresh).
+	InitialDynamic string
 }
 
 // Session is the business-logic core that wraps Agent + session persistence.
@@ -111,6 +117,7 @@ type Session struct {
 
 	frozenIdentity     string // block 1 — process-stable, never recomputed
 	frozenInstructions string // block 2 — process-stable, never recomputed
+	dynamicText        string // block 3 — refreshed by rebuildPrompt; read by teammate spawn
 
 	deferredToolsPreamble string // <available-deferred-tools> for first user message
 	reminders             reminderState
@@ -281,6 +288,7 @@ func NewSession(cfg SessionConfig) *Session {
 
 		frozenIdentity:     cfg.FrozenIdentity,
 		frozenInstructions: cfg.FrozenInstructions,
+		dynamicText:        cfg.InitialDynamic,
 
 		deferredToolsPreamble: cfg.DeferredToolsPreamble,
 		reminders:             newReminderState(cfg.Reminders),
@@ -299,6 +307,32 @@ func NewSession(cfg SessionConfig) *Session {
 
 	s.unsub = cfg.Agent.Subscribe(s.handleAgentEvent)
 	return s
+}
+
+// DynamicSystemBlock returns the current dynamic block snapshot (MCP tool
+// inventory + active overlays), or nil when there's nothing to include.
+//
+// Called by the teammate spawner at spawn time so teammates inherit the
+// leader's MCP descriptions and overlay state. Snapshot semantics match cc's
+// in-process teammate behavior: each teammate freezes its system prompt at
+// spawn, later changes on the leader side (plan-mode toggle / MCP refresh)
+// do NOT propagate to already-running teammates.
+//
+// The block intentionally carries no CacheControl. Two reasons:
+//  1. Anthropic caps system-field cache_control markers; the universal base
+//     and role block already consume two — leaving the dynamic block uncached
+//     keeps headroom for the message-level marker the agent loop adds.
+//  2. The dynamic block can churn mid-session (plan-mode toggle, MCP
+//     reconnect); a cache breakpoint here would be invalidated frequently and
+//     would charge cache-write cost for short-lived content.
+func (s *Session) DynamicSystemBlock() *agentcore.SystemBlock {
+	s.mu.Lock()
+	text := s.dynamicText
+	s.mu.Unlock()
+	if text == "" {
+		return nil
+	}
+	return &agentcore.SystemBlock{Text: text}
 }
 
 func (s *Session) SetTaskNotifyFn(fn storage.TaskNotifyFn) {

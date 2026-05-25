@@ -190,6 +190,14 @@ func (m *sessionPromptManager) rebuildPrompt() {
 	}
 
 	dynamicText := config.BuildDynamicSystemPart(mcpInfos, m.session.overlays.texts())
+	// Mirror the current dynamic text onto the Session so teammate spawn can
+	// read it via DynamicSystemBlock() without re-running the builder. mu is
+	// also taken below for cacheSnap; merging into that critical section
+	// would tighten the lock window but the assignment is a single
+	// reference-store, so cost is negligible.
+	m.session.mu.Lock()
+	m.session.dynamicText = dynamicText
+	m.session.mu.Unlock()
 
 	// Three-block layout for cache stability:
 	//   block 1 (identity):     ephemeral, frozen for the process
