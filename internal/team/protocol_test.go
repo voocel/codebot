@@ -228,7 +228,7 @@ func TestPickPriority(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHooks_AllFieldsWired(t *testing.T) {
-	h := Hooks()
+	h := Hooks(HookOptions{})
 	if h.FormatPrompt == nil ||
 		h.EncodeIdle == nil ||
 		h.ShouldTerminate == nil ||

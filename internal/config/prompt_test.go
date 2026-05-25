@@ -405,11 +405,9 @@ func TestBuildTeammateRoleBlock_OmitsCustomMarkerWhenEmpty(t *testing.T) {
 }
 
 // TestBuildTeammateRoleBlock_AppendsCustomPrompt verifies the standard
-// composition path: identity → tools → mailbox → custom agent.
-//
-// The custom-instructions header MUST be H1 ("# Custom Agent Instructions"),
-// matching cc's inProcessRunner.ts:944. Using H2 here would silently diverge
-// from cc and any future byte-level comparison would fail.
+// composition path: identity → tools → mailbox → custom agent. The
+// custom-instructions header must be H1 ("# Custom Agent Instructions") —
+// H2 would silently change the prompt cache fingerprint.
 func TestBuildTeammateRoleBlock_AppendsCustomPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -422,7 +420,7 @@ func TestBuildTeammateRoleBlock_AppendsCustomPrompt(t *testing.T) {
 		"## Tools",                   // tool inventory
 		"**read**",                   // a specific tool
 		"## Mailbox & Coordination",  // addendum
-		"\n# Custom Agent Instructions\n", // H1 wrapper, with the leading "\n" cc emits
+		"\n# Custom Agent Instructions\n", // H1 wrapper with the leading newline
 		"You are a researcher",       // role prompt body
 	} {
 		if !strings.Contains(got, marker) {
@@ -431,7 +429,7 @@ func TestBuildTeammateRoleBlock_AppendsCustomPrompt(t *testing.T) {
 	}
 	// Guard against a future regression to H2.
 	if strings.Contains(got, "## Custom Agent Instructions") {
-		t.Error("custom-instructions header must be H1, not H2 (cc parity)")
+		t.Error("custom-instructions header must be H1, not H2")
 	}
 	// Ordering: identity comes before tools, tools before mailbox, mailbox
 	// before custom. A reordering would change the bytes and break cache.

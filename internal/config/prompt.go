@@ -41,28 +41,25 @@ func SplitToolsByOrigin(all []ToolInfo) (local, mcp []ToolInfo) {
 }
 
 // SystemPromptMode* are the host-recognized values for
-// agentcore/subagent.Config.SystemPromptMode. The enum lives as untyped string
-// constants because agentcore stores it as a string hint and codebot is the
-// only consumer that interprets it — keeping the type loose at the boundary
-// avoids spreading a sub-agent-specific enum into agentcore. The semantics
-// mirror cc's `systemPromptMode: 'default' | 'replace' | 'append'`.
+// agentcore/subagent.Config.SystemPromptMode. The enum stays as untyped
+// string constants because agentcore stores it as a string hint and codebot
+// is the only consumer that interprets it.
 const (
-	// SystemPromptModeDefault (or "" / unset) means the teammate inherits the
-	// host's universal base block and teammate addendum; cfg.SystemPrompt is
-	// wrapped as "# Custom Agent Instructions" inside the role block (H1
-	// matches cc's inProcessRunner.ts:944 exactly). This is the recommended
-	// path for new role-specific agents.
+	// SystemPromptModeDefault (or "" / unset) means the teammate inherits
+	// the host's universal base block and teammate addendum;
+	// cfg.SystemPrompt is wrapped as "# Custom Agent Instructions" inside
+	// the role block. Recommended path for new role-specific agents.
 	SystemPromptModeDefault = "default"
 
-	// SystemPromptModeReplace skips both the universal base and the teammate
-	// addendum; cfg.SystemPrompt becomes the only SystemBlock. Use this when an
-	// agent definition is already a complete, self-contained prompt (cc's
-	// named-subagent / Task tool semantics).
+	// SystemPromptModeReplace skips both the universal base and the
+	// teammate addendum; cfg.SystemPrompt becomes the only SystemBlock.
+	// Use when the agent definition is already a complete self-contained
+	// prompt.
 	SystemPromptModeReplace = "replace"
 
-	// SystemPromptModeAppend builds the default composition and then appends
-	// cfg.SystemPrompt at the end of the role block — rare, only when an agent
-	// needs to add tail content on top of the default.
+	// SystemPromptModeAppend builds the default composition and then
+	// appends cfg.SystemPrompt at the end of the role block — rare, only
+	// when an agent needs to add tail content on top of the default.
 	SystemPromptModeAppend = "append"
 )
 
@@ -159,23 +156,19 @@ const leaderIdentityPreamble = `You are an expert coding assistant. The user int
 // a plain reply during the first few turns until this is hammered in.
 const teammateIdentityPreamble = `You are a teammate running as part of a team coordinated by a team lead. The user does NOT see your raw output — only the team lead does, and only through send_message. To deliver anything (a final answer, a question, a status update), you MUST call send_message. Plain text replies are invisible to the rest of the team.`
 
-// teammateMailboxInstructions corresponds to cc's TEAMMATE_SYSTEM_PROMPT_ADDENDUM
-// (refer/claude-code-src/utils/swarm/teammatePromptAddendum.ts). Kept brief —
-// the universal base already covers tool conventions and code style; this
-// section adds ONLY teammate-specific coordination semantics that the model
-// cannot infer from tool descriptions alone.
-//
-// NOTE on permission bullets: unlike cc — which force-injects task_* and
-// team_* tools into every teammate — codebot is leader-centric. tool_filter.go
-// blocks task_create/task_update/task_stop and team_create/team_dismiss at
-// spawn time. The bullet enumerates exactly the disallowed verbs (NOT a
-// catch-all "you can't touch tasks"), so the model knows it can still call
-// task_list / task_get to read shared state.
+// teammateMailboxInstructions is the teammate-only coordination addendum.
+// Kept brief — the universal base covers tool conventions and code style;
+// this section adds semantics the model can't infer from tool descriptions:
+// what's read/write on the shared task list, claim protocol, and what stays
+// leader-only (task_stop, team_create / team_dismiss, subagent spawning).
 const teammateMailboxInstructions = `## Mailbox & Coordination
 - Use ` + "`send_message{to:\"team-lead\", message:\"...\"}`" + ` to deliver your reply, ask clarifying questions, or report a blocker.
 - Use ` + "`send_message{to:\"<peer-name>\", message:\"...\"}`" + ` to coordinate with another teammate when needed.
 - Each turn begins with one inbound message (from the team lead or a peer); you wake, do the work, and produce one final reply that lands as your turn's output.
-- You cannot spawn other teammates, cannot create or rename teams, and cannot modify the team task list (task_create / task_update / task_stop are leader-only). You can still call task_list / task_get to see ongoing work.`
+- You share the team task list with the leader and peers: call task_list / task_get to see ongoing work; call task_create / task_update to register subtasks you discover or mark your progress. Do NOT use task_stop — stopping another agent's work is a leader concern.
+- Claiming work: when the leader assigns you a task (you'll see it in task_list, often after a send_message hint), call ` + "`task_update{taskId, status:\"in_progress\"}`" + ` — the system stamps you as the owner automatically. Mark it ` + "`completed`" + ` only when the work is fully done. If a task already has an owner that isn't you, leave it alone unless the leader explicitly reassigned it.
+- Auto-pull: when your mailbox is empty and the shared task list has an unowned, unblocked task, the runner claims one for you and feeds it directly as your next turn's input (the prompt starts with "Complete all open tasks. Start with task #N: …"). Treat it the same as any other assignment — call ` + "`task_update status:\"in_progress\"`" + ` (no-op on owner since you already own it) and proceed.
+- You cannot spawn other teammates and cannot create or dismiss teams — those re-shape the coordination surface and are leader-only.`
 
 // BuildUniversalBase returns the agent-agnostic head of the system prompt:
 // neutral identity preamble, environment metadata, and the five shared
@@ -260,18 +253,11 @@ func BuildLeaderRoleBlock(ctx ContextFiles, localTools []ToolInfo) string {
 }
 
 // BuildTeammateRoleBlock returns the teammate-specific portion of the system
-// prompt: teammate identity, the teammate's tool inventory, the mailbox /
-// coordination addendum, and (when agentRolePrompt != "") the agent
-// definition's custom prompt wrapped under "# Custom Agent Instructions"
-// (H1, matches cc's inProcessRunner.ts:944 byte-for-byte).
-//
-// localTools is the teammate's effective tool set — typically Config.Tools
-// plus injected coordination tools (send_message). Pass an empty/nil slice to
-// omit the tool list entirely (useful in tests).
-//
-// Goes in the second SystemBlock of a teammate's AgentContext with
-// cache_control="ephemeral". The first is BuildUniversalBase, byte-equal to
-// the leader's.
+// prompt: identity preamble, tool inventory, mailbox/coordination addendum,
+// and (when set) the agent definition's custom prompt under
+// "# Custom Agent Instructions". localTools is the effective tool set
+// (Config.Tools + injected coordination tools); empty/nil omits the tool
+// list. Lives in the second SystemBlock with cache_control="ephemeral".
 func BuildTeammateRoleBlock(localTools []ToolInfo, agentRolePrompt string) string {
 	var parts []string
 	parts = append(parts, teammateIdentityPreamble)
@@ -280,11 +266,8 @@ func BuildTeammateRoleBlock(localTools []ToolInfo, agentRolePrompt string) strin
 	}
 	parts = append(parts, teammateMailboxInstructions)
 	if agentRolePrompt != "" {
-		// cc's inProcessRunner.ts:944 emits `\n# Custom Agent Instructions\n...`
-		// — H1 plus a leading newline. The leading "\n" combined with the
-		// strings.Join("\n\n") below produces three newlines before the header,
-		// matching cc's byte layout exactly so prompt cache fingerprints stay
-		// comparable.
+		// Leading "\n" + the outer Join("\n\n") yields three newlines
+		// before the header — stable byte layout for prompt cache reuse.
 		parts = append(parts, "\n# Custom Agent Instructions\n"+agentRolePrompt)
 	}
 	return strings.Join(parts, "\n\n")
@@ -334,6 +317,7 @@ A default team is already active in this session and you are auto-registered as 
   - background subagent (agent+task+background): same isolation, runs detached, you receive a follow-up when it completes. Use for fire-and-forget.
   - teammate (agent+task+name, team_name optional): persistent, addressable by name, can be re-prompted with send_message over many turns. Use only when you genuinely need ongoing collaboration — never for work a single subagent call can finish.
 - Workflow: subagent{name,…} per teammate → send_message{to:name,…} to coordinate → team_dismiss{name} when a teammate is no longer needed. No team setup step is required.
+- Dispatching shared work: create todos with task_create, then ` + "`task_update{taskId, owner:\"<teammate-name>\"}`" + ` to hand them out — the system drops an assignment notice into the teammate's mailbox automatically, no extra send_message needed. The teammate will pick it up at its next turn and call ` + "`task_update status:\"in_progress\"`" + ` (which auto-claims it). Use this for parallel work; for single-step asks send_message is still simpler.
 - ` + "`team_create`" + ` is OPTIONAL and only useful BEFORE you spawn any teammates: it relabels the team (e.g. "auth-refactor") so logs and the UI chip read better. After the first teammate is spawned the rename is rejected.
 - A teammate is "idle" when parked on its mailbox between turns. You can send_message to any teammate regardless of state — messages queue and deliver at their next turn boundary.
 - Teammates cannot spawn other teammates and cannot create teams. Only you (the leader) can.

@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/agentcore/permission"
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/agentcore/task"
+	coreteam "github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/storage"
 )
@@ -148,9 +149,31 @@ func (t *TaskGetTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 
 // TaskUpdateTool modifies an existing task.
 type TaskUpdateTool struct {
-	store *storage.TaskStore
-	hooks *hooks.Runner
+	store    *storage.TaskStore
+	hooks    *hooks.Runner
+	assigner AssignmentNotifier
 }
+
+// AssignmentPayload describes a fresh task assignment for an off-tool
+// notifier. Carries everything the recipient teammate needs to start work
+// without first re-fetching the task; the assigner name comes from the
+// invoking ctx's team identity (leader is "team-lead").
+type AssignmentPayload struct {
+	TaskID      string
+	Subject     string
+	Description string
+}
+
+// AssignmentNotifier is invoked by TaskUpdateTool whenever a task's owner
+// changes. Implementations typically deliver a message to the new owner's
+// mailbox so the recipient picks it up at its next turn boundary. nil
+// notifier disables the notification path (tests, leader-only sessions).
+type AssignmentNotifier func(ctx context.Context, toAgent string, p AssignmentPayload)
+
+// SetAssignmentNotifier registers a notifier callback. Safe to call before
+// any Execute; not safe to swap concurrently with Execute (no atomic guard
+// — caller is expected to wire this once at bootstrap).
+func (t *TaskUpdateTool) SetAssignmentNotifier(fn AssignmentNotifier) { t.assigner = fn }
 
 func (t *TaskUpdateTool) Name() string                           { return "task_update" }
 func (t *TaskUpdateTool) Label() string                          { return "Update Task" }
@@ -224,6 +247,16 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args json.RawMessage) (jso
 	if !ok {
 		return json.Marshal(fmt.Sprintf("Error: task %s not found", a.TaskID))
 	}
+	// Auto-claim: a teammate marking a task in_progress without an explicit
+	// owner stamps itself as owner. Identity comes from the ctx the team
+	// runner wraps around every Execute call; leader callers have no
+	// identity, so the leader's owner-stays-empty behavior is preserved.
+	if a.Owner == nil && existing.Owner == "" && a.Status != nil && *a.Status == storage.TaskInProgress {
+		if id := coreteam.IdentityFromContext(ctx); id != nil && id.AgentName != "" {
+			self := id.AgentName
+			a.Owner = &self
+		}
+	}
 	if t.hooks != nil && a.Status != nil && *a.Status == storage.TaskCompleted {
 		if existing.Status != storage.TaskCompleted {
 			next := previewTaskUpdate(existing, storage.TaskUpdateOpts{
@@ -256,6 +289,16 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args json.RawMessage) (jso
 	}
 	if updated == nil {
 		return json.Marshal(fmt.Sprintf("Task %s deleted", a.TaskID))
+	}
+	// Notify on owner change. Echo suppression (sender == new owner) is the
+	// notifier closure's job, keeping this layer ignorant of team.Registry
+	// and sender identity.
+	if t.assigner != nil && updated.Owner != "" && updated.Owner != existing.Owner {
+		t.assigner(ctx, updated.Owner, AssignmentPayload{
+			TaskID:      updated.ID,
+			Subject:     updated.Subject,
+			Description: updated.Description,
+		})
 	}
 	updatedFields := make([]string, 0, 8)
 	statusChange := map[string]any(nil)

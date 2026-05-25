@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
@@ -16,6 +17,7 @@ import (
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/storage"
 	cbteam "github.com/voocel/codebot/internal/team"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
@@ -81,19 +83,35 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 				{Text: assembly.frozenIdentity, CacheControl: "ephemeral"},
 			}
 		}
-		// dynamicProvider is evaluated lazily on each spawn so teammates pick
-		// up the leader's CURRENT MCP / overlay state (cc parity: cc rebuilds
-		// the full system prompt at every teammate spawn via getSystemPrompt).
-		// Snapshot is frozen into the teammate at spawn time — later changes
-		// on the leader side do not propagate, which matches cc's behavior.
+		// Lazy snapshot: each spawn freezes the leader's CURRENT MCP / overlay
+		// state into the teammate; later leader-side changes do not propagate.
 		dynamicProvider := session.DynamicSystemBlock
+
+		// Force-inject coordination tools so teammates can collaborate on the
+		// shared task list. task_stop / team_* deliberately stay out — they
+		// reshape coordination state and remain leader-only.
+		extraTools := []agentcore.Tool{localtools.NewSendMessageTool(taskRT, teamReg)}
+		for _, t := range localtools.NewTaskTools(services.taskStore, nil, assembly.hookRunner) {
+			switch t.Name() {
+			case "task_create", "task_update", "task_get", "task_list":
+				extraTools = append(extraTools, t)
+				if updater, ok := t.(*localtools.TaskUpdateTool); ok {
+					updater.SetAssignmentNotifier(buildAssignmentNotifier(teamReg))
+				}
+			}
+		}
+		protocol := cbteam.Hooks(cbteam.HookOptions{
+			IdleClaim:         buildIdleClaim(services.taskStore),
+			IdleClaimInterval: 2 * time.Second,
+		})
 		assembly.subagentTool.SetTeamSpawner(agent.TeammateSpawner(
 			teamReg,
 			taskRT,
-			[]agentcore.Tool{localtools.NewSendMessageTool(taskRT, teamReg)},
+			extraTools,
 			teammateEvents,
 			baseBlocks,
 			dynamicProvider,
+			protocol,
 		))
 	}
 
@@ -125,8 +143,62 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		PlanSlug:       input.sessionSnapshot.PlanSlug,
 		PlanPhase:      input.sessionSnapshot.PlanPhase,
 		PlanPreMode:    input.sessionSnapshot.PlanPreMode,
-		stopTeamPump:   stopPump,
+		stopTeamPump: stopPump,
 	}, nil
+}
+
+// buildIdleClaim is the work-stealing hook: pull the next claimable task on
+// behalf of the calling teammate and return it as the synthetic prompt for
+// the next turn. ok=false means no work / no identity / lost the CAS race.
+func buildIdleClaim(store *storage.TaskStore) func(ctx context.Context) (string, bool) {
+	return func(ctx context.Context) (string, bool) {
+		if store == nil {
+			return "", false
+		}
+		id := team.IdentityFromContext(ctx)
+		if id == nil || id.AgentName == "" {
+			return "", false
+		}
+		next := store.FindClaimable()
+		if next == nil {
+			return "", false
+		}
+		claimed, err := store.Claim(next.ID, id.AgentName)
+		if err != nil {
+			return "", false
+		}
+		return cbteam.FormatTaskClaimPrompt(claimed.ID, claimed.Subject, claimed.Description), true
+	}
+}
+
+// buildAssignmentNotifier fires when a task's owner actually changes:
+// resolves sender from ctx (leader → TeamLeadName), suppresses self-assign
+// echo, and best-effort delivers an assignment notice to the new owner.
+// Silent on missing / closed mailbox — the team was torn down mid-update.
+func buildAssignmentNotifier(reg *team.Registry) localtools.AssignmentNotifier {
+	return func(ctx context.Context, toAgent string, p localtools.AssignmentPayload) {
+		if reg == nil || toAgent == "" {
+			return
+		}
+		sender := team.TeamLeadName
+		var color string
+		if id := team.IdentityFromContext(ctx); id != nil {
+			sender = id.AgentName
+			color = id.Color
+		}
+		if sender == toAgent {
+			return
+		}
+		mb := reg.Mailbox(toAgent)
+		if mb == nil {
+			return
+		}
+		text := fmt.Sprintf("You have been assigned task #%s: %s.", p.TaskID, p.Subject)
+		if p.Description != "" {
+			text += " " + p.Description
+		}
+		_ = mb.Send(team.Message{From: sender, Text: text, Color: color})
+	}
 }
 
 func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int, cwd string) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy) {

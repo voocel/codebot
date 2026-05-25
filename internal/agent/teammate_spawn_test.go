@@ -217,10 +217,10 @@ func TestBuildTeammateExecutor_ReplaceMode_EmptyPromptSendsNoSystemBlock(t *test
 	}
 }
 
-// Default mode (the new zero-value default, matching cc) produces two
-// system blocks: baseBlocks[0] verbatim, then a teammate role block that
-// wraps cfg.SystemPrompt under "# Custom Agent Instructions" (H1, matches
-// cc's inProcessRunner.ts:944). Both carry cache_control=ephemeral.
+// Default mode (the zero-value default) produces two system blocks:
+// baseBlocks[0] verbatim, then a teammate role block wrapping
+// cfg.SystemPrompt under "# Custom Agent Instructions" (H1). Both carry
+// cache_control=ephemeral.
 func TestBuildTeammateExecutor_DefaultMode_PrependsBaseBlocks(t *testing.T) {
 	baseText := "## Environment\n- universal base content\n"
 	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
@@ -251,9 +251,9 @@ func TestBuildTeammateExecutor_DefaultMode_PrependsBaseBlocks(t *testing.T) {
 			t.Errorf("role block missing %q; got %q", marker, roleText)
 		}
 	}
-	// Header must be H1, not H2 (cc parity).
+	// Header must be H1, not H2.
 	if strings.Contains(roleText, "## Custom Agent Instructions") {
-		t.Error("custom-instructions header must be H1, not H2 (cc parity)")
+		t.Error("custom-instructions header must be H1, not H2")
 	}
 	for i, m := range systemMsgs {
 		cc, _ := m.Metadata["cache_control"].(string)
@@ -450,7 +450,7 @@ func TestTeammateSpawner_HappyPath(t *testing.T) {
 		SystemPrompt: "you are a researcher",
 		Tools:        []agentcore.Tool{&fakeNamedTool{n: "read"}},
 	}
-	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil)
+	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil, team.ProtocolHooks{})
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -512,7 +512,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 		Model:        newScriptModel("done"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, hub, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, hub, nil, nil, team.ProtocolHooks{})
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -566,7 +566,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 func TestTeammateSpawner_RejectsWhenNoTeam(t *testing.T) {
 	reg := team.NewRegistry()
 	rt := task.NewRuntime()
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -585,7 +585,7 @@ func TestTeammateSpawner_RejectsWrongTeamName(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -604,7 +604,7 @@ func TestTeammateSpawner_RejectsMissingModel(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher"}, // no Model
@@ -623,7 +623,7 @@ func TestTeammateSpawner_DepthGuard(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
 
 	// Caller already sits at MaxAgentDepth → spawn would push past it.
 	ctx := task.WithDepth(context.Background(), task.MaxAgentDepth)
@@ -700,8 +700,8 @@ func TestUniqueAgentName_NilRegistry(t *testing.T) {
 	}
 }
 
-// End-to-end: spawning the same logical name twice must auto-suffix instead
-// of bubbling ErrAgentExists up to the model, matching cc's UX.
+// End-to-end: spawning the same logical name twice must auto-suffix
+// instead of bubbling ErrAgentExists up to the model.
 func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
 	reg := team.NewRegistry()
 	rt := task.NewRuntime()
@@ -714,7 +714,7 @@ func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
 		Model:        newScriptModel("first", "second", "third", "fourth"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
 
 	first, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,

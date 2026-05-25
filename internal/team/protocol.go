@@ -15,9 +15,11 @@
 package team
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	coreteam "github.com/voocel/agentcore/team"
 )
@@ -213,22 +215,51 @@ func PickPriority(queue []coreteam.Message) int {
 	return bestIdx
 }
 
+// HookOptions wires application-supplied callbacks into the protocol hook
+// bundle. Today the only opt-in is IdleClaim (work-stealing); other fields
+// are universal policy. Wrapping in a struct lets future opt-ins join
+// without another signature break.
+type HookOptions struct {
+	// IdleClaim, when set, lets the runner pull a synthetic prompt from
+	// the application instead of (or alongside) waiting on the mailbox.
+	// ctx carries the teammate identity via coreteam.WithIdentity so
+	// implementations can decide who is allowed to claim what.
+	IdleClaim func(ctx context.Context) (synthPrompt string, ok bool)
+
+	// IdleClaimInterval is the period at which the runner re-tries
+	// IdleClaim while parked on the mailbox. Zero means "only try once
+	// per turn boundary, then block until a real message arrives" —
+	// non-zero is needed when tasks can appear without any mailbox
+	// traffic (e.g. leader creates todos without send_message).
+	IdleClaimInterval time.Duration
+}
+
 // Hooks returns the agentcore protocol-hook bundle wired with codebot's
-// XML/JSON formats and priority policy. Spawn callers pass this through to
-// the runner so a teammate behaves identically to the original hard-coded
-// version of the runner.
-//
-// The synthetic initial prompt and every later inbound message both flow
-// through FormatPrompt — agentcore packages the initial prompt as Message{
-// From: TeamLeadName, Text: InitialPrompt, Summary: Description}, so the
-// single XML wrapper handles both cases.
-func Hooks() coreteam.ProtocolHooks {
+// envelope format and priority policy. The synthetic initial prompt and
+// every later inbound message both flow through FormatPrompt.
+func Hooks(opts HookOptions) coreteam.ProtocolHooks {
 	return coreteam.ProtocolHooks{
 		FormatPrompt: func(m coreteam.Message) string {
 			return FormatTeammateAttachment(m.From, m.Text, m.Color, m.Summary)
 		},
-		EncodeIdle:      EncodeIdleNotification,
-		ShouldTerminate: IsShutdownRequest,
-		PickPriority:    PickPriority,
+		EncodeIdle:        EncodeIdleNotification,
+		ShouldTerminate:   IsShutdownRequest,
+		PickPriority:      PickPriority,
+		IdleClaim:         opts.IdleClaim,
+		IdleClaimInterval: opts.IdleClaimInterval,
 	}
+}
+
+// FormatTaskClaimPrompt is the text fed straight to a teammate's next turn
+// when IdleClaim pulls a task. The "Complete all open tasks" preamble
+// keeps the model focused on the wider list rather than treating the
+// claimed item as its only assignment.
+func FormatTaskClaimPrompt(taskID, subject, description string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Complete all open tasks. Start with task #%s: \n\n %s", taskID, subject)
+	if description != "" {
+		b.WriteString("\n\n")
+		b.WriteString(description)
+	}
+	return b.String()
 }

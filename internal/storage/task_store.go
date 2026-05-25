@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -11,6 +12,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+)
+
+// Sentinel errors returned by Claim so callers can branch on cause without
+// string-matching.
+var (
+	ErrTaskNotFound    = errors.New("task not found")
+	ErrAlreadyClaimed  = errors.New("task already claimed by another owner")
+	ErrAlreadyResolved = errors.New("task already completed")
+	ErrBlocked         = errors.New("task has unresolved blockers")
 )
 
 // ---------------------------------------------------------------------------
@@ -273,6 +283,103 @@ func (s *TaskStore) Update(id string, opts TaskUpdateOpts) (*Task, error) {
 	s.mu.Unlock()
 	s.notify()
 	return cp, nil
+}
+
+// Claim atomically assigns owner to task id, but only when the task is in a
+// claimable state: it exists, has no current owner (or already equals
+// owner — idempotent retry), is not completed, and all of its blockedBy
+// dependencies are completed. Returns the updated task on success or a
+// sentinel error explaining the rejection.
+//
+// This is the CAS primitive that makes work-stealing safe: when two idle
+// teammates race for the same unowned task, only the first Claim succeeds;
+// the loser sees ErrAlreadyClaimed and falls through to find another task.
+// The in-memory mutex is the only lock — codebot is single-process.
+//
+// Deliberately NOT implemented: a "busy-check" variant that rejects when
+// the claimant already owns another open task. The pull path is strictly
+// sequential per agent (FindClaimable → Claim → run turn → return → pull
+// again), so one-in-flight-per-agent holds by construction; the only case
+// such a check would catch is a model marking two tasks in_progress
+// inside the same turn — a degenerate prompt-shape problem, not a race.
+func (s *TaskStore) Claim(id, owner string) (*Task, error) {
+	if owner == "" {
+		return nil, fmt.Errorf("Claim: owner must be non-empty")
+	}
+	s.mu.Lock()
+	t, ok := s.tasks[id]
+	if !ok {
+		s.mu.Unlock()
+		return nil, ErrTaskNotFound
+	}
+	if t.Owner != "" && t.Owner != owner {
+		s.mu.Unlock()
+		return nil, ErrAlreadyClaimed
+	}
+	if t.Status == TaskCompleted {
+		s.mu.Unlock()
+		return nil, ErrAlreadyResolved
+	}
+	for _, blocker := range t.BlockedBy {
+		other, exists := s.tasks[blocker]
+		if !exists {
+			continue
+		}
+		if other.Status != TaskCompleted {
+			s.mu.Unlock()
+			return nil, ErrBlocked
+		}
+	}
+	// Idempotent path: if owner already matches we still return a fresh copy
+	// (callers treat the return value as authoritative) but skip persistence
+	// — the on-disk file is already in the desired state and rewriting it
+	// would burn IO without changing anything observable.
+	persistNeeded := t.Owner != owner
+	t.Owner = owner
+	cp := copyTask(t)
+	if persistNeeded {
+		s.persistLocked(cp)
+	}
+	s.mu.Unlock()
+	if persistNeeded {
+		s.notify()
+	}
+	return cp, nil
+}
+
+// FindClaimable returns a copy of the next claimable task by ascending ID, or
+// nil when nothing is available. Claimable = owner empty, status != completed,
+// and every blockedBy reference points to a completed task. Pure read; safe
+// for the dispatcher hot loop.
+func (s *TaskStore) FindClaimable() *Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := sortedTasks(s.tasks)
+	statusByID := make(map[string]TaskStatus, len(items))
+	for _, item := range items {
+		statusByID[item.ID] = item.Status
+	}
+	for i := range items {
+		if items[i].Owner != "" {
+			continue
+		}
+		if items[i].Status == TaskCompleted {
+			continue
+		}
+		blocked := false
+		for _, blocker := range items[i].BlockedBy {
+			if statusByID[blocker] != TaskCompleted {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		cp := items[i]
+		return &cp
+	}
+	return nil
 }
 
 // List returns copies of all tasks sorted by ID.

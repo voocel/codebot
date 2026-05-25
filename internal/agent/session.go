@@ -313,10 +313,9 @@ func NewSession(cfg SessionConfig) *Session {
 // inventory + active overlays), or nil when there's nothing to include.
 //
 // Called by the teammate spawner at spawn time so teammates inherit the
-// leader's MCP descriptions and overlay state. Snapshot semantics match cc's
-// in-process teammate behavior: each teammate freezes its system prompt at
-// spawn, later changes on the leader side (plan-mode toggle / MCP refresh)
-// do NOT propagate to already-running teammates.
+// leader's MCP descriptions and overlay state. Each teammate freezes its
+// system prompt at spawn — later leader-side changes (plan-mode toggle /
+// MCP refresh) do NOT propagate to already-running teammates.
 //
 // The block intentionally carries no CacheControl. Two reasons:
 //  1. Anthropic caps system-field cache_control markers; the universal base

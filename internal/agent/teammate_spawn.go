@@ -11,7 +11,6 @@ import (
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/config"
-	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 // maxAgentNameSuffixAttempts caps the rename retry loop so a registry with an
@@ -20,35 +19,24 @@ import (
 // teammates, which is far below this number.
 const maxAgentNameSuffixAttempts = 1000
 
-// TeammateSpawner returns a subagent.TeamSpawner closure that turns the
-// `subagent { team_name: ... }` tool call into an actual long-lived teammate.
-// The closure is bound to the runtime's team registry and task runtime so
-// every spawn shares the same coordination surface as send_message / the
-// leader inbox pump.
+// TeammateSpawner returns the subagent.TeamSpawner closure that turns a
+// `subagent { team_name: ... }` tool call into a long-lived teammate.
+// Bound to the runtime's team registry + task runtime so every spawn
+// shares the same coordination surface (send_message / leader inbox pump).
 //
-// `extraTools` are tools the teammate needs in addition to the ones baked
-// into its subagent.Config — today that's send_message, which the filter
-// strips from every sub-agent's pool by default. Keeping the list explicit
-// rather than reaching into a shared bag avoids accidentally leaking tools
-// (like team_create) that should stay leader-only.
-//
-// `baseBlocks` is the universal base prefix shared with the leader — the
-// host computes it once at session startup (BuildUniversalBase + cache_control
-// ephemeral) and the spawner prepends it to every teammate's SystemBlocks in
-// Default/Append modes. Pass nil to disable base sharing entirely (teammate
-// then runs with its role block as the only system content); pass the
-// leader's actual base for cross-agent prompt cache reuse. agentcore stays
-// unaware of this — base assembly is purely host-side concern.
-//
-// `dynamicProvider` is invoked once per spawn to fetch the leader's CURRENT
-// dynamic block (MCP tool inventory + active overlays). The returned block —
-// which carries NO cache_control by design — is appended after the role block
-// in Default/Append modes, mirroring cc's `getSystemPrompt(tools, model,
-// undefined, mcpClients)` call that produces a teammate prompt including the
-// leader's MCP descriptions. Pass nil to skip dynamic propagation. The
-// teammate freezes the snapshot at spawn — subsequent leader-side overlay /
-// MCP changes do not propagate (cc parity).
-func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock) subagent.TeamSpawner {
+// Parameters:
+//   - extraTools: force-injected on top of req.Config.Tools (send_message
+//     and the shared task tools) — listed explicitly to avoid leaking
+//     leader-only tools.
+//   - hub: per-session teammate event fan-out; nil disables observation.
+//   - baseBlocks: universal base prefix shared with the leader for prompt
+//     cache reuse in Default/Append modes; nil ⇒ role block only.
+//   - dynamicProvider: invoked once per spawn to snapshot the leader's
+//     current dynamic block (MCP + overlays). Snapshot is frozen at spawn;
+//     nil skips dynamic propagation.
+//   - protocol: fully wired ProtocolHooks (envelope, idle notification,
+//     priority, optional IdleClaim). Bootstrap owns the wiring.
+func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol team.ProtocolHooks) subagent.TeamSpawner {
 	return func(ctx context.Context, req subagent.TeamSpawnRequest) (*subagent.TeamSpawnResult, error) {
 		if reg == nil || rt == nil {
 			return nil, errors.New("teammate spawner: registry and runtime are required")
@@ -88,7 +76,7 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 			}
 		}
 		// Snapshot the dynamic block once per spawn — the teammate freezes it
-		// at construction and ignores subsequent leader-side changes (cc parity).
+		// at construction and ignores subsequent leader-side changes.
 		var dynamicBlock *agentcore.SystemBlock
 		if dynamicProvider != nil {
 			dynamicBlock = dynamicProvider()
@@ -123,7 +111,7 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 			Registry:      reg,
 			TaskRT:        rt,
 			Execute:       executor,
-			Protocol:      cbteam.Hooks(),
+			Protocol:      protocol,
 			Depth:         depth,
 			OnExit:        onExit,
 		})
@@ -191,41 +179,25 @@ func mergeTeammateTools(base, extras []agentcore.Tool) []agentcore.Tool {
 }
 
 // buildTeammateExecutor wraps agentcore.AgentLoop in the TurnExecutor shape
-// the team runner expects. Each call:
+// the team runner expects. Each turn splits msgs into history + new prompt
+// (last entry), runs AgentLoop, and returns the produced messages (skipping
+// AgentLoop's initial echo of the input prompt to avoid duplicating it in
+// the runner's stitched history).
 //
-//  1. splits the incoming history+prompt slice — the LAST message is the new
-//     user prompt, everything before it is prior history;
-//  2. runs AgentLoop with that split, letting the inner loop drive any tool
-//     calls until the model hits a stop condition (final answer or MaxTurns);
-//  3. collects the produced messages, skipping AgentLoop's initial re-emit
-//     of the input prompt so the runner's `history = history + prompt + produced`
-//     stitch does not duplicate it.
+// The context manager is captured ONCE here, not per-turn, so summary /
+// projection state survives across turns — teammates may run hundreds of
+// turns and re-summarising from scratch each one is not acceptable.
 //
-// AgentLoop is otherwise stateless across calls — the runner owns history
-// accumulation — but we capture the context manager ONCE at spawn so its
-// summary / projection state survives the per-turn boundary. A factory per
-// turn would forget any prior compaction and either re-summarise from scratch
-// every turn or fail to summarise at all, neither of which is acceptable for
-// teammates that may run hundreds of turns.
-// onEvent is an optional observer invoked once for every event emitted by
-// the teammate's AgentLoop, after the executor has done its own bookkeeping
-// (produced collection / error capture). It is the integration seam that
-// lets the spawner publish to TeammateEventHub without buildTeammateExecutor
-// needing to know about hubs or agent names. nil disables the callback.
+// SystemBlocks are also assembled once: cfg + tools + baseBlocks +
+// dynamicBlock are all fixed for the teammate's lifetime, so rebuilding
+// per turn would produce identical bytes for no benefit.
 //
-// baseBlocks is the universal base prefix the teammate shares with the
-// leader. Captured at executor-construction time (not per-turn) because
-// BuildUniversalBase output depends only on session-stable inputs (cwd /
-// OS); per-turn evaluation would either be wasted work or — worse — pull in
-// a transient input that breaks cross-turn byte equality and invalidates
-// the prompt cache.
+// onEvent fans every AgentLoop event to an external observer after the
+// executor's own bookkeeping; nil disables.
 //
-// dynamicBlock is the spawn-time snapshot of the leader's dynamic content
-// (MCP descriptions + active overlays). Appended after the role block in
-// Default/Append modes; nil skips it. No CacheControl by design — it sits
-// after the cached prefix so a churning dynamic does not invalidate the
-// stable head, and message-level cache (WithCacheLastMessage) still covers
-// the growing tail.
+// Identity (AgentName / TeamName / Color) is NOT plumbed through here —
+// agentcore/team.Runner wraps every Execute call with WithIdentity, so
+// tools that vary by caller read it from coreteam.IdentityFromContext.
 func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event), baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock) team.TurnExecutor {
 	var ctxMgr agentcore.ContextManager
 	switch {
@@ -296,35 +268,20 @@ func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model ag
 	}
 }
 
-// assembleTeammateSystemBlocks composes the teammate's AgentContext.SystemBlocks
-// based on cfg.SystemPromptMode. Modes mirror cc's
-// `systemPromptMode: 'default' | 'replace' | 'append'` semantics:
+// assembleTeammateSystemBlocks composes the teammate's SystemBlocks based on
+// cfg.SystemPromptMode:
 //
-//   - Default (empty string or "default"): baseBlocks... + role block (with
-//     cfg.SystemPrompt wrapped as "# Custom Agent Instructions" when set —
-//     H1 mirrors cc's inProcessRunner.ts:944 byte-for-byte) + dynamicBlock
-//     (if any, NO cache_control). Teammate inherits the host's conventions
-//     AND shares the universal-base cache prefix with the leader.
+//   - Default: baseBlocks + role block (cfg.SystemPrompt wrapped under
+//     "# Custom Agent Instructions" when set) + dynamicBlock. Teammate
+//     inherits host conventions and shares the cache prefix with the leader.
+//   - Replace: a single SystemBlock with cfg.SystemPrompt verbatim — for
+//     fully isolated agents that already include everything they need.
+//   - Append: Default + cfg.SystemPrompt joined to the role block (NOT a
+//     separate cache block — caps on system cache_control are tight).
 //
-//   - Replace: a single SystemBlock containing cfg.SystemPrompt verbatim,
-//     dropping baseBlocks, the teammate addendum, AND the dynamic block.
-//     For agent definitions that already include everything they need
-//     (legacy .agents/*.md, named-subagent-style fully isolated agents).
-//
-//   - Append: same as Default plus cfg.SystemPrompt appended at the end of
-//     the role block (NOT a separate cache block — avoids burning a
-//     precious cache_control marker; Anthropic caps system cache_control
-//     count and extras are wasted on per-teammate stable content). Dynamic
-//     block still appended as the uncached tail.
-//
-// Unknown mode values fall through to Default (with a host-side log it would
-// be nice to add later) so a typo in agent metadata degrades to the safest
-// composition instead of erroring spawn.
-//
-// Dynamic block placement: AFTER the cache-controlled role block, with no
-// cache_control of its own. This mirrors how the leader's session_prompt.go
-// lays out its blocks (frozen identity + frozen instructions cached, dynamic
-// uncached) so leader and teammate share the same cache-frontier shape.
+// Unknown mode values fall through to Default. Dynamic block placement is
+// always AFTER the cache-controlled role block with no cache_control of its
+// own, matching the leader's frozen/dynamic split.
 func assembleTeammateSystemBlocks(cfg subagent.Config, tools []agentcore.Tool, baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock) []agentcore.SystemBlock {
 	switch cfg.SystemPromptMode {
 	case config.SystemPromptModeReplace:
