@@ -11,13 +11,19 @@ import (
 // around each tool execution.
 func (r *Runner) Middleware() agentcore.ToolMiddleware {
 	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolExecuteFunc) (json.RawMessage, error) {
-		if err := r.RunPreToolUse(ctx, call.Name, call.Args); err != nil {
+		dec, err := r.RunPreToolUse(ctx, call.Name, call.Args)
+		if err != nil {
 			return nil, err
 		}
 
-		output, execErr := next(ctx, call.Args)
+		args := call.Args
+		if len(dec.UpdatedInput) > 0 {
+			args = dec.UpdatedInput
+		}
 
-		r.RunPostToolUse(ctx, call.Name, call.Args, output, execErr != nil)
+		output, execErr := next(ctx, args)
+
+		r.RunPostToolUse(ctx, call.Name, args, output, execErr != nil)
 
 		return output, execErr
 	}

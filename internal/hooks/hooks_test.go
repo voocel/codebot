@@ -83,16 +83,16 @@ func TestRunPreToolUse(t *testing.T) {
 
 	cfg := config.HooksConfig{
 		"PreToolUse": {
-			{Type: "command", Command: `echo '{"blocked":true,"reason":"not allowed"}'`, Matcher: "bash", Blocking: boolPtr(true)},
+			{Type: "command", Command: `echo '{"block":true,"reason":"not allowed"}'`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
 	r := New(cfg, "test", nil, nil)
 
-	if err := r.RunPreToolUse(context.Background(), "write", json.RawMessage(`{}`)); err != nil {
+	if _, err := r.RunPreToolUse(context.Background(), "write", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("non-matching hook should be skipped: %v", err)
 	}
 
-	err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
+	_, err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err == nil || err.Error() != "hook: not allowed" {
 		t.Fatalf("expected blocking error, got %v", err)
 	}
@@ -134,7 +134,7 @@ func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
 		},
 	}
 	r := New(cfg, "test", engine, nil)
-	err = r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
+	_, err = r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err == nil || err.Error() != "hook: blocking hook command requires approval" {
 		t.Fatalf("expected approval denial, got %v", err)
 	}
@@ -182,7 +182,7 @@ func TestRunTaskCompleted_Blocking(t *testing.T) {
 
 	cfg := config.HooksConfig{
 		"TaskCompleted": {
-			{Type: "command", Command: `echo '{"blocked":true,"reason":"verify results first"}'`, Blocking: boolPtr(true)},
+			{Type: "command", Command: `echo '{"block":true,"reason":"verify results first"}'`, Blocking: boolPtr(true)},
 		},
 	}
 	r := New(cfg, "test", nil, nil)
@@ -210,5 +210,100 @@ func TestRunTaskCompleted_NonBlocking(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("non-blocking completion hook should not fail: %v", err)
+	}
+}
+
+func TestPreToolUse_UpdatedInput(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.HooksConfig{
+		"PreToolUse": {
+			{Type: "command", Command: `echo '{"updated_input":{"path":"/safe"}}'`, Matcher: "write"},
+		},
+	}
+	r := New(cfg, "test", nil, nil)
+
+	dec, err := r.RunPreToolUse(context.Background(), "write", json.RawMessage(`{"path":"/raw"}`))
+	if err != nil {
+		t.Fatalf("hook should not block: %v", err)
+	}
+	if string(dec.UpdatedInput) != `{"path":"/safe"}` {
+		t.Fatalf("expected rewritten input, got %q", string(dec.UpdatedInput))
+	}
+}
+
+func TestPreToolUse_ExitCode2Blocks(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.HooksConfig{
+		"PreToolUse": {
+			{Type: "command", Command: `echo "denied" >&2; exit 2`, Matcher: "bash", Blocking: boolPtr(true)},
+		},
+	}
+	r := New(cfg, "test", nil, nil)
+
+	if _, err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("expected exit-2 hook to block")
+	}
+}
+
+func TestPreToolUse_ExitCode1NonBlocking(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.HooksConfig{
+		"PreToolUse": {
+			{Type: "command", Command: `echo "oops" >&2; exit 1`, Matcher: "bash", Blocking: boolPtr(true)},
+		},
+	}
+	r := New(cfg, "test", nil, nil)
+
+	if _, err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("exit-1 should be a non-blocking error, got block: %v", err)
+	}
+}
+
+func TestUserPromptSubmit_AdditionalContext(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.HooksConfig{
+		"UserPromptSubmit": {
+			{Type: "command", Command: `echo '{"additional_context":"remember: be concise"}'`},
+		},
+	}
+	r := New(cfg, "test", nil, nil)
+
+	dec, err := r.RunUserPromptSubmit(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("hook should not block: %v", err)
+	}
+	if dec.AdditionalContext != "remember: be concise" {
+		t.Fatalf("expected additional context, got %q", dec.AdditionalContext)
+	}
+}
+
+func TestRunSubagentStop_FireAndForget(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "stop.json")
+	cfg := config.HooksConfig{
+		"SubagentStop": {
+			{Type: "command", Command: "cat > " + marker, Matcher: "researcher"},
+		},
+	}
+	r := New(cfg, "test", nil, nil)
+	r.RunSubagentStop(context.Background(), "researcher")
+
+	time.Sleep(200 * time.Millisecond)
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("expected SubagentStop hook to run: %v", err)
+	}
+	var payload Payload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Event != SubagentStop || payload.Agent != "researcher" {
+		t.Fatalf("unexpected payload: %#v", payload)
 	}
 }

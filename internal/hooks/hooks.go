@@ -25,9 +25,8 @@ const (
 	TaskCompleted      EventType = "TaskCompleted"
 	SessionStart       EventType = "SessionStart"
 	SessionEnd         EventType = "SessionEnd"
-	PreCompact         EventType = "PreCompact"
-	PostCompact        EventType = "PostCompact"
 	UserPromptSubmit   EventType = "UserPromptSubmit"
+	SubagentStop       EventType = "SubagentStop"
 )
 
 const defaultTimeout = 60 * time.Second
@@ -44,10 +43,8 @@ type Payload struct {
 	PreviousTask *TaskSnapshot   `json:"previous_task,omitempty"`
 	StatusFrom   string          `json:"status_from,omitempty"`
 	StatusTo     string          `json:"status_to,omitempty"`
-	Prompt       string          `json:"prompt,omitempty"`        // UserPromptSubmit
-	Reason       string          `json:"reason,omitempty"`        // Pre/PostCompact
-	TokensBefore int             `json:"tokens_before,omitempty"` // Pre/PostCompact
-	TokensAfter  int             `json:"tokens_after,omitempty"`  // PostCompact
+	Prompt       string          `json:"prompt,omitempty"` // UserPromptSubmit
+	Agent        string          `json:"agent,omitempty"`  // SubagentStop: teammate name
 }
 
 // TaskSnapshot is the task payload exposed to lifecycle hooks.
@@ -63,10 +60,29 @@ type TaskSnapshot struct {
 	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
-// Result is the expected JSON structure from a blocking hook's stdout.
-type Result struct {
-	Blocked bool   `json:"blocked"`
-	Reason  string `json:"reason,omitempty"`
+// hookOutput is the JSON a hook may print to stdout to influence the run.
+type hookOutput struct {
+	Block             bool            `json:"block,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	AdditionalContext string          `json:"additional_context,omitempty"`
+	UpdatedInput      json.RawMessage `json:"updated_input,omitempty"`
+}
+
+// Decision is the normalized, allowed-with-extras result handed back to
+// callers. A blocking hook is surfaced as an error by the Run* methods, so
+// Decision only carries the payload that applies when the run proceeds.
+type Decision struct {
+	AdditionalContext string
+	UpdatedInput      json.RawMessage
+}
+
+// evalResult is a single hook's evaluated outcome.
+type evalResult struct {
+	decision  Decision
+	blocked   bool
+	reason    string
+	err       error  // non-blocking execution or approval error, for logging
+	rawStdout []byte // raw hook stdout, used for PostStopValidation feedback
 }
 
 // entry is a compiled, ready-to-run hook.
@@ -99,40 +115,11 @@ func New(cfg config.HooksConfig, sessionID string, engine *approval.Engine, mode
 	return &Runner{hooks: hooks, sessionID: sessionID, approval: engine, model: model}
 }
 
-// RunPreToolUse executes all matching PreToolUse hooks.
-// A blocking hook that exits non-zero or returns {"blocked":true} returns an error.
-func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, args json.RawMessage) error {
-	payload := Payload{Event: PreToolUse, Tool: toolName, Args: args}
-	for _, e := range r.matching(PreToolUse, toolName, args) {
-		stdout, err := r.run(ctx, e, payload)
-		if e.blocking {
-			if err != nil {
-				// Check if stdout contains a JSON block message.
-				var res Result
-				if json.Unmarshal(stdout, &res) == nil && res.Blocked {
-					reason := res.Reason
-					if reason == "" {
-						reason = "blocked by hook"
-					}
-					return fmt.Errorf("hook: %s", reason)
-				}
-				return fmt.Errorf("hook: %v", err)
-			}
-			// Even on success, check if stdout explicitly blocks.
-			var res Result
-			if json.Unmarshal(stdout, &res) == nil && res.Blocked {
-				reason := res.Reason
-				if reason == "" {
-					reason = "blocked by hook"
-				}
-				return fmt.Errorf("hook: %s", reason)
-			}
-		}
-		if err != nil {
-			log.Printf("hooks: PreToolUse %q: %v", e.label, err)
-		}
-	}
-	return nil
+// RunPreToolUse evaluates PreToolUse hooks. A blocking hook that signals a
+// block returns an error; otherwise the returned Decision may carry an updated
+// tool input or additional context.
+func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, args json.RawMessage) (Decision, error) {
+	return r.evaluate(ctx, PreToolUse, toolName, args, Payload{Event: PreToolUse, Tool: toolName, Args: args})
 }
 
 // RunPostToolUse fires matching PostToolUse hooks asynchronously.
@@ -143,8 +130,8 @@ func (r *Runner) RunPostToolUse(_ context.Context, toolName string, args, output
 		go func(e entry) {
 			ctx, cancel := detachedHookContext(e.timeout)
 			defer cancel()
-			if _, err := r.run(ctx, e, payload); err != nil {
-				log.Printf("hooks: PostToolUse %q: %v", e.label, err)
+			if res := r.runOne(ctx, e, payload); res.err != nil {
+				log.Printf("hooks: PostToolUse %q: %v", e.label, res.err)
 			}
 		}(e)
 	}
@@ -158,44 +145,52 @@ func (r *Runner) RunNotification(_ context.Context, message string) {
 		go func(e entry) {
 			ctx, cancel := detachedHookContext(e.timeout)
 			defer cancel()
-			if _, err := r.run(ctx, e, payload); err != nil {
-				log.Printf("hooks: Notification %q: %v", e.label, err)
+			if res := r.runOne(ctx, e, payload); res.err != nil {
+				log.Printf("hooks: Notification %q: %v", e.label, res.err)
 			}
 		}(e)
 	}
 }
 
 // RunPostStopValidation executes matching PostStopValidation hooks synchronously.
-// Returns the combined stderr/error output of the first failing hook, or "" on success.
+// Returns the output of the first failing hook (non-zero exit, exit-2 block, or
+// approval denial), or "" when every validation passes.
 func (r *Runner) RunPostStopValidation(ctx context.Context) (failOutput string) {
 	payload := Payload{Event: PostStopValidation, Message: "post-stop validation"}
 	for _, e := range r.matching(PostStopValidation, "") {
-		stdout, err := r.run(ctx, e, payload)
-		if err != nil {
-			msg := strings.TrimSpace(string(stdout))
-			if msg == "" {
-				msg = err.Error()
-			}
+		res := r.runOne(ctx, e, payload)
+		if !res.blocked && res.err == nil {
+			continue
+		}
+		if msg := strings.TrimSpace(string(res.rawStdout)); msg != "" {
 			return msg
 		}
+		if res.reason != "" {
+			return res.reason
+		}
+		if res.err != nil {
+			return res.err.Error()
+		}
+		return "post-stop validation failed"
 	}
 	return ""
 }
 
 // RunTaskCreated executes TaskCreated hooks synchronously.
-// Any hook error aborts the task creation so callers can roll back.
+// Any blocking hook aborts the task creation so callers can roll back.
 func (r *Runner) RunTaskCreated(ctx context.Context, task TaskSnapshot) error {
-	return r.runLifecycleHooks(ctx, TaskCreated, "task_create", Payload{
+	_, err := r.evaluate(ctx, TaskCreated, "task_create", nil, Payload{
 		Event: TaskCreated,
 		Tool:  "task_create",
 		Task:  &task,
 	})
+	return err
 }
 
 // RunTaskCompleted executes TaskCompleted hooks synchronously.
-// Any hook error aborts the completion transition.
+// Any blocking hook aborts the completion transition.
 func (r *Runner) RunTaskCompleted(ctx context.Context, previous, current TaskSnapshot) error {
-	return r.runLifecycleHooks(ctx, TaskCompleted, "task_update", Payload{
+	_, err := r.evaluate(ctx, TaskCompleted, "task_update", nil, Payload{
 		Event:        TaskCompleted,
 		Tool:         "task_update",
 		Task:         &current,
@@ -203,70 +198,43 @@ func (r *Runner) RunTaskCompleted(ctx context.Context, previous, current TaskSna
 		StatusFrom:   previous.Status,
 		StatusTo:     current.Status,
 	})
+	return err
 }
 
 // RunSessionStart fires SessionStart hooks asynchronously.
 func (r *Runner) RunSessionStart(ctx context.Context) {
-	r.fireAsync(SessionStart, Payload{Event: SessionStart})
+	r.fireAsync(SessionStart, "", Payload{Event: SessionStart})
 }
 
 // RunSessionEnd fires SessionEnd hooks asynchronously.
 func (r *Runner) RunSessionEnd(ctx context.Context) {
-	r.fireAsync(SessionEnd, Payload{Event: SessionEnd})
+	r.fireAsync(SessionEnd, "", Payload{Event: SessionEnd})
 }
 
-// RunPreCompact fires PreCompact hooks asynchronously.
-func (r *Runner) RunPreCompact(ctx context.Context, reason string, tokensBefore int) {
-	r.fireAsync(PreCompact, Payload{Event: PreCompact, Reason: reason, TokensBefore: tokensBefore})
+// RunSubagentStop fires SubagentStop hooks asynchronously when a teammate's
+// agent loop exits. The hook matcher is tested against the teammate name (an
+// empty matcher fires for every teammate). Observation only — by the time it
+// runs the teammate has already exited, so it cannot keep it alive.
+func (r *Runner) RunSubagentStop(_ context.Context, agentName string) {
+	r.fireAsync(SubagentStop, agentName, Payload{Event: SubagentStop, Agent: agentName})
 }
 
-// RunPostCompact fires PostCompact hooks asynchronously.
-func (r *Runner) RunPostCompact(ctx context.Context, reason string, tokensBefore, tokensAfter int) {
-	r.fireAsync(PostCompact, Payload{Event: PostCompact, Reason: reason, TokensBefore: tokensBefore, TokensAfter: tokensAfter})
-}
-
-// RunUserPromptSubmit executes UserPromptSubmit hooks synchronously.
-// A blocking hook that returns {"blocked":true} rejects the user's input.
-func (r *Runner) RunUserPromptSubmit(ctx context.Context, prompt string) error {
-	payload := Payload{Event: UserPromptSubmit, Prompt: prompt}
-	for _, e := range r.matching(UserPromptSubmit, "") {
-		stdout, err := r.run(ctx, e, payload)
-		if e.blocking {
-			if err != nil {
-				var res Result
-				if json.Unmarshal(stdout, &res) == nil && res.Blocked {
-					reason := res.Reason
-					if reason == "" {
-						reason = "blocked by hook"
-					}
-					return fmt.Errorf("hook: %s", reason)
-				}
-				return fmt.Errorf("hook: %v", err)
-			}
-			var res Result
-			if json.Unmarshal(stdout, &res) == nil && res.Blocked {
-				reason := res.Reason
-				if reason == "" {
-					reason = "blocked by hook"
-				}
-				return fmt.Errorf("hook: %s", reason)
-			}
-		}
-		if err != nil {
-			log.Printf("hooks: UserPromptSubmit %q: %v", e.label, err)
-		}
-	}
-	return nil
+// RunUserPromptSubmit evaluates UserPromptSubmit hooks. A blocking hook
+// rejects the prompt with an error; otherwise the returned Decision may carry
+// additional context to prepend to the turn.
+func (r *Runner) RunUserPromptSubmit(ctx context.Context, prompt string) (Decision, error) {
+	return r.evaluate(ctx, UserPromptSubmit, "", nil, Payload{Event: UserPromptSubmit, Prompt: prompt})
 }
 
 // fireAsync runs all matching hooks for the event in background goroutines.
-func (r *Runner) fireAsync(event EventType, payload Payload) {
-	for _, e := range r.matching(event, "") {
+// matchName is tested against each hook's matcher (empty = match all).
+func (r *Runner) fireAsync(event EventType, matchName string, payload Payload) {
+	for _, e := range r.matching(event, matchName) {
 		go func(e entry) {
 			ctx, cancel := detachedHookContext(e.timeout)
 			defer cancel()
-			if _, err := r.run(ctx, e, payload); err != nil {
-				log.Printf("hooks: %s %q: %v", event, e.label, err)
+			if res := r.runOne(ctx, e, payload); res.err != nil {
+				log.Printf("hooks: %s %q: %v", event, e.label, res.err)
 			}
 		}(e)
 	}
@@ -346,8 +314,8 @@ func compileConfig(cfg config.HooksConfig) map[EventType][]entry {
 func isKnownEvent(et EventType) bool {
 	switch et {
 	case PreToolUse, PostToolUse, Notification, PostStopValidation,
-		TaskCreated, TaskCompleted,
-		SessionStart, SessionEnd, PreCompact, PostCompact, UserPromptSubmit:
+		TaskCreated, TaskCompleted, SubagentStop,
+		SessionStart, SessionEnd, UserPromptSubmit:
 		return true
 	}
 	return false
@@ -387,42 +355,9 @@ func truncate(s string, n int) string {
 	return string(r[:n]) + "..."
 }
 
-func (r *Runner) runLifecycleHooks(ctx context.Context, event EventType, source string, payload Payload) error {
-	for _, e := range r.matching(event, source) {
-		stdout, err := r.run(ctx, e, payload)
-		if e.blocking {
-			if err != nil {
-				var res Result
-				if json.Unmarshal(stdout, &res) == nil && res.Blocked {
-					reason := res.Reason
-					if reason == "" {
-						reason = "blocked by hook"
-					}
-					return fmt.Errorf("hook: %s", reason)
-				}
-				return fmt.Errorf("hook: %v", err)
-			}
-
-			var res Result
-			if json.Unmarshal(stdout, &res) == nil && res.Blocked {
-				reason := res.Reason
-				if reason == "" {
-					reason = "blocked by hook"
-				}
-				return fmt.Errorf("hook: %s", reason)
-			}
-			continue
-		}
-
-		if err != nil {
-			log.Printf("hooks: %s %q: %v", event, e.label, err)
-			continue
-		}
-	}
-	return nil
-}
-
-func (r *Runner) run(ctx context.Context, e entry, payload Payload) ([]byte, error) {
+// runOne applies the approval gate then runs the hook, returning its evaluated
+// result. An approval denial counts as a block.
+func (r *Runner) runOne(ctx context.Context, e entry, payload Payload) evalResult {
 	if r.approval != nil {
 		if err := r.approval.ApproveHook(ctx, approval.HookRequest{
 			Event:    string(payload.Event),
@@ -430,10 +365,74 @@ func (r *Runner) run(ctx context.Context, e entry, payload Payload) ([]byte, err
 			Command:  e.label,
 			Blocking: e.blocking,
 		}); err != nil {
-			return nil, err
+			return evalResult{blocked: true, reason: err.Error(), err: err}
 		}
 	}
-	return r.execEntry(ctx, e, payload)
+	return interpret(r.execEntry(ctx, e, payload))
+}
+
+// interpret normalizes a hook's outcome. A hook blocks when it prints
+// {"block":true} or (for command hooks) exits with code 2. Any other non-zero
+// exit or transport error is a non-blocking error: it is logged but does not
+// stop the run.
+func interpret(o outcome) evalResult {
+	var out hookOutput
+	if len(o.stdout) > 0 {
+		_ = json.Unmarshal(o.stdout, &out) // non-JSON stdout is ignored
+	}
+
+	res := evalResult{
+		decision:  Decision{AdditionalContext: out.AdditionalContext},
+		reason:    out.Reason,
+		rawStdout: o.stdout,
+	}
+	if len(out.UpdatedInput) > 0 && json.Valid(out.UpdatedInput) {
+		res.decision.UpdatedInput = out.UpdatedInput
+	}
+	if out.Block || o.exitCode == 2 {
+		res.blocked = true
+		return res
+	}
+	res.err = o.err
+	return res
+}
+
+// evaluate runs every matching hook for an event in order. It short-circuits
+// on the first blocking hook (surfaced as an error) and otherwise merges the
+// allowed hooks' Decision payloads.
+func (r *Runner) evaluate(ctx context.Context, event EventType, toolName string, args json.RawMessage, payload Payload) (Decision, error) {
+	var merged Decision
+	for _, e := range r.matching(event, toolName, args) {
+		res := r.runOne(ctx, e, payload)
+		if e.blocking && res.blocked {
+			reason := res.reason
+			if reason == "" {
+				reason = "blocked by hook"
+			}
+			return merged, fmt.Errorf("hook: %s", reason)
+		}
+		if res.err != nil {
+			log.Printf("hooks: %s %q: %v", event, e.label, res.err)
+		}
+		merged = mergeDecision(merged, res.decision)
+	}
+	return merged, nil
+}
+
+// mergeDecision combines two hook decisions: additional contexts are joined and
+// a later updated input overrides an earlier one.
+func mergeDecision(a, b Decision) Decision {
+	if b.AdditionalContext != "" {
+		if a.AdditionalContext == "" {
+			a.AdditionalContext = b.AdditionalContext
+		} else {
+			a.AdditionalContext += "\n\n" + b.AdditionalContext
+		}
+	}
+	if len(b.UpdatedInput) > 0 {
+		a.UpdatedInput = b.UpdatedInput
+	}
+	return a
 }
 
 func detachedHookContext(timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -444,7 +443,7 @@ func detachedHookContext(timeout time.Duration) (context.Context, context.Cancel
 }
 
 // execEntry dispatches the hook to its executor with proper context and env.
-func (r *Runner) execEntry(ctx context.Context, e entry, payload Payload) ([]byte, error) {
+func (r *Runner) execEntry(ctx context.Context, e entry, payload Payload) outcome {
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
@@ -454,7 +453,7 @@ func (r *Runner) execEntry(ctx context.Context, e entry, payload Payload) ([]byt
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal hook payload: %w", err)
+		return outcome{exitCode: 1, err: fmt.Errorf("marshal hook payload: %w", err)}
 	}
 
 	env := []string{

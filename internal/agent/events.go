@@ -14,6 +14,7 @@ const (
 	ReminderSkillPaths         RuntimeReminderKind = "skill_paths"
 	ReminderTaskManagement     RuntimeReminderKind = "task_management"
 	ReminderPlanMode           RuntimeReminderKind = "plan_mode"
+	ReminderHookContext        RuntimeReminderKind = "hook_context"
 )
 
 type CompactionKind string

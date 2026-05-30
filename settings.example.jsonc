@@ -58,11 +58,20 @@
   "search_provider": "tavily", // tavily | jina
   "search_api_key": "",
 
-  // Hooks: shell commands triggered on lifecycle events.
+  // Hooks: commands/prompts/http triggered on lifecycle events.
   // Global + project-level hooks are merged (appended, not replaced).
+  // A hook may print JSON to stdout to influence the run:
+  //   {"block": true, "reason": "..."}   block the action (blocking hooks only)
+  //   {"updated_input": { ... }}         rewrite tool args (PreToolUse)
+  //   {"additional_context": "..."}      inject context into the turn (UserPromptSubmit)
+  // For command hooks, exit code 2 also blocks; any other non-zero exit is a
+  // non-blocking error (logged, never stops the run).
   "hooks": {
     "PreToolUse": [
       { "type": "command", "command": "echo $HOOK_TOOL_NAME >> ~/.codebot/audit.log", "matcher": "bash", "blocking": true, "timeout": 10 }
+    ],
+    "UserPromptSubmit": [
+      { "type": "command", "command": "echo '{\"additional_context\":\"Repo convention: run gofmt before committing.\"}'" }
     ],
     "PostToolUse": [
       { "type": "command", "command": "echo done" }
@@ -75,6 +84,11 @@
     ],
     "Notification": [
       { "type": "command", "command": "notify-send 'codebot' 'Agent finished'" }
+    ],
+    // SubagentStop fires when a teammate exits. The matcher tests the teammate
+    // name; the stdin payload carries {"agent": "<name>"}.
+    "SubagentStop": [
+      { "type": "command", "command": "cat >> ~/.codebot/teammates.log" }
     ]
   },
 

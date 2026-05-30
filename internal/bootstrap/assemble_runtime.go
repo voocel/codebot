@@ -112,6 +112,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			baseBlocks,
 			dynamicProvider,
 			protocol,
+			assembly.hookRunner,
 		))
 	}
 
@@ -143,7 +144,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		PlanSlug:       input.sessionSnapshot.PlanSlug,
 		PlanPhase:      input.sessionSnapshot.PlanPhase,
 		PlanPreMode:    input.sessionSnapshot.PlanPreMode,
-		stopTeamPump: stopPump,
+		stopTeamPump:   stopPump,
 	}, nil
 }
 

@@ -30,10 +30,6 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 	result = CompactionResult{Reason: reason}
 	c.session.recordCompactionAttempt(CompactionKindFull)
 	c.session.emit(SessionEvent{Type: SEAutoCompactionStart, CompactionReason: reason, CompactionKind: CompactionKindFull})
-	if c.session.hookRunner != nil {
-		tokensBefore := agentctx.EstimateTotal(c.session.agent.Messages())
-		c.session.hookRunner.RunPreCompact(context.Background(), reason, tokensBefore)
-	}
 	defer func() {
 		if err != nil {
 			return
@@ -52,9 +48,6 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 			KeptCount:          result.KeptCount,
 			SplitTurn:          result.SplitTurn,
 		})
-		if c.session.hookRunner != nil {
-			c.session.hookRunner.RunPostCompact(context.Background(), reason, result.TokensBefore, result.TokensAfter)
-		}
 	}()
 
 	msgs := c.session.agent.Messages()

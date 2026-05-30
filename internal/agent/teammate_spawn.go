@@ -11,6 +11,7 @@ import (
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/hooks"
 )
 
 // maxAgentNameSuffixAttempts caps the rename retry loop so a registry with an
@@ -36,7 +37,9 @@ const maxAgentNameSuffixAttempts = 1000
 //     nil skips dynamic propagation.
 //   - protocol: fully wired ProtocolHooks (envelope, idle notification,
 //     priority, optional IdleClaim). Bootstrap owns the wiring.
-func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol team.ProtocolHooks) subagent.TeamSpawner {
+//   - hookRunner: fires the SubagentStop lifecycle hook when a teammate
+//     exits; nil disables it.
+func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol team.ProtocolHooks, hookRunner *hooks.Runner) subagent.TeamSpawner {
 	return func(ctx context.Context, req subagent.TeamSpawnRequest) (*subagent.TeamSpawnResult, error) {
 		if reg == nil || rt == nil {
 			return nil, errors.New("teammate spawner: registry and runtime are required")
@@ -94,13 +97,20 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		// → Run exits) and by task.Runtime.StopAll.
 		spawnCtx := task.WithDepth(context.Background(), depth)
 
-		// onExit flips the hub's active flag when the teammate goroutine
-		// returns. The history ring is preserved so an observer can still
-		// open this teammate's transcript afterwards; the UI distinguishes
-		// "live" vs "ended" via hub.IsActive.
+		// onExit flips the hub's active flag and fires the SubagentStop hook
+		// when the teammate goroutine returns. The history ring is preserved so
+		// an observer can still open this teammate's transcript afterwards; the
+		// UI distinguishes "live" vs "ended" via hub.IsActive.
 		var onExit func(error)
-		if hub != nil {
-			onExit = func(error) { hub.MarkStopped(agentName) }
+		if hub != nil || hookRunner != nil {
+			onExit = func(error) {
+				if hub != nil {
+					hub.MarkStopped(agentName)
+				}
+				if hookRunner != nil {
+					hookRunner.RunSubagentStop(context.Background(), agentName)
+				}
+			}
 		}
 
 		res, err := team.Spawn(spawnCtx, team.SpawnConfig{

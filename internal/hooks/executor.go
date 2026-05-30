@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,9 +16,16 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// executor runs a hook and returns stdout bytes.
+// outcome is the raw result of running a hook's executor.
+type outcome struct {
+	stdout   []byte
+	exitCode int // command: real exit code; prompt/http: 0 success, 1 error
+	err      error
+}
+
+// executor runs a hook and returns its outcome.
 type executor interface {
-	execute(ctx context.Context, payload []byte, env []string) ([]byte, error)
+	execute(ctx context.Context, payload []byte, env []string) outcome
 }
 
 // commandExec runs a shell command with payload on stdin.
@@ -25,7 +33,7 @@ type commandExec struct {
 	command string
 }
 
-func (c *commandExec) execute(ctx context.Context, payload []byte, env []string) ([]byte, error) {
+func (c *commandExec) execute(ctx context.Context, payload []byte, env []string) outcome {
 	cmd := exec.CommandContext(ctx, "sh", "-c", c.command)
 	cmd.Env = append(cmd.Environ(), env...)
 	cmd.Stdin = bytes.NewReader(payload)
@@ -35,9 +43,18 @@ func (c *commandExec) execute(ctx context.Context, payload []byte, env []string)
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("command %q: %w (stderr: %s)", c.command, err, stderr.String())
+		code := -1
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		}
+		return outcome{
+			stdout:   stdout.Bytes(),
+			exitCode: code,
+			err:      fmt.Errorf("command %q: %w (stderr: %s)", c.command, err, stderr.String()),
+		}
 	}
-	return stdout.Bytes(), nil
+	return outcome{stdout: stdout.Bytes()}
 }
 
 // promptExec sends a single-turn LLM query and returns the response as JSON.
@@ -46,10 +63,10 @@ type promptExec struct {
 	prompt string
 }
 
-func (p *promptExec) execute(ctx context.Context, payload []byte, _ []string) ([]byte, error) {
+func (p *promptExec) execute(ctx context.Context, payload []byte, _ []string) outcome {
 	model := modelFromCtx(ctx)
 	if model == nil {
-		return nil, fmt.Errorf("prompt hook: no model available")
+		return outcome{exitCode: 1, err: fmt.Errorf("prompt hook: no model available")}
 	}
 
 	prompt := strings.ReplaceAll(p.prompt, "$ARGUMENTS", string(payload))
@@ -57,15 +74,14 @@ func (p *promptExec) execute(ctx context.Context, payload []byte, _ []string) ([
 		{Role: "user", Content: []agentcore.ContentBlock{agentcore.TextBlock(prompt)}},
 	}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("prompt hook: %w", err)
+		return outcome{exitCode: 1, err: fmt.Errorf("prompt hook: %w", err)}
 	}
 
 	text := extractText(resp)
 	ok, reason := parseHookResponse(text)
-	result := Result{Blocked: !ok, Reason: reason}
-	return json.Marshal(result)
+	data, _ := json.Marshal(hookOutput{Block: !ok, Reason: reason})
+	return outcome{stdout: data}
 }
-
 
 // httpExec sends a POST request with the payload as JSON body.
 type httpExec struct {
@@ -73,14 +89,14 @@ type httpExec struct {
 	headers map[string]string
 }
 
-func (h *httpExec) execute(ctx context.Context, payload []byte, _ []string) ([]byte, error) {
+func (h *httpExec) execute(ctx context.Context, payload []byte, _ []string) outcome {
 	if err := checkSSRF(h.url); err != nil {
-		return nil, fmt.Errorf("http hook: %w", err)
+		return outcome{exitCode: 1, err: fmt.Errorf("http hook: %w", err)}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.url, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("http hook: %w", err)
+		return outcome{exitCode: 1, err: fmt.Errorf("http hook: %w", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range h.headers {
@@ -94,15 +110,15 @@ func (h *httpExec) execute(ctx context.Context, payload []byte, _ []string) ([]b
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http hook %s: %w", h.url, err)
+		return outcome{exitCode: 1, err: fmt.Errorf("http hook %s: %w", h.url, err)}
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if resp.StatusCode >= 400 {
-		return body, fmt.Errorf("http hook %s: status %d", h.url, resp.StatusCode)
+		return outcome{stdout: body, exitCode: 1, err: fmt.Errorf("http hook %s: status %d", h.url, resp.StatusCode)}
 	}
-	return body, nil
+	return outcome{stdout: body}
 }
 
 // checkSSRF validates the URL scheme and performs a pre-flight DNS check

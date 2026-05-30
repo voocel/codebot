@@ -19,14 +19,20 @@ import (
 var errStaleSessionGeneration = errors.New("stale session generation")
 
 func (s *Session) Prompt(text string) error {
+	var hookContext string
 	if s.hookRunner != nil {
-		if err := s.hookRunner.RunUserPromptSubmit(context.Background(), text); err != nil {
+		dec, err := s.hookRunner.RunUserPromptSubmit(context.Background(), text)
+		if err != nil {
 			return err
 		}
+		hookContext = strings.TrimSpace(dec.AdditionalContext)
 	}
 	s.beginTurn()
 	if s.beforePrompt != nil {
 		s.beforePrompt()
+	}
+	if hookContext != "" {
+		s.queueRuntimeReminder("hook_context", ReminderHookContext, wrapHookContext(hookContext))
 	}
 	s.runtime.beforeUserPrompt([]agentcore.ContentBlock{agentcore.TextBlock(text)})
 
@@ -1050,6 +1056,12 @@ func injectedUserMsg(text string) agentcore.Message {
 	msg := agentcore.UserMsg(text)
 	msg.Metadata = map[string]any{"injected": true}
 	return msg
+}
+
+// wrapHookContext wraps UserPromptSubmit hook output as a system reminder so
+// the model treats it as injected context rather than user-authored text.
+func wrapHookContext(text string) string {
+	return "<system-reminder>\n" + text + "\n</system-reminder>"
 }
 
 // ephemeralQuery sends a one-shot query to the current model using the full

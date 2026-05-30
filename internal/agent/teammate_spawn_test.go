@@ -450,7 +450,7 @@ func TestTeammateSpawner_HappyPath(t *testing.T) {
 		SystemPrompt: "you are a researcher",
 		Tools:        []agentcore.Tool{&fakeNamedTool{n: "read"}},
 	}
-	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil, team.ProtocolHooks{})
+	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil, team.ProtocolHooks{}, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -512,7 +512,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 		Model:        newScriptModel("done"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, hub, nil, nil, team.ProtocolHooks{})
+	spawner := TeammateSpawner(reg, rt, nil, hub, nil, nil, team.ProtocolHooks{}, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -566,7 +566,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 func TestTeammateSpawner_RejectsWhenNoTeam(t *testing.T) {
 	reg := team.NewRegistry()
 	rt := task.NewRuntime()
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -585,7 +585,7 @@ func TestTeammateSpawner_RejectsWrongTeamName(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -604,7 +604,7 @@ func TestTeammateSpawner_RejectsMissingModel(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher"}, // no Model
@@ -623,7 +623,7 @@ func TestTeammateSpawner_DepthGuard(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil)
 
 	// Caller already sits at MaxAgentDepth → spawn would push past it.
 	ctx := task.WithDepth(context.Background(), task.MaxAgentDepth)
@@ -714,7 +714,7 @@ func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
 		Model:        newScriptModel("first", "second", "third", "fourth"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{})
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil)
 
 	first, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
