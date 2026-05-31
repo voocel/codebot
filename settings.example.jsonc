@@ -61,10 +61,14 @@
   // OpenTelemetry trace export. When enabled, every LLM call is emitted as a
   // generation span (gen_ai.* attributes) to an OTLP/HTTP backend such as
   // Langfuse — any OTLP-compatible platform works (Phoenix, Jaeger, …).
-  // endpoint is the full OTLP URL; public_key/secret_key form HTTP Basic auth.
+  // endpoint is the full OTLP *traces* URL, used as-is: it must already include
+  // the /v1/traces path (it is NOT auto-appended). For Langfuse Cloud:
+  //   EU https://cloud.langfuse.com/api/public/otel/v1/traces
+  //   US https://us.cloud.langfuse.com/api/public/otel/v1/traces
+  // public_key/secret_key form HTTP Basic auth (base64 of "public:secret").
   "telemetry": {
     "enabled": false,
-    "endpoint": "https://cloud.langfuse.com/api/public/otel",
+    "endpoint": "https://cloud.langfuse.com/api/public/otel/v1/traces",
     "public_key": "pk-lf-...",
     "secret_key": "sk-lf-..."
   },

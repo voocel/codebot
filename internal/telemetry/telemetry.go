@@ -14,7 +14,9 @@ import (
 	"github.com/voocel/litellm"
 	litellmotel "github.com/voocel/litellm/otel"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -41,7 +43,18 @@ func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Hook, func(
 		return nil, noop, fmt.Errorf("telemetry: otlp exporter: %w", err)
 	}
 
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter))
+	// Name the service so backends show "codebot" instead of the OTel default
+	// "unknown_service". Merge onto the default resource to keep telemetry.sdk.*;
+	// matching the default schema URL keeps the merge error-free.
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(resource.Default().SchemaURL(), attribute.String("service.name", "codebot")),
+	)
+	if err != nil {
+		res = resource.Default()
+	}
+
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
 	otel.SetTracerProvider(tp)
 
 	return litellmotel.New(tp.Tracer("litellm")), tp.Shutdown, nil
