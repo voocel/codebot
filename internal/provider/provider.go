@@ -7,6 +7,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/codebot/internal/diag"
+	"github.com/voocel/litellm"
 )
 
 // IsSupportedType reports whether the given provider type is registered in
@@ -23,11 +24,29 @@ func SupportedTypeNames() []string {
 
 // CreateModel creates a ChatModel for the given provider, model name, API key, and optional base URL.
 func CreateModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
+	return createModel(prov, name, apiKey, baseURL)
+}
+
+// NewModelFactory returns a model factory that forwards the given litellm
+// ClientOptions (e.g. litellm.WithHook for telemetry) into every model it
+// builds. The return type structurally matches agent.ModelFactory without
+// importing that package, avoiding an import cycle.
+func NewModelFactory(clientOpts ...litellm.ClientOption) func(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
+	return func(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
+		return createModel(prov, name, apiKey, baseURL, clientOpts...)
+	}
+}
+
+func createModel(prov, name, apiKey, baseURL string, clientOpts ...litellm.ClientOption) (agentcore.ChatModel, error) {
 	normalizedProvider := strings.ToLower(strings.TrimSpace(prov))
-	model, err := llm.NewModel(normalizedProvider, name,
+	modelOpts := []llm.ModelOption{
 		llm.WithAPIKey(apiKey),
 		llm.WithBaseURL(baseURL),
-	)
+	}
+	if len(clientOpts) > 0 {
+		modelOpts = append(modelOpts, llm.WithClientOptions(clientOpts...))
+	}
+	model, err := llm.NewModel(normalizedProvider, name, modelOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create model %s/%s: %w: %w",
 			normalizedProvider, name, diag.ErrProvider, err)

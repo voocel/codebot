@@ -58,6 +58,17 @@
   "search_provider": "tavily", // tavily | jina
   "search_api_key": "",
 
+  // OpenTelemetry trace export. When enabled, every LLM call is emitted as a
+  // generation span (gen_ai.* attributes) to an OTLP/HTTP backend such as
+  // Langfuse — any OTLP-compatible platform works (Phoenix, Jaeger, …).
+  // endpoint is the full OTLP URL; public_key/secret_key form HTTP Basic auth.
+  "telemetry": {
+    "enabled": false,
+    "endpoint": "https://cloud.langfuse.com/api/public/otel",
+    "public_key": "pk-lf-...",
+    "secret_key": "sk-lf-..."
+  },
+
   // Hooks: commands/prompts/http triggered on lifecycle events.
   // Global + project-level hooks are merged (appended, not replaced).
   // A hook may print JSON to stdout to influence the run:

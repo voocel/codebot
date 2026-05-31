@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,19 +17,22 @@ import (
 	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/telemetry"
+	"github.com/voocel/litellm"
 )
 
 type resolvedInput struct {
-	cwd             string
-	settings        config.Resolved
-	registry        *provider.ModelRegistry
-	approvalMode    approval.Mode
-	modelFactory    agent.ModelFactory
-	sessionManager  *storage.Manager
-	sessionStore    *storage.Store
-	sessionSnapshot storage.ContextSnapshot
-	nonTTY          bool
-	envHint         string
+	cwd               string
+	settings          config.Resolved
+	registry          *provider.ModelRegistry
+	approvalMode      approval.Mode
+	modelFactory      agent.ModelFactory
+	sessionManager    *storage.Manager
+	sessionStore      *storage.Store
+	sessionSnapshot   storage.ContextSnapshot
+	nonTTY            bool
+	envHint           string
+	telemetryShutdown func(context.Context) error
 }
 
 func resolveInput(opts Options) (*resolvedInput, error) {
@@ -54,8 +58,18 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 	}
 
 	modelFactory := opts.ModelFactory
+	var telemetryShutdown func(context.Context) error
 	if modelFactory == nil {
-		modelFactory = provider.CreateModel
+		hook, shutdown, err := telemetry.Setup(context.Background(), settings.Telemetry)
+		if err != nil {
+			return nil, err
+		}
+		telemetryShutdown = shutdown
+		if hook != nil {
+			modelFactory = provider.NewModelFactory(litellm.WithHook(hook))
+		} else {
+			modelFactory = provider.CreateModel
+		}
 	}
 
 	settings, envHint, err := ensureProviderSetup(cwd, settings, opts.NonTTYMode)
@@ -79,16 +93,17 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 	}
 
 	return &resolvedInput{
-		cwd:             cwd,
-		settings:        settings,
-		registry:        registry,
-		approvalMode:    approvalMode,
-		modelFactory:    modelFactory,
-		sessionManager:  sessionManager,
-		sessionStore:    sessionStore,
-		sessionSnapshot: sessionSnapshot,
-		nonTTY:          opts.NonTTYMode,
-		envHint:         envHint,
+		cwd:               cwd,
+		settings:          settings,
+		registry:          registry,
+		approvalMode:      approvalMode,
+		modelFactory:      modelFactory,
+		sessionManager:    sessionManager,
+		sessionStore:      sessionStore,
+		sessionSnapshot:   sessionSnapshot,
+		nonTTY:            opts.NonTTYMode,
+		envHint:           envHint,
+		telemetryShutdown: telemetryShutdown,
 	}, nil
 }
 

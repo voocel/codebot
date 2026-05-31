@@ -25,6 +25,15 @@ type ProviderConfig struct {
 	SmallModel string   `json:"small_model,omitempty"` // lightweight model for sub-agents
 }
 
+// TelemetryConfig configures OpenTelemetry trace export to an OTLP backend
+// (e.g. Langfuse). Telemetry stays off unless Enabled is true.
+type TelemetryConfig struct {
+	Enabled   bool   `json:"enabled,omitempty"`
+	Endpoint  string `json:"endpoint,omitempty"`   // OTLP/HTTP endpoint URL, e.g. https://cloud.langfuse.com/api/public/otel
+	PublicKey string `json:"public_key,omitempty"` // basic-auth username
+	SecretKey string `json:"secret_key,omitempty"` // basic-auth password
+}
+
 // ProviderType resolves the protocol type for this provider.
 // The protocol type maps to a name registered in litellm's provider registry.
 func (pc ProviderConfig) ProviderType(name string) (string, error) {
@@ -99,6 +108,8 @@ type Settings struct {
 	Hooks HooksConfig `json:"hooks,omitempty"` // lifecycle hooks
 
 	Permissions *PermissionsConfig `json:"permissions,omitempty"`
+
+	Telemetry *TelemetryConfig `json:"telemetry,omitempty"` // OpenTelemetry trace export
 }
 
 // PermissionsConfig holds user-defined permission rules.
@@ -127,6 +138,8 @@ type Resolved struct {
 	Hooks HooksConfig // lifecycle hooks
 
 	Permissions PermissionsConfig // user-defined permission rules
+
+	Telemetry TelemetryConfig // OTLP trace export config
 }
 
 // ProviderCredentials returns API key and base URL for the given provider.
@@ -244,6 +257,9 @@ func (s Settings) Resolve() Resolved {
 	}
 	if s.Permissions != nil {
 		r.Permissions = *s.Permissions
+	}
+	if s.Telemetry != nil {
+		r.Telemetry = *s.Telemetry
 	}
 	return r
 }
@@ -438,6 +454,9 @@ func mergeSettings(base, override Settings) Settings {
 		base.Permissions.Deny = append(base.Permissions.Deny, override.Permissions.Deny...)
 		base.Permissions.ReadRoots = append(base.Permissions.ReadRoots, override.Permissions.ReadRoots...)
 		base.Permissions.WriteRoots = append(base.Permissions.WriteRoots, override.Permissions.WriteRoots...)
+	}
+	if override.Telemetry != nil {
+		base.Telemetry = override.Telemetry
 	}
 	return base
 }

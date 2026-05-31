@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"time"
 
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
@@ -57,6 +58,10 @@ type Runtime struct {
 	// assembleRuntime, called by Close so the pump exits before the team
 	// registry is torn down.
 	stopTeamPump context.CancelFunc
+
+	// telemetryShutdown flushes pending OTLP trace spans on Close; nil when
+	// telemetry is disabled.
+	telemetryShutdown func(context.Context) error
 }
 
 // Close releases runtime resources.
@@ -78,6 +83,12 @@ func (r *Runtime) Close() {
 	}
 	if r.MCPManager != nil {
 		r.MCPManager.Close()
+	}
+	if r.telemetryShutdown != nil {
+		// Bound the final span flush so a hung OTLP backend can't block exit.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = r.telemetryShutdown(ctx)
+		cancel()
 	}
 	if r.Session != nil {
 		r.Session.Close()
@@ -112,6 +123,7 @@ func Boot(opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	rt.telemetryShutdown = input.telemetryShutdown
 
 	closeStoreOnError = false
 	go localtools.CleanOldOutputs()
