@@ -70,6 +70,12 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	}
 
 	session := buildSession(input, services, assembly, contextEngine, agentCore, tools)
+	// Bind the telemetry session-id provider now the session exists: every LLM
+	// generation span (leader and teammates, same session) gets tagged so the
+	// backend groups the run. Reads live, so a mid-run SwitchSession follows.
+	if input.telemetryBindSession != nil {
+		input.telemetryBindSession(session.SessionID)
+	}
 	wireSessionRuntime(input, assembly, services, session, baseTools, tools, agentCore, taskRT, contextEngine, summaryCompact)
 
 	// Wire team spawn on the subagent tool. Each spawned teammate gets its

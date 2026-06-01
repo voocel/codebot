@@ -7,14 +7,40 @@ import (
 	"github.com/voocel/codebot/internal/config"
 )
 
+// The exact attribute keys matter: a typo silently breaks session grouping on
+// the backend (the very bug this feature fixes), so pin them down.
+func TestSessionSpanAttributes(t *testing.T) {
+	got := sessionSpanAttributes("sess-42")
+	m := make(map[string]string, len(got))
+	for _, kv := range got {
+		m[string(kv.Key)] = kv.Value.AsString()
+	}
+	if m["langfuse.session.id"] != "sess-42" {
+		t.Errorf("langfuse.session.id = %q, want sess-42", m["langfuse.session.id"])
+	}
+	if m["session.id"] != "sess-42" {
+		t.Errorf("session.id = %q, want sess-42 (generic fallback)", m["session.id"])
+	}
+}
+
+func TestSessionSpanAttributesEmptyIsNil(t *testing.T) {
+	if got := sessionSpanAttributes(""); got != nil {
+		t.Errorf("empty session id must yield nil (no tagging), got %v", got)
+	}
+}
+
 func TestSetupDisabled(t *testing.T) {
-	hook, shutdown, err := Setup(context.Background(), config.TelemetryConfig{Enabled: false})
+	hook, bind, shutdown, err := Setup(context.Background(), config.TelemetryConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("disabled setup err: %v", err)
 	}
 	if hook != nil {
 		t.Fatal("disabled telemetry must return a nil hook")
 	}
+	if bind == nil {
+		t.Fatal("bind must be a non-nil noop")
+	}
+	bind(func() string { return "s-1" }) // must not panic when disabled
 	if shutdown == nil {
 		t.Fatal("shutdown must be a non-nil noop")
 	}
@@ -24,7 +50,7 @@ func TestSetupDisabled(t *testing.T) {
 }
 
 func TestSetupEnabledNoEndpoint(t *testing.T) {
-	hook, _, err := Setup(context.Background(), config.TelemetryConfig{Enabled: true})
+	hook, _, _, err := Setup(context.Background(), config.TelemetryConfig{Enabled: true})
 	if err != nil {
 		t.Fatalf("setup err: %v", err)
 	}
@@ -34,7 +60,7 @@ func TestSetupEnabledNoEndpoint(t *testing.T) {
 }
 
 func TestSetupEnabledReturnsHook(t *testing.T) {
-	hook, shutdown, err := Setup(context.Background(), config.TelemetryConfig{
+	hook, bind, shutdown, err := Setup(context.Background(), config.TelemetryConfig{
 		Enabled:   true,
 		Endpoint:  "https://example.test/api/public/otel",
 		PublicKey: "pk",
@@ -46,6 +72,10 @@ func TestSetupEnabledReturnsHook(t *testing.T) {
 	if hook == nil {
 		t.Fatal("enabled telemetry must return a hook")
 	}
+	if bind == nil {
+		t.Fatal("bind must be non-nil when enabled")
+	}
+	bind(func() string { return "sess-42" })
 	if shutdown == nil {
 		t.Fatal("shutdown must be non-nil")
 	}
