@@ -25,8 +25,18 @@ import (
 // The sender's identity is taken from team.IdentityFromContext(ctx). The
 // leader (no identity) sends as "team-lead"; a teammate sends as its own name.
 type SendMessageTool struct {
-	rt  *task.Runtime
-	reg *team.Registry
+	rt    *task.Runtime
+	reg   *team.Registry
+	waker TeammateWaker
+}
+
+// TeammateWaker re-spawns a dormant teammate from its persisted transcript and
+// delivers a message as its opening turn. send_message consults it when a
+// target name has no live teammate behind it — the lazy, message-driven resume
+// path. Implemented by internal/agent.TeammateWaker; a nil waker disables wake,
+// so a stopped teammate simply reports as not found.
+type TeammateWaker interface {
+	Wake(ctx context.Context, name, prompt string) (bool, error)
 }
 
 // NewSendMessageTool wires the tool to the shared task runtime and team
@@ -34,6 +44,11 @@ type SendMessageTool struct {
 func NewSendMessageTool(rt *task.Runtime, reg *team.Registry) *SendMessageTool {
 	return &SendMessageTool{rt: rt, reg: reg}
 }
+
+// SetWaker enables lazy teammate resume: when send_message targets a teammate
+// name with no live mailbox, the waker re-spawns it from its saved transcript
+// with the message as its opening turn. Optional; nil keeps stop-is-final.
+func (t *SendMessageTool) SetWaker(w TeammateWaker) { t.waker = w }
 
 func (t *SendMessageTool) Name() string  { return "send_message" }
 func (t *SendMessageTool) Label() string { return "Send Message" }
@@ -85,6 +100,27 @@ func (t *SendMessageTool) Execute(ctx context.Context, args json.RawMessage) (js
 	if t.reg != nil && t.reg.HasTeam() {
 		if _, ok := t.reg.TaskID(a.To); ok {
 			return t.sendToTeam(ctx, a.To, a.Message)
+		}
+		// Not live. A teammate that exited (or a prior session's teammate that
+		// hasn't been re-spawned yet) is unregistered but may still have a
+		// persisted roster entry + transcript. Wake it lazily, delivering this
+		// message as its opening turn — the message IS the resume prompt.
+		if t.waker != nil {
+			woke, err := t.waker.Wake(ctx, a.To, a.Message)
+			if err != nil {
+				return json.Marshal(fmt.Sprintf("Could not resume teammate %q: %v", a.To, err))
+			}
+			if woke {
+				return json.Marshal(map[string]any{
+					"success": true,
+					"message": fmt.Sprintf("Resumed teammate %s from its saved transcript; your message is its next turn.", a.To),
+				})
+			}
+			// Wake didn't spawn: either the name is unknown, or a concurrent
+			// wake already revived it. If it is live now, deliver to its mailbox.
+			if _, ok := t.reg.TaskID(a.To); ok {
+				return t.sendToTeam(ctx, a.To, a.Message)
+			}
 		}
 	}
 

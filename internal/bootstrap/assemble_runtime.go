@@ -36,6 +36,15 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	}
 	taskTools := localtools.NewTaskTools(services.taskStore, taskRT, assembly.hookRunner)
 	teamTools := localtools.NewTeamTools(teamReg, taskRT, sessionID)
+	// Drop a dismissed teammate from the persisted roster so resume doesn't
+	// resurrect it. The dismiss tool is leader-only; find it in the team set.
+	if services.rosterStore != nil {
+		for _, t := range teamTools {
+			if dt, ok := t.(*localtools.TeamDismissTool); ok {
+				dt.SetRosterRemover(services.rosterStore.RemoveMember)
+			}
+		}
+	}
 	tools := make([]agentcore.Tool, 0, len(assembly.tools)+len(taskTools)+len(teamTools))
 	tools = append(tools, assembly.tools...)
 	tools = append(tools, taskTools...)
@@ -104,7 +113,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			IdleClaim:         buildIdleClaim(services.taskStore),
 			IdleClaimInterval: 2 * time.Second,
 		})
-		assembly.subagentTool.SetTeamSpawner(agent.TeammateSpawner(
+		spawner := agent.TeammateSpawner(
 			teamReg,
 			taskRT,
 			extraTools,
@@ -113,7 +122,24 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			dynamicProvider,
 			protocol,
 			assembly.hookRunner,
-		))
+			&agent.TeammatePersist{Roster: services.rosterStore, Transcripts: services.transcripts},
+		)
+		assembly.subagentTool.SetTeamSpawner(spawner)
+
+		// Lazy teammate resume: boot does NO team work. Instead of eagerly
+		// re-spawning prior teammates, each wakes on demand the first time the
+		// leader messages it — the waker reuses the same spawner so a woken
+		// teammate flows through identical tool injection / transcript recording
+		// / roster upsert. A woken teammate joins the active (default) team; the
+		// prior team's display name is not restored.
+		if services.rosterStore != nil {
+			waker := agent.NewTeammateWaker(spawner, assembly.subagentTool.AgentConfig, teamReg, services.rosterStore, services.transcripts)
+			for _, t := range teamTools {
+				if sm, ok := t.(*localtools.SendMessageTool); ok {
+					sm.SetWaker(waker)
+				}
+			}
+		}
 	}
 
 	pumpCtx, stopPump := context.WithCancel(context.Background())

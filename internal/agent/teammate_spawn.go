@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/voocel/agentcore"
@@ -12,7 +13,18 @@ import (
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
+	"github.com/voocel/codebot/internal/storage"
 )
+
+// TeammatePersist bundles the durable stores a spawned teammate writes to so
+// the session can recover its team after a restart: the roster (who is on the
+// team + how to re-spawn them) and the per-teammate conversation transcript.
+// A nil *TeammatePersist — or nil fields within — disables that slice of
+// persistence, so tests and ephemeral sessions can omit it entirely.
+type TeammatePersist struct {
+	Roster      *storage.RosterStore
+	Transcripts *storage.TranscriptStore
+}
 
 // maxAgentNameSuffixAttempts caps the rename retry loop so a registry with an
 // implausibly large run of `name-2`, `name-3`, … doesn't spin forever. The
@@ -39,7 +51,11 @@ const maxAgentNameSuffixAttempts = 1000
 //     priority, optional IdleClaim). Bootstrap owns the wiring.
 //   - hookRunner: fires the SubagentStop lifecycle hook when a teammate
 //     exits; nil disables it.
-func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol team.ProtocolHooks, hookRunner *hooks.Runner) subagent.TeamSpawner {
+//   - persist: durable roster + transcript stores. On a successful spawn the
+//     teammate is recorded in the roster and every turn is appended to its
+//     transcript, so a restart can re-spawn it with its prior context. nil
+//     disables persistence.
+func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol team.ProtocolHooks, hookRunner *hooks.Runner, persist *TeammatePersist) subagent.TeamSpawner {
 	return func(ctx context.Context, req subagent.TeamSpawnRequest) (*subagent.TeamSpawnResult, error) {
 		if reg == nil || rt == nil {
 			return nil, errors.New("teammate spawner: registry and runtime are required")
@@ -86,6 +102,27 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		}
 		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, baseBlocks, dynamicBlock)
 
+		// Wrap the executor to append each turn (the prompt the runner fed +
+		// the messages produced) to the teammate's transcript. This is the
+		// lossless capture point — identical to what the runner stitches into
+		// its history — unlike the drop-oldest event hub. Best-effort: a write
+		// failure is logged but never fails the turn.
+		if persist != nil && persist.Transcripts != nil {
+			base := executor
+			executor = func(ctx context.Context, msgs []agentcore.AgentMessage) ([]agentcore.AgentMessage, error) {
+				produced, err := base(ctx, msgs)
+				if len(msgs) > 0 {
+					turn := make([]agentcore.AgentMessage, 0, 1+len(produced))
+					turn = append(turn, msgs[len(msgs)-1])
+					turn = append(turn, produced...)
+					if werr := persist.Transcripts.Append(agentName, turn); werr != nil {
+						fmt.Fprintf(os.Stderr, "warning: transcript append for %q: %v\n", agentName, werr)
+					}
+				}
+				return produced, err
+			}
+		}
+
 		depth := task.DepthFromContext(ctx) + 1
 		if depth > task.MaxAgentDepth {
 			return nil, fmt.Errorf("agent nesting depth %d exceeds max %d", depth, task.MaxAgentDepth)
@@ -116,6 +153,7 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		res, err := team.Spawn(spawnCtx, team.SpawnConfig{
 			AgentName:     agentName,
 			InitialPrompt: req.InitialPrompt,
+			History:       req.History,
 			Description:   req.Description,
 			Color:         req.Color,
 			Registry:      reg,
@@ -128,6 +166,24 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		if err != nil {
 			return nil, err
 		}
+
+		// Record the teammate in the roster so a restart knows it existed and
+		// how to re-spawn it. AgentType is the definition key the resume path
+		// rebuilds Config from; model / system prompt / tools all come back via
+		// that lookup, so they are not duplicated here.
+		if persist != nil && persist.Roster != nil {
+			persist.Roster.SetTeam(teamCtx.Name, teamCtx.Description)
+			persist.Roster.UpsertMember(storage.RosterMember{
+				Name:          agentName,
+				AgentType:     req.Config.Name,
+				Color:         req.Color,
+				InitialPrompt: req.InitialPrompt,
+				Description:   req.Description,
+				Depth:         depth,
+				Kind:          "teammate",
+			})
+		}
+
 		return &subagent.TeamSpawnResult{
 			TaskID:  res.TaskID,
 			AgentID: res.AgentID,

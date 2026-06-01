@@ -30,13 +30,21 @@ import (
 // is task_stop on the teammate's task ID — that cancels the runner's ctx
 // and Run exits via ctx.Err() instead of message handling.
 type TeamDismissTool struct {
-	reg *team.Registry
+	reg       *team.Registry
+	onDismiss func(name string) // optional: drop the teammate from the persisted roster
 }
 
 // NewTeamDismissTool wires the tool to the session's team registry. A nil
 // registry is a programmer error.
 func NewTeamDismissTool(reg *team.Registry) *TeamDismissTool {
 	return &TeamDismissTool{reg: reg}
+}
+
+// SetRosterRemover registers a callback fired when a teammate is dismissed, so
+// the persisted roster drops it and a later session resume does not resurrect
+// a deliberately-retired teammate. Optional; nil disables roster cleanup.
+func (t *TeamDismissTool) SetRosterRemover(fn func(name string)) {
+	t.onDismiss = fn
 }
 
 func (t *TeamDismissTool) Name() string  { return "team_dismiss" }
@@ -91,6 +99,12 @@ func (t *TeamDismissTool) Execute(_ context.Context, args json.RawMessage) (json
 			return json.Marshal(fmt.Sprintf("Teammate %q has already shut down.", name))
 		}
 		return nil, fmt.Errorf("send shutdown to %s: %w", name, err)
+	}
+	// Drop from the persisted roster so a later resume does not resurrect a
+	// teammate the leader deliberately retired. Done on dismiss intent (not on
+	// the async exit) so the roster reflects the leader's decision immediately.
+	if t.onDismiss != nil {
+		t.onDismiss(name)
 	}
 	return json.Marshal(map[string]any{
 		"success": true,

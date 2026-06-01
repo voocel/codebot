@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -234,5 +235,73 @@ func TestSendMessage_ClosedTeammateMailbox(t *testing.T) {
 	})
 	if !strings.Contains(got, "shut down") {
 		t.Errorf("expected closed-mailbox message, got %q", got)
+	}
+}
+
+// fakeWaker records Wake calls and returns a scripted outcome, standing in for
+// internal/agent.TeammateWaker so send_message routing can be tested without a
+// real spawn path.
+type fakeWaker struct {
+	woke   bool
+	err    error
+	calls  int
+	gotTo  string
+	gotMsg string
+}
+
+func (f *fakeWaker) Wake(_ context.Context, name, prompt string) (bool, error) {
+	f.calls++
+	f.gotTo, f.gotMsg = name, prompt
+	return f.woke, f.err
+}
+
+func TestSendMessage_WakesDormantTeammate(t *testing.T) {
+	h := newSendMessageHarness(t).withTeam(t, "alpha")
+	// No live teammate named "researcher" — only the leader is registered, so
+	// the name is unresolved in the registry and the waker is consulted.
+	fw := &fakeWaker{woke: true}
+	h.tool.SetWaker(fw)
+
+	got := mustExecute(t, h.tool, context.Background(), map[string]any{"to": "researcher", "message": "resume: status?"})
+	if fw.calls != 1 || fw.gotTo != "researcher" || fw.gotMsg != "resume: status?" {
+		t.Fatalf("waker invoked %d times with (to=%q msg=%q), want 1 (researcher / resume: status?)", fw.calls, fw.gotTo, fw.gotMsg)
+	}
+	if !strings.Contains(got, "Resumed teammate researcher") {
+		t.Errorf("got %q, want a resume-success message", got)
+	}
+}
+
+func TestSendMessage_LiveTeammateNotWoken(t *testing.T) {
+	h := newSendMessageHarness(t).withTeam(t, "alpha")
+	h.addTeammate(t, "researcher", "tm-1")
+	fw := &fakeWaker{woke: true}
+	h.tool.SetWaker(fw)
+
+	_ = mustExecute(t, h.tool, context.Background(), map[string]any{"to": "researcher", "message": "hi"})
+	if fw.calls != 0 {
+		t.Errorf("waker called %d times for a LIVE teammate, want 0 (must route to its mailbox)", fw.calls)
+	}
+	if depth := h.reg.Mailbox("researcher").Len(); depth != 1 {
+		t.Errorf("live teammate mailbox depth = %d, want 1 (message delivered, not woken)", depth)
+	}
+}
+
+func TestSendMessage_WakerDeclineFallsThrough(t *testing.T) {
+	h := newSendMessageHarness(t).withTeam(t, "alpha")
+	h.tool.SetWaker(&fakeWaker{woke: false}) // name is not a known dormant teammate
+
+	got := mustExecute(t, h.tool, context.Background(), map[string]any{"to": "ghost", "message": "hi"})
+	if !strings.Contains(got, `No agent or task matches "ghost"`) {
+		t.Errorf("got %q, want fall-through to not-found", got)
+	}
+}
+
+func TestSendMessage_WakerErrorSurfaces(t *testing.T) {
+	h := newSendMessageHarness(t).withTeam(t, "alpha")
+	h.tool.SetWaker(&fakeWaker{err: errors.New(`unknown agent type "x"`)})
+
+	got := mustExecute(t, h.tool, context.Background(), map[string]any{"to": "researcher", "message": "hi"})
+	if !strings.Contains(got, "Could not resume teammate") {
+		t.Errorf("got %q, want a resume-failure message", got)
 	}
 }

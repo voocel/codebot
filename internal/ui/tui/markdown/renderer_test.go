@@ -54,7 +54,7 @@ func TestRenderFinalLinkUsesColorWithoutUnderline(t *testing.T) {
 	}
 }
 
-func TestRenderFinalHorizontalRuleMatchesClaudeCode(t *testing.T) {
+func TestRenderFinalHorizontalRuleAsLiteralDashes(t *testing.T) {
 	r := NewRenderer(40)
 	out := stripANSITest(r.RenderFinal("---"))
 	if out != "---" {

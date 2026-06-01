@@ -25,6 +25,8 @@ type bootServices struct {
 	mcpManager     *mcpclient.Manager
 	mcpServers     map[string]mcpclient.ServerConfig
 	taskStore      *storage.TaskStore
+	rosterStore    *storage.RosterStore
+	transcripts    *storage.TranscriptStore
 }
 
 func buildServices(input *resolvedInput) (*bootServices, error) {
@@ -47,6 +49,8 @@ func buildServices(input *resolvedInput) (*bootServices, error) {
 
 	mcpManager, mcpServers := buildMCPServices(input.cwd, contrib)
 
+	rosterStore, transcripts := newTeamStores(input)
+
 	return &bootServices{
 		approvalEngine: approvalEngine,
 		pluginCatalog:  pluginCatalog,
@@ -56,7 +60,24 @@ func buildServices(input *resolvedInput) (*bootServices, error) {
 		mcpManager:     mcpManager,
 		mcpServers:     mcpServers,
 		taskStore:      newTaskStore(input),
+		rosterStore:    rosterStore,
+		transcripts:    transcripts,
 	}, nil
+}
+
+// newTeamStores builds the per-session team persistence: the roster (rooted at
+// the session's team dir) and teammate transcripts (a transcripts/ subdir).
+// Both share config.TeamDir so a session's coordination state is reclaimed
+// together with its task list. SetDir creates nothing until the first write,
+// so sessions that never form a team leave no team dir behind.
+func newTeamStores(input *resolvedInput) (*storage.RosterStore, *storage.TranscriptStore) {
+	teamDir := config.TeamDir(input.sessionStore.Header().SessionID)
+	rosterStore := storage.NewRosterStore()
+	if err := rosterStore.SetDir(teamDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: roster persistence: %v\n", err)
+	}
+	transcripts := storage.NewTranscriptStore(filepath.Join(teamDir, "transcripts"))
+	return rosterStore, transcripts
 }
 
 func newSkillCatalog(cwd string, contrib plugin.Contributions) *skill.Catalog {

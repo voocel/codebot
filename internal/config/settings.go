@@ -329,6 +329,15 @@ func TasksDir() string {
 	return filepath.Join(UserConfigDir(), "tasks")
 }
 
+// TeamDir returns ~/.codebot/tasks/<sessionID>/team/ — the per-session home
+// for team coordination artifacts (roster, teammate transcripts, mailbox
+// backlog) that must survive a restart alongside the durable task list. It
+// lives under the session's task dir so a session's entire coordination
+// state is reclaimed together.
+func TeamDir(sessionID string) string {
+	return filepath.Join(TasksDir(), sessionID, "team")
+}
+
 // AuditLogPath returns ~/.codebot/audit.log.
 func AuditLogPath() string {
 	return filepath.Join(UserConfigDir(), "audit.log")
