@@ -221,6 +221,9 @@ func (s *Session) beginTurn() {
 	s.currentTurn = TurnOutcomeSnapshot{}
 	s.reminders.resetTurnDelivery()
 	s.mu.Unlock()
+	// Checkpoint the workspace before the turn touches files. Runs outside the
+	// lock (git I/O) and is best-effort — see snapshotTurnStart.
+	s.snapshotTurnStart()
 }
 
 func (s *Session) recordTurnTool(name string) {

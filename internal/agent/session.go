@@ -37,6 +37,9 @@ type SessionConfig struct {
 	ChatModel agentcore.ChatModel
 	// HookRunner fires lifecycle hooks (notification, etc.). Nil when no hooks configured.
 	HookRunner *hooks.Runner
+	// Snapshotter records workspace file checkpoints at turn boundaries and
+	// powers /undo. Nil disables snapshotting (e.g. outside a git repo).
+	Snapshotter Snapshotter
 
 	// Tools is the full set of tools registered with the agent.
 	// Used by ToolsByName / RestoreAllTools for plan mode filtering.
@@ -110,6 +113,7 @@ type Session struct {
 	beforePrompt      func()
 	planModeSignal    func() PlanModeSignal
 	hookRunner        *hooks.Runner
+	snapshotter       Snapshotter
 	taskStore         *storage.TaskStore
 	skillAllowsSetter func([]string)
 	skillRuntime      skillRuntimeState
@@ -276,6 +280,7 @@ func NewSession(cfg SessionConfig) *Session {
 		lazyPersist:       cfg.LazyPersist,
 		chatModel:         cfg.ChatModel,
 		hookRunner:        cfg.HookRunner,
+		snapshotter:       cfg.Snapshotter,
 		taskStore:         cfg.TaskStore,
 		allTools:          cfg.Tools,
 		activeTools:       cfg.Tools,
@@ -374,5 +379,9 @@ func (s *Session) resetHarnessStateLocked() {
 	// validate against reads the LLM no longer remembers.
 	if s.fileReadState != nil {
 		s.fileReadState.Reset()
+	}
+	// Prior turns' snapshots no longer map to the new conversation.
+	if s.snapshotter != nil {
+		s.snapshotter.Reset()
 	}
 }

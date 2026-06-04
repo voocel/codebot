@@ -110,6 +110,10 @@ type Settings struct {
 	Permissions *PermissionsConfig `json:"permissions,omitempty"`
 
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"` // OpenTelemetry trace export
+
+	// Snapshot toggles workspace file checkpoints backing /undo. Unset means on;
+	// set false to disable (e.g. on a large repo where per-turn scans lag).
+	Snapshot *bool `json:"snapshot,omitempty"`
 }
 
 // PermissionsConfig holds user-defined permission rules.
@@ -140,6 +144,8 @@ type Resolved struct {
 	Permissions PermissionsConfig // user-defined permission rules
 
 	Telemetry TelemetryConfig // OTLP trace export config
+
+	Snapshot bool // workspace checkpoints for /undo; defaults on
 }
 
 // ProviderCredentials returns API key and base URL for the given provider.
@@ -216,6 +222,7 @@ func (s Settings) Resolve() Resolved {
 		Providers:     make(map[string]ProviderConfig),
 		ThinkingLevel: "low",
 		MaxTurns:      200,
+		Snapshot:      true,
 	}
 	if s.Provider != nil && *s.Provider != "" {
 		r.Provider = *s.Provider
@@ -261,6 +268,9 @@ func (s Settings) Resolve() Resolved {
 	if s.Telemetry != nil {
 		r.Telemetry = *s.Telemetry
 	}
+	if s.Snapshot != nil {
+		r.Snapshot = *s.Snapshot
+	}
 	return r
 }
 
@@ -299,6 +309,12 @@ func GlobalConfigExists() bool {
 // Sessions are stored globally but scoped by project.
 func SessionsDir(cwd string) string {
 	return filepath.Join(UserConfigDir(), "projects", projectID(cwd))
+}
+
+// SnapshotDir returns ~/.codebot/snapshot/<projectID> — the shadow git
+// repository backing /undo file checkpoints for this project.
+func SnapshotDir(cwd string) string {
+	return filepath.Join(UserConfigDir(), "snapshot", projectID(cwd))
 }
 
 // SessionMemoryPath returns ~/.codebot/projects/<projectID>/session-memory.md.
@@ -466,6 +482,9 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.Telemetry != nil {
 		base.Telemetry = override.Telemetry
+	}
+	if override.Snapshot != nil {
+		base.Snapshot = override.Snapshot
 	}
 	return base
 }

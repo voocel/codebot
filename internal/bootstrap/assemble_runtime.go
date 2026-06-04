@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/snapshot"
 	"github.com/voocel/codebot/internal/storage"
 	cbteam "github.com/voocel/codebot/internal/team"
 	localtools "github.com/voocel/codebot/internal/tools"
@@ -322,6 +323,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		SkillCatalog:          services.skillCatalog,
 		SkillUsage:            services.skillUsage,
 		HookRunner:            assembly.hookRunner,
+		Snapshotter:           buildSnapshotter(input.cwd, assembly.settings.Snapshot),
 		FrozenIdentity:        assembly.frozenIdentity,
 		FrozenInstructions:    assembly.frozenInstructions,
 		InitialMCPOverlay:     assembly.initialMCPOverlay,
@@ -332,6 +334,17 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		SkillAllowsSetter:     services.approvalEngine.SetSkillAllows,
 		FileReadState:         assembly.fileReadState,
 	})
+}
+
+// buildSnapshotter returns a workspace snapshotter for /undo, or nil when it is
+// disabled. Mirrors opencode's enabled(): off unless the setting is on AND cwd
+// is a git repository (the shadow repo borrows git's plumbing, so /undo is
+// git-only for now).
+func buildSnapshotter(cwd string, enabled bool) agent.Snapshotter {
+	if !enabled || !config.IsGitRepo(cwd) {
+		return nil
+	}
+	return snapshot.New(config.SnapshotDir(cwd), cwd)
 }
 
 func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, services *bootServices, session *agent.Session, baseTools, tools []agentcore.Tool, ag *agentcore.Agent, taskRT *task.Runtime, contextEngine *agentctx.ContextEngine, summaryCompact *agentctx.FullSummaryStrategy) {

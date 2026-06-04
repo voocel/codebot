@@ -62,3 +62,8 @@ func gitExec(cwd string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// IsGitRepo reports whether cwd is inside a git working tree.
+func IsGitRepo(cwd string) bool {
+	return gitExec(cwd, "rev-parse", "--is-inside-work-tree") == "true"
+}
