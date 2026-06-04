@@ -1,11 +1,13 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/snapshot"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -35,6 +37,9 @@ func (c *UndoCommand) Spec() Spec {
 func (c *UndoCommand) Run(_ Invocation) tea.Cmd {
 	changed, ok, err := c.session.Undo()
 	switch {
+	case errors.Is(err, snapshot.ErrSnapshotExpired):
+		return tui.SendCommandResult(tui.CommandStyle.Render(
+			"The last checkpoint has expired (the shadow repo reclaimed it after 7 days) and can no longer be restored."))
 	case err != nil:
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Undo failed: " + err.Error()))
 	case !ok:

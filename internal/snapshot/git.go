@@ -30,6 +30,9 @@ func (g gitRunner) baseArgs() []string {
 		// Pin fsmonitor off so a user's global core.fsmonitor can't make this
 		// shadow repo spawn a filesystem-watcher daemon over their workspace.
 		"-c", "core.fsmonitor=false",
+		// Disable implicit auto-gc on writes; reclamation is driven explicitly
+		// by backgroundGC so a normal `git add` never races our own gc.
+		"-c", "gc.auto=0",
 	}
 }
 

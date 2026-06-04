@@ -10,6 +10,8 @@
 package snapshot
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,10 +20,23 @@ import (
 	"sync"
 )
 
+// ErrSnapshotExpired means the popped snapshot's tree object is gone — the
+// background gc pruned it (objects older than the prune window are unreachable
+// and get collected). The undo point is unrecoverable; callers report it and
+// move on. The expired hash is already dropped from the stack.
+var ErrSnapshotExpired = errors.New("snapshot expired or unavailable")
+
 // maxFileSize caps which untracked files enter a snapshot. Larger files are
 // excluded so the shadow repo doesn't balloon on build artifacts or binaries
 // that escaped .gitignore. Mirrors opencode's 2 MiB limit.
 const maxFileSize = 2 * 1024 * 1024
+
+// gcPruneWindow bounds shadow-repo growth: snapshot objects untouched for this
+// long become reclaimable. Matches opencode's 7-day cleanup window. Note that
+// git's content addressing means a re-added identical object does NOT refresh
+// its mtime, so undo points older than this window do get collected — Undo's
+// ErrSnapshotExpired path handles that.
+const gcPruneWindow = "7.days"
 
 // Tracker snapshots the workspace into a shadow git repo and reverts to those
 // snapshots. Snapshots are turn-scoped: the session calls Track at each turn
@@ -33,12 +48,58 @@ type Tracker struct {
 	git         gitRunner
 	mu          sync.Mutex
 	stack       []string
+	statePath   string // sidecar file persisting stack across restarts; "" = memory only
 	initialized bool
+	gcOnce      sync.Once // guards the once-per-process background gc
 }
 
 // New returns a Tracker writing snapshots to gitDir for the given workspace.
-func New(gitDir, workTree string) *Tracker {
-	return &Tracker{git: gitRunner{gitDir: gitDir, workTree: workTree}}
+// statePath persists the undo stack so it survives a restart/resume; pass "" to
+// keep the stack in memory only. An existing statePath is loaded immediately.
+func New(gitDir, workTree, statePath string) *Tracker {
+	t := &Tracker{git: gitRunner{gitDir: gitDir, workTree: workTree}, statePath: statePath}
+	t.load()
+	return t
+}
+
+// load replaces the in-memory stack with the persisted one. Best-effort: a
+// missing or corrupt sidecar yields an empty stack (New has no error return).
+// Caller holds t.mu, except the New/Rebind paths which own the Tracker.
+func (t *Tracker) load() {
+	t.stack = nil
+	if t.statePath == "" {
+		return
+	}
+	data, err := os.ReadFile(t.statePath)
+	if err != nil {
+		return
+	}
+	var stack []string
+	if json.Unmarshal(data, &stack) == nil {
+		t.stack = stack
+	}
+}
+
+// persist writes the stack to statePath via tmp+rename so a crash mid-write
+// can't corrupt the sidecar. A fixed tmp name suffices — a session has a single
+// writer. Best-effort: every error is swallowed (Track/Undo callers ignore
+// snapshot failures; a lost stack must never break a turn). Caller holds t.mu.
+func (t *Tracker) persist() {
+	if t.statePath == "" {
+		return
+	}
+	data, err := json.Marshal(t.stack)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(t.statePath), 0o755); err != nil {
+		return
+	}
+	tmp := t.statePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, t.statePath)
 }
 
 // Track snapshots the current workspace as the start point of the next turn.
@@ -66,6 +127,7 @@ func (t *Tracker) Track() (bool, error) {
 		return false, nil // workspace unchanged since the last snapshot
 	}
 	t.stack = append(t.stack, hash)
+	t.persist()
 	return true, nil
 }
 
@@ -79,6 +141,13 @@ func (t *Tracker) Undo() (changed []string, ok bool, err error) {
 	}
 	hash := t.stack[len(t.stack)-1]
 	t.stack = t.stack[:len(t.stack)-1]
+	t.persist()
+	// The snapshot may have been collected by background gc (objects past the
+	// prune window are unreachable). Probe before reverting so a missing tree
+	// reports cleanly instead of failing deep inside revertTo.
+	if _, probeErr := t.git.run("cat-file", "-e", hash+"^{tree}"); probeErr != nil {
+		return nil, true, ErrSnapshotExpired
+	}
 	changed, err = t.revertTo(hash)
 	if err != nil {
 		return nil, true, err
@@ -86,12 +155,14 @@ func (t *Tracker) Undo() (changed []string, ok bool, err error) {
 	return changed, true, nil
 }
 
-// Reset clears the in-memory undo stack (shadow objects stay on disk). Called
-// on session switch/reset, where prior turns' snapshots no longer map to the
-// new conversation.
-func (t *Tracker) Reset() {
+// Rebind repoints the tracker at a new session's sidecar: it drops the current
+// in-memory stack and loads whatever was persisted for statePath (empty when
+// that session has none yet). Called on session switch/new, where the prior
+// session's undo points no longer apply. Shadow objects stay on disk.
+func (t *Tracker) Rebind(statePath string) {
 	t.mu.Lock()
-	t.stack = nil
+	t.statePath = statePath
+	t.load()
 	t.mu.Unlock()
 }
 
@@ -99,22 +170,35 @@ func (t *Tracker) ensureInit() error {
 	if t.initialized {
 		return nil
 	}
-	if _, err := os.Stat(filepath.Join(t.git.gitDir, "HEAD")); err == nil {
-		t.initialized = true
-		return nil
-	}
-	if err := os.MkdirAll(t.git.gitDir, 0o755); err != nil {
-		return err
-	}
-	// Init via GIT_DIR/GIT_WORK_TREE env so the repo metadata lands in gitDir.
-	// A `--git-dir` flag on `init` would instead create a repo *named* gitDir.
-	cmd := exec.Command("git", "init", "-q")
-	cmd.Env = append(noPromptEnv(), "GIT_DIR="+t.git.gitDir, "GIT_WORK_TREE="+t.git.workTree)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git init shadow repo: %w: %s", err, strings.TrimSpace(string(out)))
+	if _, err := os.Stat(filepath.Join(t.git.gitDir, "HEAD")); err != nil {
+		if err := os.MkdirAll(t.git.gitDir, 0o755); err != nil {
+			return err
+		}
+		// Init via GIT_DIR/GIT_WORK_TREE env so the repo metadata lands in gitDir.
+		// A `--git-dir` flag on `init` would instead create a repo *named* gitDir.
+		cmd := exec.Command("git", "init", "-q")
+		cmd.Env = append(noPromptEnv(), "GIT_DIR="+t.git.gitDir, "GIT_WORK_TREE="+t.git.workTree)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git init shadow repo: %w: %s", err, strings.TrimSpace(string(out)))
+		}
 	}
 	t.initialized = true
+	// Reclaim the shadow repo once per process, now that it's known to exist.
+	// sync.Once collapses repeated ensureInit calls (every Track) to a single gc.
+	t.gcOnce.Do(func() { go t.backgroundGC() })
 	return nil
+}
+
+// backgroundGC reclaims the shadow repo so it doesn't grow unbounded. Snapshots
+// are unreachable (we only write-tree, never commit), so gc prunes tree/blob
+// objects past gcPruneWindow. Best-effort: a failure just leaves the repo
+// larger. Holds t.mu so gc is mutually exclusive with Track/Undo (mirrors
+// opencode's locked cleanup) — otherwise a concurrent prune could collect the
+// very hash Undo just probed, dropping it into revertTo's delete path.
+func (t *Tracker) backgroundGC() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, _ = t.git.run("gc", "--prune="+gcPruneWindow, "--quiet")
 }
 
 // add stages the whole workspace into the shadow index, honoring the

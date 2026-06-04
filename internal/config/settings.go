@@ -317,6 +317,13 @@ func SnapshotDir(cwd string) string {
 	return filepath.Join(UserConfigDir(), "snapshot", projectID(cwd))
 }
 
+// UndoStatePath returns the per-session sidecar that persists /undo's snapshot
+// stack across restarts: ~/.codebot/projects/<projectID>/<sessionID>/undo-stack.json.
+// It sits under the per-session dir alongside bg/ and tool-outputs/.
+func UndoStatePath(cwd, sessionID string) string {
+	return filepath.Join(SessionsDir(cwd), sessionID, "undo-stack.json")
+}
+
 // SessionMemoryPath returns ~/.codebot/projects/<projectID>/session-memory.md.
 // This file is project-scoped (shared across sessions in the same cwd) so
 // that resuming or starting a new session can inherit accumulated context.

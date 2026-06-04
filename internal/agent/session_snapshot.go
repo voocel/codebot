@@ -1,5 +1,7 @@
 package agent
 
+import "github.com/voocel/codebot/internal/config"
+
 // Snapshotter captures and restores workspace file checkpoints for /undo.
 // Implemented by internal/snapshot.Tracker and injected at assembly time, so
 // the agent package stays decoupled from the git-shadow implementation.
@@ -10,8 +12,19 @@ type Snapshotter interface {
 	// Undo reverts the workspace to the most recent checkpoint. ok is false
 	// when there is nothing to undo; changed lists the affected paths.
 	Undo() (changed []string, ok bool, err error)
-	// Reset clears the checkpoint history (e.g. on session switch).
-	Reset()
+	// Rebind repoints the tracker at a session's persisted undo stack: it drops
+	// the in-memory stack and loads whatever statePath holds. Called on session
+	// switch/new so each session gets its own checkpoint history.
+	Rebind(statePath string)
+}
+
+// undoStatePath returns the sidecar file persisting this session's undo stack,
+// under the per-session dir alongside bg/ and tool-outputs/.
+//
+// Caller must hold s.mu. It reads s.store directly (Store.Header has its own
+// lock) instead of s.SessionID(), which locks s.mu and would self-deadlock.
+func (s *Session) undoStatePath() string {
+	return config.UndoStatePath(s.cwd, s.store.Header().SessionID)
 }
 
 // snapshotTurnStart records a workspace checkpoint at the start of a turn.

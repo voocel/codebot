@@ -380,8 +380,9 @@ func (s *Session) resetHarnessStateLocked() {
 	if s.fileReadState != nil {
 		s.fileReadState.Reset()
 	}
-	// Prior turns' snapshots no longer map to the new conversation.
+	// Repoint at the new session's persisted undo stack (empty for a fresh
+	// session); prior snapshots no longer map to this conversation.
 	if s.snapshotter != nil {
-		s.snapshotter.Reset()
+		s.snapshotter.Rebind(s.undoStatePath())
 	}
 }

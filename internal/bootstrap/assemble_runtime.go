@@ -323,7 +323,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		SkillCatalog:          services.skillCatalog,
 		SkillUsage:            services.skillUsage,
 		HookRunner:            assembly.hookRunner,
-		Snapshotter:           buildSnapshotter(input.cwd, assembly.settings.Snapshot),
+		Snapshotter:           buildSnapshotter(input.cwd, input.sessionStore.Header().SessionID, assembly.settings.Snapshot),
 		FrozenIdentity:        assembly.frozenIdentity,
 		FrozenInstructions:    assembly.frozenInstructions,
 		InitialMCPOverlay:     assembly.initialMCPOverlay,
@@ -340,11 +340,11 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 // disabled. Mirrors opencode's enabled(): off unless the setting is on AND cwd
 // is a git repository (the shadow repo borrows git's plumbing, so /undo is
 // git-only for now).
-func buildSnapshotter(cwd string, enabled bool) agent.Snapshotter {
+func buildSnapshotter(cwd, sessionID string, enabled bool) agent.Snapshotter {
 	if !enabled || !config.IsGitRepo(cwd) {
 		return nil
 	}
-	return snapshot.New(config.SnapshotDir(cwd), cwd)
+	return snapshot.New(config.SnapshotDir(cwd), cwd, config.UndoStatePath(cwd, sessionID))
 }
 
 func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, services *bootServices, session *agent.Session, baseTools, tools []agentcore.Tool, ag *agentcore.Agent, taskRT *task.Runtime, contextEngine *agentctx.ContextEngine, summaryCompact *agentctx.FullSummaryStrategy) {
