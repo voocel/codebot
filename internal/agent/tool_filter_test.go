@@ -14,9 +14,9 @@ import (
 // uses one concrete name per tool to keep cases readable.
 type fakeTool struct{ name string }
 
-func (t *fakeTool) Name() string         { return t.name }
-func (t *fakeTool) Label() string        { return t.name }
-func (t *fakeTool) Description() string  { return "" }
+func (t *fakeTool) Name() string           { return t.name }
+func (t *fakeTool) Label() string          { return t.name }
+func (t *fakeTool) Description() string    { return "" }
 func (t *fakeTool) Schema() map[string]any { return map[string]any{"type": "object"} }
 func (t *fakeTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	return nil, nil
@@ -80,9 +80,9 @@ func TestFilter_AlwaysDropsSubagentTool(t *testing.T) {
 	}
 }
 
-// Built-in sync agent (coder-like): keeps the broad coding toolset but loses
-// every tool the main agent reserves for itself.
-func TestFilter_BuiltInSync_Coder(t *testing.T) {
+// Built-in sync agent (general-purpose-like): keeps the broad coding toolset
+// but loses every tool the main agent reserves for itself.
+func TestFilter_BuiltInSync_GeneralPurpose(t *testing.T) {
 	got := names(FilterToolsForAgent(fullMainPool(), FilterOpts{
 		IsBuiltIn: true,
 		IsAsync:   false,
@@ -97,7 +97,7 @@ func TestFilter_BuiltInSync_Coder(t *testing.T) {
 		"mcp__github__create_issue",
 	} {
 		if !contains(got, want) {
-			t.Errorf("coder pool missing %q", want)
+			t.Errorf("general-purpose pool missing %q", want)
 		}
 	}
 
@@ -113,7 +113,7 @@ func TestFilter_BuiltInSync_Coder(t *testing.T) {
 		"team_dismiss",
 	} {
 		if contains(got, deny) {
-			t.Errorf("coder pool should not contain %q", deny)
+			t.Errorf("general-purpose pool should not contain %q", deny)
 		}
 	}
 }
@@ -230,8 +230,8 @@ func TestFilter_PreservesInstances(t *testing.T) {
 }
 
 // BuildToolPool must return INDEPENDENT read/write/edit instances on each
-// call. Two sub-agent kinds (e.g. explore and coder) share their input tool
-// list — if they also share the read instance, a read in one silences a
+// call. Two sub-agent kinds (e.g. explore and general-purpose) share their input
+// tool list — if they also share the read instance, a read in one silences a
 // missing read-before-write check in the other. The pool is the linchpin of
 // that invariant; this test pins it down.
 //

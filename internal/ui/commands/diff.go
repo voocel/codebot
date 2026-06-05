@@ -115,9 +115,15 @@ func parseNumstat(numstat string) (files []diffStatEntry, totAdd, totDel int) {
 	return files, totAdd, totDel
 }
 
-// diffSelectedRowStyle paints the selected file row as a filled highlight band
-// (light fg on brand bg), matching codebot's active-tab convention.
-var diffSelectedRowStyle = lipgloss.NewStyle().Foreground(tui.Strong).Background(tui.Brand).Bold(true)
+var (
+	// A soft teal tint for /diff's selected file label. It stays local because
+	// the rest of the app uses foreground-only selection for command lists.
+	diffSelectedLabelBg = lipgloss.AdaptiveColor{Light: "#DCEFEA", Dark: "#244A44"}
+
+	// diffSelectedRowStyle highlights only the selected file label, leaving the
+	// stat segment free to keep its green/red diff colors.
+	diffSelectedRowStyle = lipgloss.NewStyle().Foreground(tui.Strong).Background(diffSelectedLabelBg).Bold(true)
+)
 
 func (c *DiffCommand) View(width, height int) string {
 	if c.state == nil {
@@ -138,8 +144,7 @@ func (c *DiffCommand) View(width, height int) string {
 	if len(s.files) == 1 {
 		noun = "file"
 	}
-	_, summary := diffCounts(diffStatEntry{add: s.totAdd, del: s.totDel})
-	fmt.Fprintf(&sb, "%d %s changed %s\n\n", len(s.files), noun, summary)
+	fmt.Fprintf(&sb, "%d %s changed %s\n\n", len(s.files), noun, diffSummary(s))
 
 	// Rows that fit, reserving the borders + title + summary + hint chrome.
 	limit := len(s.files)
@@ -168,40 +173,36 @@ func (c *DiffCommand) View(width, height int) string {
 // diffRule renders a full-width horizontal divider for the overlay's top and
 // bottom borders, reusing codebot's standard overlay separator color.
 func diffRule(width int) string {
-	if width < 1 {
-		width = 80
-	}
+	width = diffWidth(width)
 	return tui.SeparatorStyle.Render(strings.Repeat("─", width))
 }
 
-// renderRow lays out one file row: "❯ name ........ +N -M", the name in the
-// terminal's default color (highlighted when selected), counts right-aligned
-// and colored (green additions, red deletions).
+// renderRow lays out one file row: "❯ name  +N -M". Counts stay near the file
+// name instead of being pushed to the far edge of the overlay.
 func (c *DiffCommand) renderRow(e diffStatEntry, selected bool, width int) string {
+	width = diffWidth(width)
 	prefix := "  "
 	if selected {
 		prefix = "❯ "
 	}
 	numPlain, numColored := diffCounts(e)
 
-	const rightMargin = 1
-	// Truncate an over-long name, keeping the tail (prefixed with …).
-	nameBudget := width - lipgloss.Width(prefix) - lipgloss.Width(numPlain) - rightMargin - 1
-	name := e.path
-	if nameBudget > 1 {
-		if runes := []rune(name); len(runes) > nameBudget {
-			name = "…" + string(runes[len(runes)-nameBudget+1:])
-		}
+	statGap := 0
+	if numPlain != "" {
+		statGap = 2
 	}
+	// Truncate an over-long name, keeping the tail (prefixed with …).
+	nameBudget := width - lipgloss.Width(prefix) - lipgloss.Width(numPlain) - statGap
+	name := truncateTail(e.path, max(1, nameBudget))
 
 	left := prefix + name
-	leftWidth := lipgloss.Width(left)
 	if selected {
 		left = diffSelectedRowStyle.Render(left)
 	}
-
-	pad := max(1, width-leftWidth-lipgloss.Width(numPlain)-rightMargin)
-	return left + strings.Repeat(" ", pad) + numColored
+	if numPlain == "" {
+		return left
+	}
+	return left + strings.Repeat(" ", statGap) + numColored
 }
 
 // diffCounts returns the per-file change segment both as plain text (for width
@@ -221,4 +222,54 @@ func diffCounts(e diffStatEntry) (plain, colored string) {
 		col = append(col, tui.DiffStatRemoveStyle.Render(fmt.Sprintf("-%d", e.del)))
 	}
 	return strings.Join(p, " "), strings.Join(col, " ")
+}
+
+func diffWidth(width int) int {
+	if width < 1 {
+		return 80
+	}
+	return width
+}
+
+func diffSummary(s *diffListState) string {
+	var parts []string
+	if _, counts := diffCounts(diffStatEntry{add: s.totAdd, del: s.totDel}); counts != "" {
+		parts = append(parts, counts)
+	}
+
+	binary := 0
+	for _, f := range s.files {
+		if f.binary {
+			binary++
+		}
+	}
+	if binary > 0 {
+		label := "binary changes"
+		if binary == 1 {
+			label = "binary change"
+		}
+		parts = append(parts, tui.MutedStyle.Render(fmt.Sprintf("%d %s", binary, label)))
+	}
+	if len(parts) == 0 {
+		return tui.MutedStyle.Render("metadata only")
+	}
+	return strings.Join(parts, tui.MutedStyle.Render(" · "))
+}
+
+func truncateTail(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width("…"+string(runes)) > width {
+		runes = runes[1:]
+	}
+	return "…" + string(runes)
 }

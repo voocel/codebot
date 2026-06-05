@@ -23,6 +23,8 @@ const (
 	SourceUser    AgentSource = "user"    // ~/.codebot/agents/
 )
 
+const generalPurposeAgentName = "general-purpose"
+
 // IsBuiltIn reports whether the source qualifies for the built-in trust tier
 // in tool filtering. Today only SourceBuiltin does; SourceProject is kept
 // out because a project agent file changes via PR review but executes on
@@ -209,9 +211,9 @@ func BuiltinDefinitions(cwd string) []AgentDefinition {
 			BaseDir:         "builtin",
 		},
 		{
-			Name:         "coder",
+			Name:         generalPurposeAgentName,
 			Description:  "General-purpose coding agent. Independently search, read, and write code to complete subtasks.",
-			SystemPrompt: config.CoderSubAgentPrompt(cwd),
+			SystemPrompt: config.GeneralPurposeSubAgentPrompt(cwd),
 			MaxTurns:     30,
 			Source:       SourceBuiltin,
 			BaseDir:      "builtin",

@@ -68,6 +68,18 @@ func TestMergeAgents_SkipsEmptyNames(t *testing.T) {
 	}
 }
 
+func TestBuiltinDefinitionsUseGeneralPurposeName(t *testing.T) {
+	defs := BuiltinDefinitions("/tmp/ws")
+	var names []string
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+	want := []string{"explore", "plan", "general-purpose"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("builtin names = %v, want %v", names, want)
+	}
+}
+
 // Validate must fail when any required field is empty. Tests are tabular
 // because the four checks are nearly identical and a table makes adding a
 // fifth check trivial.

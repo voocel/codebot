@@ -78,8 +78,8 @@ Format: 2-12 words, match the user's style. Or nothing.
 
 Reply with ONLY the suggestion, no quotes or explanation.`
 
-// CoderSubAgentPrompt returns the system prompt for the coder sub-agent.
-func CoderSubAgentPrompt(cwd string) string {
+// GeneralPurposeSubAgentPrompt returns the system prompt for the general-purpose sub-agent.
+func GeneralPurposeSubAgentPrompt(cwd string) string {
 	return fmt.Sprintf(`You are a coding expert working in %s.
 
 ## Responsibilities

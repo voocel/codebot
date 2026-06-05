@@ -213,8 +213,8 @@ func NormalizeAgentType(agent string) string {
 		return "explore"
 	case "plan":
 		return "plan"
-	case "coder", "general-purpose", "":
-		return "coder"
+	case "general-purpose", "":
+		return "general-purpose"
 	default:
 		return strings.TrimSpace(agent)
 	}

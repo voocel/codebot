@@ -58,7 +58,7 @@ var allAgentDisallowed = map[string]bool{
 // customAgentDisallowed adds a stricter floor for sub-agents loaded from
 // user-controlled sources (.codebot/agents/*.md, etc.). Empty today — the
 // hook exists so Stage 3 can tighten file-write surfaces for user-defined
-// agents without disturbing the built-in agents (explore/plan/coder).
+// agents without disturbing the built-in agents.
 var customAgentDisallowed = map[string]bool{}
 
 // asyncAgentAllowed is a strict allow-list. Async (background) sub-agents
@@ -162,8 +162,9 @@ func toSet(xs []string) map[string]bool {
 // through by reference — they are either stateless or already keyed by cwd.
 //
 // Call this ONCE PER SUB-AGENT KIND. Two sub-agent kinds (e.g. explore and
-// coder) must NOT share the returned slice: doing so re-introduces the same
-// cross-pollination of read state that we created this function to prevent.
+// general-purpose) must NOT share the returned slice: doing so re-introduces
+// the same cross-pollination of read state that we created this function to
+// prevent.
 func BuildToolPool(cwd string, mainTools []agentcore.Tool) []agentcore.Tool {
 	state := tools.NewFileReadState()
 	out := make([]agentcore.Tool, 0, len(mainTools))

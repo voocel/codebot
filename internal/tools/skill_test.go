@@ -248,8 +248,8 @@ func TestSkillToolContextForkDefaultAgent(t *testing.T) {
 
 	var params map[string]string
 	json.Unmarshal(capturedArgs, &params)
-	if params["agent"] != "coder" {
-		t.Errorf("expected default agent=coder, got %q", params["agent"])
+	if params["agent"] != "general-purpose" {
+		t.Errorf("expected default agent=general-purpose, got %q", params["agent"])
 	}
 }
 
@@ -343,9 +343,9 @@ func TestNormalizeAgentType(t *testing.T) {
 		{"Explore", "explore"},
 		{"explore", "explore"},
 		{"Plan", "plan"},
-		{"general-purpose", "coder"},
+		{"general-purpose", "general-purpose"},
+		{"", "general-purpose"},
 		{"coder", "coder"},
-		{"", "coder"},
 		{"custom-agent", "custom-agent"},
 	}
 	for _, tc := range tests {
