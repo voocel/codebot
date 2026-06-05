@@ -100,6 +100,11 @@ var (
 	// through; only the background tells the eye "this part actually changed".
 	DiffAddInverseStyle    = lipgloss.NewStyle().Background(DiffAddBgStrong)
 	DiffRemoveInverseStyle = lipgloss.NewStyle().Background(DiffRemoveBgStrong)
+
+	// /diff's --stat bar: plain foreground sigils (no background fill, unlike
+	// the edit-result rows above) for the per-file +/- change graph.
+	DiffStatAddStyle    = lipgloss.NewStyle().Foreground(Success)
+	DiffStatRemoveStyle = lipgloss.NewStyle().Foreground(Danger)
 )
 
 // ---------------------------------------------------------------------------
@@ -206,4 +211,3 @@ var (
 
 	TagSubtleStyle = lipgloss.NewStyle().Foreground(Text)
 )
-

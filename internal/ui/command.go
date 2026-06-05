@@ -106,7 +106,7 @@ func (a *App) builtinCommands() []commands.Command {
 		commands.Loop(a.CronStore),
 		commands.Undo(a.Session),
 		commands.Redo(a.Session),
-		commands.Diff(a.Session),
+		commands.Diff(a.Session, a.registry),
 		commands.Exit(),
 	}
 }
