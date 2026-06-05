@@ -295,7 +295,7 @@ func (t *Tracker) excludeLargeFiles() error {
 	for _, rel := range others {
 		fi, statErr := os.Stat(filepath.Join(t.git.workTree, rel))
 		if statErr == nil && !fi.IsDir() && fi.Size() > maxFileSize {
-			large = append(large, "/"+rel)
+			large = append(large, gitignorePattern(rel))
 		}
 	}
 	excludePath := filepath.Join(t.git.gitDir, "info", "exclude")
@@ -306,6 +306,29 @@ func (t *Tracker) excludeLargeFiles() error {
 		return os.WriteFile(excludePath, nil, 0o644)
 	}
 	return os.WriteFile(excludePath, []byte(strings.Join(large, "\n")+"\n"), 0o644)
+}
+
+// gitignorePattern turns a workspace-relative path into a literal info/exclude
+// entry. The leading "/" anchors the match to the work-tree root (and
+// incidentally neutralizes a leading '#' or '!', which would otherwise read as
+// comment or negation). The wildmatch metacharacters \ * ? [ are backslash-
+// escaped so a real name like "[id].tsx" or "a*b.bin" is matched verbatim rather
+// than as a glob — without this, an oversized glob-named file slips into the
+// snapshot while an unrelated file caught by the pattern is wrongly dropped.
+func gitignorePattern(rel string) string {
+	var b strings.Builder
+	b.Grow(len(rel) + 1)
+	b.WriteByte('/')
+	for i := 0; i < len(rel); i++ {
+		switch c := rel[i]; c {
+		case '\\', '*', '?', '[':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // revertTo restores the workspace to the given tree hash: files differing from

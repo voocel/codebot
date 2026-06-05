@@ -33,6 +33,9 @@ func (c *RedoCommand) Spec() Spec {
 }
 
 func (c *RedoCommand) Run(_ Invocation) tea.Cmd {
+	if notice := snapshotUnavailable(c.session); notice != nil {
+		return notice
+	}
 	changed, ok, err := c.session.Redo()
 	switch {
 	case err != nil:

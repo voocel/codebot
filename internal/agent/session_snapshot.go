@@ -44,6 +44,14 @@ func (s *Session) snapshotTurnStart() {
 	_, _ = s.snapshotter.Track()
 }
 
+// SnapshotEnabled reports whether workspace snapshots are active for this
+// session. It is false when the workspace isn't a git repository (or the
+// snapshot setting is off), in which case Undo/Redo/Diff are inert no-ops —
+// callers use this to explain the no-op instead of reporting "nothing to do".
+func (s *Session) SnapshotEnabled() bool {
+	return s.snapshotter != nil
+}
+
 // Undo reverts workspace files to the start of the most recent turn that
 // changed files, leaving conversation history untouched. ok is false when
 // there is nothing to undo (no tracker, or no recorded changes).

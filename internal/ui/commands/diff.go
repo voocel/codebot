@@ -33,6 +33,9 @@ func (c *DiffCommand) Spec() Spec {
 }
 
 func (c *DiffCommand) Run(_ Invocation) tea.Cmd {
+	if notice := snapshotUnavailable(c.session); notice != nil {
+		return notice
+	}
 	numstat, err := c.session.Diff()
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Diff failed: " + err.Error()))
@@ -46,7 +49,7 @@ func (c *DiffCommand) Run(_ Invocation) tea.Cmd {
 	var b strings.Builder
 	b.WriteString("/undo would roll back these changes:")
 	var totalAdd, totalDel, files int
-	for _, line := range strings.Split(numstat, "\n") {
+	for line := range strings.SplitSeq(numstat, "\n") {
 		// numstat line: "<adds>\t<dels>\t<path>"; binary files report "-".
 		fields := strings.SplitN(line, "\t", 3)
 		if len(fields) != 3 {

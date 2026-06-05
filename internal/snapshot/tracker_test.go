@@ -126,6 +126,36 @@ func TestLargeFileExcluded(t *testing.T) {
 	}
 }
 
+// TestLargeFileGlobNameExcluded guards the large-file exclude against filenames
+// containing gitignore metacharacters. The oversized "[id].bin" must be matched
+// literally (excluded), while the small "i.bin" — which the unescaped character
+// class "[id]" would wrongly match and drop — must stay in the snapshot.
+func TestLargeFileGlobNameExcluded(t *testing.T) {
+	requireGit(t)
+	work := t.TempDir()
+	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+
+	if err := os.WriteFile(filepath.Join(work, "[id].bin"), make([]byte, maxFileSize+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, work, "i.bin", "keep me")
+
+	if _, err := tr.Track(); err != nil {
+		t.Fatal(err)
+	}
+	hash := tr.stack[len(tr.stack)-1]
+	out, err := tr.git.run("ls-tree", "-r", "--name-only", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "[id].bin") {
+		t.Fatal("oversized glob-named file should be excluded")
+	}
+	if !strings.Contains(out, "i.bin") {
+		t.Fatal("small file must not be dropped by an unescaped character class")
+	}
+}
+
 // TestNestedFile verifies snapshot/revert works for files in subdirectories
 // and that reported paths are work-tree-relative (guards the cmd.Dir anchoring).
 func TestNestedFile(t *testing.T) {

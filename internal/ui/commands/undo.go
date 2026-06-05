@@ -35,6 +35,9 @@ func (c *UndoCommand) Spec() Spec {
 }
 
 func (c *UndoCommand) Run(_ Invocation) tea.Cmd {
+	if notice := snapshotUnavailable(c.session); notice != nil {
+		return notice
+	}
 	changed, ok, err := c.session.Undo()
 	switch {
 	case errors.Is(err, snapshot.ErrSnapshotExpired):
@@ -44,7 +47,7 @@ func (c *UndoCommand) Run(_ Invocation) tea.Cmd {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Undo failed: " + err.Error()))
 	case !ok:
 		return tui.SendCommandResult(tui.CommandStyle.Render(
-			"Nothing to undo. File checkpoints are kept only inside a git repository for the current session."))
+			"Nothing to undo — no file changes have been recorded in this session yet."))
 	case len(changed) == 0:
 		return tui.SendCommandResult(tui.CommandStyle.Render("The last turn made no file changes."))
 	}
@@ -55,4 +58,17 @@ func (c *UndoCommand) Run(_ Invocation) tea.Cmd {
 		b.WriteString("\n  " + f)
 	}
 	return tui.SendCommandResult(tui.CommandStyle.Render(b.String()))
+}
+
+// snapshotUnavailable returns an explanatory notice when workspace snapshots are
+// off — the directory isn't a git repository, so /undo, /redo and /diff have
+// nothing to operate on. Returns nil when snapshots are active. Shared by all
+// three commands so they say *why* they're inert instead of pretending there is
+// simply nothing to do.
+func snapshotUnavailable(session *agent.Session) tea.Cmd {
+	if session.SnapshotEnabled() {
+		return nil
+	}
+	return tui.SendCommandResult(tui.CommandStyle.Render(
+		"Snapshots are off because this directory isn't a git repository — /undo, /redo and /diff are unavailable. Run `git init` here to enable them."))
 }
