@@ -45,7 +45,7 @@ func RenderEditResult(result json.RawMessage, filePath string, width int) string
 		return connector + MutedStyle.Render(msg)
 	}
 
-	lines := strings.Split(diff, "\n")
+	lines := normalizeTerminalEmptyDiffRows(strings.Split(diff, "\n"))
 	added, removed := countDiffLines(lines)
 	stats := fmt.Sprintf("Added %d lines, removed %d lines", added, removed)
 
@@ -97,6 +97,95 @@ func RenderEditResult(result json.RawMessage, filePath string, width int) string
 		i++
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// normalizeTerminalEmptyDiffRows drops the synthetic empty line produced by
+// strings.Split(fileContent, "\n") for a final newline. agentcore's compact
+// diff format numbers that sentinel as the last old/new line, but displaying it
+// looks like an extra blank line was edited.
+func normalizeTerminalEmptyDiffRows(lines []string) []string {
+	maxOld, maxNew := 0, 0
+	type parsedRow struct {
+		ok      bool
+		sign    byte
+		lineNum int
+		content string
+	}
+	parsed := make([]parsedRow, len(lines))
+	for i, line := range lines {
+		sign, lineNum, content, ok := parseNumberedDiffRow(line)
+		if !ok {
+			continue
+		}
+		parsed[i] = parsedRow{ok: true, sign: sign, lineNum: lineNum, content: content}
+		switch sign {
+		case '+':
+			maxNew = max(maxNew, lineNum)
+		case '-', ' ':
+			maxOld = max(maxOld, lineNum)
+		}
+	}
+
+	hasTerminalRemoved := false
+	hasTerminalAdded := false
+	for _, row := range parsed {
+		if !row.ok || row.content != "" {
+			continue
+		}
+		if row.sign == '-' && row.lineNum == maxOld {
+			hasTerminalRemoved = true
+		}
+		if row.sign == '+' && row.lineNum == maxNew {
+			hasTerminalAdded = true
+		}
+	}
+
+	out := lines[:0]
+	for i, line := range lines {
+		row := parsed[i]
+		if row.ok && row.content == "" {
+			switch row.sign {
+			case '+':
+				if row.lineNum == maxNew && hasTerminalRemoved {
+					continue
+				}
+			case '-', ' ':
+				if row.sign == '-' && row.lineNum == maxOld && hasTerminalAdded {
+					continue
+				}
+				if row.sign == ' ' && row.lineNum == maxOld {
+					continue
+				}
+			}
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func parseNumberedDiffRow(line string) (sign byte, lineNum int, content string, ok bool) {
+	if len(line) == 0 {
+		return 0, 0, "", false
+	}
+	sign = line[0]
+	if sign != '+' && sign != '-' && sign != ' ' {
+		return 0, 0, "", false
+	}
+	i := 1
+	for i < len(line) && line[i] == ' ' {
+		i++
+	}
+	if i >= len(line) || line[i] < '0' || line[i] > '9' {
+		return 0, 0, "", false
+	}
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		lineNum = lineNum*10 + int(line[i]-'0')
+		i++
+	}
+	if i >= len(line) || line[i] != ' ' {
+		return 0, 0, "", false
+	}
+	return sign, lineNum, line[i+1:], true
 }
 
 // renderContextLine renders an unchanged diff line: muted gutter + highlighted

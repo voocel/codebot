@@ -26,6 +26,9 @@ import (
 // move on. The expired hash is already dropped from the stack.
 var ErrSnapshotExpired = errors.New("snapshot expired or unavailable")
 
+// ErrTrackerClosed means a snapshot operation was attempted after Close.
+var ErrTrackerClosed = errors.New("snapshot tracker closed")
+
 // maxFileSize caps which untracked files enter a snapshot. Larger files are
 // excluded so the shadow repo doesn't balloon on build artifacts or binaries
 // that escaped .gitignore. Mirrors opencode's 2 MiB limit.
@@ -47,11 +50,13 @@ const gcPruneWindow = "7.days"
 type Tracker struct {
 	git         gitRunner
 	mu          sync.Mutex
-	stack       []string  // undo stack: pre-turn tree hashes, persisted to statePath
-	redoStack   []string  // redo stack: pre-undo workspace hashes, memory-only
-	statePath   string    // sidecar persisting the undo stack across restarts; "" = memory only
+	stack       []string // undo stack: pre-turn tree hashes, persisted to statePath
+	redoStack   []string // redo stack: pre-undo workspace hashes, memory-only
+	statePath   string   // sidecar persisting the undo stack across restarts; "" = memory only
 	initialized bool
 	gcOnce      sync.Once // guards the once-per-process background gc
+	gcDone      chan struct{}
+	closed      bool
 }
 
 // New returns a Tracker writing snapshots to gitDir for the given workspace.
@@ -61,6 +66,21 @@ func New(gitDir, workTree, statePath string) *Tracker {
 	t := &Tracker{git: gitRunner{gitDir: gitDir, workTree: workTree}, statePath: statePath}
 	t.load()
 	return t
+}
+
+// Close waits for the tracker's background maintenance to finish.
+//
+// Snapshot operations are otherwise synchronous, but ensureInit starts a
+// best-effort git gc in the background. Tests and runtime shutdown call Close
+// so temp-dir cleanup and process teardown never race that git process.
+func (t *Tracker) Close() {
+	t.mu.Lock()
+	t.closed = true
+	done := t.gcDone
+	t.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // load replaces the in-memory stack with the persisted one. Best-effort: a
@@ -238,6 +258,9 @@ func (t *Tracker) Rebind(statePath string) {
 }
 
 func (t *Tracker) ensureInit() error {
+	if t.closed {
+		return ErrTrackerClosed
+	}
 	if t.initialized {
 		return nil
 	}
@@ -256,7 +279,14 @@ func (t *Tracker) ensureInit() error {
 	t.initialized = true
 	// Reclaim the shadow repo once per process, now that it's known to exist.
 	// sync.Once collapses repeated ensureInit calls (every Track) to a single gc.
-	t.gcOnce.Do(func() { go t.backgroundGC() })
+	t.gcOnce.Do(func() {
+		done := make(chan struct{})
+		t.gcDone = done
+		go func() {
+			defer close(done)
+			t.backgroundGC()
+		}()
+	})
 	return nil
 }
 

@@ -22,6 +22,8 @@ type Snapshotter interface {
 	// the in-memory stack and loads whatever statePath holds. Called on session
 	// switch/new so each session gets its own checkpoint history.
 	Rebind(statePath string)
+	// Close waits for any background snapshot maintenance to finish.
+	Close()
 }
 
 // undoStatePath returns the sidecar file persisting this session's undo stack,

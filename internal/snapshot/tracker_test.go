@@ -23,6 +23,18 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
+func newTestTracker(t *testing.T, gitDir, workTree, statePath string) *Tracker {
+	t.Helper()
+	tr := New(gitDir, workTree, statePath)
+	t.Cleanup(tr.Close)
+	return tr
+}
+
+func newTempTracker(t *testing.T, workTree string) *Tracker {
+	t.Helper()
+	return newTestTracker(t, filepath.Join(t.TempDir(), "shadow"), workTree, "")
+}
+
 func readFile(t *testing.T, dir, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(dir, name))
@@ -37,7 +49,7 @@ func readFile(t *testing.T, dir, name string) string {
 func TestTrackAndUndo(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "v1")
 	if _, err := tr.Track(); err != nil { // snapshot 1: a=v1
@@ -88,7 +100,7 @@ func TestTrackAndUndo(t *testing.T) {
 func TestUnchangedTurnSkipped(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "v1")
 	if changed, _ := tr.Track(); !changed {
@@ -103,7 +115,7 @@ func TestUnchangedTurnSkipped(t *testing.T) {
 func TestLargeFileExcluded(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "small.txt", "ok")
 	if err := os.WriteFile(filepath.Join(work, "big.bin"), make([]byte, maxFileSize+1), 0o644); err != nil {
@@ -133,7 +145,7 @@ func TestLargeFileExcluded(t *testing.T) {
 func TestLargeFileGlobNameExcluded(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	if err := os.WriteFile(filepath.Join(work, "[id].bin"), make([]byte, maxFileSize+1), 0o644); err != nil {
 		t.Fatal(err)
@@ -164,7 +176,7 @@ func TestNestedFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(work, "pkg"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "pkg/x.go", "package pkg\n")
 	if _, err := tr.Track(); err != nil {
@@ -192,7 +204,7 @@ func TestPersistAndReload(t *testing.T) {
 	shadow := filepath.Join(t.TempDir(), "shadow")
 	state := filepath.Join(t.TempDir(), "undo-stack.json")
 
-	tr := New(shadow, work, state)
+	tr := newTestTracker(t, shadow, work, state)
 	writeFile(t, work, "a.txt", "v1")
 	if _, err := tr.Track(); err != nil {
 		t.Fatal(err)
@@ -201,9 +213,10 @@ func TestPersistAndReload(t *testing.T) {
 	if _, err := tr.Track(); err != nil {
 		t.Fatal(err)
 	}
+	tr.Close()
 
 	// Fresh Tracker over the same shadow + sidecar: stack reloads from disk.
-	tr2 := New(shadow, work, state)
+	tr2 := newTestTracker(t, shadow, work, state)
 	writeFile(t, work, "a.txt", "v3")
 	if _, ok, err := tr2.Undo(); err != nil || !ok {
 		t.Fatalf("undo after reload: ok=%v err=%v", ok, err)
@@ -222,7 +235,7 @@ func TestRebindIsolation(t *testing.T) {
 	stateA := filepath.Join(t.TempDir(), "a.json")
 	stateB := filepath.Join(t.TempDir(), "b.json")
 
-	tr := New(shadow, work, stateA)
+	tr := newTestTracker(t, shadow, work, stateA)
 	writeFile(t, work, "f.txt", "A1")
 	if _, err := tr.Track(); err != nil {
 		t.Fatal(err)
@@ -251,7 +264,7 @@ func TestRebindIsolation(t *testing.T) {
 func TestUndoExpiredSnapshot(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 	writeFile(t, work, "a.txt", "v1")
 	if _, err := tr.Track(); err != nil { // real snapshot + inits shadow repo
 		t.Fatal(err)
@@ -277,7 +290,7 @@ func TestUndoExpiredSnapshot(t *testing.T) {
 func TestGCKeepsRecentSnapshot(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 	writeFile(t, work, "a.txt", "v1")
 	if _, err := tr.Track(); err != nil {
 		t.Fatal(err)
@@ -302,7 +315,7 @@ func TestGCKeepsRecentSnapshot(t *testing.T) {
 func TestUndoRedo(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "v1")
 	if _, err := tr.Track(); err != nil { // snapshot: a=v1
@@ -342,7 +355,7 @@ func TestUndoRedo(t *testing.T) {
 func TestNewTrackClearsRedo(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "v1")
 	if _, err := tr.Track(); err != nil {
@@ -366,7 +379,7 @@ func TestNewTrackClearsRedo(t *testing.T) {
 func TestRebindClearsRedo(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "v1")
 	if _, err := tr.Track(); err != nil {
@@ -388,13 +401,13 @@ func TestRebindClearsRedo(t *testing.T) {
 func TestDiffTopIncludesUntracked(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "1\n")
 	if _, err := tr.Track(); err != nil { // snapshot before changes
 		t.Fatal(err)
 	}
-	writeFile(t, work, "a.txt", "1\n2\n") // modify
+	writeFile(t, work, "a.txt", "1\n2\n")    // modify
 	writeFile(t, work, "new.txt", "hello\n") // create (untracked)
 
 	out, err := tr.DiffTop()
@@ -414,7 +427,7 @@ func TestDiffTopIncludesUntracked(t *testing.T) {
 func TestExpiredUndoSkipsRedo(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
-	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "v1")
 	if _, err := tr.Track(); err != nil { // real snapshot, inits the repo

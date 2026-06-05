@@ -869,7 +869,7 @@ func (m *Model) appendRestoredMessage(sb *strings.Builder, am agentcore.AgentMes
 }
 
 func (m *Model) appendRestoredUserMessage(sb *strings.Builder, am agentcore.AgentMessage) {
-	text := am.TextContent()
+	text := restoredUserText(am)
 	if text == "" {
 		return
 	}
@@ -919,12 +919,71 @@ func (m *Model) appendRestoredToolMessage(sb *strings.Builder, am agentcore.Agen
 		return
 	}
 	isError, _ := concrete.Metadata["is_error"].(bool)
-	body := m.renderRestoredToolBody(toolCall.name, toolCall.args, json.RawMessage(am.TextContent()), isError)
+	body := m.renderRestoredToolBody(toolCall.name, toolCall.args, restoredToolResultRaw(concrete), isError)
 	if body == "" {
 		return
 	}
 	sb.WriteString("\n")
 	sb.WriteString(body)
+}
+
+func restoredUserText(am agentcore.AgentMessage) string {
+	msg, ok := am.(agentcore.Message)
+	if !ok {
+		return stripLeadingHarnessBlocks(am.TextContent())
+	}
+	if msg.Metadata["injected"] == true && strings.Contains(msg.TextContent(), "<system-reminder>") {
+		return ""
+	}
+	var last string
+	textBlocks := 0
+	for _, block := range msg.Content {
+		if block.Type == agentcore.ContentText && block.Text != "" {
+			textBlocks++
+			last = block.Text
+		}
+	}
+	if textBlocks == 1 && strings.Contains(last, "<system-reminder>") {
+		last = stripLeadingHarnessBlocks(last)
+	}
+	return stripLeadingHarnessBlocks(last)
+}
+
+func stripLeadingHarnessBlocks(text string) string {
+	for {
+		text = strings.TrimLeft(text, " \t\r\n")
+		stripped := false
+		for _, tag := range []string{"system-reminder", "available-deferred-tools", "context-summary"} {
+			open := "<" + tag + ">"
+			if !strings.HasPrefix(text, open) {
+				continue
+			}
+			close := "</" + tag + ">"
+			end := strings.Index(text[len(open):], close)
+			if end < 0 {
+				return ""
+			}
+			text = text[len(open)+end+len(close):]
+			stripped = true
+			break
+		}
+		if !stripped {
+			return text
+		}
+	}
+}
+
+func restoredToolResultRaw(msg agentcore.Message) json.RawMessage {
+	text := msg.TextContent()
+	raw := json.RawMessage(text)
+	if json.Valid(raw) {
+		return raw
+	}
+	encoded, err := json.Marshal(text)
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return encoded
 }
 
 func (m *Model) renderRestoredToolBody(toolName string, args, raw json.RawMessage, isError bool) string {

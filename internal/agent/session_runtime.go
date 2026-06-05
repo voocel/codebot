@@ -1032,7 +1032,11 @@ func (s *Session) Close() {
 	s.persistence.flushPendingMessages()
 	s.mu.Lock()
 	store := s.store
+	snapshotter := s.snapshotter
 	s.mu.Unlock()
+	if snapshotter != nil {
+		snapshotter.Close()
+	}
 	if store != nil {
 		store.Close()
 	}
