@@ -105,6 +105,8 @@ func (a *App) builtinCommands() []commands.Command {
 		commands.Memory(a.Cwd, func() { a.Session.Reload() }),
 		commands.Loop(a.CronStore),
 		commands.Undo(a.Session),
+		commands.Redo(a.Session),
+		commands.Diff(a.Session),
 		commands.Exit(),
 	}
 }

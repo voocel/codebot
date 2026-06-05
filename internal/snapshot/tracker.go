@@ -47,8 +47,9 @@ const gcPruneWindow = "7.days"
 type Tracker struct {
 	git         gitRunner
 	mu          sync.Mutex
-	stack       []string
-	statePath   string // sidecar file persisting stack across restarts; "" = memory only
+	stack       []string  // undo stack: pre-turn tree hashes, persisted to statePath
+	redoStack   []string  // redo stack: pre-undo workspace hashes, memory-only
+	statePath   string    // sidecar persisting the undo stack across restarts; "" = memory only
 	initialized bool
 	gcOnce      sync.Once // guards the once-per-process background gc
 }
@@ -109,17 +110,10 @@ func (t *Tracker) persist() {
 func (t *Tracker) Track() (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.ensureInit(); err != nil {
-		return false, err
-	}
-	if err := t.add(); err != nil {
-		return false, err
-	}
-	out, err := t.git.run("write-tree")
+	hash, err := t.currentTree()
 	if err != nil {
 		return false, err
 	}
-	hash := strings.TrimSpace(out)
 	if hash == "" {
 		return false, nil
 	}
@@ -127,8 +121,27 @@ func (t *Tracker) Track() (bool, error) {
 		return false, nil // workspace unchanged since the last snapshot
 	}
 	t.stack = append(t.stack, hash)
+	t.redoStack = nil // a fresh edit invalidates the redo branch
 	t.persist()
 	return true, nil
+}
+
+// currentTree stages the whole workspace and writes it to a tree object,
+// returning the hash that captures the live workspace. Shared by Track (records
+// turn-start snapshots) and Undo/Redo (snapshot the pre-revert state for the
+// opposite stack). Caller holds t.mu.
+func (t *Tracker) currentTree() (string, error) {
+	if err := t.ensureInit(); err != nil {
+		return "", err
+	}
+	if err := t.add(); err != nil {
+		return "", err
+	}
+	out, err := t.git.run("write-tree")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // Undo reverts the workspace to the most recent turn-start snapshot. ok=false
@@ -140,19 +153,76 @@ func (t *Tracker) Undo() (changed []string, ok bool, err error) {
 		return nil, false, nil
 	}
 	hash := t.stack[len(t.stack)-1]
-	t.stack = t.stack[:len(t.stack)-1]
-	t.persist()
 	// The snapshot may have been collected by background gc (objects past the
-	// prune window are unreachable). Probe before reverting so a missing tree
-	// reports cleanly instead of failing deep inside revertTo.
+	// prune window are unreachable). Probe before mutating anything so a missing
+	// tree reports cleanly; drop the dead point and don't touch the redo stack
+	// (no workspace change happened).
 	if _, probeErr := t.git.run("cat-file", "-e", hash+"^{tree}"); probeErr != nil {
+		t.stack = t.stack[:len(t.stack)-1]
+		t.persist()
 		return nil, true, ErrSnapshotExpired
 	}
-	changed, err = t.revertTo(hash)
+	// Snapshot the current (pre-undo) workspace so Redo can return to it.
+	redoHash, err := t.currentTree()
 	if err != nil {
 		return nil, true, err
 	}
+	changed, err = t.revertTo(hash)
+	if err != nil {
+		return nil, true, err // stacks untouched — undo can be retried
+	}
+	t.stack = t.stack[:len(t.stack)-1]
+	t.redoStack = append(t.redoStack, redoHash)
+	t.persist()
 	return changed, true, nil
+}
+
+// Redo re-applies the most recently undone change, returning the workspace to
+// the state captured just before that Undo. ok=false when there is nothing to
+// redo (no prior Undo, or a new edit invalidated the redo branch). The redo
+// stack is memory-only, so its hashes are recent and never gc-pruned mid-life.
+func (t *Tracker) Redo() (changed []string, ok bool, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.redoStack) == 0 {
+		return nil, false, nil
+	}
+	hash := t.redoStack[len(t.redoStack)-1]
+	// Snapshot the current (pre-redo) workspace so Undo can return to it.
+	undoHash, err := t.currentTree()
+	if err != nil {
+		return nil, true, err
+	}
+	changed, err = t.revertTo(hash)
+	if err != nil {
+		return nil, true, err // stacks untouched — redo can be retried
+	}
+	t.redoStack = t.redoStack[:len(t.redoStack)-1]
+	t.stack = append(t.stack, undoHash)
+	t.persist()
+	return changed, true, nil
+}
+
+// DiffTop returns a numstat diff of the top undo snapshot against the current
+// workspace — what /undo would roll back. Empty when the stack is empty. Stages
+// the workspace first so untracked (newly created) files appear in the diff.
+func (t *Tracker) DiffTop() (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.stack) == 0 {
+		return "", nil
+	}
+	if err := t.ensureInit(); err != nil {
+		return "", err
+	}
+	if err := t.add(); err != nil {
+		return "", err
+	}
+	hash := t.stack[len(t.stack)-1]
+	// --no-renames (as opencode does) keeps numstat lines as "adds\tdels\tpath";
+	// rename detection would emit "old => new" in the path column and break the
+	// command-layer parse. A rename then shows as delete-old + add-new.
+	return t.git.run("diff", "--cached", "--numstat", "--no-renames", hash)
 }
 
 // Rebind repoints the tracker at a new session's sidecar: it drops the current
@@ -162,6 +232,7 @@ func (t *Tracker) Undo() (changed []string, ok bool, err error) {
 func (t *Tracker) Rebind(statePath string) {
 	t.mu.Lock()
 	t.statePath = statePath
+	t.redoStack = nil
 	t.load()
 	t.mu.Unlock()
 }

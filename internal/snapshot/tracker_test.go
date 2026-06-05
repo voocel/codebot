@@ -266,3 +266,136 @@ func TestGCKeepsRecentSnapshot(t *testing.T) {
 		t.Fatalf("a.txt = %q, want v2 (gc must not prune in-window snapshot)", got)
 	}
 }
+
+// TestUndoRedo verifies undo/redo symmetry: redo restores the pre-undo state,
+// and the two stacks stay in sync across repeated undo/redo.
+func TestUndoRedo(t *testing.T) {
+	requireGit(t)
+	work := t.TempDir()
+	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+
+	writeFile(t, work, "a.txt", "v1")
+	if _, err := tr.Track(); err != nil { // snapshot: a=v1
+		t.Fatal(err)
+	}
+	writeFile(t, work, "a.txt", "v2")
+
+	if _, ok, err := tr.Undo(); err != nil || !ok {
+		t.Fatalf("undo: ok=%v err=%v", ok, err)
+	}
+	if got := readFile(t, work, "a.txt"); got != "v1" {
+		t.Fatalf("after undo a.txt = %q, want v1", got)
+	}
+
+	changed, ok, err := tr.Redo()
+	if err != nil || !ok {
+		t.Fatalf("redo: ok=%v err=%v", ok, err)
+	}
+	if len(changed) == 0 {
+		t.Fatal("redo should report changed files")
+	}
+	if got := readFile(t, work, "a.txt"); got != "v2" {
+		t.Fatalf("after redo a.txt = %q, want v2 (pre-undo state)", got)
+	}
+
+	// Undo again — redo just pushed the v1 snapshot back onto the undo stack.
+	if _, ok, err := tr.Undo(); err != nil || !ok {
+		t.Fatalf("undo after redo: ok=%v err=%v", ok, err)
+	}
+	if got := readFile(t, work, "a.txt"); got != "v1" {
+		t.Fatalf("after second undo a.txt = %q, want v1", got)
+	}
+}
+
+// TestNewTrackClearsRedo verifies a fresh edit + Track invalidates the redo
+// branch (classic undo/redo invariant).
+func TestNewTrackClearsRedo(t *testing.T) {
+	requireGit(t)
+	work := t.TempDir()
+	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+
+	writeFile(t, work, "a.txt", "v1")
+	if _, err := tr.Track(); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, work, "a.txt", "v2")
+	if _, ok, err := tr.Undo(); err != nil || !ok { // redo stack now holds v2
+		t.Fatalf("undo: ok=%v err=%v", ok, err)
+	}
+
+	writeFile(t, work, "a.txt", "v3")
+	if _, err := tr.Track(); err != nil { // new edit invalidates redo
+		t.Fatal(err)
+	}
+	if _, ok, _ := tr.Redo(); ok {
+		t.Fatal("a new Track must clear the redo stack")
+	}
+}
+
+// TestRebindClearsRedo verifies switching sessions drops the redo stack.
+func TestRebindClearsRedo(t *testing.T) {
+	requireGit(t)
+	work := t.TempDir()
+	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+
+	writeFile(t, work, "a.txt", "v1")
+	if _, err := tr.Track(); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, work, "a.txt", "v2")
+	if _, ok, err := tr.Undo(); err != nil || !ok {
+		t.Fatalf("undo: ok=%v err=%v", ok, err)
+	}
+
+	tr.Rebind("")
+	if _, ok, _ := tr.Redo(); ok {
+		t.Fatal("Rebind must clear the redo stack")
+	}
+}
+
+// TestDiffTopIncludesUntracked verifies DiffTop stages first so a newly created
+// (untracked) file shows up — guarding the `add` before `diff --cached`.
+func TestDiffTopIncludesUntracked(t *testing.T) {
+	requireGit(t)
+	work := t.TempDir()
+	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+
+	writeFile(t, work, "a.txt", "1\n")
+	if _, err := tr.Track(); err != nil { // snapshot before changes
+		t.Fatal(err)
+	}
+	writeFile(t, work, "a.txt", "1\n2\n") // modify
+	writeFile(t, work, "new.txt", "hello\n") // create (untracked)
+
+	out, err := tr.DiffTop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "new.txt") {
+		t.Fatalf("DiffTop must include the newly created file; got:\n%s", out)
+	}
+	if !strings.Contains(out, "a.txt") {
+		t.Fatalf("DiffTop must include the modified file; got:\n%s", out)
+	}
+}
+
+// TestExpiredUndoSkipsRedo verifies an undo that hits a gc-pruned snapshot does
+// not push onto the redo stack (no workspace change happened).
+func TestExpiredUndoSkipsRedo(t *testing.T) {
+	requireGit(t)
+	work := t.TempDir()
+	tr := New(filepath.Join(t.TempDir(), "shadow"), work, "")
+
+	writeFile(t, work, "a.txt", "v1")
+	if _, err := tr.Track(); err != nil { // real snapshot, inits the repo
+		t.Fatal(err)
+	}
+	tr.stack = append(tr.stack, "0000000000000000000000000000000000000000")
+
+	if _, ok, err := tr.Undo(); !ok || !errors.Is(err, ErrSnapshotExpired) {
+		t.Fatalf("expired undo: ok=%v err=%v, want ok + ErrSnapshotExpired", ok, err)
+	}
+	if _, ok, _ := tr.Redo(); ok {
+		t.Fatal("an expired undo must not populate the redo stack")
+	}
+}

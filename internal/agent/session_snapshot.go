@@ -12,6 +12,12 @@ type Snapshotter interface {
 	// Undo reverts the workspace to the most recent checkpoint. ok is false
 	// when there is nothing to undo; changed lists the affected paths.
 	Undo() (changed []string, ok bool, err error)
+	// Redo re-applies the most recently undone change. ok is false when there
+	// is nothing to redo (no prior undo, or a new edit invalidated the branch).
+	Redo() (changed []string, ok bool, err error)
+	// DiffTop returns a numstat diff of what Undo would roll back, or "" when
+	// there is nothing to undo.
+	DiffTop() (string, error)
 	// Rebind repoints the tracker at a session's persisted undo stack: it drops
 	// the in-memory stack and loads whatever statePath holds. Called on session
 	// switch/new so each session gets its own checkpoint history.
@@ -46,4 +52,23 @@ func (s *Session) Undo() (changed []string, ok bool, err error) {
 		return nil, false, nil
 	}
 	return s.snapshotter.Undo()
+}
+
+// Redo re-applies the most recently undone turn's file changes. ok is false
+// when there is nothing to redo (no tracker, no prior undo, or the redo branch
+// was invalidated by a new turn).
+func (s *Session) Redo() (changed []string, ok bool, err error) {
+	if s.snapshotter == nil {
+		return nil, false, nil
+	}
+	return s.snapshotter.Redo()
+}
+
+// Diff returns a numstat preview of what Undo would roll back (the last turn's
+// file changes), or "" when there is nothing to undo.
+func (s *Session) Diff() (string, error) {
+	if s.snapshotter == nil {
+		return "", nil
+	}
+	return s.snapshotter.DiffTop()
 }
