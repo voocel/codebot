@@ -16,6 +16,7 @@ const (
 	EntryThinkingChange EntryKind = "thinking_change"
 	EntrySessionInfo    EntryKind = "session_info"
 	EntryPlanState      EntryKind = "plan_state"
+	EntryGoalState      EntryKind = "goal_state"
 	EntryLLMCall        EntryKind = "llm_call"
 )
 
@@ -59,6 +60,26 @@ type PlanStateEntry struct {
 	Phase   string `json:"phase"`
 	Slug    string `json:"slug,omitempty"`
 	PreMode string `json:"pre_mode,omitempty"`
+}
+
+// GoalStateEntry records the explicit /goal state for session resume.
+type GoalStateEntry struct {
+	ID                       string    `json:"id,omitempty"`
+	Objective                string    `json:"objective,omitempty"`
+	Status                   string    `json:"status"`
+	CreatedAt                time.Time `json:"created_at,omitempty"`
+	UpdatedAt                time.Time `json:"updated_at,omitempty"`
+	CompletedAt              time.Time `json:"completed_at,omitempty"`
+	BlockedAt                time.Time `json:"blocked_at,omitempty"`
+	BudgetLimitedAt          time.Time `json:"budget_limited_at,omitempty"`
+	Reason                   string    `json:"reason,omitempty"`
+	BlockedReason            string    `json:"blocked_reason,omitempty"`
+	BlockedCount             int       `json:"blocked_count,omitempty"`
+	BlockedAttemptTokenTotal int       `json:"blocked_attempt_token_total,omitempty"`
+	BudgetLimitReported      bool      `json:"budget_limit_reported,omitempty"`
+	TokenBudget              int       `json:"token_budget,omitempty"`
+	TokensUsed               int       `json:"tokens_used,omitempty"`
+	TokenTotalAtLastAccount  int       `json:"token_total_at_last_account,omitempty"`
 }
 
 // LLMCallEntry is a per-turn observability record for a single LLM response.

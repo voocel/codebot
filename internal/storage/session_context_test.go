@@ -199,3 +199,37 @@ func TestBuildSnapshotIncludesPlanState(t *testing.T) {
 		t.Fatalf("plan pre mode = %q, want balanced", snapshot.PlanPreMode)
 	}
 }
+
+func TestBuildSnapshotIncludesGoalState(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := create(dir, "/workspace/project")
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.AppendGoalState(GoalStateEntry{
+		ID:        "steady-goal",
+		Objective: "finish the feature",
+		Status:    "active",
+		Reason:    "still running",
+	}); err != nil {
+		t.Fatalf("append goal state: %v", err)
+	}
+
+	snapshot, err := store.BuildSnapshot()
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	if snapshot.Goal.ID != "steady-goal" {
+		t.Fatalf("goal id = %q, want steady-goal", snapshot.Goal.ID)
+	}
+	if snapshot.Goal.Objective != "finish the feature" {
+		t.Fatalf("goal objective = %q", snapshot.Goal.Objective)
+	}
+	if snapshot.Goal.Status != "active" {
+		t.Fatalf("goal status = %q, want active", snapshot.Goal.Status)
+	}
+}

@@ -214,6 +214,14 @@ func (s *Store) AppendPlanState(phase, slug, preMode string) error {
 	return s.appendChained(EntryPlanState, data)
 }
 
+func (s *Store) AppendGoalState(entry GoalStateEntry) error {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal goal state: %w", err)
+	}
+	return s.appendChained(EntryGoalState, data)
+}
+
 // SetName updates the session display name by appending a session_info entry.
 func (s *Store) SetName(name string) error {
 	data, err := json.Marshal(map[string]string{"name": name})

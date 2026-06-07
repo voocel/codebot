@@ -16,6 +16,7 @@ type ContextSnapshot struct {
 	PlanSlug    string
 	PlanPhase   string
 	PlanPreMode string
+	Goal        GoalStateEntry
 }
 
 // BuildSnapshot reconstructs runtime state by walking the tree from the current leaf.
@@ -74,7 +75,7 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	// Locate the last EntryCompaction so we can skip the JSON unmarshal of
 	// pre-compaction EntryMessage entries — the compaction case below runs
 	// msgs = nil, so any messages reduced before it are immediately discarded.
-	// State-bearing entries (model / thinking / plan / session-info) are
+	// State-bearing entries (model / thinking / plan / goal / session-info) are
 	// kept because they may not have a post-compaction counterpart and
 	// dropping them would silently lose model/plan/thinking selection.
 	lastCompactionIdx := -1
@@ -93,6 +94,7 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	lastPlanSlug := ""
 	lastPlanPhase := ""
 	lastPlanPreMode := ""
+	lastGoal := GoalStateEntry{Status: "off"}
 
 	for i, entry := range chain {
 		// Pre-compaction messages are superseded by the compaction summary;
@@ -151,6 +153,11 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 				lastPlanSlug = ps.Slug
 				lastPlanPreMode = ps.PreMode
 			}
+		case EntryGoalState:
+			var gs GoalStateEntry
+			if json.Unmarshal(entry.Data, &gs) == nil {
+				lastGoal = gs
+			}
 		}
 	}
 
@@ -164,5 +171,6 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 		PlanSlug:    lastPlanSlug,
 		PlanPhase:   lastPlanPhase,
 		PlanPreMode: lastPlanPreMode,
+		Goal:        lastGoal,
 	}, nil
 }
