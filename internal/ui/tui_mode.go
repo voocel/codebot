@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
+	goalstate "github.com/voocel/codebot/internal/goal"
 	planstate "github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
@@ -31,6 +32,10 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 
 	planStore := storage.NewPlanStore(config.PlansDir(cwd))
 	planManager := planstate.NewManager(sess, approvalEngine, planStore, rt.SessionStore)
+	goalManager := goalstate.NewManager(sess, sess)
+	goalManager.SetSuspender(func() bool {
+		return planManager.Snapshot().Phase != planstate.PhaseOff
+	})
 	adapter := &App{
 		Session:        sess,
 		Cwd:            cwd,
@@ -47,6 +52,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		PlanStore:      planStore,
 		SessionStore:   rt.SessionStore,
 		PlanManager:    planManager,
+		GoalManager:    goalManager,
 		MCPManager:     mcpMgr,
 		MCPServers:     mcpServers,
 		History:        newInputHistory(sess, cwd),
@@ -59,6 +65,10 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		Slug:    rt.PlanSlug,
 		PreMode: rt.PlanPreMode,
 	})
+	if err := goalManager.Restore(restoreGoalState(rt.Goal)); err != nil {
+		return fmt.Errorf("restore goal state: %w", err)
+	}
+	adapter.wireGoalTools()
 
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()

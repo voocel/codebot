@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
+	"github.com/voocel/codebot/internal/goal"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/plugin"
@@ -73,6 +74,7 @@ type App struct {
 	History *storage.History
 
 	PlanManager *plan.Manager
+	GoalManager *goal.Manager
 
 	// registry holds all slash commands assembled from built-ins and file-backed sources.
 	registry *Registry
@@ -221,6 +223,7 @@ func (a *App) refreshRuntimeAfterPluginReload() (mcpReloadResult, error) {
 	} else if a.SkillCatalog != nil {
 		a.Skills = a.SkillCatalog.List()
 	}
+	a.wireGoalTools()
 	a.rebuildRegistry()
 	return mcpResult, nil
 }

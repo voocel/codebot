@@ -177,6 +177,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		PlanSlug:       input.sessionSnapshot.PlanSlug,
 		PlanPhase:      input.sessionSnapshot.PlanPhase,
 		PlanPreMode:    input.sessionSnapshot.PlanPreMode,
+		Goal:           input.sessionSnapshot.Goal,
 		stopTeamPump:   stopPump,
 	}, nil
 }

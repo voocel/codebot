@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/goal"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
 )
@@ -263,6 +264,24 @@ func (s *Session) currentPlanModeSignal() PlanModeSignal {
 	s.mu.Unlock()
 	if fn == nil {
 		return PlanModeSignal{}
+	}
+	return fn()
+}
+
+// SetGoalSignal registers a callback the runtime polls at natural stop points
+// to decide whether an explicit /goal should auto-continue.
+func (s *Session) SetGoalSignal(fn func() goal.Signal) {
+	s.mu.Lock()
+	s.goalSignal = fn
+	s.mu.Unlock()
+}
+
+func (s *Session) currentGoalSignal() goal.Signal {
+	s.mu.Lock()
+	fn := s.goalSignal
+	s.mu.Unlock()
+	if fn == nil {
+		return goal.Signal{}
 	}
 	return fn()
 }
@@ -819,6 +838,26 @@ func (s *Session) SwitchSession(id string) error {
 		SessionID: newStore.Header().SessionID,
 	})
 	return nil
+}
+
+func (s *Session) CurrentSnapshot() (storage.ContextSnapshot, error) {
+	s.mu.Lock()
+	store := s.store
+	s.mu.Unlock()
+	if store == nil {
+		return storage.ContextSnapshot{}, fmt.Errorf("session store is not available")
+	}
+	return store.BuildSnapshot()
+}
+
+func (s *Session) AppendGoalState(entry storage.GoalStateEntry) error {
+	s.mu.Lock()
+	store := s.store
+	s.mu.Unlock()
+	if store == nil {
+		return fmt.Errorf("session store is not available")
+	}
+	return store.AppendGoalState(entry)
 }
 
 func (s *Session) Settings() config.Resolved {

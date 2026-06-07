@@ -67,7 +67,10 @@ func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {
 }
 
 func (p *sessionRuntimePolicy) afterAgentEnd() {
-	p.runPostStopValidation()
+	if p.runPostStopValidation() {
+		return
+	}
+	p.continueGoalIfActive()
 }
 
 func (p *sessionRuntimePolicy) trackToolStart(ev agentcore.Event) {
@@ -252,6 +255,7 @@ func (s *Session) finalizeTurnOutcome() {
 	s.lastTurn = s.currentTurn
 	s.currentTurn = TurnOutcomeSnapshot{}
 	s.reminders.steeredKeys = make(map[string]struct{})
+	s.reminders.autoResumeKeys = make(map[string]struct{})
 	s.mu.Unlock()
 }
 
@@ -334,13 +338,68 @@ func isRepoMutatingTool(name string) bool {
 	}
 }
 
-// runPostStopValidation fires PostStopValidation hooks when the agent
-// stops naturally and there are unverified code edits since the last
-// successful hook run. Runs asynchronously to avoid blocking the agent-end path.
-func (p *sessionRuntimePolicy) runPostStopValidation() {
+func (p *sessionRuntimePolicy) continueGoalIfActive() bool {
+	s := p.session
+	if p.lastGoalContinuationHadNoActivity() {
+		return false
+	}
+	sig := s.currentGoalSignal()
+	if sig.Err != nil {
+		s.emit(SessionEvent{
+			Type:  SEError,
+			Error: fmt.Errorf("goal continuation: %w", sig.Err),
+		})
+		return false
+	}
+	if !sig.Active || sig.Key == "" || sig.Reminder == "" {
+		return false
+	}
+	s.mu.Lock()
+	queued := len(s.reminders.runtime) > 0
+	s.mu.Unlock()
+	if queued {
+		return false
+	}
+	s.continueWithRuntimeReminder(sig.Key, ReminderGoal, sig.Reminder)
+	return true
+}
+
+func (p *sessionRuntimePolicy) lastGoalContinuationHadNoActivity() bool {
+	s := p.session
+	s.mu.Lock()
+	lastReminder := s.lastReminder
+	outcome := s.lastTurn
+	s.mu.Unlock()
+
+	if lastReminder == nil || lastReminder.Kind != ReminderGoal {
+		return false
+	}
+	return !outcome.AssistantResponded &&
+		outcome.ReadOnlyToolCalls == 0 &&
+		outcome.WriteLikeToolCalls == 0 &&
+		outcome.TaskMutations == 0 &&
+		outcome.CodeEditToolCalls == 0
+}
+
+func (p *sessionRuntimePolicy) continueGoalIfActiveForGeneration(gen uint64) bool {
+	s := p.session
+	s.mu.Lock()
+	stale := s.generation != gen
+	s.mu.Unlock()
+	if stale {
+		return false
+	}
+	return p.continueGoalIfActive()
+}
+
+// runPostStopValidation fires PostStopValidation hooks when the agent stops
+// naturally and there are unverified code edits since the last successful hook
+// run. It returns true when validation was launched asynchronously; callers
+// should not start lower-priority continuation work until the hook finishes.
+func (p *sessionRuntimePolicy) runPostStopValidation() bool {
 	s := p.session
 	if s.hookRunner == nil {
-		return
+		return false
 	}
 	s.mu.Lock()
 	summary := s.lastRunSummary
@@ -349,10 +408,10 @@ func (p *sessionRuntimePolicy) runPostStopValidation() {
 	s.mu.Unlock()
 
 	if summary == nil || summary.EndReason != agentcore.EndReasonStop {
-		return
+		return false
 	}
 	if seq == 0 {
-		return
+		return false
 	}
 
 	go func() {
@@ -372,6 +431,7 @@ func (p *sessionRuntimePolicy) runPostStopValidation() {
 				s.dirtySeq = 0
 			}
 			s.mu.Unlock()
+			p.continueGoalIfActiveForGeneration(gen)
 			return
 		}
 		s.mu.Unlock()
@@ -385,4 +445,5 @@ func (p *sessionRuntimePolicy) runPostStopValidation() {
 			),
 		)
 	}()
+	return true
 }

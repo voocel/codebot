@@ -14,9 +14,10 @@ import (
 // ResumeCommand drives /resume — an interactive overlay listing recent
 // sessions and switching to the chosen one.
 type ResumeCommand struct {
-	session   *agent.Session
-	overlay   OverlayController
-	resetPlan func()
+	session     *agent.Session
+	overlay     OverlayController
+	resetPlan   func()
+	afterSwitch func() error
 
 	state *resumeSelectState
 }
@@ -29,8 +30,8 @@ type resumeSelectState struct {
 
 // Resume constructs the /resume command. resetPlan tears down any active
 // plan-mode UI when switching sessions, mirroring /clear and /new.
-func Resume(session *agent.Session, overlay OverlayController, resetPlan func()) *ResumeCommand {
-	return &ResumeCommand{session: session, overlay: overlay, resetPlan: resetPlan}
+func Resume(session *agent.Session, overlay OverlayController, resetPlan func(), afterSwitch func() error) *ResumeCommand {
+	return &ResumeCommand{session: session, overlay: overlay, resetPlan: resetPlan, afterSwitch: afterSwitch}
 }
 
 func (c *ResumeCommand) Spec() Spec {
@@ -113,6 +114,11 @@ func (c *ResumeCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		if c.resetPlan != nil {
 			c.resetPlan()
+		}
+		if c.afterSwitch != nil {
+			if err := c.afterSwitch(); err != nil {
+				return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to restore session state: " + err.Error()))
+			}
 		}
 
 		// Send RestoreMsg directly because p.Send deadlocks when called

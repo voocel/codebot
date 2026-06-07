@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/codebot/internal/config"
+	goalstate "github.com/voocel/codebot/internal/goal"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
@@ -138,6 +140,69 @@ func (m *scriptedReminderModel) GenerateStream(
 }
 
 func (m *scriptedReminderModel) SupportsTools() bool { return true }
+
+func (m *scriptedReminderModel) SawRepeatedToolReminder() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.secondCallSawReminder
+}
+
+type countingGoalModel struct {
+	mu            sync.Mutex
+	reminderRuns  int
+	lastRunNumber int
+}
+
+func (m *countingGoalModel) Generate(
+	_ context.Context,
+	msgs []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sawGoalReminder := false
+	for _, msg := range msgs {
+		if msg.Role == agentcore.RoleUser && strings.Contains(msg.TextContent(), "Continue the explicit goal") {
+			sawGoalReminder = true
+		}
+	}
+	if sawGoalReminder {
+		m.reminderRuns++
+		m.lastRunNumber = m.reminderRuns
+		return &agentcore.LLMResponse{Message: assistantTextMessage(fmt.Sprintf("goal run %d", m.reminderRuns))}, nil
+	}
+	return &agentcore.LLMResponse{Message: assistantTextMessage("idle")}, nil
+}
+
+func (m *countingGoalModel) GenerateStream(
+	ctx context.Context,
+	msgs []agentcore.Message,
+	tools []agentcore.ToolSpec,
+	opts ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	resp, err := m.Generate(ctx, msgs, tools, opts...)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{
+		Type:       agentcore.StreamEventDone,
+		Message:    resp.Message,
+		StopReason: resp.Message.StopReason,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *countingGoalModel) SupportsTools() bool { return true }
+
+func (m *countingGoalModel) ReminderRuns() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reminderRuns
+}
 
 type taskCompletionReminderModel struct {
 	mu          sync.Mutex
@@ -437,9 +502,9 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 			Providers: map[string]config.ProviderConfig{
 				"openai": {APIKey: "k"},
 			},
-			ContextWindow:  128000,
+			ContextWindow: 128000,
 
-			MaxTurns:       30,
+			MaxTurns: 30,
 		},
 		Cwd: dir,
 		CreateModel: func(_ string, model string, _ string, _ string) (agentcore.ChatModel, error) {
@@ -497,9 +562,9 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 			Providers: map[string]config.ProviderConfig{
 				"openai": {APIKey: "k"},
 			},
-			ContextWindow:  128000,
+			ContextWindow: 128000,
 
-			MaxTurns:       30,
+			MaxTurns: 30,
 		},
 		Cwd: dir,
 		CreateModel: func(_ string, _ string, _ string, _ string) (agentcore.ChatModel, error) {
@@ -566,9 +631,9 @@ func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 				"openai":    {APIKey: "openai-key"},
 				"anthropic": {APIKey: "anthropic-key"},
 			},
-			ContextWindow:  128000,
+			ContextWindow: 128000,
 
-			MaxTurns:       30,
+			MaxTurns: 30,
 		},
 		Cwd: dir,
 		CreateModel: func(_ string, _ string, _ string, _ string) (agentcore.ChatModel, error) {
@@ -636,12 +701,12 @@ func TestApplySkillInvocationUsesTemporaryOverrides(t *testing.T) {
 	s := NewSession(SessionConfig{
 		Agent: agentcore.NewAgent(agentcore.WithModel(baseModel)),
 		Settings: config.Resolved{
-			Provider:       "openai",
-			Model:          "base-model",
-			ThinkingLevel:  "low",
-			ContextWindow:  128000,
+			Provider:      "openai",
+			Model:         "base-model",
+			ThinkingLevel: "low",
+			ContextWindow: 128000,
 
-			MaxTurns:       30,
+			MaxTurns: 30,
 			Providers: map[string]config.ProviderConfig{
 				"openai": {APIKey: "k", Models: []string{"base-model", "skill-model"}},
 			},
@@ -915,7 +980,7 @@ func TestDeliverRuntimeReminderSteersCurrentRun(t *testing.T) {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitFor(t, time.Second, func() bool {
-		return model.secondCallSawReminder && s.LastAssistantText() == "steered"
+		return model.SawRepeatedToolReminder() && s.LastAssistantText() == "steered"
 	})
 }
 
@@ -941,6 +1006,109 @@ func TestContinueWithRuntimeReminderAutoContinuesWhenIdle(t *testing.T) {
 	waitFor(t, time.Second, func() bool {
 		return s.LastAssistantText() == "steered"
 	})
+}
+
+func TestGoalContinuationAutoContinuesWhenIdle(t *testing.T) {
+	t.Parallel()
+
+	model := &countingGoalModel{}
+	ag := agentcore.NewAgent(agentcore.WithModel(model), agentcore.WithMaxTurns(10))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "initial task"),
+		textMessage(agentcore.RoleAssistant, "partial progress."),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 10},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+	var signalCalls atomic.Int32
+	s.SetGoalSignal(func() goalstate.Signal {
+		if signalCalls.Add(1) > 1 {
+			return goalstate.Signal{}
+		}
+		return goalstate.Signal{
+			Active:   true,
+			Key:      "goal:test",
+			Reminder: "<system-reminder>\nContinue the explicit goal.\n</system-reminder>",
+		}
+	})
+
+	s.runtime.afterAgentEnd()
+	waitFor(t, time.Second, func() bool {
+		return s.LastAssistantText() == "goal run 1"
+	})
+}
+
+func TestGoalContinuationCanAutoContinueAcrossRuns(t *testing.T) {
+	t.Parallel()
+
+	model := &countingGoalModel{}
+	ag := agentcore.NewAgent(agentcore.WithModel(model), agentcore.WithMaxTurns(10))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "initial task"),
+		textMessage(agentcore.RoleAssistant, "partial progress."),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 10},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+	var signalCalls atomic.Int32
+	s.SetGoalSignal(func() goalstate.Signal {
+		if signalCalls.Add(1) > 2 {
+			return goalstate.Signal{}
+		}
+		return goalstate.Signal{
+			Active:   true,
+			Key:      "goal:test",
+			Reminder: "<system-reminder>\nContinue the explicit goal.\n</system-reminder>",
+		}
+	})
+
+	s.runtime.afterAgentEnd()
+	waitFor(t, time.Second, func() bool {
+		return model.ReminderRuns() == 2 && s.LastAssistantText() == "goal run 2"
+	})
+}
+
+func TestGoalContinuationDoesNotBypassQueuedRuntimeReminder(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedReminderModel{}
+	ag := agentcore.NewAgent(agentcore.WithModel(model), agentcore.WithMaxTurns(10))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "initial task"),
+		textMessage(agentcore.RoleAssistant, "partial progress."),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 10},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+	s.SetGoalSignal(func() goalstate.Signal {
+		return goalstate.Signal{
+			Active:   true,
+			Key:      "goal:test",
+			Reminder: "<system-reminder>\nContinue the explicit goal.\n</system-reminder>",
+		}
+	})
+	s.queueRuntimeReminder("queued", ReminderTaskManagement, "<system-reminder>\nqueued reminder\n</system-reminder>")
+
+	s.runtime.afterAgentEnd()
+	time.Sleep(50 * time.Millisecond)
+	if got := s.LastAssistantText(); got != "partial progress." {
+		t.Fatalf("goal continuation bypassed queued reminder, last assistant = %q", got)
+	}
 }
 
 func TestPromptDoesNotQueueTaskManagementReminderFromUserText(t *testing.T) {

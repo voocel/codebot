@@ -53,6 +53,7 @@ type Runtime struct {
 	PlanSlug      string                            // restored plan slug (empty if no plan)
 	PlanPhase     string                            // restored plan phase
 	PlanPreMode   string                            // restored plan pre-mode
+	Goal          storage.GoalStateEntry            // restored explicit /goal state
 
 	// stopTeamPump cancels the leader-inbox pump goroutine. Set by
 	// assembleRuntime, called by Close so the pump exits before the team

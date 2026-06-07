@@ -61,7 +61,7 @@ func validateCommand(ctx context.Context, engine *approval.Engine, spec commands
 func (a *App) builtinCommands() []commands.Command {
 	return []commands.Command{
 		commands.Help(a.registry),
-		commands.Clear(a.Session, a.resetPlanState),
+		commands.Clear(a.Session, a.resetSessionState),
 		commands.Model(a.Session, a.registry, a.Cwd),
 		commands.Compact(a.Session),
 		&commands.StatusCommand{
@@ -79,8 +79,8 @@ func (a *App) builtinCommands() []commands.Command {
 			CommandCount: func() int { return len(a.Commands) },
 		},
 		commands.Context(a.Session, a.registry),
-		commands.New(a.Session, a.resetPlanState),
-		commands.Resume(a.Session, a.registry, a.resetPlanState),
+		commands.New(a.Session, a.resetSessionState),
+		commands.Resume(a.Session, a.registry, a.resetPlanState, a.restoreSessionGoalState),
 		commands.Tasks(a.TaskRuntime, a.registry),
 		commands.Btw(a.Session, a.registry),
 		commands.Settings(a.Session, a.registry, a.ApprovalEngine, a.Cwd),
@@ -100,6 +100,13 @@ func (a *App) builtinCommands() []commands.Command {
 			Show:   a.showCurrentPlan,
 			Cancel: a.cancelPlanMode,
 			Open:   a.openCurrentPlan,
+		},
+		&commands.GoalCommand{
+			Create: a.createGoal,
+			Status: a.showGoalStatus,
+			Pause:  a.pauseGoal,
+			Resume: a.resumeGoal,
+			Clear:  a.clearGoal,
 		},
 		commands.Reload(a.reloadAll),
 		commands.Memory(a.Cwd, func() { a.Session.Reload() }),

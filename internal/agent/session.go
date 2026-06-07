@@ -8,6 +8,7 @@ import (
 	"github.com/voocel/agentcore"
 	agenttools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/goal"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/skill"
@@ -112,6 +113,7 @@ type Session struct {
 	overlays          overlayStore
 	beforePrompt      func()
 	planModeSignal    func() PlanModeSignal
+	goalSignal        func() goal.Signal
 	hookRunner        *hooks.Runner
 	snapshotter       Snapshotter
 	taskStore         *storage.TaskStore
@@ -183,7 +185,7 @@ type invokedSkillSnapshot struct {
 //   - runtime: one-shot queue consumed on the next user prompt
 //   - runtimeKeys: dedup for the queue
 //   - steeredKeys / autoResumeKeys: per-turn dedup for the two in-flight
-//     delivery paths (Steer / Inject) — reset every beginTurn
+//     delivery paths (Steer / Inject) — reset at turn start and agent end
 //   - pendingContinue: marks that a Steer'd reminder needs a Continue() call
 //     after the current run finishes
 type reminderState struct {

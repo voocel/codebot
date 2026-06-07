@@ -48,6 +48,13 @@ func (a *App) resetPlanState() {
 	}
 }
 
+func (a *App) resetSessionState() {
+	a.resetPlanState()
+	if a.GoalManager != nil {
+		_, _ = a.GoalManager.Clear()
+	}
+}
+
 // planOnEvent reacts to enter_plan_mode / exit_plan_mode tool completion.
 // Both tools own their own state transitions via plan.Manager; this handler
 // only emits scrollback artifacts so the user can see what was approved.
