@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/litellm"
 )
 
 type sessionPersistence struct {
@@ -42,6 +44,15 @@ func (s *Session) Subscribe(fn func(SessionEvent)) func() {
 
 func (s *Session) handleAgentEvent(ev agentcore.Event) {
 	s.runtime.handleEvent(ev)
+
+	if ev.Type == agentcore.EventError && isUsageLimitError(ev.Err) {
+		if err := s.markGoalUsageLimited("provider usage limit reached"); err != nil {
+			s.emit(SessionEvent{
+				Type:  SEError,
+				Error: fmt.Errorf("mark goal usage-limited: %w", err),
+			})
+		}
+	}
 
 	if ev.Type == agentcore.EventMessageStart {
 		if msg, ok := ev.Message.(agentcore.Message); ok && msg.Role == agentcore.RoleAssistant {
@@ -127,6 +138,21 @@ func (s *Session) emit(ev SessionEvent) {
 			fn(ev)
 		}
 	}
+}
+
+func isUsageLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var llmErr *litellm.LiteLLMError
+	if errors.As(err, &llmErr) && llmErr.Type == litellm.ErrorTypeQuota {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "usage_limit_reached") ||
+		strings.Contains(msg, "usage limit") ||
+		strings.Contains(msg, "insufficient_quota") ||
+		strings.Contains(msg, "quota exceeded")
 }
 
 func (s *Session) ApplySkillInvocation(result *skill.InvocationResult) error {

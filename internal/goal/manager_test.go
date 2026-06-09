@@ -276,3 +276,55 @@ func TestManagerBudgetLimitedResumeRequiresHigherBudget(t *testing.T) {
 		t.Fatalf("signal after resume = (%v, %q), want normal goal continuation", sig.Active, sig.Key)
 	}
 }
+
+func TestManagerUsageLimitStopsActiveGoal(t *testing.T) {
+	t.Parallel()
+
+	totalTokens := 100
+	m := NewManager(nil, nil)
+	m.SetTokenCounter(func() int { return totalTokens })
+	if _, err := m.Create("ship goal mode"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	totalTokens = 140
+	state, err := m.UsageLimit("provider rate limit reached")
+	if err != nil {
+		t.Fatalf("usage limit: %v", err)
+	}
+	if state.Status != StatusUsageLimited {
+		t.Fatalf("status = %q, want usage_limited", state.Status)
+	}
+	if state.TokensUsed != 40 {
+		t.Fatalf("tokens used = %d, want 40", state.TokensUsed)
+	}
+	if state.Reason != "provider rate limit reached" {
+		t.Fatalf("reason = %q", state.Reason)
+	}
+	if sig := m.signal(); sig.Active || sig.Err != nil {
+		t.Fatalf("signal after usage limit = (%v, %v), want inactive nil", sig.Active, sig.Err)
+	}
+}
+
+func TestManagerUsageLimitedResume(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil)
+	if _, err := m.Create("ship goal mode"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := m.UsageLimit(""); err != nil {
+		t.Fatalf("usage limit: %v", err)
+	}
+
+	state, err := m.Resume()
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if state.Status != StatusActive {
+		t.Fatalf("status = %q, want active", state.Status)
+	}
+	if !state.UsageLimitedAt.IsZero() {
+		t.Fatal("expected resume to clear usage-limited timestamp")
+	}
+}

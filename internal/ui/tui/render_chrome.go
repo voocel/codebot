@@ -73,6 +73,11 @@ func (m *Model) RenderContextBar() string {
 			chips = append(chips, ContextChipTeamStyle.Render(t))
 		}
 	}
+	if m.config.StatusGoal != nil {
+		if goal := m.config.StatusGoal(m); goal != "" {
+			chips = append(chips, ContextChipAccentStyle.Render(goal))
+		}
+	}
 	if m.Cwd != "" {
 		chips = append(chips, ContextChipPathStyle.Render(filepath.Base(m.Cwd)))
 	}

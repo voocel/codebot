@@ -249,6 +249,7 @@ func (a *App) Config() tui.Config {
 		StatusRight:    a.statusRight,
 		StatusMode:     a.statusMode,
 		StatusTeam:     a.statusTeam,
+		StatusGoal:     a.statusGoal,
 		Overlay:        a.overlayState,
 		Completions:    a.completions,
 		OnBtwResult:    a.onBtwResult,
@@ -317,6 +318,50 @@ func (a *App) statusRight(m *tui.Model) string {
 		return ""
 	}
 	return tui.TokenStyle.Render(strings.Join(parts, " · "))
+}
+
+func (a *App) statusGoal(_ *tui.Model) string {
+	if a.GoalManager == nil {
+		return ""
+	}
+	state := a.GoalManager.Snapshot().Normalize()
+	if state.Status == goal.StatusOff {
+		return ""
+	}
+	label := "goal: " + string(state.Status)
+	switch state.Status {
+	case goal.StatusActive:
+		label = "goal: " + truncateRunes(state.Objective, 28)
+	case goal.StatusPaused:
+		label = "goal: paused"
+	case goal.StatusBlocked:
+		label = "goal: blocked"
+	case goal.StatusBudgetLimited:
+		label = "goal: budget"
+	case goal.StatusUsageLimited:
+		label = "goal: usage"
+	case goal.StatusComplete:
+		label = "goal: complete"
+	}
+	if state.Status == goal.StatusActive && state.TokenBudget > 0 {
+		remaining := state.TokenBudget - state.TokensUsed
+		if remaining < 0 {
+			remaining = 0
+		}
+		label = fmt.Sprintf("goal: %s left", tui.FormatTokens(remaining))
+	}
+	return label
+}
+
+func truncateRunes(s string, limit int) string {
+	runes := []rune(strings.TrimSpace(s))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	if limit <= 3 {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-3]) + "..."
 }
 
 // statusTeam returns the active-team chip for the context bar. Empty when

@@ -34,8 +34,9 @@ type Config struct {
 	OnMCPReady           func(msg MCPReadyMsg)               // called when MCP servers finish connecting
 	OnHideCompletedTasks func(snap storage.TaskSnapshot) tea.Cmd
 	StatusRight          func(m *Model) string
-	StatusMode           func(m *Model) string // mode indicator for context bar (e.g. "⏵⏵ trust")
-	StatusTeam           func(m *Model) string // active-team indicator for context bar (e.g. "△ alpha · 2 idle")
+	StatusMode           func(m *Model) string                // mode indicator for context bar (e.g. "⏵⏵ trust")
+	StatusTeam           func(m *Model) string                // active-team indicator for context bar (e.g. "△ alpha · 2 idle")
+	StatusGoal           func(m *Model) string                // explicit-goal indicator for context bar
 	Overlay              func(m *Model) *OverlayState         // interactive command overlay
 	Completions          func(prefix string) []CompletionItem // slash command completions
 	OnBtwResult          func(msg BtwResultMsg)               // called when /btw side question completes

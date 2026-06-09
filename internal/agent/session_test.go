@@ -467,6 +467,17 @@ func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Fatal("condition not satisfied before timeout")
 }
 
+func newEventTestSession(t *testing.T) *Session {
+	t.Helper()
+	s := NewSession(SessionConfig{
+		Agent:    agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Settings: config.Resolved{MaxTurns: 10},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+	return s
+}
+
 func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	t.Parallel()
 
@@ -1087,6 +1098,103 @@ func TestSessionEmitsGoalEvents(t *testing.T) {
 	}
 	if events[1].Type != SEGoalCleared || events[1].GoalPrevious.Status != goalstate.StatusActive {
 		t.Fatalf("second event = (%s, prev %s), want goal_cleared prev active", events[1].Type, events[1].GoalPrevious.Status)
+	}
+}
+
+func TestSessionUsageLimitErrorMarksGoal(t *testing.T) {
+	t.Parallel()
+
+	s := newEventTestSession(t)
+	var markedReason string
+	s.SetGoalUsageLimitHandler(func(reason string) (goalstate.State, error) {
+		markedReason = reason
+		return goalstate.State{Status: goalstate.StatusUsageLimited}, nil
+	})
+
+	var sawAgentError bool
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SEAgentEvent && ev.AgentEvent != nil && ev.AgentEvent.Type == agentcore.EventError {
+			sawAgentError = true
+		}
+	})
+	defer unsub()
+
+	s.handleAgentEvent(agentcore.Event{
+		Type: agentcore.EventError,
+		Err:  fmt.Errorf("usage_limit_reached: The usage limit has been reached"),
+	})
+
+	if markedReason != "provider usage limit reached" {
+		t.Fatalf("marked reason = %q", markedReason)
+	}
+	if !sawAgentError {
+		t.Fatal("expected original agent error event to still be emitted")
+	}
+}
+
+func TestSessionPlainRateLimitErrorDoesNotMarkGoalUsageLimited(t *testing.T) {
+	t.Parallel()
+
+	s := newEventTestSession(t)
+	marked := false
+	s.SetGoalUsageLimitHandler(func(reason string) (goalstate.State, error) {
+		marked = true
+		return goalstate.State{Status: goalstate.StatusUsageLimited}, nil
+	})
+
+	s.handleAgentEvent(agentcore.Event{
+		Type: agentcore.EventError,
+		Err:  fmt.Errorf("provider returned 429 rate limit"),
+	})
+
+	if marked {
+		t.Fatal("did not expect plain rate limit error to mark goal usage-limited")
+	}
+}
+
+func TestSessionNonUsageLimitErrorDoesNotMarkGoal(t *testing.T) {
+	t.Parallel()
+
+	s := newEventTestSession(t)
+	marked := false
+	s.SetGoalUsageLimitHandler(func(reason string) (goalstate.State, error) {
+		marked = true
+		return goalstate.State{Status: goalstate.StatusUsageLimited}, nil
+	})
+
+	s.handleAgentEvent(agentcore.Event{
+		Type: agentcore.EventError,
+		Err:  fmt.Errorf("plain model failure"),
+	})
+
+	if marked {
+		t.Fatal("did not expect non-rate-limit error to mark goal usage-limited")
+	}
+}
+
+func TestSessionUsageLimitMarkFailureEmitsExplicitError(t *testing.T) {
+	t.Parallel()
+
+	s := newEventTestSession(t)
+	s.SetGoalUsageLimitHandler(func(reason string) (goalstate.State, error) {
+		return goalstate.State{}, fmt.Errorf("no active goal")
+	})
+
+	var sawSessionError bool
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SEError && ev.Error != nil && strings.Contains(ev.Error.Error(), "mark goal usage-limited") {
+			sawSessionError = true
+		}
+	})
+	defer unsub()
+
+	s.handleAgentEvent(agentcore.Event{
+		Type: agentcore.EventError,
+		Err:  fmt.Errorf("usage_limit_reached: The usage limit has been reached"),
+	})
+
+	if !sawSessionError {
+		t.Fatal("expected usage-limit mark failure to emit explicit session error")
 	}
 }
 

@@ -286,6 +286,23 @@ func (s *Session) currentGoalSignal() goal.Signal {
 	return fn()
 }
 
+func (s *Session) SetGoalUsageLimitHandler(fn func(string) (goal.State, error)) {
+	s.mu.Lock()
+	s.goalUsageLimit = fn
+	s.mu.Unlock()
+}
+
+func (s *Session) markGoalUsageLimited(reason string) error {
+	s.mu.Lock()
+	fn := s.goalUsageLimit
+	s.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	_, err := fn(reason)
+	return err
+}
+
 func (s *Session) HandleGoalChange(change goal.Change) {
 	current := change.Current.Normalize()
 	ev := SessionEvent{

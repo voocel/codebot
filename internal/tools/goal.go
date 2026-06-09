@@ -4,11 +4,58 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore/permission"
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/codebot/internal/goal"
 )
+
+type GoalCreateTool struct {
+	create func(objective string, tokenBudget int) (goal.State, error)
+}
+
+func NewGoalCreate() *GoalCreateTool { return &GoalCreateTool{} }
+
+func (t *GoalCreateTool) SetCreator(fn func(string, int) (goal.State, error)) { t.create = fn }
+
+func (t *GoalCreateTool) Name() string                           { return "create_goal" }
+func (t *GoalCreateTool) Label() string                          { return "Create Goal" }
+func (t *GoalCreateTool) ConcurrencySafe(_ json.RawMessage) bool { return false }
+func (t *GoalCreateTool) PermissionMetadata() permission.Metadata {
+	return permission.Metadata{Capability: permission.CapabilityInternal}
+}
+func (t *GoalCreateTool) Description() string {
+	return `Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks. Set token_budget only when an explicit token budget is requested. Fails if a goal exists; use update_goal only for status.`
+}
+func (t *GoalCreateTool) Schema() map[string]any {
+	return schema.Object(
+		schema.Property("objective", schema.String("Required. The concrete objective to start pursuing. This starts a new active goal only when no goal is currently defined; if a goal already exists, this tool fails.")).Required(),
+		schema.Property("token_budget", schema.Int("Positive token budget for the new goal. Omit unless explicitly requested.")),
+	)
+}
+
+func (t *GoalCreateTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+	if t.create == nil {
+		return nil, fmt.Errorf("create_goal handler is not wired")
+	}
+	var a struct {
+		Objective   string `json:"objective"`
+		TokenBudget int    `json:"token_budget"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	objective := strings.TrimSpace(a.Objective)
+	if objective == "" {
+		return nil, fmt.Errorf("goal objective is required")
+	}
+	state, err := t.create(objective, a.TokenBudget)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(goalToolState(state))
+}
 
 type GoalGetTool struct {
 	snapshot func() goal.State
@@ -119,6 +166,9 @@ func goalToolState(state goal.State) map[string]any {
 	}
 	if !state.BudgetLimitedAt.IsZero() {
 		result["budget_limited_at"] = state.BudgetLimitedAt
+	}
+	if !state.UsageLimitedAt.IsZero() {
+		result["usage_limited_at"] = state.UsageLimitedAt
 	}
 	if state.Reason != "" {
 		result["reason"] = state.Reason

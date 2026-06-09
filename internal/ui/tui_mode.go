@@ -367,7 +367,7 @@ func formatGoalEvent(ev agent.SessionEvent) (string, bool) {
 			if current.BlockedReason != "" && current.BlockedCount != previous.BlockedCount {
 				return fmt.Sprintf("Goal blocked audit: %d/3.", current.BlockedCount), true
 			}
-			if previous.Status == goalstate.StatusPaused || previous.Status == goalstate.StatusBlocked || previous.Status == goalstate.StatusBudgetLimited {
+			if previous.Status == goalstate.StatusPaused || previous.Status == goalstate.StatusBlocked || previous.Status == goalstate.StatusBudgetLimited || previous.Status == goalstate.StatusUsageLimited {
 				return "Goal resumed: " + current.Objective, true
 			}
 			if previous.Status == goalstate.StatusOff {
@@ -382,6 +382,8 @@ func formatGoalEvent(ev agent.SessionEvent) (string, bool) {
 			return "Goal blocked: " + current.Objective, true
 		case goalstate.StatusBudgetLimited:
 			return "Goal token budget reached: " + current.Objective, true
+		case goalstate.StatusUsageLimited:
+			return "Goal usage limited: " + current.Objective, true
 		default:
 			return "", false
 		}

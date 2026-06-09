@@ -72,6 +72,7 @@ type GoalStateEntry struct {
 	CompletedAt              time.Time `json:"completed_at,omitempty"`
 	BlockedAt                time.Time `json:"blocked_at,omitempty"`
 	BudgetLimitedAt          time.Time `json:"budget_limited_at,omitempty"`
+	UsageLimitedAt           time.Time `json:"usage_limited_at,omitempty"`
 	Reason                   string    `json:"reason,omitempty"`
 	BlockedReason            string    `json:"blocked_reason,omitempty"`
 	BlockedCount             int       `json:"blocked_count,omitempty"`

@@ -65,8 +65,17 @@ func (a *App) wireGoalTools() {
 	if a.Session == nil || a.GoalManager == nil {
 		return
 	}
-	for _, tool := range a.Session.ToolsByName("get_goal", "update_goal") {
+	a.Session.SetGoalUsageLimitHandler(func(reason string) (goal.State, error) {
+		state := a.GoalManager.Snapshot().Normalize()
+		if state.Status != goal.StatusActive && state.Status != goal.StatusBudgetLimited {
+			return state, nil
+		}
+		return a.GoalManager.UsageLimit(reason)
+	})
+	for _, tool := range a.Session.ToolsByName("create_goal", "get_goal", "update_goal") {
 		switch t := tool.(type) {
+		case *tools.GoalCreateTool:
+			t.SetCreator(a.GoalManager.CreateWithBudget)
 		case *tools.GoalGetTool:
 			t.SetSnapshotter(a.GoalManager.Snapshot)
 		case *tools.GoalUpdateTool:
@@ -100,6 +109,7 @@ func restoreGoalState(entry storage.GoalStateEntry) goal.State {
 		CompletedAt:              entry.CompletedAt,
 		BlockedAt:                entry.BlockedAt,
 		BudgetLimitedAt:          entry.BudgetLimitedAt,
+		UsageLimitedAt:           entry.UsageLimitedAt,
 		Reason:                   entry.Reason,
 		BlockedReason:            entry.BlockedReason,
 		BlockedCount:             entry.BlockedCount,

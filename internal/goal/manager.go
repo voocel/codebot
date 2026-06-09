@@ -86,7 +86,7 @@ func (m *Manager) CreateWithBudget(objective string, tokenBudget int) (State, er
 		return State{}, fmt.Errorf("goal token budget cannot be negative")
 	}
 	current := m.state.Snapshot().Normalize()
-	if current.Status == StatusActive || current.Status == StatusPaused {
+	if current.Status != StatusOff {
 		return State{}, fmt.Errorf("goal already %s; use /goal clear before creating a new goal", current.Status)
 	}
 
@@ -124,8 +124,8 @@ func (m *Manager) ResumeWithBudget(tokenBudget int) (State, error) {
 		return State{}, fmt.Errorf("goal token budget cannot be negative")
 	}
 	current := m.state.Snapshot().Normalize()
-	if current.Status != StatusPaused && current.Status != StatusBlocked && current.Status != StatusBudgetLimited {
-		return current, fmt.Errorf("goal is not paused, blocked, or budget-limited")
+	if current.Status != StatusPaused && current.Status != StatusBlocked && current.Status != StatusBudgetLimited && current.Status != StatusUsageLimited {
+		return current, fmt.Errorf("goal is not paused, blocked, budget-limited, or usage-limited")
 	}
 	if current.Status == StatusBudgetLimited && tokenBudget == 0 {
 		return current, fmt.Errorf("budget-limited goal requires /goal resume --tokens N with N greater than tokens used (%d)", current.TokensUsed)
@@ -144,6 +144,7 @@ func (m *Manager) ResumeWithBudget(tokenBudget int) (State, error) {
 	current.BudgetLimitReported = false
 	current.BlockedAt = time.Time{}
 	current.BudgetLimitedAt = time.Time{}
+	current.UsageLimitedAt = time.Time{}
 	current.UpdatedAt = m.now()
 	if m.tokenCounter != nil {
 		current.TokenTotalAtLastAccount = m.tokenCounter()
@@ -210,6 +211,23 @@ func (m *Manager) Block(reason string) (State, error) {
 	current.Reason = reason
 	current.BlockedAt = now
 	return current, m.replaceAndPersist(current)
+}
+
+func (m *Manager) UsageLimit(reason string) (State, error) {
+	current := m.state.Snapshot().Normalize()
+	if current.Status != StatusActive && current.Status != StatusBudgetLimited {
+		return current, fmt.Errorf("no active or budget-limited goal to usage-limit")
+	}
+	state, _ := m.accountTokens(current)
+	now := m.now()
+	state.Status = StatusUsageLimited
+	state.Reason = strings.TrimSpace(reason)
+	if state.Reason == "" {
+		state.Reason = "provider usage limit reached"
+	}
+	state.UsageLimitedAt = now
+	state.UpdatedAt = now
+	return state, m.replaceAndPersist(state)
 }
 
 // signal is polled by the runtime at serialized turn-end continuation points.
@@ -327,6 +345,7 @@ func (m *Manager) replaceAndPersist(state State) error {
 		CompletedAt:              state.CompletedAt,
 		BlockedAt:                state.BlockedAt,
 		BudgetLimitedAt:          state.BudgetLimitedAt,
+		UsageLimitedAt:           state.UsageLimitedAt,
 		Reason:                   state.Reason,
 		BlockedReason:            state.BlockedReason,
 		BlockedCount:             state.BlockedCount,

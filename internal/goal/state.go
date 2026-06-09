@@ -16,6 +16,7 @@ const (
 	StatusComplete      Status = "complete"
 	StatusBlocked       Status = "blocked"
 	StatusBudgetLimited Status = "budget_limited"
+	StatusUsageLimited  Status = "usage_limited"
 )
 
 type State struct {
@@ -27,6 +28,7 @@ type State struct {
 	CompletedAt              time.Time
 	BlockedAt                time.Time
 	BudgetLimitedAt          time.Time
+	UsageLimitedAt           time.Time
 	Reason                   string
 	BlockedReason            string
 	BlockedCount             int
@@ -80,7 +82,7 @@ func (s State) Normalize() State {
 
 func ValidateStatus(status Status) error {
 	switch status {
-	case StatusOff, StatusActive, StatusPaused, StatusComplete, StatusBlocked, StatusBudgetLimited:
+	case StatusOff, StatusActive, StatusPaused, StatusComplete, StatusBlocked, StatusBudgetLimited, StatusUsageLimited:
 		return nil
 	default:
 		return fmt.Errorf("invalid goal status %q", status)

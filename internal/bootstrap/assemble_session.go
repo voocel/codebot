@@ -144,6 +144,7 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 		// too late for the same planning run. Plan.Manager still filters the
 		// visible active toolset and validates out-of-phase calls.
 		localtools.NewExitPlanMode(),
+		localtools.NewGoalCreate(),
 		localtools.NewGoalGet(),
 		localtools.NewGoalUpdate(),
 	)
@@ -225,6 +226,7 @@ var coreToolNames = map[string]bool{
 	"ask_user":        true,
 	"enter_plan_mode": true,
 	"exit_plan_mode":  true,
+	"create_goal":     true,
 	"get_goal":        true,
 	"update_goal":     true,
 }

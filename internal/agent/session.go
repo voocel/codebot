@@ -114,6 +114,7 @@ type Session struct {
 	beforePrompt      func()
 	planModeSignal    func() PlanModeSignal
 	goalSignal        func() goal.Signal
+	goalUsageLimit    func(string) (goal.State, error)
 	hookRunner        *hooks.Runner
 	snapshotter       Snapshotter
 	taskStore         *storage.TaskStore
