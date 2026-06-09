@@ -1,6 +1,7 @@
 package goal
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,40 @@ func TestManagerLifecycle(t *testing.T) {
 	}
 	if state, err = m.Complete("done"); err != nil || state.Status != StatusComplete {
 		t.Fatalf("complete = (%q, %v), want complete nil", state.Status, err)
+	}
+}
+
+func TestManagerEmitsChangeAfterStateChange(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil, nil)
+	var changes []Change
+	m.SetChangeHandler(func(change Change) {
+		changes = append(changes, change)
+	})
+
+	if _, err := m.Create("ship goal mode"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := m.Pause(); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if _, err := m.Clear(); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	got := make([]Status, 0, len(changes))
+	for _, change := range changes {
+		got = append(got, change.Current.Status)
+	}
+	if want := []Status{StatusActive, StatusPaused, StatusOff}; !slices.Equal(got, want) {
+		t.Fatalf("change statuses = %v, want %v", got, want)
+	}
+	if changes[0].Previous.Status != StatusOff {
+		t.Fatalf("first previous status = %q, want off", changes[0].Previous.Status)
+	}
+	if changes[2].Previous.Status != StatusPaused {
+		t.Fatalf("clear previous status = %q, want paused", changes[2].Previous.Status)
 	}
 }
 

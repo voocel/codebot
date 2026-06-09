@@ -12,6 +12,7 @@ type Manager struct {
 	stateAppender StateAppender
 	suspend       func() bool
 	tokenCounter  func() int
+	onChange      func(Change)
 	state         *Store
 	now           func() time.Time
 }
@@ -37,6 +38,9 @@ func NewManager(receiver SignalReceiver, stateAppender StateAppender) *Manager {
 	}
 	if receiver != nil {
 		receiver.SetGoalSignal(m.signal)
+		if changeReceiver, ok := receiver.(ChangeReceiver); ok {
+			m.onChange = changeReceiver.HandleGoalChange
+		}
 	}
 	return m
 }
@@ -47,6 +51,10 @@ func (m *Manager) SetSuspender(fn func() bool) {
 
 func (m *Manager) SetTokenCounter(fn func() int) {
 	m.tokenCounter = fn
+}
+
+func (m *Manager) SetChangeHandler(fn func(Change)) {
+	m.onChange = fn
 }
 
 func (m *Manager) Snapshot() State {
@@ -304,11 +312,13 @@ func (m *Manager) replaceAndPersist(state State) error {
 	if err := ValidateStatus(state.Status); err != nil {
 		return err
 	}
-	m.state.Replace(state)
+	previous := m.state.Snapshot().Normalize()
 	if m.stateAppender == nil {
+		m.state.Replace(state)
+		m.emitChange(previous, state)
 		return nil
 	}
-	return m.stateAppender.AppendGoalState(storage.GoalStateEntry{
+	if err := m.stateAppender.AppendGoalState(storage.GoalStateEntry{
 		ID:                       state.ID,
 		Objective:                state.Objective,
 		Status:                   string(state.Status),
@@ -325,5 +335,20 @@ func (m *Manager) replaceAndPersist(state State) error {
 		TokenBudget:              state.TokenBudget,
 		TokensUsed:               state.TokensUsed,
 		TokenTotalAtLastAccount:  state.TokenTotalAtLastAccount,
+	}); err != nil {
+		return err
+	}
+	m.state.Replace(state)
+	m.emitChange(previous, state)
+	return nil
+}
+
+func (m *Manager) emitChange(previous, current State) {
+	if m.onChange == nil {
+		return
+	}
+	m.onChange(Change{
+		Previous: previous.Normalize(),
+		Current:  current.Normalize(),
 	})
 }

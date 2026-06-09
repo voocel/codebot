@@ -34,11 +34,10 @@ func (a *App) pauseGoal() tea.Cmd {
 	if a.GoalManager == nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Goal manager is not available."))
 	}
-	state, err := a.GoalManager.Pause()
-	if err != nil {
+	if _, err := a.GoalManager.Pause(); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-	return tui.SendCommandResult(tui.CommandStyle.Render("Goal paused: " + state.Objective))
+	return nil
 }
 
 func (a *App) resumeGoal(tokenBudget int) tea.Cmd {
@@ -59,7 +58,7 @@ func (a *App) clearGoal() tea.Cmd {
 	if _, err := a.GoalManager.Clear(); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(err.Error()))
 	}
-	return tui.SendCommandResult(tui.CommandStyle.Render("Goal cleared."))
+	return nil
 }
 
 func (a *App) wireGoalTools() {

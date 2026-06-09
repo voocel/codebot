@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/goal"
 )
 
 type RuntimeReminderKind string
@@ -69,6 +70,8 @@ const (
 	SEThinkingChanged     SessionEventType = "thinking_changed"
 	SESessionSwitched     SessionEventType = "session_switched"
 	SERuntimeReminder     SessionEventType = "runtime_reminder"
+	SEGoalUpdated         SessionEventType = "goal_updated"
+	SEGoalCleared         SessionEventType = "goal_cleared"
 	SEError               SessionEventType = "session_error"
 )
 
@@ -86,6 +89,8 @@ type SessionEvent struct {
 	Error        error
 	Reminder     string
 	ReminderKind RuntimeReminderKind
+	Goal         goal.State
+	GoalPrevious goal.State
 
 	// Retry fields (populated for SEAutoRetryStart / SEAutoRetryEnd)
 	RetryAttempt int

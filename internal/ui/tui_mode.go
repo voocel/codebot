@@ -253,6 +253,10 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 			})
 			return
 		}
+		if text, ok := formatGoalEvent(ev); ok {
+			sendAsync(tui.CommandResultMsg{Text: tui.CommandStyle.Render(text)})
+			return
+		}
 		if ev.Type == agent.SEError && ev.Error != nil {
 			p.Send(tui.RetryStatusMsg{})
 			sendAsync(tui.CommandResultMsg{
@@ -342,6 +346,47 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 		return "Auto compaction finished; context unchanged.", true, true
 	default:
 		return "", false, false
+	}
+}
+
+func formatGoalEvent(ev agent.SessionEvent) (string, bool) {
+	switch ev.Type {
+	case agent.SEGoalCleared:
+		return "Goal cleared.", true
+	case agent.SEGoalUpdated:
+		previous := ev.GoalPrevious.Normalize()
+		current := ev.Goal.Normalize()
+		if current.Status == previous.Status &&
+			current.BlockedCount == previous.BlockedCount &&
+			current.BlockedReason == previous.BlockedReason &&
+			current.TokenBudget == previous.TokenBudget {
+			return "", false
+		}
+		switch current.Status {
+		case goalstate.StatusActive:
+			if current.BlockedReason != "" && current.BlockedCount != previous.BlockedCount {
+				return fmt.Sprintf("Goal blocked audit: %d/3.", current.BlockedCount), true
+			}
+			if previous.Status == goalstate.StatusPaused || previous.Status == goalstate.StatusBlocked || previous.Status == goalstate.StatusBudgetLimited {
+				return "Goal resumed: " + current.Objective, true
+			}
+			if previous.Status == goalstate.StatusOff {
+				return "Goal set: " + current.Objective, true
+			}
+			return "", false
+		case goalstate.StatusPaused:
+			return "Goal paused: " + current.Objective, true
+		case goalstate.StatusComplete:
+			return "Goal completed: " + current.Objective, true
+		case goalstate.StatusBlocked:
+			return "Goal blocked: " + current.Objective, true
+		case goalstate.StatusBudgetLimited:
+			return "Goal token budget reached: " + current.Objective, true
+		default:
+			return "", false
+		}
+	default:
+		return "", false
 	}
 }
 

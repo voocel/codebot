@@ -1043,6 +1043,53 @@ func TestGoalContinuationAutoContinuesWhenIdle(t *testing.T) {
 	})
 }
 
+func TestSessionEmitsGoalEvents(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 10},
+		Cwd:      t.TempDir(),
+	})
+	t.Cleanup(s.Close)
+
+	var events []SessionEvent
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SEGoalUpdated || ev.Type == SEGoalCleared {
+			events = append(events, ev)
+		}
+	})
+	defer unsub()
+
+	s.HandleGoalChange(goalstate.Change{
+		Previous: goalstate.State{Status: goalstate.StatusOff},
+		Current: goalstate.State{
+			ID:        "goal-1",
+			Objective: "ship goal mode",
+			Status:    goalstate.StatusActive,
+		},
+	})
+	s.HandleGoalChange(goalstate.Change{
+		Previous: goalstate.State{
+			ID:        "goal-1",
+			Objective: "ship goal mode",
+			Status:    goalstate.StatusActive,
+		},
+		Current: goalstate.State{Status: goalstate.StatusOff},
+	})
+
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	if events[0].Type != SEGoalUpdated || events[0].Goal.Status != goalstate.StatusActive {
+		t.Fatalf("first event = (%s, %s), want goal_updated active", events[0].Type, events[0].Goal.Status)
+	}
+	if events[1].Type != SEGoalCleared || events[1].GoalPrevious.Status != goalstate.StatusActive {
+		t.Fatalf("second event = (%s, prev %s), want goal_cleared prev active", events[1].Type, events[1].GoalPrevious.Status)
+	}
+}
+
 func TestGoalContinuationCanAutoContinueAcrossRuns(t *testing.T) {
 	t.Parallel()
 

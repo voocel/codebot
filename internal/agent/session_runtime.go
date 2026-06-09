@@ -286,6 +286,19 @@ func (s *Session) currentGoalSignal() goal.Signal {
 	return fn()
 }
 
+func (s *Session) HandleGoalChange(change goal.Change) {
+	current := change.Current.Normalize()
+	ev := SessionEvent{
+		Type:         SEGoalUpdated,
+		Goal:         current,
+		GoalPrevious: change.Previous.Normalize(),
+	}
+	if current.Status == goal.StatusOff {
+		ev.Type = SEGoalCleared
+	}
+	s.emit(ev)
+}
+
 func (s *Session) SetBeforePrompt(fn func()) {
 	s.beforePrompt = fn
 }

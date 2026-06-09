@@ -37,6 +37,11 @@ type State struct {
 	TokenTotalAtLastAccount  int
 }
 
+type Change struct {
+	Previous State
+	Current  State
+}
+
 // Signal is the narrow runtime contract consumed by agent.Session. Keeping it
 // in this package lets Manager wire continuation without importing agent.
 type Signal struct {
@@ -48,6 +53,10 @@ type Signal struct {
 
 type SignalReceiver interface {
 	SetGoalSignal(func() Signal)
+}
+
+type ChangeReceiver interface {
+	HandleGoalChange(Change)
 }
 
 func (s State) Active() bool {
