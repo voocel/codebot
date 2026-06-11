@@ -14,12 +14,13 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // RunPrint executes non-interactive print/json mode.
-func RunPrint(sess *agent.Session, args []string, jsonMode bool) error {
+func RunPrint(rt *bootstrap.Runtime, args []string, jsonMode bool) error {
 	prompt := strings.Join(args, " ")
 	if prompt == "" {
 		stdinPrompt, err := ReadStdinPrompt()
@@ -31,7 +32,22 @@ func RunPrint(sess *agent.Session, args []string, jsonMode bool) error {
 	if prompt == "" {
 		return fmt.Errorf("print mode requires a prompt (argument or stdin pipe): %w", diag.ErrToolInput)
 	}
-	if err := RunPrintMode(sess, prompt, jsonMode); err != nil {
+
+	// Connect MCP servers before the one-shot prompt runs — unlike the TUI
+	// there is no later turn to pick them up, so this blocks (bounded) and
+	// connection failures degrade to a stderr note.
+	if len(rt.MCPServers) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		report := rt.ConnectMCP(ctx)
+		cancel()
+		if report != nil {
+			for _, e := range report.Errors {
+				fmt.Fprintf(os.Stderr, "mcp: %s\n", e)
+			}
+		}
+	}
+
+	if err := RunPrintMode(rt.Session, prompt, jsonMode); err != nil {
 		return fmt.Errorf("print mode: %w", err)
 	}
 	return nil

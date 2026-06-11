@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,29 +12,22 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/cron"
 	goalstate "github.com/voocel/codebot/internal/goal"
-	planstate "github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/commands"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// RunTUI executes interactive TUI mode.
+// RunTUI executes interactive TUI mode. The frontend-neutral session
+// lifecycle (plan/goal managers, goal tool callbacks, MCP manager, cron
+// store) is already assembled by bootstrap; this function only adds the
+// TUI-specific bindings on top.
 func RunTUI(rt *bootstrap.Runtime, version string) error {
 	sess := rt.Session
 	cwd := rt.Cwd
 	approvalEngine := rt.ApprovalEngine
-	mcpMgr := rt.MCPManager
-	mcpServers := rt.MCPServers
 
-	planStore := storage.NewPlanStore(config.PlansDir(cwd))
-	planManager := planstate.NewManager(sess, approvalEngine, planStore, rt.SessionStore)
-	goalManager := goalstate.NewManager(sess, sess)
-	goalManager.SetSuspender(func() bool {
-		return planManager.Snapshot().Phase != planstate.PhaseOff
-	})
 	adapter := &App{
 		Session:        sess,
 		Cwd:            cwd,
@@ -49,26 +41,16 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		Skills:         sess.Skills(),
 		PluginCatalog:  rt.PluginCatalog,
 		SkillCatalog:   rt.SkillCatalog,
-		PlanStore:      planStore,
+		PlanStore:      rt.PlanStore,
 		SessionStore:   rt.SessionStore,
-		PlanManager:    planManager,
-		GoalManager:    goalManager,
-		MCPManager:     mcpMgr,
-		MCPServers:     mcpServers,
+		PlanManager:    rt.PlanManager,
+		GoalManager:    rt.GoalManager,
+		MCPManager:     rt.MCPManager,
+		MCPServers:     rt.MCPServers,
+		CronStore:      rt.CronStore,
 		History:        newInputHistory(sess, cwd),
 	}
 	adapter.Commands = adapter.loadPluginCommands()
-	adapter.installMCPRefreshHook()
-
-	_ = planManager.Restore(planstate.State{
-		Phase:   planstate.Phase(rt.PlanPhase),
-		Slug:    rt.PlanSlug,
-		PreMode: rt.PlanPreMode,
-	})
-	if err := goalManager.Restore(restoreGoalState(rt.Goal)); err != nil {
-		return fmt.Errorf("restore goal state: %w", err)
-	}
-	adapter.wireGoalTools()
 
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()
@@ -90,35 +72,19 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 			return nil
 		}
 	}
-	cfg.OnMCPReady = func(msg tui.MCPReadyMsg) {
-		if msg.Instructions != "" {
-			sess.SetMCPInstructions(msg.Instructions)
-		}
-	}
 	m := tui.New(sess, rt.ModelName, cfg)
-	m.MCPLoading = mcpMgr != nil && len(mcpServers) > 0
+	m.MCPLoading = len(rt.MCPServers) > 0
 	p := tea.NewProgram(m)
 	sendAsync := func(msg tea.Msg) {
 		go p.Send(msg)
 	}
 
-	// Start MCP server connections in background.
-	if mcpMgr != nil && len(mcpServers) > 0 {
+	// Connect MCP servers in background; the TUI shows a spinner until ready.
+	if m.MCPLoading {
 		go func() {
-			errs := mcpMgr.StartAll(context.Background(), mcpServers)
-			// Fetch tools eagerly so the count is accurate and servers are warmed up.
-			tools := mcpMgr.Tools(context.Background())
-			mcpMgr.MarkDirty()
-
-			var instructions string
-			if insts := mcpMgr.Instructions(); len(insts) > 0 {
-				instructions = strings.Join(insts, "\n\n")
+			if report := rt.ConnectMCP(context.Background()); report != nil {
+				p.Send(tui.MCPReadyMsg{Tools: report.Tools, Errors: report.Errors})
 			}
-			var errStrs []string
-			for _, e := range errs {
-				errStrs = append(errStrs, e.Error())
-			}
-			p.Send(tui.MCPReadyMsg{Tools: len(tools), Errors: errStrs, Instructions: instructions})
 		}()
 	}
 
@@ -146,30 +112,9 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		p.Send(tui.TaskListUpdateMsg{Snapshot: snap})
 	})
 
-	// Wire Cron tools to TUI — start scheduler that sends prompts.
-	if found := sess.ToolsByName("cron_create"); len(found) > 0 {
-		if ct, ok := found[0].(*tools.CronCreateTool); ok {
-			store := ct.Store()
-			adapter.CronStore = store
-
-			var sessionID string
-			if info, err := sess.CurrentSessionInfo(); err == nil {
-				sessionID = info.ID
-			}
-			if sessionID != "" {
-				store.SetConfigDir(filepath.Join(config.SessionsDir(cwd), sessionID))
-			}
-
-			sched := cron.NewScheduler(cron.SchedulerConfig{
-				Store:          store,
-				SessionID:      sessionID,
-				RestoreDurable: len(sess.Messages()) > 0,
-				OnFire:         func(prompt string) { p.Send(tui.PromptMsg{Text: prompt}) },
-				IsBusy:         sess.IsRunning,
-			})
-			sched.Start()
-			defer sched.Stop()
-		}
+	// Start the cron scheduler; fired prompts enter the conversation as user input.
+	if stop := rt.StartCron(func(prompt string) { p.Send(tui.PromptMsg{Text: prompt}) }); stop != nil {
+		defer stop()
 	}
 
 	// Wire runtime approval prompts to TUI.

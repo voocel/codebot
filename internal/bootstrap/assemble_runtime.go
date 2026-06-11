@@ -50,10 +50,6 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	tools = append(tools, assembly.tools...)
 	tools = append(tools, taskTools...)
 	tools = append(tools, teamTools...)
-	baseTools := make([]agentcore.Tool, 0, len(assembly.baseTools)+len(taskTools)+len(teamTools))
-	baseTools = append(baseTools, assembly.baseTools...)
-	baseTools = append(baseTools, taskTools...)
-	baseTools = append(baseTools, teamTools...)
 
 	reserveTokens := 0 // 0 = engine default (fixed buffer)
 	if r := assembly.settings.CompactRatio; r > 0 && r < 1 {
@@ -77,7 +73,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	if input.telemetryBindSession != nil {
 		input.telemetryBindSession(session.SessionID)
 	}
-	wireSessionRuntime(input, assembly, services, session, baseTools, tools, agentCore, taskRT, contextEngine, summaryCompact)
+	wireSessionRuntime(input, assembly, services, session, tools, agentCore, taskRT, contextEngine, summaryCompact)
 
 	// Wire team spawn on the subagent tool. Each spawned teammate gets its
 	// own send_message instance — a per-spawn instance keeps the tool
@@ -174,10 +170,6 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		MCPServers:     services.mcpServers,
 		HookRunner:     assembly.hookRunner,
 		EnvHint:        input.envHint,
-		PlanSlug:       input.sessionSnapshot.PlanSlug,
-		PlanPhase:      input.sessionSnapshot.PlanPhase,
-		PlanPreMode:    input.sessionSnapshot.PlanPreMode,
-		Goal:           input.sessionSnapshot.Goal,
 		stopTeamPump:   stopPump,
 	}, nil
 }
@@ -348,7 +340,7 @@ func buildSnapshotter(cwd, sessionID string, enabled bool) agent.Snapshotter {
 	return snapshot.New(config.SnapshotDir(cwd), cwd, config.UndoStatePath(cwd, sessionID))
 }
 
-func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, services *bootServices, session *agent.Session, baseTools, tools []agentcore.Tool, ag *agentcore.Agent, taskRT *task.Runtime, contextEngine *agentctx.ContextEngine, summaryCompact *agentctx.FullSummaryStrategy) {
+func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, services *bootServices, session *agent.Session, tools []agentcore.Tool, ag *agentcore.Agent, taskRT *task.Runtime, contextEngine *agentctx.ContextEngine, summaryCompact *agentctx.FullSummaryStrategy) {
 	summaryCompact.SetPostSummaryHooks(session.PostSummaryRecoveryHook())
 	contextEngine.SetProjectHook(session.HandleProjectedRewrite)
 	contextEngine.SetRecoverHook(session.HandleOverflowRewrite)
@@ -399,10 +391,8 @@ func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, service
 			if !ok {
 				return
 			}
-			all := make([]agentcore.Tool, len(baseTools), len(baseTools)+len(mcpTools))
-			copy(all, baseTools)
-			all = append(all, mcpTools...)
-			session.ReplaceAllTools(all)
+			session.ReplaceMCPTools(mcpTools)
+			session.SetMCPInstructions(strings.Join(services.mcpManager.Instructions(), "\n\n"))
 		})
 	}
 

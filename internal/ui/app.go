@@ -143,36 +143,19 @@ func (a *App) effectiveMCPServers() map[string]mcpclient.ServerConfig {
 	return servers
 }
 
-func (a *App) installMCPRefreshHook() {
-	if a.Session == nil || a.MCPManager == nil {
-		return
-	}
-	a.Session.SetBeforePrompt(func() {
-		mcpTools, ok := a.MCPManager.RefreshIfDirty(context.Background())
-		if !ok {
-			return
-		}
-		a.Session.ReplaceMCPTools(mcpTools)
-		a.Session.SetMCPInstructions(strings.Join(a.MCPManager.Instructions(), "\n\n"))
-	})
-}
-
 func (a *App) reloadMCPRuntime() (mcpReloadResult, error) {
 	var result mcpReloadResult
 
 	a.MCPServers = a.effectiveMCPServers()
-	if a.MCPManager == nil && len(a.MCPServers) == 0 {
+	// Boot always provisions the manager (the session's refresh hook captures
+	// it); creating a second one here would detach the hook from reality.
+	if a.MCPManager == nil {
 		if a.Session != nil {
 			a.Session.ReplaceMCPTools(nil)
 			a.Session.SetMCPInstructions("")
 		}
 		return result, nil
 	}
-
-	if a.MCPManager == nil {
-		a.MCPManager = mcpclient.NewManager()
-	}
-	a.installMCPRefreshHook()
 
 	reloadCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()

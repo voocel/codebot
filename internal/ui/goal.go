@@ -5,9 +5,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/goal"
-	"github.com/voocel/codebot/internal/storage"
-	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
@@ -61,27 +60,10 @@ func (a *App) clearGoal() tea.Cmd {
 	return nil
 }
 
+// wireGoalTools re-attaches goal tool callbacks after the session toolset is
+// rebuilt (plugin reload). Boot performs the initial wiring.
 func (a *App) wireGoalTools() {
-	if a.Session == nil || a.GoalManager == nil {
-		return
-	}
-	a.Session.SetGoalUsageLimitHandler(func(reason string) (goal.State, error) {
-		state := a.GoalManager.Snapshot().Normalize()
-		if state.Status != goal.StatusActive && state.Status != goal.StatusBudgetLimited {
-			return state, nil
-		}
-		return a.GoalManager.UsageLimit(reason)
-	})
-	for _, tool := range a.Session.ToolsByName("create_goal", "get_goal", "update_goal") {
-		switch t := tool.(type) {
-		case *tools.GoalCreateTool:
-			t.SetCreator(a.GoalManager.CreateWithBudget)
-		case *tools.GoalGetTool:
-			t.SetSnapshotter(a.GoalManager.Snapshot)
-		case *tools.GoalUpdateTool:
-			t.SetHandlers(a.GoalManager.Complete, a.GoalManager.Block)
-		}
-	}
+	bootstrap.WireGoalTools(a.Session, a.GoalManager)
 }
 
 func (a *App) restoreSessionGoalState() error {
@@ -92,33 +74,11 @@ func (a *App) restoreSessionGoalState() error {
 	if err != nil {
 		return err
 	}
-	if err := a.GoalManager.Restore(restoreGoalState(snapshot.Goal)); err != nil {
+	if err := a.GoalManager.Restore(goal.StateFromEntry(snapshot.Goal)); err != nil {
 		return err
 	}
 	a.wireGoalTools()
 	return nil
-}
-
-func restoreGoalState(entry storage.GoalStateEntry) goal.State {
-	return goal.State{
-		ID:                       entry.ID,
-		Objective:                entry.Objective,
-		Status:                   goal.Status(entry.Status),
-		CreatedAt:                entry.CreatedAt,
-		UpdatedAt:                entry.UpdatedAt,
-		CompletedAt:              entry.CompletedAt,
-		BlockedAt:                entry.BlockedAt,
-		BudgetLimitedAt:          entry.BudgetLimitedAt,
-		UsageLimitedAt:           entry.UsageLimitedAt,
-		Reason:                   entry.Reason,
-		BlockedReason:            entry.BlockedReason,
-		BlockedCount:             entry.BlockedCount,
-		BlockedAttemptTokenTotal: entry.BlockedAttemptTokenTotal,
-		BudgetLimitReported:      entry.BudgetLimitReported,
-		TokenBudget:              entry.TokenBudget,
-		TokensUsed:               entry.TokensUsed,
-		TokenTotalAtLastAccount:  entry.TokenTotalAtLastAccount,
-	}.Normalize()
 }
 
 func formatGoalStatus(state goal.State) string {

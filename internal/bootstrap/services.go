@@ -129,9 +129,9 @@ func buildMCPServices(cwd string, contrib plugin.Contributions) (*mcpclient.Mana
 			mcpServers[name] = cfg
 		}
 	}
-	if len(mcpServers) == 0 {
-		return nil, nil
-	}
+	// Always create a manager — even with zero servers configured — so the
+	// session's refresh hook and the UI's /mcp reload operate on one stable
+	// instance for the process lifetime.
 	return mcpclient.NewManager(), mcpServers
 }
 

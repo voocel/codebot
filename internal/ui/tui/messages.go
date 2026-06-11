@@ -68,9 +68,8 @@ type TasksRefreshMsg struct{}
 
 // MCPReadyMsg notifies the TUI that background MCP server connection has completed.
 type MCPReadyMsg struct {
-	Tools        int      // total number of tools loaded across all servers
-	Errors       []string // connection errors (server: reason)
-	Instructions string   // MCP server instructions to set as system suffix
+	Tools  int      // total number of tools loaded across all servers
+	Errors []string // connection errors (server: reason)
 }
 
 // SuggestionMsg carries a prompt suggestion generated after agent completion.

@@ -362,6 +362,30 @@ func (m *Manager) replaceAndPersist(state State) error {
 	return nil
 }
 
+// StateFromEntry converts a persisted goal entry back into runtime state.
+// Inverse of the mapping in replaceAndPersist.
+func StateFromEntry(entry storage.GoalStateEntry) State {
+	return State{
+		ID:                       entry.ID,
+		Objective:                entry.Objective,
+		Status:                   Status(entry.Status),
+		CreatedAt:                entry.CreatedAt,
+		UpdatedAt:                entry.UpdatedAt,
+		CompletedAt:              entry.CompletedAt,
+		BlockedAt:                entry.BlockedAt,
+		BudgetLimitedAt:          entry.BudgetLimitedAt,
+		UsageLimitedAt:           entry.UsageLimitedAt,
+		Reason:                   entry.Reason,
+		BlockedReason:            entry.BlockedReason,
+		BlockedCount:             entry.BlockedCount,
+		BlockedAttemptTokenTotal: entry.BlockedAttemptTokenTotal,
+		BudgetLimitReported:      entry.BudgetLimitReported,
+		TokenBudget:              entry.TokenBudget,
+		TokensUsed:               entry.TokensUsed,
+		TokenTotalAtLastAccount:  entry.TokenTotalAtLastAccount,
+	}.Normalize()
+}
+
 func (m *Manager) emitChange(previous, current State) {
 	if m.onChange == nil {
 		return

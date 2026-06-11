@@ -21,7 +21,6 @@ type sessionAssembly struct {
 	settings              config.Resolved
 	chatModel             agentcore.ChatModel
 	tools                 []agentcore.Tool
-	baseTools             []agentcore.Tool
 	systemBlocks          []agentcore.SystemBlock
 	frozenIdentity        string // process-stable: block 1
 	frozenInstructions    string // process-stable: block 2
@@ -55,7 +54,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		factories = defaultToolFactories(fileReadState)
 	}
 
-	tools, baseTools, subagentTool, bashTool, err := buildToolset(input, services, settings, activeProvider, chatModel, factories)
+	tools, subagentTool, bashTool, err := buildToolset(input, services, settings, activeProvider, chatModel, factories)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +68,6 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		settings:              settings,
 		chatModel:             chatModel,
 		tools:                 tools,
-		baseTools:             baseTools,
 		systemBlocks:          parts.blocks,
 		frozenIdentity:        parts.frozenIdentity,
 		frozenInstructions:    parts.frozenInstructions,
@@ -123,7 +121,7 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	return settings, activeProvider, chatModel, nil
 }
 
-func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, []agentcore.Tool, *subagent.Tool, *agentcoretools.BashTool, error) {
+func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, *subagent.Tool, *agentcoretools.BashTool, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	var bashTool *agentcoretools.BashTool
@@ -175,10 +173,9 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 	skillTool := localtools.NewSkillTool(services.skillCatalog, input.sessionStore.Header().SessionID)
 	skillTool.SetForkExecutor(subagentTool.Execute)
 	builtTools = append(builtTools, skillTool)
-	baseTools := builtTools
 
-	builtTools, baseTools = applyToolSearch(builtTools, baseTools, activeProvider, settings.Model)
-	return builtTools, baseTools, subagentTool, bashTool, nil
+	builtTools = applyToolSearch(builtTools, activeProvider, settings.Model)
+	return builtTools, subagentTool, bashTool, nil
 }
 
 func wireSkillAllows(tools []agentcore.Tool, approvalEngine *approval.Engine) {
@@ -303,9 +300,9 @@ func modelVersionAtLeast(s string, minMajor, minMinor int) bool {
 	return false
 }
 
-func applyToolSearch(allTools, baseTools []agentcore.Tool, provider, model string) ([]agentcore.Tool, []agentcore.Tool) {
+func applyToolSearch(allTools []agentcore.Tool, provider, model string) []agentcore.Tool {
 	if !supportsToolSearch(provider, model) {
-		return allTools, baseTools
+		return allTools
 	}
 
 	var visible, deferred []agentcore.Tool
@@ -318,7 +315,7 @@ func applyToolSearch(allTools, baseTools []agentcore.Tool, provider, model strin
 	}
 
 	if len(deferred) == 0 {
-		return allTools, baseTools
+		return allTools
 	}
 
 	searchTool := agentcoretools.NewToolSearchTool(deferred...)
@@ -326,19 +323,7 @@ func applyToolSearch(allTools, baseTools []agentcore.Tool, provider, model strin
 	result = append(result, visible...)
 	result = append(result, searchTool)
 	result = append(result, deferred...)
-
-	baseSet := make(map[string]bool, len(baseTools))
-	for _, t := range baseTools {
-		baseSet[t.Name()] = true
-	}
-	var newBase []agentcore.Tool
-	for _, t := range result {
-		if baseSet[t.Name()] || t.Name() == "tool_search" {
-			newBase = append(newBase, t)
-		}
-	}
-
-	return result, newBase
+	return result
 }
 
 type systemParts struct {

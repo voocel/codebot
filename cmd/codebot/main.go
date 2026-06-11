@@ -45,7 +45,7 @@ func main() {
 	defer rt.Close()
 
 	if printMode {
-		if err := ui.RunPrint(rt.Session, flag.Args(), *jsonFlag); err != nil {
+		if err := ui.RunPrint(rt, flag.Args(), *jsonFlag); err != nil {
 			fmt.Fprintln(os.Stderr, formatCLIError(err))
 			os.Exit(1)
 		}

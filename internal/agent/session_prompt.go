@@ -29,10 +29,6 @@ func (s *Session) RestoreAllTools(extra ...agentcore.Tool) {
 	s.prompts.restoreAllTools(extra...)
 }
 
-func (s *Session) ReplaceAllTools(tools []agentcore.Tool) {
-	s.prompts.replaceAllTools(tools)
-}
-
 func (s *Session) ReplaceMCPTools(tools []agentcore.Tool) {
 	s.prompts.replaceMCPTools(tools)
 }
@@ -109,13 +105,6 @@ func (m *sessionPromptManager) restoreAllTools(extra ...agentcore.Tool) {
 		m.session.activeTools = combined
 	}
 	m.session.agent.SetTools(m.session.activeTools...)
-	m.rebuildPrompt()
-}
-
-func (m *sessionPromptManager) replaceAllTools(tools []agentcore.Tool) {
-	m.session.allTools = tools
-	m.session.activeTools = tools
-	m.session.agent.SetTools(tools...)
 	m.rebuildPrompt()
 }
 

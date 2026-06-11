@@ -9,8 +9,11 @@ import (
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/cron"
+	"github.com/voocel/codebot/internal/goal"
 	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
+	"github.com/voocel/codebot/internal/plan"
 	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
@@ -50,10 +53,13 @@ type Runtime struct {
 	MCPServers    map[string]mcpclient.ServerConfig // for async connection in TUI
 	HookRunner    *hooks.Runner                     // nil if no hooks configured
 	EnvHint       string                            // non-empty when credentials come from environment variable
-	PlanSlug      string                            // restored plan slug (empty if no plan)
-	PlanPhase     string                            // restored plan phase
-	PlanPreMode   string                            // restored plan pre-mode
-	Goal          storage.GoalStateEntry            // restored explicit /goal state
+
+	// Frontend-neutral session lifecycle, assembled by wireLifecycle.
+	// Restored from the session snapshot before any frontend runs.
+	PlanStore   *storage.PlanStore
+	PlanManager *plan.Manager
+	GoalManager *goal.Manager
+	CronStore   *cron.Store // nil when the cron tools are absent
 
 	// stopTeamPump cancels the leader-inbox pump goroutine. Set by
 	// assembleRuntime, called by Close so the pump exits before the team
@@ -125,6 +131,10 @@ func Boot(opts Options) (*Runtime, error) {
 		return nil, err
 	}
 	rt.telemetryShutdown = input.telemetryShutdown
+
+	if err := wireLifecycle(rt, input); err != nil {
+		return nil, err
+	}
 
 	closeStoreOnError = false
 	go localtools.CleanOldOutputs()

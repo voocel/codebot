@@ -555,9 +555,6 @@ func formatSubmitDisplayText(text string, images []agentcore.ContentBlock) strin
 
 func (m *Model) handleMCPReady(msg MCPReadyMsg) (tea.Model, tea.Cmd) {
 	m.MCPLoading = false
-	if m.config.OnMCPReady != nil {
-		m.config.OnMCPReady(msg)
-	}
 	var parts []string
 	if msg.Tools > 0 {
 		parts = append(parts, fmt.Sprintf("%d tools connected", msg.Tools))

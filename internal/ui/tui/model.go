@@ -31,7 +31,6 @@ type Config struct {
 	OnEvent              func(m *Model, ev agentcore.Event) tea.Cmd
 	OnPaste              func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
 	OnDrop               func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
-	OnMCPReady           func(msg MCPReadyMsg)               // called when MCP servers finish connecting
 	OnHideCompletedTasks func(snap storage.TaskSnapshot) tea.Cmd
 	StatusRight          func(m *Model) string
 	StatusMode           func(m *Model) string                // mode indicator for context bar (e.g. "⏵⏵ trust")
