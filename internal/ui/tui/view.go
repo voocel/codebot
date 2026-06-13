@@ -19,9 +19,19 @@ func (m *Model) View() string {
 	// emit any scrollback content (status bar, streaming bullets, input
 	// panel) so the modal renders against an effectively blank canvas —
 	// terminal scrollback above it stays untouched and reappears when the
-	// modal closes.
-	if body := m.transcriptViewBody(); body != "" {
-		return body
+	// modal closes. Skipped while the fleet list holds focus: that path keeps
+	// the list pinned below the preview (renderFleetSplit), so the user can
+	// switch agents without closing anything.
+	if !m.FleetFocus {
+		if body := m.transcriptViewBody(); body != "" {
+			return body
+		}
+	}
+
+	// Fleet split-preview: an agent is selected in the focused list, so show
+	// its live transcript on top with the list pinned below.
+	if m.FleetFocus && m.TranscriptModal != nil {
+		return m.renderFleetSplit()
 	}
 
 	var parts []string
@@ -101,10 +111,14 @@ func (m *Model) View() string {
 		appendInputArea()
 		if comp := m.renderCompletions(); comp != "" {
 			parts = append(parts, comp)
+		} else if fleet := m.renderFleetList(); fleet != "" {
+			parts = append(parts, fleet)
 		}
 	}
 
-	if !m.compActive && overlay == "" && m.AskUser == nil {
+	// While focused in the fleet list, the list owns the bottom region — the
+	// context bar steps aside (it returns when focus goes back to the input).
+	if !m.compActive && overlay == "" && m.AskUser == nil && !m.FleetFocus {
 		parts = append(parts, m.RenderContextBar())
 		parts = append(parts, "")
 	}

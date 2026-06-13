@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -237,7 +238,82 @@ func (a *App) Config() tui.Config {
 		Completions:    a.completions,
 		OnBtwResult:    a.onBtwResult,
 		TeammateEvents: a.TeammateEvents,
+		FleetAgentStat: a.fleetAgentStat,
+		StopAgent:      a.stopAgent,
+		StopAllAgents:  a.stopAllAgents,
 	}
+}
+
+// fleetAgentStat reports how long the task backing a fleet-list agent (by hub
+// display name) has been running. ok=false when no live task correlates — the
+// row still renders, just without a timer.
+func (a *App) fleetAgentStat(name string) (time.Duration, bool) {
+	if e := a.runningEntryForAgent(name); e != nil {
+		return time.Since(e.StartedAt), true
+	}
+	return 0, false
+}
+
+// stopAgent stops the running task backing a fleet agent by hub display name.
+func (a *App) stopAgent(name string) {
+	if e := a.runningEntryForAgent(name); e != nil {
+		a.TaskRuntime.Stop(e.ID)
+	}
+}
+
+// stopAllAgents stops every running background task (same surface as the
+// /tasks modal's stop-all).
+func (a *App) stopAllAgents() {
+	if a.TaskRuntime != nil {
+		a.TaskRuntime.StopAll()
+	}
+}
+
+// runningEntryForAgent correlates a hub display name to its backing running
+// task entry. Teammates match by Identity.AgentName (already unique);
+// background sub-agents by Agent type — the hub name may carry a " #N"
+// disambiguator the task entry lacks, so we strip it before matching. Returns
+// nil when nothing live correlates.
+func (a *App) runningEntryForAgent(name string) *task.Entry {
+	if a.TaskRuntime == nil || name == "" {
+		return nil
+	}
+	base := stripInstanceSuffix(name)
+	list := a.TaskRuntime.List()
+	for i := range list {
+		e := &list[i]
+		if e.Status != task.Running {
+			continue
+		}
+		switch e.Type {
+		case task.TypeTeammate:
+			if e.Identity != nil && e.Identity.AgentName == name {
+				return e
+			}
+		case task.TypeSubAgent:
+			// Matches by agent type. With several same-type background runs
+			// (e.g. two "explore") this returns the first running one, so
+			// elapsed/stop may target the wrong instance — a known deferred
+			// limitation (precise routing needs the run's InstanceID on the
+			// task entry). See tasks/subagent-live-preview.md.
+			if e.Agent == base {
+				return e
+			}
+		}
+	}
+	return nil
+}
+
+// stripInstanceSuffix removes a trailing " #N" disambiguator (added by the hub
+// when the same agent type runs concurrently) so the base type can match a
+// task entry's Agent field.
+func stripInstanceSuffix(name string) string {
+	if i := strings.LastIndex(name, " #"); i > 0 {
+		if _, err := strconv.Atoi(name[i+2:]); err == nil {
+			return name[:i]
+		}
+	}
+	return name
 }
 
 // onKey returns a hook that intercepts slash commands.

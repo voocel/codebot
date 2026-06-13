@@ -179,6 +179,12 @@ func (m *Model) cycleTranscriptAgent(step int) tea.Cmd {
 // Open path: when the modal is CLOSED, only Ctrl+O is recognised; everything
 // else falls through.
 func (m *Model) handleTranscriptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	// While the fleet list holds focus (including split-preview, where a modal
+	// is open beneath the list), the list owns the keyboard. Defer entirely so
+	// its navigation/switch keys aren't swallowed by the modal scroll handlers.
+	if m.FleetFocus {
+		return m, nil, false
+	}
 	// Toggle from closed → open.
 	if m.TranscriptModal == nil {
 		if msg.String() != "ctrl+o" {

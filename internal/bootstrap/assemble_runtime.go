@@ -129,6 +129,12 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		)
 		assembly.subagentTool.SetTeamSpawner(spawner)
 
+		// Fan one-shot / background sub-agent runs into the same event hub the
+		// teammate spawner feeds, so the live-preview modal lists and streams
+		// them too. Teammates publish via the spawner's onEvent; sub-agents via
+		// this observer — one hub, two producers.
+		assembly.subagentTool.SetEventObserver(agent.SubagentHubObserver(teammateEvents))
+
 		// Lazy teammate resume: boot does NO team work. Instead of eagerly
 		// re-spawning prior teammates, each wakes on demand the first time the
 		// leader messages it — the waker reuses the same spawner so a woken

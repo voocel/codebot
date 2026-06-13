@@ -44,6 +44,17 @@ type Config struct {
 	// events. When non-nil the Ctrl+T modal subscribes to it to render a
 	// teammate's live transcript. nil disables the modal entirely.
 	TeammateEvents *agent.TeammateEventHub
+
+	// FleetAgentStat returns how long the agent backing a fleet-list row (keyed
+	// by hub display name) has been running, when a live backing task is found.
+	// Used to annotate rows with elapsed time. nil disables the annotation.
+	FleetAgentStat func(name string) (elapsed time.Duration, ok bool)
+	// StopAgent stops the running task backing a fleet agent by hub display
+	// name. nil disables x-to-stop in the fleet list.
+	StopAgent func(name string)
+	// StopAllAgents stops every running background task. nil disables the
+	// stop-all key in the fleet list.
+	StopAllAgents func()
 }
 
 // CompletionItem is a single command completion candidate.
@@ -209,6 +220,13 @@ type State struct {
 	// transcriptUnsubscribe drops the hub subscription that feeds the
 	// modal; nil when no modal is open.
 	transcriptUnsubscribe func()
+
+	// FleetFocus is true when keyboard focus has moved from the input into
+	// the live agent list pinned below it (entered by pressing ↓ at the last
+	// input line). While true, navigation keys drive FleetCursor instead of
+	// the textarea. FleetCursor indexes the sorted fleet agent list.
+	FleetFocus  bool
+	FleetCursor int
 }
 
 // Model is the bubbletea Model for the agent TUI.

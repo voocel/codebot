@@ -250,6 +250,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if next, cmd, handled := m.handleTranscriptKey(msg); handled {
 		return next, cmd
 	}
+	// Fleet-list navigation, when focus has dropped from the input into the
+	// live agent roster below it. No-op (handled=false) when not focused.
+	if next, cmd, handled := m.handleFleetKey(msg); handled {
+		return next, cmd
+	}
 	if next, cmd, handled := m.handleOverlayKey(msg); handled {
 		return next, cmd
 	}
@@ -599,22 +604,33 @@ func (m *Model) handleUpKey() (tea.Model, tea.Cmd, bool) {
 }
 
 func (m *Model) handleDownKey() (tea.Model, tea.Cmd, bool) {
-	if m.histIdx < 0 || m.Input.Line() != m.Input.LineCount()-1 {
-		return m, nil, false
+	atLastLine := m.Input.Line() == m.Input.LineCount()-1
+	// History forward-navigation takes priority while browsing history.
+	if m.histIdx >= 0 && atLastLine {
+		if m.histIdx > 0 {
+			m.histIdx--
+			m.Input.Reset()
+			m.Input.SetValue(m.history.Get(m.histIdx))
+		} else {
+			m.histIdx = -1
+			m.Input.Reset()
+			m.Input.SetValue(m.histDraft)
+			m.histDraft = ""
+		}
+		m.Input.CursorEnd()
+		m.adjustInputHeight()
+		return m, nil, true
 	}
-	if m.histIdx > 0 {
-		m.histIdx--
-		m.Input.Reset()
-		m.Input.SetValue(m.history.Get(m.histIdx))
-	} else {
-		m.histIdx = -1
-		m.Input.Reset()
-		m.Input.SetValue(m.histDraft)
-		m.histDraft = ""
+	// Otherwise ↓ at the last input line drops focus into the live agent list
+	// below the input (only when something is live, matching what's rendered).
+	// Consumes the key so the textarea doesn't also react.
+	if atLastLine && m.fleetEnterable() {
+		m.FleetFocus = true
+		m.FleetCursor = 1 // land on the first agent; "main" sits above at row 0
+		m.Input.Blur()    // keyboard belongs to the list now — stop the input cursor
+		return m, nil, true
 	}
-	m.Input.CursorEnd()
-	m.adjustInputHeight()
-	return m, nil, true
+	return m, nil, false
 }
 
 // handleResize processes terminal resize events.
