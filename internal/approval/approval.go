@@ -10,10 +10,10 @@ import (
 type Mode = permission.Mode
 
 const (
-	ModeStrict      = permission.ModeStrict
-	ModeBalanced    = permission.ModeBalanced
-	ModeAcceptEdits = permission.ModeAcceptEdits
-	ModeTrust       = permission.ModeTrust
+	ModeStrict   = permission.ModeStrict
+	ModeBalanced = permission.ModeBalanced
+	ModeAuto     = permission.ModeAuto
+	ModeTrust    = permission.ModeTrust
 )
 
 type Capability = permission.Capability

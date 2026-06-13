@@ -192,8 +192,8 @@ func formatApprovalMode(m approval.Mode) string {
 		return "strict"
 	case approval.ModeBalanced:
 		return "balanced"
-	case approval.ModeAcceptEdits:
-		return "accept-edits"
+	case approval.ModeAuto:
+		return "auto"
 	case approval.ModeTrust:
 		return "trust"
 	default:

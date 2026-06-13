@@ -43,7 +43,7 @@ func (s *Session) Prompt(text string) error {
 		s.preambleInjected = true
 	}
 	msgs = append(msgs, s.buildUserMessage(agentcore.TextBlock(text)))
-	return s.agent.PromptMessages(msgs...)
+	return s.agent.PromptMessages(context.Background(), msgs...)
 }
 
 func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
@@ -59,7 +59,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 		s.preambleInjected = true
 	}
 	msgs = append(msgs, s.buildUserMessage(blocks...))
-	return s.agent.PromptMessages(msgs...)
+	return s.agent.PromptMessages(context.Background(), msgs...)
 }
 
 // buildUserMessage creates a user message with reminders prepended as text blocks.
@@ -127,7 +127,7 @@ func (s *Session) continueIfCurrentGeneration(gen uint64) error {
 		return errStaleSessionGeneration
 	}
 	s.mu.Unlock()
-	return s.agent.Continue()
+	return s.agent.Continue(context.Background())
 }
 
 // deliverRuntimeReminder prefers in-run steering and otherwise defers to the
@@ -636,13 +636,14 @@ func (s *Session) applyContextWindow(window int) {
 	if r := s.settings.CompactRatio; r > 0 && r < 1 {
 		reserve = window - int(float64(window)*r)
 	}
+	// Agent.SetContextWindow propagates to the ContextEngine (it implements
+	// agentcore.ContextWindowSetter); only the reserve still needs a direct call.
 	s.agent.SetContextWindow(window)
 	s.mu.Lock()
 	s.settings.ContextWindow = window
 	cm := s.contextManager
 	s.mu.Unlock()
 	if engine, ok := cm.(*agentctx.ContextEngine); ok {
-		engine.SetContextWindow(window)
 		engine.SetReserveTokens(reserve)
 	}
 }

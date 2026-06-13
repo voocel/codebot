@@ -25,8 +25,9 @@ func TestParseMode(t *testing.T) {
 		{in: "trust", want: approval.ModeTrust},
 		{in: "off", want: approval.ModeTrust},
 		{in: "  StRiCt  ", want: approval.ModeStrict},
-		{in: "accept-edits", want: approval.ModeAcceptEdits},
-		{in: "accept_edits", want: approval.ModeAcceptEdits},
+		{in: "auto", want: approval.ModeAuto},
+		{in: "accept-edits", want: approval.ModeAuto},
+		{in: "accept_edits", want: approval.ModeAuto},
 	}
 	for _, tc := range cases {
 		got, err := approval.ParseMode(tc.in)

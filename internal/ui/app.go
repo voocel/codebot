@@ -399,8 +399,8 @@ func (a *App) statusMode(_ *tui.Model) string {
 	switch a.ApprovalEngine.Mode() {
 	case approval.ModeStrict:
 		return "◆ strict"
-	case approval.ModeAcceptEdits:
-		return "⏵⏵ accept edits"
+	case approval.ModeAuto:
+		return "⏵⏵ auto"
 	case approval.ModeTrust:
 		return "⏵⏵ trust"
 	default:
@@ -413,7 +413,7 @@ func (a *App) statusMode(_ *tui.Model) string {
 var modeOrder = []approval.Mode{
 	approval.ModeStrict,
 	approval.ModeBalanced,
-	approval.ModeAcceptEdits,
+	approval.ModeAuto,
 	approval.ModeTrust,
 }
 
