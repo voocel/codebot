@@ -36,10 +36,16 @@ type sessionAssembly struct {
 	fileReadState         *agentcoretools.FileReadState
 }
 
-func buildSessionAssembly(input *resolvedInput, services *bootServices, factories []ToolFactory) (*sessionAssembly, error) {
+func buildSessionAssembly(input *resolvedInput, services *bootServices, factories []ToolFactory, fs agentcoretools.WorkspaceFS) (*sessionAssembly, error) {
 	settings, activeProvider, chatModel, err := resolveActiveModel(input)
 	if err != nil {
 		return nil, err
+	}
+
+	// One workspace backend per session, shared by the main agent's tools and
+	// every sub-agent's rebuilt pool. Default to the local filesystem.
+	if fs == nil {
+		fs = agentcoretools.OSWorkspaceFS{}
 	}
 
 	ctxFiles := config.LoadContextFiles(input.cwd)
@@ -51,10 +57,10 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 	// Write/Edit (Validators read stamps to enforce read-before-write).
 	fileReadState := agentcoretools.NewFileReadState()
 	if factories == nil {
-		factories = defaultToolFactories(fileReadState)
+		factories = defaultToolFactories(fileReadState, fs)
 	}
 
-	tools, subagentTool, bashTool, err := buildToolset(input, services, settings, activeProvider, chatModel, factories)
+	tools, subagentTool, bashTool, err := buildToolset(input, services, settings, activeProvider, chatModel, factories, fs)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +127,7 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	return settings, activeProvider, chatModel, nil
 }
 
-func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory) ([]agentcore.Tool, *subagent.Tool, *agentcoretools.BashTool, error) {
+func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, fs agentcoretools.WorkspaceFS) ([]agentcore.Tool, *subagent.Tool, *agentcoretools.BashTool, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	var bashTool *agentcoretools.BashTool
@@ -167,6 +173,7 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 		Provider:      activeProvider,
 		Providers:     settings.Providers,
 		SmallModel:    settings.SmallModel,
+		WorkspaceFS:   fs,
 	})
 	builtTools = append(builtTools, subagentTool)
 

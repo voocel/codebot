@@ -165,17 +165,19 @@ func toSet(xs []string) map[string]bool {
 // general-purpose) must NOT share the returned slice: doing so re-introduces
 // the same cross-pollination of read state that we created this function to
 // prevent.
-func BuildToolPool(cwd string, mainTools []agentcore.Tool) []agentcore.Tool {
+// fs is the workspace backend the rebuilt read/write/edit instances operate
+// on; nil falls back to the local filesystem (tools default to OSWorkspaceFS).
+func BuildToolPool(cwd string, mainTools []agentcore.Tool, fs tools.WorkspaceFS) []agentcore.Tool {
 	state := tools.NewFileReadState()
 	out := make([]agentcore.Tool, 0, len(mainTools))
 	for _, t := range mainTools {
 		switch t.Name() {
 		case "read":
-			out = append(out, tools.NewRead(cwd, state))
+			out = append(out, tools.NewRead(cwd, state, tools.WithFS(fs)))
 		case "write":
-			out = append(out, tools.NewWrite(cwd, state))
+			out = append(out, tools.NewWrite(cwd, state, tools.WithFS(fs)))
 		case "edit":
-			out = append(out, tools.NewEdit(cwd, state))
+			out = append(out, tools.NewEdit(cwd, state, tools.WithFS(fs)))
 		default:
 			out = append(out, t)
 		}

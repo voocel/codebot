@@ -9,6 +9,7 @@ import (
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/agentcore/subagent"
+	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
 )
@@ -26,6 +27,10 @@ type subAgentDeps struct {
 	Provider    string                           // main provider name
 	Providers   map[string]config.ProviderConfig // per-provider credentials
 	SmallModel  string                           // model name preferred for the explore sub-agent
+
+	// WorkspaceFS is the session's file backend, threaded into each sub-agent's
+	// rebuilt read/write/edit pool so sub-agents share the parent's backend.
+	WorkspaceFS agentcoretools.WorkspaceFS
 }
 
 // buildSubAgentTool constructs a SubAgentTool with every sub-agent registered.
@@ -61,6 +66,7 @@ func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
 		DefaultModel:  deps.Model,
 		ContextWindow: deps.ContextWindow,
 		ResolveModel:  resolveModel,
+		WorkspaceFS:   deps.WorkspaceFS,
 	}
 	ctxFactory := func(model agentcore.ChatModel) agentcore.ContextManager {
 		return newSubAgentContextManager(model, deps.ContextWindow)

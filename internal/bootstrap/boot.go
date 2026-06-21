@@ -6,6 +6,7 @@ import (
 
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
+	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
@@ -31,6 +32,12 @@ type Options struct {
 	ApprovalMode  string
 	ToolFactories []ToolFactory
 	ModelFactory  agent.ModelFactory
+
+	// WorkspaceFS is the file backend that read/write/edit operate on, shared
+	// by the main agent and every sub-agent. Nil means the local filesystem.
+	// Frontends that serve files differently (e.g. the ACP frontend reading
+	// editor buffers) inject their own backend here.
+	WorkspaceFS agentcoretools.WorkspaceFS
 }
 
 // Runtime is the bootstrapped app runtime state.
@@ -121,7 +128,7 @@ func Boot(opts Options) (*Runtime, error) {
 		return nil, err
 	}
 
-	assembly, err := buildSessionAssembly(input, services, opts.ToolFactories)
+	assembly, err := buildSessionAssembly(input, services, opts.ToolFactories, opts.WorkspaceFS)
 	if err != nil {
 		return nil, err
 	}

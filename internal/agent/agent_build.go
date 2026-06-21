@@ -7,6 +7,7 @@ import (
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/agentcore/subagent"
+	"github.com/voocel/agentcore/tools"
 )
 
 // BuildDeps carries the runtime context BuildConfig needs to materialise an
@@ -43,6 +44,11 @@ type BuildDeps struct {
 	// per-agent model override; in that case any explicit Model that
 	// isn't "inherit" produces an error from BuildConfig.
 	ResolveModel func(name string) (agentcore.ChatModel, error)
+
+	// WorkspaceFS is the file backend the per-agent read/write/edit pool
+	// operates on. Threaded so sub-agents share the parent's backend (e.g.
+	// editor buffers under ACP). Nil means the local filesystem.
+	WorkspaceFS tools.WorkspaceFS
 }
 
 // BuildConfig converts an AgentDefinition into a subagent.Config ready to be
@@ -68,7 +74,7 @@ func (d *AgentDefinition) BuildConfig(deps BuildDeps, ctxFactory func(agentcore.
 		return subagent.Config{}, fmt.Errorf("agent %q: %w", d.Name, err)
 	}
 
-	pool := BuildToolPool(deps.Cwd, deps.MainTools)
+	pool := BuildToolPool(deps.Cwd, deps.MainTools, deps.WorkspaceFS)
 	filtered := FilterToolsForAgent(pool, FilterOpts{
 		IsBuiltIn:       d.Source.IsBuiltIn(),
 		IsAsync:         d.Background,

@@ -242,8 +242,8 @@ func TestFilter_PreservesInstances(t *testing.T) {
 func TestBuildToolPool_PerCallIndependence(t *testing.T) {
 	main := []agentcore.Tool{&fakeTool{name: "read"}, &fakeTool{name: "bash"}}
 
-	a := BuildToolPool("/tmp/ws", main)
-	b := BuildToolPool("/tmp/ws", main)
+	a := BuildToolPool("/tmp/ws", main, nil)
+	b := BuildToolPool("/tmp/ws", main, nil)
 
 	readA, readB := findByName(a, "read"), findByName(b, "read")
 	if readA == nil || readB == nil {
