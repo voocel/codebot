@@ -36,21 +36,23 @@ type acpAgent struct {
 	sid  acp.SessionId
 	fs   *WorkspaceFS // editor-backed file backend; nil when not injected
 
-	mu         sync.Mutex
-	turn       chan turnResult // completion sink for the in-flight prompt turn
-	subscribed bool
-	unsub      func()
+	mu           sync.Mutex
+	turn         chan turnResult // completion sink for the in-flight prompt turn
+	subscribed   bool
+	unsub        func()
+	pendingEdits map[acp.ToolCallId]editSnapshot // mu-guarded: pre-exec file snapshots for native diffs
 }
 
 var _ acp.Agent = (*acpAgent)(nil)
 
 func newAgent(rt *bootstrap.Runtime, version string, fs *WorkspaceFS) *acpAgent {
 	a := &acpAgent{
-		rt:      rt,
-		sess:    rt.Session,
-		version: version,
-		sid:     acp.SessionId(rt.Session.SessionID()),
-		fs:      fs,
+		rt:           rt,
+		sess:         rt.Session,
+		version:      version,
+		sid:          acp.SessionId(rt.Session.SessionID()),
+		fs:           fs,
+		pendingEdits: make(map[acp.ToolCallId]editSnapshot),
 	}
 	if fs != nil {
 		fs.setSession(a.sid)
