@@ -18,11 +18,12 @@ const ConfigDir = ".codebot"
 
 // ProviderConfig holds credentials and model configuration for a single provider.
 type ProviderConfig struct {
-	Type       string   `json:"type,omitempty"` // LiteLLM protocol type; required only when the provider name is not a known litellm provider
-	APIKey     string   `json:"api_key,omitempty"`
-	BaseURL    string   `json:"base_url,omitempty"`
-	Models     []string `json:"models,omitempty"`      // available model list for this provider
-	SmallModel string   `json:"small_model,omitempty"` // lightweight model for sub-agents
+	Type       string         `json:"type,omitempty"` // LiteLLM protocol type; required only when the provider name is not a known litellm provider
+	APIKey     string         `json:"api_key,omitempty"`
+	BaseURL    string         `json:"base_url,omitempty"`
+	Models     []string       `json:"models,omitempty"`      // available model list for this provider
+	SmallModel string         `json:"small_model,omitempty"` // lightweight model for sub-agents
+	Extra      map[string]any `json:"extra,omitempty"`       // provider-level litellm config: headers, user_agent, anthropic_beta
 }
 
 // TelemetryConfig configures OpenTelemetry trace export to an OTLP backend
@@ -155,6 +156,14 @@ func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
 		return pc.APIKey, pc.BaseURL
 	}
 	return EnvCredentials(prov)
+}
+
+// ProviderExtra returns provider-level litellm config for the given provider.
+func (r Resolved) ProviderExtra(prov string) map[string]any {
+	if pc, ok := r.Providers[prov]; ok {
+		return pc.Extra
+	}
+	return nil
 }
 
 // ProviderEnvKey derives the standard env var name for a provider's API key
@@ -449,6 +458,9 @@ func mergeSettings(base, override Settings) Settings {
 			if v.SmallModel != "" {
 				existing.SmallModel = v.SmallModel
 			}
+			if len(v.Extra) > 0 {
+				existing.Extra = cloneExtra(v.Extra)
+			}
 			base.Providers[k] = existing
 		}
 	}
@@ -494,6 +506,17 @@ func mergeSettings(base, override Settings) Settings {
 		base.Snapshot = override.Snapshot
 	}
 	return base
+}
+
+func cloneExtra(m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	c := make(map[string]any, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
 }
 
 // SaveSettings writes settings to ~/.codebot/settings.json (global).

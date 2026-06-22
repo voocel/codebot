@@ -139,11 +139,12 @@ func buildModelResolver(deps subAgentDeps) func(string) (agentcore.ChatModel, er
 		}
 		prov := defaultProv
 		apiKey, baseURL := resolveFromProviders(providers, prov)
+		providerExtra := resolveExtraFromProviders(providers, prov)
 		provType, err := resolveProviderType(providers, prov)
 		if err != nil {
 			return nil, err
 		}
-		return factory(provType, name, apiKey, baseURL)
+		return factory(provType, name, apiKey, baseURL, providerExtra)
 	}
 }
 
@@ -203,8 +204,14 @@ func resolveFromProviders(providers map[string]config.ProviderConfig, prov strin
 	return config.EnvCredentials(prov)
 }
 
+func resolveExtraFromProviders(providers map[string]config.ProviderConfig, prov string) map[string]any {
+	if pc, ok := providers[prov]; ok {
+		return pc.Extra
+	}
+	return nil
+}
+
 // resolveProviderType returns the protocol type for a provider key.
 func resolveProviderType(providers map[string]config.ProviderConfig, prov string) (string, error) {
 	return config.ResolveConfiguredProviderType(providers, prov)
 }
-

@@ -22,26 +22,28 @@ func SupportedTypeNames() []string {
 	return llm.RegisteredProviders()
 }
 
-// CreateModel creates a ChatModel for the given provider, model name, API key, and optional base URL.
-func CreateModel(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-	return createModel(prov, name, apiKey, baseURL)
+// CreateModel creates a ChatModel for the given provider, model name, API key,
+// optional base URL, and provider-level extra config.
+func CreateModel(prov, name, apiKey, baseURL string, providerExtra map[string]any) (agentcore.ChatModel, error) {
+	return createModel(prov, name, apiKey, baseURL, providerExtra)
 }
 
 // NewModelFactory returns a model factory that forwards the given litellm
 // ClientOptions (e.g. litellm.WithHook for telemetry) into every model it
 // builds. The return type structurally matches agent.ModelFactory without
 // importing that package, avoiding an import cycle.
-func NewModelFactory(clientOpts ...litellm.ClientOption) func(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-	return func(prov, name, apiKey, baseURL string) (agentcore.ChatModel, error) {
-		return createModel(prov, name, apiKey, baseURL, clientOpts...)
+func NewModelFactory(clientOpts ...litellm.ClientOption) func(prov, name, apiKey, baseURL string, providerExtra map[string]any) (agentcore.ChatModel, error) {
+	return func(prov, name, apiKey, baseURL string, providerExtra map[string]any) (agentcore.ChatModel, error) {
+		return createModel(prov, name, apiKey, baseURL, providerExtra, clientOpts...)
 	}
 }
 
-func createModel(prov, name, apiKey, baseURL string, clientOpts ...litellm.ClientOption) (agentcore.ChatModel, error) {
+func createModel(prov, name, apiKey, baseURL string, providerExtra map[string]any, clientOpts ...litellm.ClientOption) (agentcore.ChatModel, error) {
 	normalizedProvider := strings.ToLower(strings.TrimSpace(prov))
 	modelOpts := []llm.ModelOption{
 		llm.WithAPIKey(apiKey),
 		llm.WithBaseURL(baseURL),
+		llm.WithProviderExtra(providerExtra),
 	}
 	if len(clientOpts) > 0 {
 		modelOpts = append(modelOpts, llm.WithClientOptions(clientOpts...))

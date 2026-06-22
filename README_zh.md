@@ -151,6 +151,8 @@ Codebot 采用分层的 Coding Agent 架构：
 
 所有字段可选，参考 [settings.example.jsonc](settings.example.jsonc) 了解完整配置项及说明。
 
+Provider 条目支持 `extra`，用于配置 provider 级 litellm 选项，例如 `user_agent`、`headers`、`anthropic_beta`；这些会作为 HTTP/客户端配置发送，不会进入请求体。
+
 Plugin 开发参考 [docs/plugins.md](docs/plugins.md)。真实示例 plugin 放在 `docs/examples/plugins/`，目前包含 `review-assistant`、`release-ops`、`docs-context`。
 
 ## 环境要求

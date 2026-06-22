@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/voocel/agentcore"
@@ -73,5 +76,54 @@ func TestApplyProviderDefaultsAnthropicUnknownFallback(t *testing.T) {
 	applyProviderDefaults("anthropic", "claude-unknown-next", m)
 	if m.cfg.MaxTokens != 32000 {
 		t.Fatalf("max tokens = %d, want 32000", m.cfg.MaxTokens)
+	}
+}
+
+func TestCreateModelPassesProviderExtraHeaders(t *testing.T) {
+	var gotUserAgent, gotCustomHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		gotCustomHeader = r.Header.Get("X-Custom-Client")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   "gpt-test",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "ok",
+					},
+					"finish_reason": "stop",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	model, err := CreateModel("openai", "gpt-test", "test-key", server.URL, map[string]any{
+		"user_agent": "codebot-test/1.0",
+		"headers": map[string]string{
+			"X-Custom-Client": "codebot",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateModel: %v", err)
+	}
+
+	_, err = model.Generate(context.Background(), []agentcore.Message{
+		{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.TextBlock("hi")}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if gotUserAgent != "codebot-test/1.0" {
+		t.Fatalf("User-Agent = %q, want codebot-test/1.0", gotUserAgent)
+	}
+	if gotCustomHeader != "codebot" {
+		t.Fatalf("X-Custom-Client = %q, want codebot", gotCustomHeader)
 	}
 }

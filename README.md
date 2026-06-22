@@ -151,6 +151,8 @@ Config files: `~/.codebot/settings.json` (global) or `.codebot/settings.json` (p
 
 All fields are optional. See [settings.example.jsonc](settings.example.jsonc) for the full reference with comments.
 
+Provider entries support `extra` for provider-level litellm options such as `user_agent`, `headers`, and `anthropic_beta`; these are sent as HTTP/client config, not request-body fields.
+
 Plugin authoring guide: [docs/plugins.md](docs/plugins.md). Real example plugins live under `docs/examples/plugins/`, including `review-assistant`, `release-ops`, and `docs-context`.
 
 ## Requirements

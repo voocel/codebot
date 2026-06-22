@@ -37,12 +37,23 @@
     },
     // Custom proxy example: "type" specifies the API protocol (openai/anthropic/gemini).
     // Omit "type" for well-known provider names — it will be inferred automatically.
+    // Optional "extra" is provider-level litellm config for proxies that check
+    // client headers; it is sent as HTTP/client config, not request body fields.
     "my-proxy": {
-      "type": "openai",
+      "type": "anthropic",
       "api_key": "sk-xxx",
-      "base_url": "https://proxy.example.com/v1",
-      "models": ["gpt-5", "claude-sonnet-4-5"],
-      "small_model": "gpt-4o-mini"
+      "base_url": "https://proxy.example.com",
+      "models": ["claude-sonnet-4-6"],
+      "small_model": "claude-haiku-4-5",
+      "extra": {
+        "user_agent": "claude-code/2.1.183",
+        "anthropic_beta": "claude-code-20250219",
+        "headers": {
+          "X-Stainless-Lang": "js",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Runtime": "node"
+        }
+      }
     }
   },
 

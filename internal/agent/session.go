@@ -16,7 +16,7 @@ import (
 )
 
 // ModelFactory creates a chat model instance for a provider/model tuple.
-type ModelFactory func(prov, model, apiKey, baseURL string) (agentcore.ChatModel, error)
+type ModelFactory func(prov, model, apiKey, baseURL string, providerExtra map[string]any) (agentcore.ChatModel, error)
 
 // SessionConfig configures a new Session.
 type SessionConfig struct {

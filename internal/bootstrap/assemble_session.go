@@ -101,11 +101,12 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	}
 
 	activeAPIKey, activeBaseURL := input.settings.ProviderCredentials(activeProvider)
+	activeProviderExtra := input.settings.ProviderExtra(activeProvider)
 	provType, err := config.ResolveConfiguredProviderType(input.settings.Providers, activeProvider)
 	if err != nil {
 		return config.Resolved{}, "", nil, err
 	}
-	chatModel, err := input.modelFactory(provType, activeModel, activeAPIKey, activeBaseURL)
+	chatModel, err := input.modelFactory(provType, activeModel, activeAPIKey, activeBaseURL, activeProviderExtra)
 	if err != nil {
 		return config.Resolved{}, "", nil, fmt.Errorf("create model failed: %w: %w", diag.ErrProvider, err)
 	}

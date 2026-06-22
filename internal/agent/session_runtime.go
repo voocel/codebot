@@ -481,7 +481,8 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 				return "", "", nil, err
 			}
 			apiKey, baseURL := s.resolveCredentials(prov)
-			chatModel, err := s.createModel(provType, model, apiKey, baseURL)
+			providerExtra := s.resolveProviderExtra(prov)
+			chatModel, err := s.createModel(provType, model, apiKey, baseURL, providerExtra)
 			if err == nil {
 				return prov, model, chatModel, nil
 			}
@@ -508,7 +509,8 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 			return "", "", nil, err
 		}
 		apiKey, baseURL := s.resolveCredentials(m.provider)
-		chatModel, err := s.createModel(provType, m.model, apiKey, baseURL)
+		providerExtra := s.resolveProviderExtra(m.provider)
+		chatModel, err := s.createModel(provType, m.model, apiKey, baseURL, providerExtra)
 		return m.provider, m.model, chatModel, err
 	case 0:
 		provType, err := s.providerType(curProv)
@@ -516,7 +518,8 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 			return "", "", nil, err
 		}
 		apiKey, baseURL := s.resolveCredentials(curProv)
-		chatModel, err := s.createModel(provType, pattern, apiKey, baseURL)
+		providerExtra := s.resolveProviderExtra(curProv)
+		chatModel, err := s.createModel(provType, pattern, apiKey, baseURL, providerExtra)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -555,7 +558,8 @@ func (s *Session) SetModel(prov, model string) error {
 	s.mu.Lock()
 	store := s.store
 	s.mu.Unlock()
-	chatModel, err := s.createModel(provType, model, apiKey, baseURL)
+	providerExtra := s.resolveProviderExtra(prov)
+	chatModel, err := s.createModel(provType, model, apiKey, baseURL, providerExtra)
 	if err != nil {
 		return fmt.Errorf("create model %s/%s: %w", prov, model, err)
 	}
@@ -601,6 +605,16 @@ func (s *Session) providerType(prov string) (string, error) {
 		return pc.ProviderType(prov)
 	}
 	return config.ResolveProviderType(prov, "")
+}
+
+func (s *Session) resolveProviderExtra(prov string) map[string]any {
+	s.mu.Lock()
+	pc, ok := s.providers[prov]
+	s.mu.Unlock()
+	if ok {
+		return pc.Extra
+	}
+	return nil
 }
 
 // updateContextFromRegistry updates context window from registry metadata if available.
@@ -805,6 +819,7 @@ func (s *Session) SwitchSession(id string) error {
 	}
 
 	targetKey, targetBase := s.resolveCredentials(targetProvider)
+	targetExtra := s.resolveProviderExtra(targetProvider)
 
 	var restoredModel agentcore.ChatModel
 	if snapshot.Model != "" || snapshot.Provider != "" {
@@ -812,7 +827,7 @@ func (s *Session) SwitchSession(id string) error {
 		if err != nil {
 			return err
 		}
-		restoredModel, err = s.createModel(targetType, targetModel, targetKey, targetBase)
+		restoredModel, err = s.createModel(targetType, targetModel, targetKey, targetBase, targetExtra)
 		if err != nil {
 			return fmt.Errorf("restore model %s/%s: %w", targetProvider, targetModel, err)
 		}
