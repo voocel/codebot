@@ -11,6 +11,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
+	"github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/goal"
 	"github.com/voocel/codebot/internal/provider"
@@ -18,6 +19,19 @@ import (
 )
 
 var errStaleSessionGeneration = errors.New("stale session generation")
+
+// runCtx returns the base context every agent-loop entry (Prompt / Continue /
+// idle resume) runs under, carrying the session's current working directory as
+// a cwd override. Tools resolve relative paths against it, so a session moved
+// into a git-worktree sandbox (via RetargetWorkspace) — and every subagent /
+// teammate it spawns that inherits this ctx — operates inside the sandbox
+// without rebuilding any tools. Empty cwd makes WithCwd a no-op.
+func (s *Session) runCtx() context.Context {
+	s.mu.Lock()
+	cwd := s.cwd
+	s.mu.Unlock()
+	return tools.WithCwd(context.Background(), cwd)
+}
 
 func (s *Session) Prompt(text string) error {
 	var hookContext string
@@ -43,7 +57,7 @@ func (s *Session) Prompt(text string) error {
 		s.preambleInjected = true
 	}
 	msgs = append(msgs, s.buildUserMessage(agentcore.TextBlock(text)))
-	return s.agent.PromptMessages(context.Background(), msgs...)
+	return s.agent.PromptMessages(s.runCtx(), msgs...)
 }
 
 func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
@@ -59,7 +73,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 		s.preambleInjected = true
 	}
 	msgs = append(msgs, s.buildUserMessage(blocks...))
-	return s.agent.PromptMessages(context.Background(), msgs...)
+	return s.agent.PromptMessages(s.runCtx(), msgs...)
 }
 
 // buildUserMessage creates a user message with reminders prepended as text blocks.
@@ -127,7 +141,7 @@ func (s *Session) continueIfCurrentGeneration(gen uint64) error {
 		return errStaleSessionGeneration
 	}
 	s.mu.Unlock()
-	return s.agent.Continue(context.Background())
+	return s.agent.Continue(s.runCtx())
 }
 
 // deliverRuntimeReminder prefers in-run steering and otherwise defers to the
@@ -143,7 +157,7 @@ func (s *Session) deliverRuntimeReminder(key string, kind RuntimeReminderKind, r
 }
 
 // continueWithRuntimeReminder prefers in-run steering, then idle auto-resume
-// via agent.Inject, and finally falls back to next-prompt injection.
+// via agent.InjectContext, and finally falls back to next-prompt injection.
 func (s *Session) continueWithRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) {
 	if reminder == "" {
 		return
@@ -205,7 +219,7 @@ func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderK
 	}
 	s.mu.Unlock()
 
-	result, err := s.agent.Inject(injectedUserMsg(reminder))
+	result, err := s.agent.InjectContext(s.runCtx(), injectedUserMsg(reminder))
 	if err != nil {
 		return false
 	}

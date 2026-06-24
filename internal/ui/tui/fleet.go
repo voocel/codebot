@@ -67,8 +67,8 @@ func (m *Model) fleetEnterable() bool {
 // printable character — hands control straight back to the input: it exits the
 // list (re-focusing the textarea) and falls through so the keystroke lands in
 // the box. So the cursor "drops" into the list but typing instantly jumps back
-// up to the input, matching Claude Code. (No letter shortcuts like j/k, which
-// would otherwise swallow the first character of whatever the user types.)
+// up to the input. (No letter shortcuts like j/k, which would otherwise swallow
+// the first character of whatever the user types.)
 //
 // Cursor 0 is the "main" row; cursors 1..len(agents) map to agents[cursor-1].
 //
@@ -174,9 +174,9 @@ func (m *Model) clampFleetCursor(agentCount int) {
 // agent has been observed. The selection cursor only shows while focused; when
 // unfocused the list is a passive momentum view of what's running.
 //
-// Layout mirrors Claude Code's fleet view: each agent row carries its live
-// elapsed time right-aligned, while the "main" row — which needs no timer —
-// carries the keybind hint at the far right instead.
+// Layout: each agent row carries its live elapsed time right-aligned, while the
+// "main" row — which needs no timer — carries the keybind hint at the far right
+// instead.
 func (m *Model) renderFleetList() string {
 	agents := m.fleetAgents()
 	if len(agents) == 0 {

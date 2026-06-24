@@ -114,6 +114,11 @@ func (a *App) builtinCommands() []commands.Command {
 		commands.Undo(a.Session),
 		commands.Redo(a.Session),
 		commands.Diff(a.Session, a.registry),
+		&commands.WorktreeCommand{
+			Enter:  a.worktreeEnter,
+			Exit:   a.worktreeExit,
+			Active: a.worktreeActive,
+		},
 		commands.Exit(),
 	}
 }

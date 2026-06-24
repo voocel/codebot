@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,7 +17,9 @@ import (
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
+	agenttools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/worktree"
 )
 
 // scriptModel returns predetermined assistant messages in order — one per
@@ -450,7 +455,7 @@ func TestTeammateSpawner_HappyPath(t *testing.T) {
 		SystemPrompt: "you are a researcher",
 		Tools:        []agentcore.Tool{&fakeNamedTool{n: "read"}},
 	}
-	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil, team.ProtocolHooks{}, nil, nil)
+	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -512,7 +517,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 		Model:        newScriptModel("done"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, hub, nil, nil, team.ProtocolHooks{}, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, hub, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -566,7 +571,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 func TestTeammateSpawner_RejectsWhenNoTeam(t *testing.T) {
 	reg := team.NewRegistry()
 	rt := task.NewRuntime()
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -585,7 +590,7 @@ func TestTeammateSpawner_RejectsWrongTeamName(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -604,7 +609,7 @@ func TestTeammateSpawner_RejectsMissingModel(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher"}, // no Model
@@ -623,7 +628,7 @@ func TestTeammateSpawner_DepthGuard(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
 
 	// Caller already sits at MaxAgentDepth → spawn would push past it.
 	ctx := task.WithDepth(context.Background(), task.MaxAgentDepth)
@@ -714,7 +719,7 @@ func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
 		Model:        newScriptModel("first", "second", "third", "fourth"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil)
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
 
 	first, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -749,7 +754,217 @@ func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
 	})
 }
 
+// TestTeammateCwd verifies the working directory a spawned teammate runs in:
+// an isolated teammate always gets its own worktree (even over a leader cwd on
+// ctx); a shared teammate inherits the leader cwd carried on the spawn ctx, and
+// falls back to "" (the tools' constructed WorkDir) when none is set.
+func TestTeammateCwd(t *testing.T) {
+	wt := &teammateWorktree{dir: "/tmp/wt-coder"}
+	leaderCtx := agenttools.WithCwd(context.Background(), "/leader/cwd")
+
+	if got := teammateCwd(wt, context.Background()); got != "/tmp/wt-coder" {
+		t.Errorf("isolated (no leader cwd) = %q, want /tmp/wt-coder", got)
+	}
+	if got := teammateCwd(wt, leaderCtx); got != "/tmp/wt-coder" {
+		t.Errorf("isolated must win over leader cwd, got %q", got)
+	}
+	if got := teammateCwd(nil, leaderCtx); got != "/leader/cwd" {
+		t.Errorf("shared should inherit leader cwd, got %q", got)
+	}
+	if got := teammateCwd(nil, context.Background()); got != "" {
+		t.Errorf("shared with no leader cwd = %q, want empty (fall back to WorkDir)", got)
+	}
+}
+
+// TestTeammateSpawner_WorktreeIsolation verifies opt-in worktree sandboxing at
+// the spawner level: a teammate whose agent type maps to "worktree" gets a
+// private checkout created under .codebot/worktrees; a type that did not opt in
+// gets no checkout (it shares the leader cwd via the spawn ctx). The teammate
+// stays alive (no InitialPrompt) until DeleteTeam, so the checkout is observable
+// before cleanup runs.
+func TestTeammateSpawner_WorktreeIsolation(t *testing.T) {
+	repo := initGitRepo(t)
+	reg := team.NewRegistry()
+	rt := task.NewRuntime()
+	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+
+	iso := &TeammateIsolation{
+		RepoRoot: repo,
+		Of:       map[string]string{"coder": "worktree"},
+	}
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, iso)
+
+	// Opted-in type: a private checkout is created under .codebot/worktrees.
+	coder, err := spawner(context.Background(), subagent.TeamSpawnRequest{
+		Config: subagent.Config{Name: "coder", Model: newScriptModel("done"), Tools: []agentcore.Tool{&fakeNamedTool{n: "read"}}},
+		Name:   "coder",
+	})
+	if err != nil {
+		t.Fatalf("spawn coder: %v", err)
+	}
+	infos, _ := worktree.List(repo)
+	if len(infos) != 1 {
+		t.Fatalf("opted-in teammate should create 1 worktree, got %d", len(infos))
+	}
+	if want := filepath.Join(".codebot", "worktrees", "wt-coder"); !strings.Contains(infos[0].Path, want) {
+		t.Errorf("worktree path = %q, want it to contain %q", infos[0].Path, want)
+	}
+
+	// Non-opted-in type: shared cwd, no new checkout.
+	plain, err := spawner(context.Background(), subagent.TeamSpawnRequest{
+		Config: subagent.Config{Name: "plain", Model: newScriptModel("done")},
+		Name:   "plain",
+	})
+	if err != nil {
+		t.Fatalf("spawn plain: %v", err)
+	}
+	if infos, _ := worktree.List(repo); len(infos) != 1 {
+		t.Errorf("shared teammate must not create a worktree, still %d total", len(infos))
+	}
+
+	_ = reg.DeleteTeam()
+	waitFor(t, time.Second, func() bool {
+		e1, e2 := rt.Get(coder.TaskID), rt.Get(plain.TaskID)
+		return e1 != nil && e2 != nil && e1.Status.IsTerminal() && e2.Status.IsTerminal()
+	})
+}
+
+// TestTeammateSpawner_IsolationFailsClosed verifies that a teammate which
+// declares worktree isolation in a non-git directory fails the spawn rather than
+// silently running in the shared cwd (where it could clobber peers — the very
+// thing isolation exists to prevent).
+func TestTeammateSpawner_IsolationFailsClosed(t *testing.T) {
+	nonGit := t.TempDir() // a fresh temp dir is not a git repository
+	reg := team.NewRegistry()
+	rt := task.NewRuntime()
+	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+
+	iso := &TeammateIsolation{
+		RepoRoot: nonGit,
+		Of:       map[string]string{"coder": "worktree"},
+	}
+	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, iso)
+
+	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
+		Config: subagent.Config{Name: "coder", Model: newScriptModel("done")},
+		Name:   "coder",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("expected fail-closed git error, got %v", err)
+	}
+	if _, live := reg.TaskID("coder"); live {
+		t.Error("no teammate should be registered when isolation fails closed")
+	}
+}
+
+// TestTeammateWorktreeCleanup verifies the exit policy mirrors the leader-side
+// /worktree exit: a clean sandbox is removed; a dirty one is preserved and the
+// leader is notified where the unreviewed work lives.
+func TestTeammateWorktreeCleanup(t *testing.T) {
+	repo := initGitRepo(t)
+
+	// Clean sandbox → removed (worktree + branch gone).
+	clean, err := newTeammateWorktree(repo, "alice")
+	if err != nil {
+		t.Fatalf("newTeammateWorktree(alice): %v", err)
+	}
+	clean.cleanup(nil, "alice")
+	if infos, _ := worktree.List(repo); len(infos) != 0 {
+		t.Errorf("clean sandbox not removed, still listed: %+v", infos)
+	}
+
+	// Dirty sandbox → kept, leader notified.
+	reg := team.NewRegistry()
+	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	dirty, err := newTeammateWorktree(repo, "bob")
+	if err != nil {
+		t.Fatalf("newTeammateWorktree(bob): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dirty.dir, "scratch.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirty.cleanup(reg, "bob")
+	if infos, _ := worktree.List(repo); len(infos) != 1 {
+		t.Errorf("dirty sandbox should be preserved, got %d worktrees", len(infos))
+	}
+	if mb := reg.Mailbox(team.TeamLeadName); mb == nil || mb.Len() != 1 {
+		got := -1
+		if mb != nil {
+			got = mb.Len()
+		}
+		t.Errorf("leader inbox = %d messages, want 1 (dirty-exit notification)", got)
+	}
+}
+
+// TestTeammateBaseBlocks verifies an isolated teammate's system base is rebuilt
+// for its worktree cwd (so the prompt's working directory matches its tools and
+// can't invite absolute-path escapes), while shared teammates and SystemOverride
+// sessions pass the leader's base through unchanged.
+func TestTeammateBaseBlocks(t *testing.T) {
+	mainCwd := "/main/repo-xyz"
+	shared := []agentcore.SystemBlock{{Text: config.BuildUniversalBase(mainCwd), CacheControl: "ephemeral"}}
+
+	// Shared teammate (wt == nil): leader's base verbatim.
+	if got := teammateBaseBlocks(shared, nil); len(got) != 1 || got[0].Text != shared[0].Text {
+		t.Errorf("shared teammate should inherit leader base verbatim, got %+v", got)
+	}
+
+	// Isolated teammate: base rebuilt for the worktree cwd, main cwd gone.
+	wtCwd := "/tmp/sandbox-abc/.codebot/worktrees/wt-coder"
+	wt := &teammateWorktree{dir: wtCwd}
+	got := teammateBaseBlocks(shared, wt)
+	if len(got) != 1 {
+		t.Fatalf("isolated base = %d blocks, want 1", len(got))
+	}
+	if !strings.Contains(got[0].Text, wtCwd) {
+		t.Errorf("isolated base must state the worktree cwd %q, got:\n%s", wtCwd, got[0].Text)
+	}
+	if strings.Contains(got[0].Text, mainCwd) {
+		t.Errorf("isolated base must NOT leak the main cwd %q (sandbox-escape risk)", mainCwd)
+	}
+	if got[0].CacheControl != "ephemeral" {
+		t.Errorf("isolated base CacheControl = %q, want ephemeral", got[0].CacheControl)
+	}
+
+	// SystemOverride session (empty shared base): passed through even when isolated.
+	if got := teammateBaseBlocks(nil, wt); got != nil {
+		t.Errorf("empty base must pass through untouched, got %+v", got)
+	}
+}
+
 // --- helpers -----------------------------------------------------------------
+
+// initGitRepo creates a throwaway git repository with one commit, for tests
+// that exercise worktree isolation. The path is symlink-resolved to match
+// `git worktree list` output (macOS /var -> /private/var).
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init")
+	run("config", "user.email", "t@t.t")
+	run("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "init")
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return dir
+}
 
 func toolNames(in []agentcore.Tool) []string {
 	out := make([]string, len(in))

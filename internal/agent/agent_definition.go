@@ -83,6 +83,13 @@ type AgentDefinition struct {
 	// its `background` parameter.
 	Background bool
 
+	// Isolation selects the teammate's filesystem sandbox. Empty or "shared"
+	// (the default) runs the teammate in the leader's cwd, sharing the working
+	// tree. "worktree" gives it a private git worktree so its writes cannot
+	// clobber a peer editing the same files — see TeammateIsolation. Honoured
+	// only for teammate spawns in a git repo; a no-op elsewhere.
+	Isolation string
+
 	// Provenance — set by the loader, read by tooling that wants to point
 	// the user at a definition's origin (`/agents show explore` etc.).
 	Source   AgentSource
@@ -108,6 +115,11 @@ func (d *AgentDefinition) Validate() error {
 	}
 	if slices.Contains(d.DisallowedTools, "") {
 		return fmt.Errorf("agent %q has empty entry in disallowedTools list", d.Name)
+	}
+	switch d.Isolation {
+	case "", "shared", WorktreeIsolation:
+	default:
+		return fmt.Errorf("agent %q has invalid isolation %q (want \"\", \"shared\", or \"worktree\")", d.Name, d.Isolation)
 	}
 	return nil
 }

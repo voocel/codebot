@@ -267,6 +267,13 @@ func (e *Engine) SetFilesystemRoots(roots FilesystemRoots) {
 	e.tool.SetFilesystemRoots(permission.FilesystemRoots(roots))
 }
 
+// FilesystemRoots returns the engine's current read/write roots, letting a
+// caller capture them before a temporary change (e.g. entering a worktree) and
+// restore them afterwards.
+func (e *Engine) FilesystemRoots() FilesystemRoots {
+	return FilesystemRoots(e.tool.FilesystemRoots())
+}
+
 func (e *Engine) Mode() Mode {
 	return Mode(e.tool.Mode())
 }

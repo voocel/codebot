@@ -189,7 +189,7 @@ func TestTeammateSpawner_PersistThenWakeSeam(t *testing.T) {
 	}
 	cfg := subagent.Config{Name: "researcher", Model: newScriptModel("found it at line 42")}
 	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil,
-		&TeammatePersist{Roster: rosterStore, Transcripts: transcripts})
+		&TeammatePersist{Roster: rosterStore, Transcripts: transcripts}, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,

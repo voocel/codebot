@@ -51,6 +51,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		History:        newInputHistory(sess, cwd),
 	}
 	adapter.Commands = adapter.loadPluginCommands()
+	adapter.wireWorktree(rt)
 
 	adapter.rebuildRegistry()
 	cfg := adapter.Config()

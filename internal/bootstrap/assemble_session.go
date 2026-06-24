@@ -34,6 +34,12 @@ type sessionAssembly struct {
 	subagentTool          *subagent.Tool
 	bashTool              *agentcoretools.BashTool
 	fileReadState         *agentcoretools.FileReadState
+
+	// Teammate isolation (Phase 2). agentIsolation maps agent type -> "worktree"
+	// for the types that opted in; an isolated teammate's tools resolve against
+	// its private worktree via a cwd override on the spawn context (see
+	// agent.TeammateIsolation), not by rebuilding tools.
+	agentIsolation map[string]string
 }
 
 func buildSessionAssembly(input *resolvedInput, services *bootServices, factories []ToolFactory, fs agentcoretools.WorkspaceFS) (*sessionAssembly, error) {
@@ -60,7 +66,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		factories = defaultToolFactories(fileReadState, fs)
 	}
 
-	tools, subagentTool, bashTool, err := buildToolset(input, services, settings, activeProvider, chatModel, factories, fs)
+	tools, subagentTool, bashTool, agentIsolation, err := buildToolset(input, services, settings, activeProvider, chatModel, factories, fs)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +93,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		subagentTool:          subagentTool,
 		bashTool:              bashTool,
 		fileReadState:         fileReadState,
+		agentIsolation:        agentIsolation,
 	}, nil
 }
 
@@ -128,7 +135,7 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	return settings, activeProvider, chatModel, nil
 }
 
-func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, fs agentcoretools.WorkspaceFS) ([]agentcore.Tool, *subagent.Tool, *agentcoretools.BashTool, error) {
+func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, fs agentcoretools.WorkspaceFS) ([]agentcore.Tool, *subagent.Tool, *agentcoretools.BashTool, map[string]string, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	var bashTool *agentcoretools.BashTool
@@ -165,7 +172,7 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 	localtools.SetOutputDir(toolOutputDir)
 	builtTools = localtools.WrapWithOutputLimit(builtTools)
 
-	subagentTool := buildSubAgentTool(subAgentDeps{
+	subagentTool, agentIsolation := buildSubAgentTool(subAgentDeps{
 		Cwd:           input.cwd,
 		Model:         chatModel,
 		AllTools:      builtTools,
@@ -183,7 +190,7 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 	builtTools = append(builtTools, skillTool)
 
 	builtTools = applyToolSearch(builtTools, activeProvider, settings.Model)
-	return builtTools, subagentTool, bashTool, nil
+	return builtTools, subagentTool, bashTool, agentIsolation, nil
 }
 
 func wireSkillAllows(tools []agentcore.Tool, approvalEngine *approval.Engine) {

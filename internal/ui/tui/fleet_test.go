@@ -175,7 +175,7 @@ func TestFleet_TypingJumpsBackToInput(t *testing.T) {
 	}
 
 	// End-to-end through Update: focus the list again, then type — the character
-	// must land in the input box and focus return to it (matching Claude Code).
+	// must land in the input box and focus return to it.
 	m.handleDownKey()
 	m.Update(rune_('h'))
 	m.Update(rune_('i'))

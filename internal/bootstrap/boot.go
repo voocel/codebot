@@ -68,6 +68,13 @@ type Runtime struct {
 	GoalManager *goal.Manager
 	CronStore   *cron.Store // nil when the cron tools are absent
 
+	// Worktree sandbox state (Phase 1 /worktree). The cwd-bound tools are not
+	// rebuilt on a switch — they resolve against the session's cwd override (see
+	// agent.Session.runCtx); originalRoots is captured at boot and restored on
+	// exit; activeWorktree is non-nil only while inside a sandbox.
+	originalRoots  approval.FilesystemRoots
+	activeWorktree *worktreeState
+
 	// stopTeamPump cancels the leader-inbox pump goroutine. Set by
 	// assembleRuntime, called by Close so the pump exits before the team
 	// registry is torn down.
@@ -145,5 +152,6 @@ func Boot(opts Options) (*Runtime, error) {
 
 	closeStoreOnError = false
 	go localtools.CleanOldOutputs()
+	go rt.CleanWorktreeOrphans()
 	return rt, nil
 }

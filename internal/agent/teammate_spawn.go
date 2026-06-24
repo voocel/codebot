@@ -6,15 +6,144 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
+	agenttools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/worktree"
 )
+
+// WorktreeIsolation is the AgentDefinition.Isolation value that opts a teammate
+// into a private git worktree.
+const WorktreeIsolation = "worktree"
+
+// TeammateIsolation configures optional per-teammate git-worktree sandboxing.
+// A nil *TeammateIsolation disables it entirely — every teammate shares the
+// leader's cwd, the pre-Phase-2 behaviour. When set, a teammate whose agent
+// type maps to "worktree" in Of runs in its own checkout so its writes cannot
+// clobber a peer editing the same files. The checkout is bound at spawn by a
+// cwd override on the teammate's context (see teammateCwd), not by rebuilding
+// its tools — the same tool instances resolve paths against whatever cwd the
+// running context carries.
+type TeammateIsolation struct {
+	// RepoRoot is the git repository the sandboxes branch from (the leader cwd).
+	RepoRoot string
+	// Of maps agent type (subagent.Config.Name) to its isolation mode; an
+	// absent key means shared. Only "worktree" triggers a sandbox.
+	Of map[string]string
+}
+
+// declares reports whether the agent type opted into worktree isolation. It
+// deliberately does NOT check that the repo is a git repository: a declared
+// isolation that can't be honoured must fail loudly (see the spawner), never
+// silently fall back to the shared cwd where the teammate could clobber peers.
+func (ti *TeammateIsolation) declares(agentType string) bool {
+	return ti != nil && ti.Of[agentType] == WorktreeIsolation
+}
+
+// teammateCwd returns the working directory a spawned teammate runs in: its own
+// worktree when isolated, otherwise the leader's current cwd — which rides in on
+// the spawn call's ctx (the leader injects it via Session.runCtx), so a teammate
+// spawned while the leader is inside a worktree shares that worktree. An empty
+// result makes the spawnCtx WithCwd a no-op, falling back to the tools'
+// constructed WorkDir.
+func teammateCwd(wt *teammateWorktree, callerCtx context.Context) string {
+	if wt != nil {
+		return wt.dir
+	}
+	return agenttools.CwdFromContext(callerCtx)
+}
+
+// teammateWorktree is the sandbox a single isolated teammate runs in, retained
+// so onExit can clean it up.
+type teammateWorktree struct {
+	repoRoot string
+	dir      string
+	branch   string
+}
+
+// newTeammateWorktree creates (or reclaims, on wake) the sandbox for agentName
+// and seeds it with the gitignored files a clean checkout lacks. A copy failure
+// is surfaced on stderr — the sandbox still works, but the user should know it
+// may be missing local config.
+func newTeammateWorktree(repoRoot, agentName string) (*teammateWorktree, error) {
+	dir, branch, err := worktree.CreateOrReuse(repoRoot, worktree.Slug("wt-"+agentName))
+	if err != nil {
+		return nil, err
+	}
+	if failed, cerr := worktree.CopyIncludes(repoRoot, dir, worktree.DefaultIncludes); cerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: teammate worktree %s: copy local files: %v\n", dir, cerr)
+	} else if len(failed) > 0 {
+		fmt.Fprintf(os.Stderr, "warning: teammate worktree %s could not copy local files: %s\n", dir, strings.Join(failed, ", "))
+	}
+	return &teammateWorktree{repoRoot: repoRoot, dir: dir, branch: branch}, nil
+}
+
+// teammateBaseBlocks returns the system base a teammate is built with. A shared
+// teammate (wt == nil) inherits the leader's base verbatim, preserving the
+// cross-agent cache prefix. An isolated teammate gets the universal base rebuilt
+// for its worktree cwd: the shared base states the leader's cwd, but the
+// sandboxed teammate's tools resolve against the worktree and run with no
+// approval gate, so a stale path would invite absolute-path writes that escape
+// into the main tree. The shared slice is never mutated, so peers keep their
+// cache prefix. An empty shared base (SystemOverride sessions) is passed through
+// untouched — that authored prompt must not be displaced.
+func teammateBaseBlocks(shared []agentcore.SystemBlock, wt *teammateWorktree) []agentcore.SystemBlock {
+	if wt == nil || len(shared) == 0 {
+		return shared
+	}
+	return []agentcore.SystemBlock{
+		{Text: config.BuildUniversalBase(wt.dir), CacheControl: "ephemeral"},
+	}
+}
+
+// cleanup runs when the isolated teammate exits, mirroring the leader-side
+// ExitWorktree "keep the scene" policy:
+//
+//   - Uncommitted changes (or a status check that errored) → keep the whole
+//     sandbox and tell the leader where the work is.
+//   - Clean tree → non-force Remove, which is data-safe: if the teammate had
+//     committed into the branch, git keeps the branch (branchKept) and only the
+//     checkout is dropped; the leader is told the commits survived there.
+//   - Clean tree, nothing committed → fully removed, silently.
+func (wt *teammateWorktree) cleanup(reg *team.Registry, agentName string) {
+	changed, err := worktree.HasChanges(wt.dir)
+	if err == nil && !changed {
+		branchKept, rerr := worktree.Remove(wt.repoRoot, wt.dir, wt.branch, false)
+		switch {
+		case rerr != nil:
+			// Removal failed — the checkout is most likely still on disk. Don't
+			// claim it was removed; tell the leader to look.
+			wt.notifyLeader(reg, agentName, fmt.Sprintf(
+				"cleanup of my worktree failed; it is kept at %s (branch %s) — inspect manually: %v", wt.dir, wt.branch, rerr))
+		case branchKept:
+			wt.notifyLeader(reg, agentName, fmt.Sprintf(
+				"My worktree was clean so I removed the checkout, but branch %s has commits not merged elsewhere and was kept. Inspect with: git log %s",
+				wt.branch, wt.branch))
+		default:
+			// Clean and nothing committed — gone without a trace, nothing to report.
+		}
+		return
+	}
+	wt.notifyLeader(reg, agentName, fmt.Sprintf(
+		"I left uncommitted changes in worktree %s (branch %s). Review with: git -C %s diff", wt.dir, wt.branch, wt.dir))
+}
+
+// notifyLeader best-effort delivers a message to the team lead's mailbox.
+func (wt *teammateWorktree) notifyLeader(reg *team.Registry, agentName, text string) {
+	if reg == nil {
+		return
+	}
+	if mb := reg.Mailbox(team.TeamLeadName); mb != nil {
+		_ = mb.Send(team.Message{From: agentName, Text: text})
+	}
+}
 
 // TeammatePersist bundles the durable stores a spawned teammate writes to so
 // the session can recover its team after a restart: the roster (who is on the
@@ -55,7 +184,17 @@ const maxAgentNameSuffixAttempts = 1000
 //     teammate is recorded in the roster and every turn is appended to its
 //     transcript, so a restart can re-spawn it with its prior context. nil
 //     disables persistence.
-func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol team.ProtocolHooks, hookRunner *hooks.Runner, persist *TeammatePersist) subagent.TeamSpawner {
+//   - isolation: optional per-teammate git-worktree sandboxing. nil keeps every
+//     teammate in the leader's shared cwd; when set, a teammate whose agent type
+//     opts into "worktree" runs in its own checkout (bound via a cwd override on
+//     the spawn context).
+func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol team.ProtocolHooks, hookRunner *hooks.Runner, persist *TeammatePersist, isolation *TeammateIsolation) subagent.TeamSpawner {
+	// worktreeMu serialises sandbox creation: the leader can fire parallel
+	// subagent spawns (agentcore runs tools concurrently), and concurrent
+	// `git worktree add` on one repo contend on the index lock — a loser would
+	// degrade to the shared cwd. Spawns are infrequent and creation is fast, so
+	// a per-session lock costs nothing meaningful.
+	var worktreeMu sync.Mutex
 	return func(ctx context.Context, req subagent.TeamSpawnRequest) (*subagent.TeamSpawnResult, error) {
 		if reg == nil || rt == nil {
 			return nil, errors.New("teammate spawner: registry and runtime are required")
@@ -85,6 +224,29 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		// publishes under the final id; the model is told the same id back.
 		agentName := uniqueAgentName(reg, req.Name)
 
+		// Git-worktree isolation: when this agent type opts in, the teammate runs
+		// in its own sandbox so its writes can't clobber a peer working the same
+		// files. The checkout is bound to the teammate via a cwd override on its
+		// spawnCtx (see teammateCwd) — the same tool instances then resolve paths
+		// against the sandbox; every other tool (send_message, task_*, MCP) is
+		// untouched. This is fail-closed — if isolation was declared but can't be
+		// honoured (not a git repo, or the checkout fails), the spawn errors
+		// rather than silently running in the shared cwd, which is exactly the
+		// clobbering the agent asked to avoid.
+		var wt *teammateWorktree
+		if isolation.declares(req.Config.Name) {
+			if !config.IsGitRepo(isolation.RepoRoot) {
+				return nil, fmt.Errorf("teammate %q declares worktree isolation but %s is not a git repository", agentName, isolation.RepoRoot)
+			}
+			worktreeMu.Lock()
+			w, err := newTeammateWorktree(isolation.RepoRoot, agentName)
+			worktreeMu.Unlock()
+			if err != nil {
+				return nil, fmt.Errorf("worktree isolation for teammate %q: %w", agentName, err)
+			}
+			wt = w
+		}
+
 		// onEvent fans every AgentLoop event into the hub. Capturing
 		// agentName in the closure keeps buildTeammateExecutor agnostic of
 		// hub/name plumbing — it only knows "tell me about each event".
@@ -100,7 +262,8 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		if dynamicProvider != nil {
 			dynamicBlock = dynamicProvider()
 		}
-		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, baseBlocks, dynamicBlock)
+
+		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, teammateBaseBlocks(baseBlocks, wt), dynamicBlock)
 
 		// Wrap the executor to append each turn (the prompt the runner fed +
 		// the messages produced) to the teammate's transcript. This is the
@@ -131,21 +294,26 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		// Spawn off background context, not the caller's tool-call ctx: the
 		// teammate must outlive the leader's current turn. Session-level
 		// shutdown is handled by Runtime.Close (DeleteTeam closes mailboxes
-		// → Run exits) and by task.Runtime.StopAll.
-		spawnCtx := task.WithDepth(context.Background(), depth)
+		// → Run exits) and by task.Runtime.StopAll. The cwd override is carried
+		// over explicitly (the background ctx drops the caller's values), so the
+		// teammate's tools resolve against its sandbox / the leader's worktree.
+		spawnCtx := agenttools.WithCwd(task.WithDepth(context.Background(), depth), teammateCwd(wt, ctx))
 
 		// onExit flips the hub's active flag and fires the SubagentStop hook
 		// when the teammate goroutine returns. The history ring is preserved so
 		// an observer can still open this teammate's transcript afterwards; the
 		// UI distinguishes "live" vs "ended" via hub.IsActive.
 		var onExit func(error)
-		if hub != nil || hookRunner != nil {
+		if hub != nil || hookRunner != nil || wt != nil {
 			onExit = func(error) {
 				if hub != nil {
 					hub.MarkStopped(agentName)
 				}
 				if hookRunner != nil {
 					hookRunner.RunSubagentStop(context.Background(), agentName)
+				}
+				if wt != nil {
+					wt.cleanup(reg, agentName)
 				}
 			}
 		}

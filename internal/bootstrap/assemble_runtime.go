@@ -126,6 +126,10 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			protocol,
 			assembly.hookRunner,
 			&agent.TeammatePersist{Roster: services.rosterStore, Transcripts: services.transcripts},
+			&agent.TeammateIsolation{
+				RepoRoot: input.cwd,
+				Of:       assembly.agentIsolation,
+			},
 		)
 		assembly.subagentTool.SetTeamSpawner(spawner)
 
@@ -177,6 +181,8 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		HookRunner:     assembly.hookRunner,
 		EnvHint:        input.envHint,
 		stopTeamPump:   stopPump,
+
+		originalRoots: services.approvalEngine.FilesystemRoots(),
 	}, nil
 }
 

@@ -257,6 +257,24 @@ func (t *Tracker) Rebind(statePath string) {
 	t.mu.Unlock()
 }
 
+// RebindWorkspace repoints the tracker at a different workspace — both the
+// shadow gitDir and the workTree — along with its sidecar, then reloads the
+// persisted stack. Unlike Rebind (which only swaps statePath for a same-cwd
+// session switch), this is for worktree enter/exit where the whole workspace
+// moves. The instance is reused so callers needn't juggle Close on the old one;
+// initialized is cleared so the next Track lazily inits the new shadow repo.
+// The new shadow repo is not background-gc'd (gcOnce already fired) — worktree
+// shadow repos are short-lived and removed with the worktree, so that's fine.
+func (t *Tracker) RebindWorkspace(gitDir, workTree, statePath string) {
+	t.mu.Lock()
+	t.git = gitRunner{gitDir: gitDir, workTree: workTree}
+	t.initialized = false
+	t.statePath = statePath
+	t.redoStack = nil
+	t.load()
+	t.mu.Unlock()
+}
+
 func (t *Tracker) ensureInit() error {
 	if t.closed {
 		return ErrTrackerClosed

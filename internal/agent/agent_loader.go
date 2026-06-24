@@ -31,6 +31,7 @@ type agentFrontmatter struct {
 	Model           string   `yaml:"model,omitempty"`
 	MaxTurns        int      `yaml:"maxTurns,omitempty"`
 	Background      bool     `yaml:"background,omitempty"`
+	Isolation       string   `yaml:"isolation,omitempty"`
 }
 
 // LoadAgentsDir reads every *.md file under dir and parses them as agent
@@ -109,6 +110,7 @@ func loadAgentFile(path string, source AgentSource, baseDir, filename string) (A
 		Model:           fm.Model,
 		MaxTurns:        fm.MaxTurns,
 		Background:      fm.Background,
+		Isolation:       fm.Isolation,
 		Source:          source,
 		BaseDir:         baseDir,
 		Filename:        filename,

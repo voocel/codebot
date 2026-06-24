@@ -47,7 +47,11 @@ type subAgentDeps struct {
 // collisions are resolved by source: user overrides project overrides
 // builtin. A broken agent file does not abort startup — the loader returns
 // errors per file and we log and skip them.
-func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
+//
+// The returned isolationOf maps each agent type to its declared isolation
+// mode (only "worktree" entries are kept; shared agents are simply absent), so
+// the teammate spawner can sandbox the opted-in types without re-reading defs.
+func buildSubAgentTool(deps subAgentDeps) (*subagent.Tool, map[string]string) {
 	resolveModel := buildModelResolver(deps)
 
 	builtin := agent.BuiltinDefinitions(deps.Cwd)
@@ -59,6 +63,13 @@ func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
 	logAgentLoadErrors(errs)
 
 	defs := agent.MergeAgents(builtin, project, user)
+
+	isolationOf := make(map[string]string)
+	for _, def := range defs {
+		if def.Isolation == agent.WorktreeIsolation {
+			isolationOf[def.Name] = def.Isolation
+		}
+	}
 
 	buildDeps := agent.BuildDeps{
 		Cwd:           deps.Cwd,
@@ -88,7 +99,7 @@ func buildSubAgentTool(deps subAgentDeps) *subagent.Tool {
 		sat.SetCreateModel(resolveModel)
 	}
 
-	return sat
+	return sat, isolationOf
 }
 
 // applyExploreSmallModel reassigns the explore agent's Model to the

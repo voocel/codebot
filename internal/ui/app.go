@@ -65,6 +65,12 @@ type App struct {
 	// nil in headless / non-TUI flows; nil is a valid no-op publisher.
 	TeammateEvents *agent.TeammateEventHub
 
+	// Worktree sandbox callbacks, wired from the runtime by wireWorktree for the
+	// interactive TUI. Nil in other frontends, where /worktree is unavailable.
+	worktreeEnter  func(name string) (string, error)
+	worktreeExit   func(discard bool) (string, error)
+	worktreeActive func() bool
+
 	// PlanStore persists plans to ~/.codebot/plans/.
 	PlanStore *storage.PlanStore
 
