@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore/permission"
+	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
 )
 
@@ -90,6 +91,15 @@ func (e *Engine) SetPlanContentProvider(fn func() (string, error)) {
 //
 // All other tools delegate to the agentcore permission engine.
 func (e *Engine) Decide(ctx context.Context, req permission.Request) (*permission.Decision, error) {
+	// Resolve operand paths against the session's live cwd (a worktree entered
+	// mid-turn rides on the run context; see Session.runCtx), falling back to the
+	// boot cwd. Keeps the engine's path checks, audit, and CheckDangerousPath
+	// aligned with where the tool actually runs.
+	workspace := e.cwd
+	if live := agentcoretools.CwdFromContext(ctx); live != "" {
+		workspace = live
+		req.Workspace = live
+	}
 	if req.ToolName == "exit_plan_mode" && e.PlanMode() {
 		return e.decidePlanExit(ctx, req)
 	}
@@ -97,7 +107,7 @@ func (e *Engine) Decide(ctx context.Context, req permission.Request) (*permissio
 	// the force-ask here would just create a wasted prompt the user couldn't
 	// usefully act on.
 	if !e.PlanMode() {
-		if reason := CheckDangerousPath(e.cwd, req); reason != "" {
+		if reason := CheckDangerousPath(workspace, req); reason != "" {
 			return e.askDangerousPath(ctx, req, reason)
 		}
 	}

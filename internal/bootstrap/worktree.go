@@ -125,6 +125,26 @@ func (r *Runtime) ExitWorktree(discard bool) (WorktreeExit, error) {
 	return res, nil
 }
 
+// formatWorktreeExitForModel renders an ExitWorktree result for the model. Like
+// ui.formatWorktreeExit but without the /worktree slash hints (the model exits
+// via the tool, not the command).
+func formatWorktreeExitForModel(res WorktreeExit) string {
+	switch {
+	case res.Kept:
+		return fmt.Sprintf(
+			"Left worktree %q — uncommitted changes kept for review at %s (branch %s). Review or merge with git when done.",
+			res.Slug, res.Dir, res.Branch)
+	case res.HadChanges:
+		return fmt.Sprintf("Left and discarded worktree %q (changes dropped).", res.Slug)
+	case res.BranchKept:
+		return fmt.Sprintf(
+			"Left worktree %q — working tree was clean, but branch %s has commits not merged elsewhere, so the branch was kept.",
+			res.Slug, res.Branch)
+	default:
+		return fmt.Sprintf("Left worktree %q — no changes, cleaned up.", res.Slug)
+	}
+}
+
 // WorktreeDiff returns the active sandbox's uncommitted diff for review.
 func (r *Runtime) WorktreeDiff() (string, error) {
 	if r.activeWorktree == nil {

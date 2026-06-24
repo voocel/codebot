@@ -20,17 +20,18 @@ import (
 
 var errStaleSessionGeneration = errors.New("stale session generation")
 
-// runCtx returns the base context every agent-loop entry (Prompt / Continue /
-// idle resume) runs under, carrying the session's current working directory as
-// a cwd override. Tools resolve relative paths against it, so a session moved
-// into a git-worktree sandbox (via RetargetWorkspace) — and every subagent /
-// teammate it spawns that inherits this ctx — operates inside the sandbox
-// without rebuilding any tools. Empty cwd makes WithCwd a no-op.
+// runCtx is the base context for every agent-loop entry (Prompt / Continue /
+// idle resume). It carries the session cwd as a LIVE source (WithCwdFunc), so a
+// worktree switch mid-turn (RetargetWorkspace) is seen by the next tool call —
+// same-turn edits land in the new workspace, without rebuilding any tools.
+// Teammates capture a fixed cwd at spawn (see teammateCwd), so the live source
+// never bleeds across them.
 func (s *Session) runCtx() context.Context {
-	s.mu.Lock()
-	cwd := s.cwd
-	s.mu.Unlock()
-	return tools.WithCwd(context.Background(), cwd)
+	return tools.WithCwdFunc(context.Background(), func() string {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.cwd
+	})
 }
 
 func (s *Session) Prompt(text string) error {

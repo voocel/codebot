@@ -163,7 +163,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		modelName = session.ModelName()
 	}
 
-	return &Runtime{
+	rt := &Runtime{
 		Cwd:            input.cwd,
 		GitBranch:      detectGitBranch(input.cwd),
 		ApprovalEngine: services.approvalEngine,
@@ -183,7 +183,32 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		stopTeamPump:   stopPump,
 
 		originalRoots: services.approvalEngine.FilesystemRoots(),
-	}, nil
+	}
+
+	// Bind the worktree enter/exit tools now the Runtime (their backend) exists.
+	wireWorktreeTools(tools, rt)
+
+	return rt, nil
+}
+
+// wireWorktreeTools binds the Runtime worktree backend onto the enter/exit
+// tools, which were built (in assemble_session) before the Runtime existed.
+// localtools can't import bootstrap, so the setters take plain functions.
+func wireWorktreeTools(tools []agentcore.Tool, rt *Runtime) {
+	for _, t := range tools {
+		switch wt := t.(type) {
+		case *localtools.EnterWorktreeTool:
+			wt.SetEnter(rt.EnterWorktree)
+		case *localtools.ExitWorktreeTool:
+			wt.SetExit(func(discard bool) (string, error) {
+				res, err := rt.ExitWorktree(discard)
+				if err != nil {
+					return "", err
+				}
+				return formatWorktreeExitForModel(res), nil
+			})
+		}
+	}
 }
 
 // buildIdleClaim is the work-stealing hook: pull the next claimable task on

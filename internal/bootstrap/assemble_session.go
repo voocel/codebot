@@ -189,6 +189,11 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 	skillTool.SetForkExecutor(subagentTool.Execute)
 	builtTools = append(builtTools, skillTool)
 
+	// Worktree enter/exit are leader-only session operations: appended AFTER the
+	// subagent tool's AllTools snapshot (above) so they never reach sub-agent or
+	// teammate pools. Not in coreToolNames → deferred behind tool_search.
+	builtTools = append(builtTools, localtools.NewEnterWorktree(), localtools.NewExitWorktree())
+
 	builtTools = applyToolSearch(builtTools, activeProvider, settings.Model)
 	return builtTools, subagentTool, bashTool, agentIsolation, nil
 }
