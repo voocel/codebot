@@ -30,10 +30,10 @@ type resolvedInput struct {
 	sessionManager    *storage.Manager
 	sessionStore      *storage.Store
 	sessionSnapshot   storage.ContextSnapshot
-	nonTTY               bool
-	envHint              string
-	telemetryShutdown    func(context.Context) error
-	telemetryBindSession func(provider func() string)
+	nonTTY            bool
+	envHint           string
+	telemetryShutdown func(context.Context) error
+	telemetryTracer   *telemetry.Tracer
 }
 
 func resolveInput(opts Options) (*resolvedInput, error) {
@@ -60,14 +60,14 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 
 	modelFactory := opts.ModelFactory
 	var telemetryShutdown func(context.Context) error
-	bindSession := func(func() string) {} // no-op unless telemetry is enabled
+	var telemetryTracer *telemetry.Tracer
 	if modelFactory == nil {
-		hook, bind, shutdown, err := telemetry.Setup(context.Background(), settings.Telemetry)
+		hook, tracer, shutdown, err := telemetry.Setup(context.Background(), settings.Telemetry)
 		if err != nil {
 			return nil, err
 		}
 		telemetryShutdown = shutdown
-		bindSession = bind
+		telemetryTracer = tracer
 		if hook != nil {
 			modelFactory = provider.NewModelFactory(litellm.WithHook(hook))
 		} else {
@@ -104,10 +104,10 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 		sessionManager:    sessionManager,
 		sessionStore:      sessionStore,
 		sessionSnapshot:   sessionSnapshot,
-		nonTTY:               opts.NonTTYMode,
-		envHint:              envHint,
-		telemetryShutdown:    telemetryShutdown,
-		telemetryBindSession: bindSession,
+		nonTTY:            opts.NonTTYMode,
+		envHint:           envHint,
+		telemetryShutdown: telemetryShutdown,
+		telemetryTracer:   telemetryTracer,
 	}, nil
 }
 

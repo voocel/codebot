@@ -16,6 +16,7 @@ import (
 	"github.com/voocel/codebot/internal/goal"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/telemetry"
 )
 
 var errStaleSessionGeneration = errors.New("stale session generation")
@@ -26,12 +27,72 @@ var errStaleSessionGeneration = errors.New("stale session generation")
 // same-turn edits land in the new workspace, without rebuilding any tools.
 // Teammates capture a fixed cwd at spawn (see teammateCwd), so the live source
 // never bleeds across them.
-func (s *Session) runCtx() context.Context {
+func (s *Session) baseRunCtx() context.Context {
 	return tools.WithCwdFunc(context.Background(), func() string {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.cwd
 	})
+}
+
+func (s *Session) startPromptMessages(msgs ...agentcore.AgentMessage) error {
+	ctx, run, previous := s.beginTelemetryRun(s.baseRunCtx())
+	if err := s.agent.PromptMessages(ctx, msgs...); err != nil {
+		s.rollbackTelemetryRun(run, previous, err)
+		return err
+	}
+	s.commitTelemetryRun(previous)
+	return nil
+}
+
+func (s *Session) startContinue() error {
+	ctx, run, previous := s.beginTelemetryRun(s.baseRunCtx())
+	if err := s.agent.Continue(ctx); err != nil {
+		s.rollbackTelemetryRun(run, previous, err)
+		return err
+	}
+	s.commitTelemetryRun(previous)
+	return nil
+}
+
+func (s *Session) beginTelemetryRun(ctx context.Context) (context.Context, *telemetry.Run, *telemetry.Run) {
+	if s.telemetryTracer == nil {
+		return ctx, nil, nil
+	}
+	ctx, run := s.telemetryTracer.StartRun(ctx, "agent run")
+	s.mu.Lock()
+	previous := s.activeRun
+	s.activeRun = run
+	s.mu.Unlock()
+	return ctx, run, previous
+}
+
+func (s *Session) commitTelemetryRun(previous *telemetry.Run) {
+	if previous != nil {
+		previous.End(nil)
+	}
+}
+
+func (s *Session) rollbackTelemetryRun(run, previous *telemetry.Run, err error) {
+	if run == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.activeRun == run {
+		s.activeRun = previous
+	}
+	s.mu.Unlock()
+	run.End(err)
+}
+
+func (s *Session) endTelemetryRun(err error) {
+	s.mu.Lock()
+	run := s.activeRun
+	s.activeRun = nil
+	s.mu.Unlock()
+	if run != nil {
+		run.End(err)
+	}
 }
 
 func (s *Session) Prompt(text string) error {
@@ -58,7 +119,7 @@ func (s *Session) Prompt(text string) error {
 		s.preambleInjected = true
 	}
 	msgs = append(msgs, s.buildUserMessage(agentcore.TextBlock(text)))
-	return s.agent.PromptMessages(s.runCtx(), msgs...)
+	return s.startPromptMessages(msgs...)
 }
 
 func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
@@ -74,7 +135,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 		s.preambleInjected = true
 	}
 	msgs = append(msgs, s.buildUserMessage(blocks...))
-	return s.agent.PromptMessages(s.runCtx(), msgs...)
+	return s.startPromptMessages(msgs...)
 }
 
 // buildUserMessage creates a user message with reminders prepended as text blocks.
@@ -142,7 +203,7 @@ func (s *Session) continueIfCurrentGeneration(gen uint64) error {
 		return errStaleSessionGeneration
 	}
 	s.mu.Unlock()
-	return s.agent.Continue(s.runCtx())
+	return s.startContinue()
 }
 
 // deliverRuntimeReminder prefers in-run steering and otherwise defers to the
@@ -220,13 +281,17 @@ func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderK
 	}
 	s.mu.Unlock()
 
-	result, err := s.agent.InjectContext(s.runCtx(), injectedUserMsg(reminder))
+	ctx, run, previous := s.beginTelemetryRun(s.baseRunCtx())
+	result, err := s.agent.InjectContext(ctx, injectedUserMsg(reminder))
 	if err != nil {
+		s.rollbackTelemetryRun(run, previous, err)
 		return false
 	}
 	if result.Disposition != agentcore.InjectResumedIdleRun {
+		s.rollbackTelemetryRun(run, previous, nil)
 		return false
 	}
+	s.commitTelemetryRun(previous)
 
 	s.mu.Lock()
 	s.reminders.autoResumeKeys[key] = struct{}{}

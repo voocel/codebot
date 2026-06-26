@@ -30,17 +30,16 @@ func TestSessionSpanAttributesEmptyIsNil(t *testing.T) {
 }
 
 func TestSetupDisabled(t *testing.T) {
-	hook, bind, shutdown, err := Setup(context.Background(), config.TelemetryConfig{Enabled: false})
+	hook, tracer, shutdown, err := Setup(context.Background(), config.TelemetryConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("disabled setup err: %v", err)
 	}
 	if hook != nil {
 		t.Fatal("disabled telemetry must return a nil hook")
 	}
-	if bind == nil {
-		t.Fatal("bind must be a non-nil noop")
+	if tracer != nil {
+		t.Fatal("disabled telemetry must return a nil tracer")
 	}
-	bind(func() string { return "s-1" }) // must not panic when disabled
 	if shutdown == nil {
 		t.Fatal("shutdown must be a non-nil noop")
 	}
@@ -60,7 +59,7 @@ func TestSetupEnabledNoEndpoint(t *testing.T) {
 }
 
 func TestSetupEnabledReturnsHook(t *testing.T) {
-	hook, bind, shutdown, err := Setup(context.Background(), config.TelemetryConfig{
+	hook, tracer, shutdown, err := Setup(context.Background(), config.TelemetryConfig{
 		Enabled:   true,
 		Endpoint:  "https://example.test/api/public/otel",
 		PublicKey: "pk",
@@ -72,10 +71,10 @@ func TestSetupEnabledReturnsHook(t *testing.T) {
 	if hook == nil {
 		t.Fatal("enabled telemetry must return a hook")
 	}
-	if bind == nil {
-		t.Fatal("bind must be non-nil when enabled")
+	if tracer == nil {
+		t.Fatal("enabled telemetry must return a tracer")
 	}
-	bind(func() string { return "sess-42" })
+	tracer.BindSession(func() string { return "sess-42" })
 	if shutdown == nil {
 		t.Fatal("shutdown must be non-nil")
 	}

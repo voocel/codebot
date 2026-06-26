@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/litellm"
 )
 
 // FormatError renders err for user display. Recognizes common cross-cutting
@@ -38,18 +37,15 @@ func FormatError(err error, fallbackPrefix string) string {
 		return fmt.Sprintf("max turns (%d) reached; start a new session or raise MaxTurns", mte.Limit)
 	}
 
-	var lerr *litellm.LiteLLMError
-	if errors.As(err, &lerr) {
-		switch lerr.Type {
-		case litellm.ErrorTypeQuota:
-			return "quota exhausted"
-		case litellm.ErrorTypeRateLimit:
-			return "rate limited; retry shortly"
-		case litellm.ErrorTypeAuth:
-			return "API key invalid or expired"
-		case litellm.ErrorTypeOverloaded:
-			return "provider overloaded; retry shortly"
-		}
+	switch {
+	case errors.Is(err, agentcore.ErrProviderQuota):
+		return "quota exhausted"
+	case errors.Is(err, agentcore.ErrProviderRateLimit):
+		return "rate limited; retry shortly"
+	case errors.Is(err, agentcore.ErrProviderAuth):
+		return "API key invalid or expired"
+	case errors.Is(err, agentcore.ErrProviderOverloaded):
+		return "provider overloaded; retry shortly"
 	}
 
 	if fallbackPrefix == "" {

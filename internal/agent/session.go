@@ -13,6 +13,7 @@ import (
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/telemetry"
 )
 
 // ModelFactory creates a chat model instance for a provider/model tuple.
@@ -36,6 +37,8 @@ type SessionConfig struct {
 	LazyPersist bool
 	// ChatModel is the active ChatModel reference.
 	ChatModel agentcore.ChatModel
+	// TelemetryTracer opens agent-run spans and tool spans when telemetry is enabled.
+	TelemetryTracer *telemetry.Tracer
 	// HookRunner fires lifecycle hooks (notification, etc.). Nil when no hooks configured.
 	HookRunner *hooks.Runner
 	// Snapshotter records workspace file checkpoints at turn boundaries and
@@ -135,7 +138,9 @@ type Session struct {
 
 	retryAttempt int
 
-	chatModel agentcore.ChatModel
+	chatModel       agentcore.ChatModel
+	telemetryTracer *telemetry.Tracer
+	activeRun       *telemetry.Run
 
 	lazyPersist        bool
 	pendingUserMsg     []agentcore.Message
@@ -282,6 +287,7 @@ func NewSession(cfg SessionConfig) *Session {
 		createModel:       modelFactory,
 		lazyPersist:       cfg.LazyPersist,
 		chatModel:         cfg.ChatModel,
+		telemetryTracer:   cfg.TelemetryTracer,
 		hookRunner:        cfg.HookRunner,
 		snapshotter:       cfg.Snapshotter,
 		taskStore:         cfg.TaskStore,

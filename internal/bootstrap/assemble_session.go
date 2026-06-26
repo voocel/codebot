@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/skill"
+	"github.com/voocel/codebot/internal/telemetry"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
 
@@ -30,6 +31,7 @@ type sessionAssembly struct {
 	reminders             []string
 	contextFiles          config.ContextFiles
 	hookMiddleware        agentcore.ToolMiddleware
+	telemetryTracer       *telemetry.Tracer
 	hookRunner            *hooks.Runner
 	subagentTool          *subagent.Tool
 	bashTool              *agentcoretools.BashTool
@@ -89,6 +91,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		reminders:             parts.reminders,
 		contextFiles:          ctxFiles,
 		hookMiddleware:        hookMiddleware,
+		telemetryTracer:       input.telemetryTracer,
 		hookRunner:            hookRunner,
 		subagentTool:          subagentTool,
 		bashTool:              bashTool,

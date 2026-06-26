@@ -9,7 +9,6 @@ import (
 	"errors"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/litellm"
 )
 
 // Category classifies errors for metrics and human-readable status output.
@@ -67,11 +66,21 @@ func Categorize(err error) Category {
 		return CatAgent
 	}
 
-	var lerr *litellm.LiteLLMError
-	if errors.As(err, &lerr) {
+	if isProviderError(err) {
 		return CatLLM
 	}
 	return CatUnknown
+}
+
+func isProviderError(err error) bool {
+	classified := agentcore.ClassifyProvider(err)
+	return errors.Is(classified, agentcore.ErrProviderRateLimit) ||
+		errors.Is(classified, agentcore.ErrProviderQuota) ||
+		errors.Is(classified, agentcore.ErrProviderTimeout) ||
+		errors.Is(classified, agentcore.ErrProviderStreamIdle) ||
+		errors.Is(classified, agentcore.ErrProviderNetwork) ||
+		errors.Is(classified, agentcore.ErrProviderAuth) ||
+		errors.Is(classified, agentcore.ErrProviderOverloaded)
 }
 
 func isAgentLoop(err error) bool {

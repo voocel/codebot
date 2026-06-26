@@ -70,8 +70,8 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	// Bind the telemetry session-id provider now the session exists: every LLM
 	// generation span (leader and teammates, same session) gets tagged so the
 	// backend groups the run. Reads live, so a mid-run SwitchSession follows.
-	if input.telemetryBindSession != nil {
-		input.telemetryBindSession(session.SessionID)
+	if input.telemetryTracer != nil {
+		input.telemetryTracer.BindSession(session.SessionID)
 	}
 	wireSessionRuntime(input, assembly, services, session, tools, agentCore, taskRT, contextEngine, summaryCompact)
 
@@ -313,8 +313,17 @@ func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine
 		// re-uploading them.
 		agentcore.WithCacheLastMessage("ephemeral"),
 	}
+	middlewares := make([]agentcore.ToolMiddleware, 0, 2)
+	if assembly.telemetryTracer != nil {
+		if mw := assembly.telemetryTracer.ToolMiddleware(); mw != nil {
+			middlewares = append(middlewares, mw)
+		}
+	}
 	if assembly.hookMiddleware != nil {
-		opts = append(opts, agentcore.WithMiddlewares(assembly.hookMiddleware))
+		middlewares = append(middlewares, assembly.hookMiddleware)
+	}
+	if len(middlewares) > 0 {
+		opts = append(opts, agentcore.WithMiddlewares(middlewares...))
 	}
 	return agentcore.NewAgent(opts...), nil
 }
@@ -363,6 +372,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		PreambleInjected:      len(input.sessionSnapshot.Messages) > 0,
 		SkillAllowsSetter:     services.approvalEngine.SetSkillAllows,
 		FileReadState:         assembly.fileReadState,
+		TelemetryTracer:       input.telemetryTracer,
 	})
 }
 

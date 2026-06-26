@@ -11,13 +11,14 @@ require (
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/muesli/reflow v0.3.0
 	github.com/muesli/termenv v0.16.0
-	github.com/voocel/agentcore v1.7.2
-	github.com/voocel/litellm v1.6.18
+	github.com/voocel/agentcore v1.7.3
+	github.com/voocel/litellm v1.8.1
 	github.com/voocel/litellm/otel v0.0.0-20260604024731-898e4869b0e2
 	github.com/voocel/mcp-sdk-go v1.2.7
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
+	go.opentelemetry.io/otel/trace v1.44.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -56,7 +57,6 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/net v0.55.0 // indirect

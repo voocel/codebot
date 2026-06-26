@@ -11,7 +11,6 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
-	"github.com/voocel/litellm"
 )
 
 type sessionPersistence struct {
@@ -81,6 +80,7 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 	}
 
 	if ev.Type == agentcore.EventAgentEnd {
+		s.endTelemetryRun(ev.Err)
 		if ev.Summary != nil {
 			s.mu.Lock()
 			summary := *ev.Summary
@@ -144,8 +144,7 @@ func isUsageLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var llmErr *litellm.LiteLLMError
-	if errors.As(err, &llmErr) && llmErr.Type == litellm.ErrorTypeQuota {
+	if errors.Is(err, agentcore.ErrProviderQuota) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
