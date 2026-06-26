@@ -15,6 +15,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
+	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/codebot/internal/config"
 	goalstate "github.com/voocel/codebot/internal/goal"
 	"github.com/voocel/codebot/internal/skill"
@@ -56,6 +57,19 @@ func (m *stubChatModel) GenerateStream(
 }
 
 func (m *stubChatModel) SupportsTools() bool { return true }
+
+type noEffortChatModel struct {
+	stubChatModel
+}
+
+func (m *noEffortChatModel) Capabilities() llm.Capabilities {
+	return llm.Capabilities{
+		Thinking: llm.ThinkingCapabilities{
+			Supported: llm.SupportYes,
+			Disable:   llm.SupportYes,
+		},
+	}
+}
 
 type panicChatModel struct{}
 
@@ -549,6 +563,44 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	}
 }
 
+func TestSwitchSessionResolvesThinkingAgainstCurrentModelWhenSnapshotHasNoModel(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mgr := storage.NewManager(dir)
+	current, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create current session: %v", err)
+	}
+
+	target, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create target session: %v", err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	if err := target.AppendThinkingLevelChange("high"); err != nil {
+		t.Fatalf("append target thinking: %v", err)
+	}
+
+	chatModel := &noEffortChatModel{}
+	s := NewSession(SessionConfig{
+		Agent:     agentcore.NewAgent(agentcore.WithModel(chatModel)),
+		Store:     current,
+		Manager:   mgr,
+		Settings:  config.Resolved{Provider: "mimo", Model: "mimo-v2.5-pro", ContextWindow: 128000, MaxTurns: 30},
+		Cwd:       dir,
+		ChatModel: chatModel,
+	})
+	t.Cleanup(s.Close)
+
+	if err := s.SwitchSession(target.Header().SessionID); err != nil {
+		t.Fatalf("SwitchSession: %v", err)
+	}
+	if got := s.Settings().ThinkingLevel; got != "" {
+		t.Fatalf("thinking after switch = %q, want auto/empty", got)
+	}
+}
+
 func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 	t.Parallel()
 
@@ -673,6 +725,110 @@ func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 	}
 	if s.ModelName() != "claude-sonnet-4-5" {
 		t.Fatalf("session model not switched: got %q want %q", s.ModelName(), "claude-sonnet-4-5")
+	}
+}
+
+func TestSetThinkingLevelPersistsToProjectSettingsWhenPresent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	globalDir := filepath.Join(home, ".codebot")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatalf("mkdir global config dir: %v", err)
+	}
+	globalPath := filepath.Join(globalDir, "settings.json")
+	if err := os.WriteFile(globalPath, []byte(`{"thinking_level":"low"}`), 0o600); err != nil {
+		t.Fatalf("write global settings: %v", err)
+	}
+
+	cwd := t.TempDir()
+	projectDir := filepath.Join(cwd, ".codebot")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project config dir: %v", err)
+	}
+	projectPath := filepath.Join(projectDir, "settings.json")
+	if err := os.WriteFile(projectPath, []byte(`{"thinking_level":"high"}`), 0o600); err != nil {
+		t.Fatalf("write project settings: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent: agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Settings: config.Resolved{
+			Provider:      "openai",
+			Model:         "gpt-5",
+			ThinkingLevel: "high",
+			Providers: map[string]config.ProviderConfig{
+				"openai": {APIKey: "openai-key"},
+			},
+			ContextWindow: 128000,
+			MaxTurns:      30,
+		},
+		Cwd:       cwd,
+		ChatModel: &stubChatModel{},
+	})
+	t.Cleanup(s.Close)
+
+	s.SetThinkingLevel(agentcore.ThinkingAuto)
+
+	projectRaw, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatalf("read project settings: %v", err)
+	}
+	var projectSettings config.Settings
+	if err := json.Unmarshal(projectRaw, &projectSettings); err != nil {
+		t.Fatalf("decode project settings: %v", err)
+	}
+	if projectSettings.ThinkingLevel == nil || *projectSettings.ThinkingLevel != "" {
+		t.Fatalf("project thinking = %#v, want explicit auto/empty", projectSettings.ThinkingLevel)
+	}
+	globalSettings, err := config.LoadSettingsStrict(cwd)
+	if err != nil {
+		t.Fatalf("load merged settings: %v", err)
+	}
+	if globalSettings.Provider != "openai" {
+		t.Fatalf("sanity provider = %q", globalSettings.Provider)
+	}
+	globalRaw, err := os.ReadFile(globalPath)
+	if err != nil {
+		t.Fatalf("read global settings: %v", err)
+	}
+	if !strings.Contains(string(globalRaw), `"thinking_level":"low"`) && !strings.Contains(string(globalRaw), `"thinking_level": "low"`) {
+		t.Fatalf("global settings was unexpectedly changed: %s", globalRaw)
+	}
+}
+
+func TestResetClearsRuntimeThinking(t *testing.T) {
+	dir := t.TempDir()
+	mgr := storage.NewManager(dir)
+	store, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent:   agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Store:   store,
+		Manager: mgr,
+		Settings: config.Resolved{
+			Provider:      "openai",
+			Model:         "gpt-5",
+			ThinkingLevel: "high",
+			Providers: map[string]config.ProviderConfig{
+				"openai": {APIKey: "openai-key"},
+			},
+			ContextWindow: 128000,
+			MaxTurns:      30,
+		},
+		Cwd:       dir,
+		ChatModel: &stubChatModel{},
+	})
+	t.Cleanup(s.Close)
+
+	if err := s.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if got := s.Settings().ThinkingLevel; got != "" {
+		t.Fatalf("thinking after reset = %q, want auto/empty", got)
 	}
 }
 

@@ -471,13 +471,7 @@ func (s *Session) applyTemporarySkillThinking(level string) {
 	}
 	s.mu.Unlock()
 
-	if s.registry != nil {
-		s.mu.Lock()
-		modelName := s.modelName
-		s.mu.Unlock()
-		available := s.registry.AvailableThinkingLevels(modelName)
-		level = provider.ClampThinkingLevel(level, available)
-	}
+	level, _ = s.resolveThinkingLevel(level)
 	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(level))
 	s.mu.Lock()
 	s.settings.ThinkingLevel = level
@@ -529,8 +523,9 @@ func (s *Session) clearTemporarySkillOverrides() {
 	if baseChatModel != nil {
 		s.agent.SetModel(baseChatModel)
 	}
-	if baseThinking != "" {
-		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(baseThinking))
+	effectiveThinking := resolveThinkingLevelForModel(baseChatModel, baseThinking)
+	if effectiveThinking != "" {
+		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(effectiveThinking))
 	} else {
 		s.agent.SetThinkingLevel("")
 	}
@@ -614,15 +609,10 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 }
 
 func (s *Session) reclampThinkingTemporary() {
-	if s.registry == nil {
-		return
-	}
 	s.mu.Lock()
 	current := s.settings.ThinkingLevel
-	modelName := s.modelName
 	s.mu.Unlock()
-	available := s.registry.AvailableThinkingLevels(modelName)
-	clamped := provider.ClampThinkingLevel(current, available)
+	clamped, _ := s.resolveThinkingLevel(current)
 	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
 	s.mu.Lock()
 	s.settings.ThinkingLevel = clamped
@@ -743,13 +733,8 @@ func (s *Session) applyContextWindow(window int) {
 }
 
 func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
-	if s.registry != nil {
-		s.mu.Lock()
-		modelName := s.modelName
-		s.mu.Unlock()
-		available := s.registry.AvailableThinkingLevels(modelName)
-		level = agentcore.ThinkingLevel(provider.ClampThinkingLevel(string(level), available))
-	}
+	resolved, _ := s.resolveThinkingLevel(string(level))
+	level = agentcore.ThinkingLevel(resolved)
 
 	s.agent.SetThinkingLevel(level)
 
@@ -773,7 +758,7 @@ func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
 	})
 
 	lvl := string(level)
-	if err := config.PatchGlobalSettings(config.Settings{
+	if err := config.PatchEffectiveSettings(s.cwd, config.Settings{
 		ThinkingLevel: &lvl,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: persist thinking level setting: %v\n", err)
@@ -802,6 +787,76 @@ func (s *Session) BaseURL() string {
 	return baseURL
 }
 
+func (s *Session) AvailableThinkingLevels() []string {
+	s.mu.Lock()
+	model := s.chatModel
+	reg := s.registry
+	modelName := s.modelName
+	s.mu.Unlock()
+	if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
+		return levels
+	}
+	if reg != nil {
+		return reg.AvailableThinkingLevels(modelName)
+	}
+	return []string{""}
+}
+
+func (s *Session) AvailableThinkingLevelsFor(prov, modelName string) []string {
+	s.mu.Lock()
+	currentProvider := s.provider
+	currentModel := s.modelName
+	currentChatModel := s.chatModel
+	reg := s.registry
+	s.mu.Unlock()
+
+	if strings.EqualFold(prov, currentProvider) && strings.EqualFold(modelName, currentModel) {
+		if levels := provider.ThinkingLevelsForModel(currentChatModel); len(levels) > 0 {
+			return levels
+		}
+	}
+
+	provType, err := s.providerType(prov)
+	if err == nil {
+		apiKey, baseURL := s.resolveCredentials(prov)
+		providerExtra := s.resolveProviderExtra(prov)
+		model, err := s.createModel(provType, modelName, apiKey, baseURL, providerExtra)
+		if err == nil {
+			if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
+				return levels
+			}
+		}
+	}
+
+	if reg != nil {
+		return reg.AvailableThinkingLevels(modelName)
+	}
+	return []string{""}
+}
+
+func (s *Session) resolveThinkingLevel(level string) (string, bool) {
+	s.mu.Lock()
+	model := s.chatModel
+	reg := s.registry
+	modelName := s.modelName
+	s.mu.Unlock()
+	if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
+		return provider.ResolveThinkingLevel(model, level)
+	}
+	if reg != nil {
+		return provider.ClampThinkingLevel(level, reg.AvailableThinkingLevels(modelName)), true
+	}
+	return string(agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(level))), true
+}
+
+func resolveThinkingLevelForModel(model agentcore.ChatModel, level string) string {
+	if levels := provider.ThinkingLevelsForModel(model); len(levels) == 0 {
+		return string(agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(level)))
+	}
+	resolved, _ := provider.ResolveThinkingLevel(model, level)
+	return resolved
+}
+
 func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 	s.mu.Lock()
 	pc, ok := s.providers[prov]
@@ -813,19 +868,14 @@ func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 }
 
 func (s *Session) reclampThinking() {
-	if s.registry == nil {
-		return
-	}
 	s.mu.Lock()
 	current := s.settings.ThinkingLevel
-	modelName := s.modelName
 	s.mu.Unlock()
 
 	if current == "" {
 		return
 	}
-	available := s.registry.AvailableThinkingLevels(modelName)
-	clamped := provider.ClampThinkingLevel(current, available)
+	clamped, _ := s.resolveThinkingLevel(current)
 	if clamped != current {
 		s.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
 	}
@@ -848,10 +898,12 @@ func (s *Session) Reset() error {
 
 	s.agent.ClearMessages()
 	s.agent.ClearAllQueues()
+	s.agent.SetThinkingLevel("")
 
 	s.mu.Lock()
 	s.store = newStore
 	s.autoNamed = false
+	s.settings.ThinkingLevel = ""
 	s.resetHarnessStateLocked()
 	s.mu.Unlock()
 	if oldStore != nil {
@@ -871,6 +923,7 @@ func (s *Session) SwitchSession(id string) error {
 	mgr := s.mgr
 	curProvider := s.provider
 	curModel := s.modelName
+	curChatModel := s.chatModel
 	s.mu.Unlock()
 
 	newStore, err := mgr.Open(id)
@@ -901,7 +954,7 @@ func (s *Session) SwitchSession(id string) error {
 	targetKey, targetBase := s.resolveCredentials(targetProvider)
 	targetExtra := s.resolveProviderExtra(targetProvider)
 
-	var restoredModel agentcore.ChatModel
+	restoredModel := curChatModel
 	if snapshot.Model != "" || snapshot.Provider != "" {
 		targetType, err := s.providerType(targetProvider)
 		if err != nil {
@@ -927,12 +980,9 @@ func (s *Session) SwitchSession(id string) error {
 		agentcore.ReactivateDeferred(s.allTools, snapshot.Messages)
 	}
 	if snapshot.Thinking != "" {
-		thinkingLevel := agentcore.ThinkingLevel(snapshot.Thinking)
-		if s.registry != nil {
-			available := s.registry.AvailableThinkingLevels(targetModel)
-			thinkingLevel = agentcore.ThinkingLevel(provider.ClampThinkingLevel(string(thinkingLevel), available))
-		}
-		s.agent.SetThinkingLevel(thinkingLevel)
+		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(resolveThinkingLevelForModel(restoredModel, snapshot.Thinking)))
+	} else {
+		s.agent.SetThinkingLevel("")
 	}
 	if restoredModel != nil {
 		s.agent.SetModel(restoredModel)
@@ -944,12 +994,9 @@ func (s *Session) SwitchSession(id string) error {
 	s.modelName = targetModel
 	s.autoNamed = newStore.Header().Name != ""
 	if snapshot.Thinking != "" {
-		clamped := snapshot.Thinking
-		if s.registry != nil {
-			available := s.registry.AvailableThinkingLevels(targetModel)
-			clamped = provider.ClampThinkingLevel(snapshot.Thinking, available)
-		}
-		s.settings.ThinkingLevel = clamped
+		s.settings.ThinkingLevel = resolveThinkingLevelForModel(restoredModel, snapshot.Thinking)
+	} else {
+		s.settings.ThinkingLevel = ""
 	}
 	s.resetHarnessStateLocked()
 	s.mu.Unlock()

@@ -177,7 +177,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch model: " + err.Error()))
 		}
 
-		if thinkLevel != "" && thinkLevel != "off" {
+		if thinkLevel != c.session.Settings().ThinkingLevel {
 			c.session.SetThinkingLevel(agentcore.ThinkingLevel(thinkLevel))
 		}
 
@@ -190,19 +190,14 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			Model:      &model,
 			SmallModel: &small,
 		}
-		var perr error
-		if config.ProjectSettingsDefinesModel(c.cwd) {
-			perr = config.PatchProjectSettings(c.cwd, patch)
-		} else {
-			perr = config.PatchGlobalSettings(patch)
-		}
-		if perr != nil {
-			fmt.Fprintf(os.Stderr, "warning: persist model setting: %v\n", perr)
+		if err := config.PatchEffectiveSettings(c.cwd, patch); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: persist model setting: %v\n", err)
 		}
 
 		display := config.FormatModelID(prov, model)
-		if thinkLevel != "" && thinkLevel != "off" {
-			display += " (thinking: " + thinkLevel + ")"
+		finalThinking := c.session.Settings().ThinkingLevel
+		if finalThinking != "" && finalThinking != "off" {
+			display += " (thinking: " + finalThinking + ")"
 		}
 		return true, func() tea.Msg {
 			return tui.CommandResultMsg{
@@ -327,14 +322,9 @@ func (c *ModelCommand) Dismiss() {
 
 func (c *ModelCommand) refreshThinking() {
 	s := c.state
-	reg := c.session.Registry()
-	model := s.sections[s.provIdx].models[s.modelIdx]
-	if reg == nil {
-		s.thinkLevels = []string{"off"}
-		s.thinkIdx = 0
-		return
-	}
-	s.thinkLevels = reg.AvailableThinkingLevels(model)
+	section := s.sections[s.provIdx]
+	model := section.models[s.modelIdx]
+	s.thinkLevels = c.session.AvailableThinkingLevelsFor(section.name, model)
 	s.thinkIdx = currentThinkingIndex(c.session, s.thinkLevels)
 }
 
@@ -343,20 +333,24 @@ func (c *ModelCommand) renderThinkingIndicator() string {
 	if len(s.thinkLevels) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("[◂ %s ▸]", s.thinkLevels[s.thinkIdx])
+	return fmt.Sprintf("[◂ %s ▸]", thinkingLabel(s.thinkLevels[s.thinkIdx]))
 }
 
 func currentThinkingIndex(session *agent.Session, levels []string) int {
 	current := session.Settings().ThinkingLevel
-	if current == "" {
-		current = "off"
-	}
 	for i, l := range levels {
 		if l == current {
 			return i
 		}
 	}
 	return 0
+}
+
+func thinkingLabel(level string) string {
+	if level == "" {
+		return "auto"
+	}
+	return level
 }
 
 func buildProviderSections(providers map[string]config.ProviderConfig) []providerSection {

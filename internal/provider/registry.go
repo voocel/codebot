@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/llm"
 )
 
 // ModelEntry describes a known LLM model.
@@ -53,7 +54,7 @@ func (r *ModelRegistry) Resolve(pattern string) (*ModelEntry, agentcore.Thinking
 	if idx := strings.LastIndex(pattern, ":"); idx > 0 {
 		suffix := pattern[idx+1:]
 		if IsValidThinkingLevel(suffix) {
-			thinkingLevel = agentcore.ThinkingLevel(suffix)
+			thinkingLevel = agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(suffix))
 			pattern = pattern[:idx]
 		}
 	}
@@ -185,9 +186,10 @@ func (r *ModelRegistry) MergeModels(fetched []ModelEntry) {
 
 // IsValidThinkingLevel reports whether s is a recognized thinking level.
 func IsValidThinkingLevel(s string) bool {
-	switch agentcore.ThinkingLevel(s) {
-	case agentcore.ThinkingOff, agentcore.ThinkingMinimal, agentcore.ThinkingLow,
-		agentcore.ThinkingMedium, agentcore.ThinkingHigh, agentcore.ThinkingXHigh:
+	switch agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(s)) {
+	case agentcore.ThinkingAuto, agentcore.ThinkingOff, agentcore.ThinkingMinimal, agentcore.ThinkingLow,
+		agentcore.ThinkingMedium, agentcore.ThinkingHigh, agentcore.ThinkingXHigh,
+		agentcore.ThinkingMax:
 		return true
 	}
 	return false
@@ -202,7 +204,22 @@ func hasDatedSuffix(id string) bool {
 }
 
 // ThinkingLevelOrder defines the ordered progression of thinking levels.
-var ThinkingLevelOrder = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
+var ThinkingLevelOrder = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+func ThinkingLevelsForModel(model agentcore.ChatModel) []string {
+	if model == nil {
+		return nil
+	}
+	return thinkingLevelsFromPolicy(llm.ThinkingPolicyFor(model))
+}
+
+func ResolveThinkingLevel(model agentcore.ChatModel, level string) (string, bool) {
+	if model == nil {
+		return string(agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(level))), true
+	}
+	resolved, ok := llm.ThinkingPolicyFor(model).Resolve(agentcore.ThinkingLevel(level))
+	return string(resolved), ok
+}
 
 // AvailableThinkingLevels returns valid thinking levels for a model.
 // Non-reasoning models only support "off"; reasoning models support all levels.
@@ -220,11 +237,23 @@ func (r *ModelRegistry) AvailableThinkingLevels(modelID string) []string {
 	return ThinkingLevelOrder
 }
 
+func thinkingLevelsFromPolicy(policy llm.ThinkingPolicy) []string {
+	if len(policy.Available) == 0 {
+		return []string{""}
+	}
+	out := make([]string, 0, len(policy.Available))
+	for _, level := range policy.Available {
+		out = append(out, string(level))
+	}
+	return out
+}
+
 // ClampThinkingLevel adjusts level to the nearest valid level from available.
 // It searches backward then forward in ThinkingLevelOrder for the closest match.
 func ClampThinkingLevel(level string, available []string) string {
+	level = string(agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(level)))
 	if len(available) == 0 {
-		return "off"
+		return ""
 	}
 	avSet := make(map[string]bool, len(available))
 	for _, a := range available {

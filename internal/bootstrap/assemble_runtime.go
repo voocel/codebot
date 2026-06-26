@@ -13,6 +13,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
+	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
@@ -336,12 +337,29 @@ func restoreAgentState(input *resolvedInput, assembly *sessionAssembly, tools []
 		agentcore.ReactivateDeferred(tools, input.sessionSnapshot.Messages)
 	}
 	if input.sessionSnapshot.Thinking != "" {
-		ag.SetThinkingLevel(agentcore.ThinkingLevel(input.sessionSnapshot.Thinking))
-		assembly.settings.ThinkingLevel = input.sessionSnapshot.Thinking
+		thinking := resolveThinkingForModel(assembly.chatModel, input.sessionSnapshot.Thinking)
+		ag.SetThinkingLevel(agentcore.ThinkingLevel(thinking))
+		assembly.settings.ThinkingLevel = thinking
 	} else if assembly.settings.ThinkingLevel != "" {
-		ag.SetThinkingLevel(agentcore.ThinkingLevel(assembly.settings.ThinkingLevel))
+		thinking := resolveThinkingForModel(assembly.chatModel, assembly.settings.ThinkingLevel)
+		ag.SetThinkingLevel(agentcore.ThinkingLevel(thinking))
+		if thinking != assembly.settings.ThinkingLevel {
+			persistThinkingSetting(input.cwd, thinking)
+		}
+		assembly.settings.ThinkingLevel = thinking
 	}
 	return nil
+}
+
+func resolveThinkingForModel(model agentcore.ChatModel, level string) string {
+	resolved, _ := llm.ThinkingPolicyFor(model).Resolve(agentcore.ThinkingLevel(strings.TrimSpace(level)))
+	return string(resolved)
+}
+
+func persistThinkingSetting(cwd, level string) {
+	if err := config.PatchEffectiveSettings(cwd, config.Settings{ThinkingLevel: &level}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: persist thinking level setting: %v\n", err)
+	}
 }
 
 func buildSession(input *resolvedInput, services *bootServices, assembly *sessionAssembly, contextEngine agentcore.ContextManager, ag *agentcore.Agent, tools []agentcore.Tool) *agent.Session {

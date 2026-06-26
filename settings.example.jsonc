@@ -57,7 +57,7 @@
     }
   },
 
-  "thinking_level": "low",   // off | low | medium | high | xhigh
+  "thinking_level": "",      // "" = auto/provider default; off | minimal | low | medium | high | xhigh | max
   "max_turns": 30,
 
   // Cap the effective compaction window: effective = min(detected, compact_window).

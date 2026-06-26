@@ -227,11 +227,10 @@ func FormatModelID(provider, model string) string {
 // Resolve converts Settings to Resolved using defaults for unset fields.
 func (s Settings) Resolve() Resolved {
 	r := Resolved{
-		Provider:      "openai",
-		Providers:     make(map[string]ProviderConfig),
-		ThinkingLevel: "low",
-		MaxTurns:      200,
-		Snapshot:      true,
+		Provider:  "openai",
+		Providers: make(map[string]ProviderConfig),
+		MaxTurns:  200,
+		Snapshot:  true,
 	}
 	if s.Provider != nil && *s.Provider != "" {
 		r.Provider = *s.Provider
@@ -292,15 +291,6 @@ func SettingsPath(cwd string) string {
 func ProjectConfigExists(cwd string) bool {
 	_, err := os.Stat(SettingsPath(cwd))
 	return err == nil
-}
-
-// ProjectSettingsDefinesModel reports whether the project settings file
-// exists and explicitly sets provider or model. Callers use this to decide
-// whether /model persistence should target the project file (so the choice
-// sticks across restarts) or the global file.
-func ProjectSettingsDefinesModel(cwd string) bool {
-	s := loadSettingsFile(SettingsPath(cwd))
-	return s.Provider != nil || s.Model != nil
 }
 
 // GlobalSettingsPath returns ~/.codebot/settings.json.
@@ -575,6 +565,16 @@ func PatchProjectSettings(cwd string, patch Settings) error {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
 	return writeFileAtomic(path, data, 0o600)
+}
+
+// PatchEffectiveSettings writes to the project settings file when it exists,
+// otherwise to the global settings file. Runtime UI changes should use this
+// so the visible state matches the settings layer ResolveAllStrict reads.
+func PatchEffectiveSettings(cwd string, patch Settings) error {
+	if ProjectConfigExists(cwd) {
+		return PatchProjectSettings(cwd, patch)
+	}
+	return PatchGlobalSettings(patch)
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {

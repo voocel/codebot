@@ -79,3 +79,10 @@ func (m *streamSafeModel) GetConfig() *llm.GenerationConfig {
 	}
 	return nil
 }
+
+func (m *streamSafeModel) Capabilities() llm.Capabilities {
+	if cp, ok := m.inner.(llm.CapabilityProvider); ok {
+		return cp.Capabilities()
+	}
+	return llm.Capabilities{}
+}
