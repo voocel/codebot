@@ -7,7 +7,7 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-func TestBuildContextSnapshotIncludesModelProviderAndThinking(t *testing.T) {
+func TestBuildContextSnapshotIncludesModelProviderAndReasoningEffort(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -20,8 +20,8 @@ func TestBuildContextSnapshotIncludesModelProviderAndThinking(t *testing.T) {
 	if err := store.AppendModelChange("anthropic", "claude-sonnet-4-5"); err != nil {
 		t.Fatalf("append model change: %v", err)
 	}
-	if err := store.AppendThinkingLevelChange("high"); err != nil {
-		t.Fatalf("append thinking change: %v", err)
+	if err := store.AppendReasoningEffortChange("high"); err != nil {
+		t.Fatalf("append reasoning effort change: %v", err)
 	}
 	if err := store.AppendMessage(agentcore.UserMsg("hello")); err != nil {
 		t.Fatalf("append message: %v", err)
@@ -38,8 +38,8 @@ func TestBuildContextSnapshotIncludesModelProviderAndThinking(t *testing.T) {
 	if snapshot.Model != "claude-sonnet-4-5" {
 		t.Fatalf("model = %q, want %q", snapshot.Model, "claude-sonnet-4-5")
 	}
-	if snapshot.Thinking != "high" {
-		t.Fatalf("thinking = %q, want %q", snapshot.Thinking, "high")
+	if snapshot.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort = %q, want %q", snapshot.ReasoningEffort, "high")
 	}
 	if len(snapshot.Messages) != 1 {
 		t.Fatalf("messages len = %d, want 1", len(snapshot.Messages))
@@ -111,8 +111,8 @@ func TestBuildSnapshotPreservesPreCompactionStateWhileSkippingMessages(t *testin
 	if err := store.AppendModelChange("anthropic", "claude-sonnet-4-5"); err != nil {
 		t.Fatalf("append model change: %v", err)
 	}
-	if err := store.AppendThinkingLevelChange("high"); err != nil {
-		t.Fatalf("append thinking change: %v", err)
+	if err := store.AppendReasoningEffortChange("high"); err != nil {
+		t.Fatalf("append reasoning effort change: %v", err)
 	}
 	if err := store.AppendPlanState("planning", "calm-river", "balanced"); err != nil {
 		t.Fatalf("append plan state: %v", err)
@@ -143,8 +143,8 @@ func TestBuildSnapshotPreservesPreCompactionStateWhileSkippingMessages(t *testin
 	if snapshot.Provider != "anthropic" || snapshot.Model != "claude-sonnet-4-5" {
 		t.Fatalf("pre-compaction model lost: provider=%q model=%q", snapshot.Provider, snapshot.Model)
 	}
-	if snapshot.Thinking != "high" {
-		t.Fatalf("pre-compaction thinking lost: %q", snapshot.Thinking)
+	if snapshot.ReasoningEffort != "high" {
+		t.Fatalf("pre-compaction reasoning effort lost: %q", snapshot.ReasoningEffort)
 	}
 	if snapshot.PlanPhase != "planning" || snapshot.PlanSlug != "calm-river" || snapshot.PlanPreMode != "balanced" {
 		t.Fatalf("pre-compaction plan state lost: %+v", snapshot)

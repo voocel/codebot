@@ -443,7 +443,7 @@ func (s *Session) applyTemporarySkillModel(model string) error {
 		s.skillRuntime.baseProvider = s.provider
 		s.skillRuntime.baseModel = s.modelName
 		s.skillRuntime.baseChatModel = s.chatModel
-		s.skillRuntime.baseThinking = s.settings.ThinkingLevel
+		s.skillRuntime.baseThinking = s.settings.ReasoningEffort
 	}
 	s.provider = prov
 	s.modelName = resolved
@@ -467,14 +467,14 @@ func (s *Session) applyTemporarySkillThinking(level string) {
 		s.skillRuntime.baseProvider = s.provider
 		s.skillRuntime.baseModel = s.modelName
 		s.skillRuntime.baseChatModel = s.chatModel
-		s.skillRuntime.baseThinking = s.settings.ThinkingLevel
+		s.skillRuntime.baseThinking = s.settings.ReasoningEffort
 	}
 	s.mu.Unlock()
 
 	level, _ = s.resolveThinkingLevel(level)
 	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(level))
 	s.mu.Lock()
-	s.settings.ThinkingLevel = level
+	s.settings.ReasoningEffort = level
 	s.mu.Unlock()
 }
 
@@ -533,7 +533,7 @@ func (s *Session) clearTemporarySkillOverrides() {
 	s.provider = baseProvider
 	s.modelName = baseModel
 	s.chatModel = baseChatModel
-	s.settings.ThinkingLevel = baseThinking
+	s.settings.ReasoningEffort = baseThinking
 	s.mu.Unlock()
 }
 
@@ -610,12 +610,12 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 
 func (s *Session) reclampThinkingTemporary() {
 	s.mu.Lock()
-	current := s.settings.ThinkingLevel
+	current := s.settings.ReasoningEffort
 	s.mu.Unlock()
 	clamped, _ := s.resolveThinkingLevel(current)
 	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
 	s.mu.Lock()
-	s.settings.ThinkingLevel = clamped
+	s.settings.ReasoningEffort = clamped
 	s.mu.Unlock()
 }
 
@@ -740,28 +740,28 @@ func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
 
 	s.mu.Lock()
 	store := s.store
-	s.settings.ThinkingLevel = string(level)
+	s.settings.ReasoningEffort = string(level)
 	s.mu.Unlock()
 
 	if store != nil {
-		if err := store.AppendThinkingLevelChange(string(level)); err != nil {
+		if err := store.AppendReasoningEffortChange(string(level)); err != nil {
 			s.emit(SessionEvent{
 				Type:  SEError,
-				Error: fmt.Errorf("persist thinking level: %w", err),
+				Error: fmt.Errorf("persist reasoning effort: %w", err),
 			})
 		}
 	}
 
 	s.emit(SessionEvent{
-		Type:  SEThinkingChanged,
+		Type:  SEReasoningEffortChanged,
 		Level: level,
 	})
 
 	lvl := string(level)
 	if err := config.PatchEffectiveSettings(s.cwd, config.Settings{
-		ThinkingLevel: &lvl,
+		ReasoningEffort: &lvl,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: persist thinking level setting: %v\n", err)
+		fmt.Fprintf(os.Stderr, "warning: persist reasoning effort setting: %v\n", err)
 	}
 }
 
@@ -869,7 +869,7 @@ func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 
 func (s *Session) reclampThinking() {
 	s.mu.Lock()
-	current := s.settings.ThinkingLevel
+	current := s.settings.ReasoningEffort
 	s.mu.Unlock()
 
 	if current == "" {
@@ -903,7 +903,7 @@ func (s *Session) Reset() error {
 	s.mu.Lock()
 	s.store = newStore
 	s.autoNamed = false
-	s.settings.ThinkingLevel = ""
+	s.settings.ReasoningEffort = ""
 	s.resetHarnessStateLocked()
 	s.mu.Unlock()
 	if oldStore != nil {
@@ -979,8 +979,8 @@ func (s *Session) SwitchSession(id string) error {
 		}
 		agentcore.ReactivateDeferred(s.allTools, snapshot.Messages)
 	}
-	if snapshot.Thinking != "" {
-		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(resolveThinkingLevelForModel(restoredModel, snapshot.Thinking)))
+	if snapshot.ReasoningEffort != "" {
+		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(resolveThinkingLevelForModel(restoredModel, snapshot.ReasoningEffort)))
 	} else {
 		s.agent.SetThinkingLevel("")
 	}
@@ -993,10 +993,10 @@ func (s *Session) SwitchSession(id string) error {
 	s.provider = targetProvider
 	s.modelName = targetModel
 	s.autoNamed = newStore.Header().Name != ""
-	if snapshot.Thinking != "" {
-		s.settings.ThinkingLevel = resolveThinkingLevelForModel(restoredModel, snapshot.Thinking)
+	if snapshot.ReasoningEffort != "" {
+		s.settings.ReasoningEffort = resolveThinkingLevelForModel(restoredModel, snapshot.ReasoningEffort)
 	} else {
-		s.settings.ThinkingLevel = ""
+		s.settings.ReasoningEffort = ""
 	}
 	s.resetHarnessStateLocked()
 	s.mu.Unlock()

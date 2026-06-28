@@ -261,11 +261,11 @@ func (c *StatusCommand) renderRuntime(width int) string {
 			p.Row("Plan phase", string(phase))
 		}
 	}
-	thinking := s.ThinkingLevel
-	if thinking == "" {
-		thinking = tui.MutedStyle.Render("(unset)")
+	effort := s.ReasoningEffort
+	if effort == "" {
+		effort = tui.MutedStyle.Render("(unset)")
 	}
-	p.Row("Thinking", thinking)
+	p.Row("Reasoning Effort", effort)
 
 	p.Section("Extensions")
 	p.Row("MCP", c.formatMCPSummary())

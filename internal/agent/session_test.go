@@ -563,7 +563,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	}
 }
 
-func TestSwitchSessionResolvesThinkingAgainstCurrentModelWhenSnapshotHasNoModel(t *testing.T) {
+func TestSwitchSessionResolvesReasoningEffortAgainstCurrentModelWhenSnapshotHasNoModel(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -578,8 +578,8 @@ func TestSwitchSessionResolvesThinkingAgainstCurrentModelWhenSnapshotHasNoModel(
 		t.Fatalf("create target session: %v", err)
 	}
 	t.Cleanup(func() { _ = target.Close() })
-	if err := target.AppendThinkingLevelChange("high"); err != nil {
-		t.Fatalf("append target thinking: %v", err)
+	if err := target.AppendReasoningEffortChange("high"); err != nil {
+		t.Fatalf("append target reasoning effort: %v", err)
 	}
 
 	chatModel := &noEffortChatModel{}
@@ -596,8 +596,8 @@ func TestSwitchSessionResolvesThinkingAgainstCurrentModelWhenSnapshotHasNoModel(
 	if err := s.SwitchSession(target.Header().SessionID); err != nil {
 		t.Fatalf("SwitchSession: %v", err)
 	}
-	if got := s.Settings().ThinkingLevel; got != "" {
-		t.Fatalf("thinking after switch = %q, want auto/empty", got)
+	if got := s.Settings().ReasoningEffort; got != "" {
+		t.Fatalf("reasoning effort after switch = %q, want auto/empty", got)
 	}
 }
 
@@ -728,7 +728,7 @@ func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 	}
 }
 
-func TestSetThinkingLevelPersistsToProjectSettingsWhenPresent(t *testing.T) {
+func TestSetReasoningEffortPersistsToProjectSettingsWhenPresent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -737,7 +737,7 @@ func TestSetThinkingLevelPersistsToProjectSettingsWhenPresent(t *testing.T) {
 		t.Fatalf("mkdir global config dir: %v", err)
 	}
 	globalPath := filepath.Join(globalDir, "settings.json")
-	if err := os.WriteFile(globalPath, []byte(`{"thinking_level":"low"}`), 0o600); err != nil {
+	if err := os.WriteFile(globalPath, []byte(`{"reasoning_effort":"low"}`), 0o600); err != nil {
 		t.Fatalf("write global settings: %v", err)
 	}
 
@@ -747,16 +747,16 @@ func TestSetThinkingLevelPersistsToProjectSettingsWhenPresent(t *testing.T) {
 		t.Fatalf("mkdir project config dir: %v", err)
 	}
 	projectPath := filepath.Join(projectDir, "settings.json")
-	if err := os.WriteFile(projectPath, []byte(`{"thinking_level":"high"}`), 0o600); err != nil {
+	if err := os.WriteFile(projectPath, []byte(`{"reasoning_effort":"high"}`), 0o600); err != nil {
 		t.Fatalf("write project settings: %v", err)
 	}
 
 	s := NewSession(SessionConfig{
 		Agent: agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
 		Settings: config.Resolved{
-			Provider:      "openai",
-			Model:         "gpt-5",
-			ThinkingLevel: "high",
+			Provider:        "openai",
+			Model:           "gpt-5",
+			ReasoningEffort: "high",
 			Providers: map[string]config.ProviderConfig{
 				"openai": {APIKey: "openai-key"},
 			},
@@ -778,8 +778,8 @@ func TestSetThinkingLevelPersistsToProjectSettingsWhenPresent(t *testing.T) {
 	if err := json.Unmarshal(projectRaw, &projectSettings); err != nil {
 		t.Fatalf("decode project settings: %v", err)
 	}
-	if projectSettings.ThinkingLevel == nil || *projectSettings.ThinkingLevel != "" {
-		t.Fatalf("project thinking = %#v, want explicit auto/empty", projectSettings.ThinkingLevel)
+	if projectSettings.ReasoningEffort == nil || *projectSettings.ReasoningEffort != "" {
+		t.Fatalf("project reasoning effort = %#v, want explicit auto/empty", projectSettings.ReasoningEffort)
 	}
 	globalSettings, err := config.LoadSettingsStrict(cwd)
 	if err != nil {
@@ -792,12 +792,12 @@ func TestSetThinkingLevelPersistsToProjectSettingsWhenPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read global settings: %v", err)
 	}
-	if !strings.Contains(string(globalRaw), `"thinking_level":"low"`) && !strings.Contains(string(globalRaw), `"thinking_level": "low"`) {
+	if !strings.Contains(string(globalRaw), `"reasoning_effort":"low"`) && !strings.Contains(string(globalRaw), `"reasoning_effort": "low"`) {
 		t.Fatalf("global settings was unexpectedly changed: %s", globalRaw)
 	}
 }
 
-func TestResetClearsRuntimeThinking(t *testing.T) {
+func TestResetClearsRuntimeReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
 	mgr := storage.NewManager(dir)
 	store, err := mgr.Create(dir)
@@ -810,9 +810,9 @@ func TestResetClearsRuntimeThinking(t *testing.T) {
 		Store:   store,
 		Manager: mgr,
 		Settings: config.Resolved{
-			Provider:      "openai",
-			Model:         "gpt-5",
-			ThinkingLevel: "high",
+			Provider:        "openai",
+			Model:           "gpt-5",
+			ReasoningEffort: "high",
 			Providers: map[string]config.ProviderConfig{
 				"openai": {APIKey: "openai-key"},
 			},
@@ -827,8 +827,8 @@ func TestResetClearsRuntimeThinking(t *testing.T) {
 	if err := s.Reset(); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
-	if got := s.Settings().ThinkingLevel; got != "" {
-		t.Fatalf("thinking after reset = %q, want auto/empty", got)
+	if got := s.Settings().ReasoningEffort; got != "" {
+		t.Fatalf("reasoning effort after reset = %q, want auto/empty", got)
 	}
 }
 
@@ -916,10 +916,10 @@ func TestApplySkillInvocationUsesTemporaryOverrides(t *testing.T) {
 	s := NewSession(SessionConfig{
 		Agent: agentcore.NewAgent(agentcore.WithModel(baseModel)),
 		Settings: config.Resolved{
-			Provider:      "openai",
-			Model:         "base-model",
-			ThinkingLevel: "low",
-			ContextWindow: 128000,
+			Provider:        "openai",
+			Model:           "base-model",
+			ReasoningEffort: "low",
+			ContextWindow:   128000,
 
 			MaxTurns: 30,
 			Providers: map[string]config.ProviderConfig{
@@ -949,8 +949,8 @@ func TestApplySkillInvocationUsesTemporaryOverrides(t *testing.T) {
 	if got := s.ModelName(); got != "skill-model" {
 		t.Fatalf("temporary model = %q, want skill-model", got)
 	}
-	if got := s.Settings().ThinkingLevel; got != "high" {
-		t.Fatalf("temporary thinking = %q, want high", got)
+	if got := s.Settings().ReasoningEffort; got != "high" {
+		t.Fatalf("temporary reasoning effort = %q, want high", got)
 	}
 
 	s.clearSkillDelta()

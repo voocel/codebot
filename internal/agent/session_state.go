@@ -306,7 +306,7 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 	p.session.lastAssistantStart = time.Time{}
 	provider := p.session.provider
 	model := p.session.modelName
-	thinking := p.session.settings.ThinkingLevel
+	thinking := p.session.settings.ReasoningEffort
 	prevSnap := p.session.cacheSnap
 	currSnap := cacheSnapshot{
 		FrozenSystemHash:  p.session.cacheSnap.FrozenSystemHash,
@@ -336,7 +336,7 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 		TotalTokens:         u.TotalTokens,
 		LatencyMs:           latencyMs,
 		StopReason:          string(msg.StopReason),
-		ThinkingLevel:       thinking,
+		ReasoningEffort:     thinking,
 		CacheBreak:          detectCacheBreak(prevSnap, currSnap),
 	}
 	if err := store.AppendLLMCall(entry); err != nil {

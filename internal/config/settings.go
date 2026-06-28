@@ -87,12 +87,11 @@ type HooksConfig map[string][]HookEntry
 // Settings holds application-level configuration.
 // Fields use pointer types so unset fields fall back to defaults.
 type Settings struct {
-	Provider   *string                    `json:"provider,omitempty"`    // provider name (matches key in providers map)
-	Model      *string                    `json:"model,omitempty"`       // model name sent to API as-is
-	SmallModel *string                    `json:"small_model,omitempty"` // sub-agent model; defaults to Model if empty
-	Providers  map[string]*ProviderConfig `json:"providers,omitempty"`
-
-	ThinkingLevel *string `json:"thinking_level,omitempty"`
+	Provider        *string                    `json:"provider,omitempty"`         // provider name (matches key in providers map)
+	Model           *string                    `json:"model,omitempty"`            // model name sent to API as-is
+	ReasoningEffort *string                    `json:"reasoning_effort,omitempty"` // "" = auto/provider default; off | minimal | low | medium | high | xhigh | max
+	SmallModel      *string                    `json:"small_model,omitempty"`      // sub-agent model; defaults to Model if empty
+	Providers       map[string]*ProviderConfig `json:"providers,omitempty"`
 
 	MaxTurns *int `json:"max_turns,omitempty"`
 
@@ -132,13 +131,13 @@ type Resolved struct {
 	SmallModel string                    // sub-agent model; equals Model when not configured
 	Providers  map[string]ProviderConfig // per-provider credentials
 
-	ContextWindow  int     // effective window after applying CompactWindow cap
-	CompactWindow  int     // user-configured cap on effective window; 0 = disabled
-	CompactRatio   float64 // usage ratio that triggers compaction; 0 = engine default
-	ThinkingLevel  string
-	MaxTurns       int
-	SearchProvider string
-	SearchAPIKey   string
+	ContextWindow   int     // effective window after applying CompactWindow cap
+	CompactWindow   int     // user-configured cap on effective window; 0 = disabled
+	CompactRatio    float64 // usage ratio that triggers compaction; 0 = engine default
+	ReasoningEffort string
+	MaxTurns        int
+	SearchProvider  string
+	SearchAPIKey    string
 
 	Hooks HooksConfig // lifecycle hooks
 
@@ -246,8 +245,8 @@ func (s Settings) Resolve() Resolved {
 			r.Providers[k] = *v
 		}
 	}
-	if s.ThinkingLevel != nil {
-		r.ThinkingLevel = *s.ThinkingLevel
+	if s.ReasoningEffort != nil {
+		r.ReasoningEffort = *s.ReasoningEffort
 	}
 	if s.MaxTurns != nil {
 		r.MaxTurns = *s.MaxTurns
@@ -454,8 +453,8 @@ func mergeSettings(base, override Settings) Settings {
 			base.Providers[k] = existing
 		}
 	}
-	if override.ThinkingLevel != nil {
-		base.ThinkingLevel = override.ThinkingLevel
+	if override.ReasoningEffort != nil {
+		base.ReasoningEffort = override.ReasoningEffort
 	}
 	if override.MaxTurns != nil {
 		base.MaxTurns = override.MaxTurns

@@ -172,13 +172,13 @@ func (s *Store) AppendModelChange(provider, model string) error {
 	return s.appendChained(EntryModelChange, data)
 }
 
-// AppendThinkingLevelChange records a thinking level switch.
-func (s *Store) AppendThinkingLevelChange(level string) error {
-	data, err := json.Marshal(ThinkingLevelChange{Level: level})
+// AppendReasoningEffortChange records a reasoning effort switch.
+func (s *Store) AppendReasoningEffortChange(level string) error {
+	data, err := json.Marshal(ReasoningEffortChange{Level: level})
 	if err != nil {
 		return err
 	}
-	return s.appendChained(EntryThinkingChange, data)
+	return s.appendChained(EntryReasoningEffortChange, data)
 }
 
 // AppendCompaction records a compaction event with summary and optional kept messages.

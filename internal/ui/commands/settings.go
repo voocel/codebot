@@ -119,9 +119,9 @@ func (c *SettingsCommand) renderGeneral(width int) string {
 
 func (c *SettingsCommand) renderRuntime(width int) string {
 	s := c.session.Settings()
-	thinking := s.ThinkingLevel
-	if thinking == "" {
-		thinking = "(unset)"
+	effort := s.ReasoningEffort
+	if effort == "" {
+		effort = "(unset)"
 	}
 
 	mode := "(unset)"
@@ -134,7 +134,7 @@ func (c *SettingsCommand) renderRuntime(width int) string {
 	}
 
 	p := newPanel(width)
-	p.Row("Thinking", thinking)
+	p.Row("Reasoning Effort", effort)
 	p.Row("Context", tui.FormatTokens(s.ContextWindow))
 	if s.CompactWindow > 0 {
 		p.Hint("Compact Cap", tui.FormatTokens(s.CompactWindow))

@@ -9,15 +9,15 @@ import (
 type EntryKind string
 
 const (
-	EntryHeader         EntryKind = "header"
-	EntryMessage        EntryKind = "message"
-	EntryModelChange    EntryKind = "model_change"
-	EntryCompaction     EntryKind = "compaction"
-	EntryThinkingChange EntryKind = "thinking_change"
-	EntrySessionInfo    EntryKind = "session_info"
-	EntryPlanState      EntryKind = "plan_state"
-	EntryGoalState      EntryKind = "goal_state"
-	EntryLLMCall        EntryKind = "llm_call"
+	EntryHeader                EntryKind = "header"
+	EntryMessage               EntryKind = "message"
+	EntryModelChange           EntryKind = "model_change"
+	EntryCompaction            EntryKind = "compaction"
+	EntryReasoningEffortChange EntryKind = "reasoning_effort_change"
+	EntrySessionInfo           EntryKind = "session_info"
+	EntryPlanState             EntryKind = "plan_state"
+	EntryGoalState             EntryKind = "goal_state"
+	EntryLLMCall               EntryKind = "llm_call"
 )
 
 // Entry is a single JSONL line in the session file.
@@ -44,8 +44,8 @@ type ModelChange struct {
 	Model    string `json:"model"`
 }
 
-// ThinkingLevelChange records a thinking level switch event.
-type ThinkingLevelChange struct {
+// ReasoningEffortChange records a reasoning effort switch event.
+type ReasoningEffortChange struct {
 	Level string `json:"level"`
 }
 
@@ -97,7 +97,7 @@ type LLMCallEntry struct {
 	TotalTokens         int             `json:"total_tokens,omitempty"`
 	LatencyMs           int64           `json:"latency_ms,omitempty"`
 	StopReason          string          `json:"stop_reason,omitempty"`
-	ThinkingLevel       string          `json:"thinking_level,omitempty"`
+	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 	CacheBreak          *CacheBreakInfo `json:"cache_break,omitempty"`
 }
 

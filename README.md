@@ -26,7 +26,7 @@ This split matters. The agent loop stays small and reusable, while long-running 
 ## Features
 
 **Agent**
-- Streaming responses with extended thinking (off → xhigh)
+- Streaming responses with configurable reasoning effort (off → xhigh)
 - Tool execution: read, write, edit, bash, grep, find, ls, web_search, web_fetch
 - Task management: task_create, task_get, task_update, task_list (SubAgent coordination)
 - SubAgent delegation with parallel/chain execution
@@ -37,7 +37,7 @@ This split matters. The agent loop stays small and reusable, while long-running 
 **Sessions**
 - Append-only JSONL persistence — crash-safe, human-readable
 - Resume (`-c` last, `-r` pick), fork at any point, replay
-- Model and thinking level restored per session
+- Model and reasoning effort restored per session
 
 **Security**
 - Four permission modes: `strict` / `balanced` / `accept-edits` / `trust`

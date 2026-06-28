@@ -62,17 +62,17 @@ const (
 	SEAgentEvent SessionEventType = "agent_event"
 
 	// Session lifecycle events
-	SEAutoCompactionStart SessionEventType = "auto_compaction_start"
-	SEAutoCompactionEnd   SessionEventType = "auto_compaction_end"
-	SEAutoRetryStart      SessionEventType = "auto_retry_start"
-	SEAutoRetryEnd        SessionEventType = "auto_retry_end"
-	SEModelChanged        SessionEventType = "model_changed"
-	SEThinkingChanged     SessionEventType = "thinking_changed"
-	SESessionSwitched     SessionEventType = "session_switched"
-	SERuntimeReminder     SessionEventType = "runtime_reminder"
-	SEGoalUpdated         SessionEventType = "goal_updated"
-	SEGoalCleared         SessionEventType = "goal_cleared"
-	SEError               SessionEventType = "session_error"
+	SEAutoCompactionStart    SessionEventType = "auto_compaction_start"
+	SEAutoCompactionEnd      SessionEventType = "auto_compaction_end"
+	SEAutoRetryStart         SessionEventType = "auto_retry_start"
+	SEAutoRetryEnd           SessionEventType = "auto_retry_end"
+	SEModelChanged           SessionEventType = "model_changed"
+	SEReasoningEffortChanged SessionEventType = "reasoning_effort_changed"
+	SESessionSwitched        SessionEventType = "session_switched"
+	SERuntimeReminder        SessionEventType = "runtime_reminder"
+	SEGoalUpdated            SessionEventType = "goal_updated"
+	SEGoalCleared            SessionEventType = "goal_cleared"
+	SEError                  SessionEventType = "session_error"
 )
 
 // SessionEvent extends agent events with session-level metadata.

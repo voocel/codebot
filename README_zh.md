@@ -26,7 +26,7 @@
 ## 功能
 
 **Agent**
-- 流式响应，支持扩展思考（off → xhigh）
+- 流式响应，支持可配置推理强度（off → xhigh）
 - 工具执行：read, write, edit, bash, grep, find, ls, web_search, web_fetch
 - 任务管理：task_create, task_get, task_update, task_list（SubAgent 协调）
 - SubAgent 委托，支持并行/链式执行
@@ -37,7 +37,7 @@
 **会话**
 - 仅追加 JSONL 持久化 — 崩溃安全、人类可读
 - 恢复会话（`-c` 最近，`-r` 选择），支持分叉、回放
-- 模型和思考级别按会话保存
+- 模型和推理强度按会话保存
 
 **安全**
 - 四种权限模式：`strict` / `balanced` / `accept-edits` / `trust`

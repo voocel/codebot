@@ -336,17 +336,17 @@ func restoreAgentState(input *resolvedInput, assembly *sessionAssembly, tools []
 		}
 		agentcore.ReactivateDeferred(tools, input.sessionSnapshot.Messages)
 	}
-	if input.sessionSnapshot.Thinking != "" {
-		thinking := resolveThinkingForModel(assembly.chatModel, input.sessionSnapshot.Thinking)
+	if input.sessionSnapshot.ReasoningEffort != "" {
+		thinking := resolveThinkingForModel(assembly.chatModel, input.sessionSnapshot.ReasoningEffort)
 		ag.SetThinkingLevel(agentcore.ThinkingLevel(thinking))
-		assembly.settings.ThinkingLevel = thinking
-	} else if assembly.settings.ThinkingLevel != "" {
-		thinking := resolveThinkingForModel(assembly.chatModel, assembly.settings.ThinkingLevel)
+		assembly.settings.ReasoningEffort = thinking
+	} else if assembly.settings.ReasoningEffort != "" {
+		thinking := resolveThinkingForModel(assembly.chatModel, assembly.settings.ReasoningEffort)
 		ag.SetThinkingLevel(agentcore.ThinkingLevel(thinking))
-		if thinking != assembly.settings.ThinkingLevel {
+		if thinking != assembly.settings.ReasoningEffort {
 			persistThinkingSetting(input.cwd, thinking)
 		}
-		assembly.settings.ThinkingLevel = thinking
+		assembly.settings.ReasoningEffort = thinking
 	}
 	return nil
 }
@@ -357,7 +357,7 @@ func resolveThinkingForModel(model agentcore.ChatModel, level string) string {
 }
 
 func persistThinkingSetting(cwd, level string) {
-	if err := config.PatchEffectiveSettings(cwd, config.Settings{ThinkingLevel: &level}); err != nil {
+	if err := config.PatchEffectiveSettings(cwd, config.Settings{ReasoningEffort: &level}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: persist thinking level setting: %v\n", err)
 	}
 }

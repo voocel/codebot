@@ -9,14 +9,14 @@ import (
 
 // ContextSnapshot is the projected runtime state from a session log.
 type ContextSnapshot struct {
-	Messages    []agentcore.AgentMessage
-	Provider    string
-	Model       string
-	Thinking    string
-	PlanSlug    string
-	PlanPhase   string
-	PlanPreMode string
-	Goal        GoalStateEntry
+	Messages        []agentcore.AgentMessage
+	Provider        string
+	Model           string
+	ReasoningEffort string
+	PlanSlug        string
+	PlanPhase       string
+	PlanPreMode     string
+	Goal            GoalStateEntry
 }
 
 // BuildSnapshot reconstructs runtime state by walking the tree from the current leaf.
@@ -75,9 +75,9 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	// Locate the last EntryCompaction so we can skip the JSON unmarshal of
 	// pre-compaction EntryMessage entries — the compaction case below runs
 	// msgs = nil, so any messages reduced before it are immediately discarded.
-	// State-bearing entries (model / thinking / plan / goal / session-info) are
+	// State-bearing entries (model / reasoning effort / plan / goal / session-info) are
 	// kept because they may not have a post-compaction counterpart and
-	// dropping them would silently lose model/plan/thinking selection.
+	// dropping them would silently lose model/plan/reasoning-effort selection.
 	lastCompactionIdx := -1
 	for i := len(chain) - 1; i >= 0; i-- {
 		if chain[i].Kind == EntryCompaction {
@@ -90,7 +90,7 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	var msgs []agentcore.AgentMessage
 	lastProvider := ""
 	lastModel := ""
-	lastThinking := ""
+	lastReasoningEffort := ""
 	lastPlanSlug := ""
 	lastPlanPhase := ""
 	lastPlanPreMode := ""
@@ -115,10 +115,10 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 				lastProvider = mc.Provider
 				lastModel = mc.Model
 			}
-		case EntryThinkingChange:
-			var tc ThinkingLevelChange
+		case EntryReasoningEffortChange:
+			var tc ReasoningEffortChange
 			if json.Unmarshal(entry.Data, &tc) == nil {
-				lastThinking = tc.Level
+				lastReasoningEffort = tc.Level
 			}
 		case EntryCompaction:
 			var c Compaction
@@ -164,13 +164,13 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 	repaired := agentcore.RepairMessageSequence(agentcore.CollectMessages(msgs))
 
 	return ContextSnapshot{
-		Messages:    agentcore.ToAgentMessages(repaired),
-		Provider:    lastProvider,
-		Model:       lastModel,
-		Thinking:    lastThinking,
-		PlanSlug:    lastPlanSlug,
-		PlanPhase:   lastPlanPhase,
-		PlanPreMode: lastPlanPreMode,
-		Goal:        lastGoal,
+		Messages:        agentcore.ToAgentMessages(repaired),
+		Provider:        lastProvider,
+		Model:           lastModel,
+		ReasoningEffort: lastReasoningEffort,
+		PlanSlug:        lastPlanSlug,
+		PlanPhase:       lastPlanPhase,
+		PlanPreMode:     lastPlanPreMode,
+		Goal:            lastGoal,
 	}, nil
 }

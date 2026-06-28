@@ -177,7 +177,7 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch model: " + err.Error()))
 		}
 
-		if thinkLevel != c.session.Settings().ThinkingLevel {
+		if thinkLevel != c.session.Settings().ReasoningEffort {
 			c.session.SetThinkingLevel(agentcore.ThinkingLevel(thinkLevel))
 		}
 
@@ -195,9 +195,9 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 
 		display := config.FormatModelID(prov, model)
-		finalThinking := c.session.Settings().ThinkingLevel
+		finalThinking := c.session.Settings().ReasoningEffort
 		if finalThinking != "" && finalThinking != "off" {
-			display += " (thinking: " + finalThinking + ")"
+			display += " (reasoning_effort: " + finalThinking + ")"
 		}
 		return true, func() tea.Msg {
 			return tui.CommandResultMsg{
@@ -223,7 +223,7 @@ func (c *ModelCommand) View(width, _ int) string {
 	s := c.state
 
 	var sb strings.Builder
-	hint := tui.MutedStyle.Render("Select model (↑↓ select · ←→ provider · Tab thinking · Enter confirm · Esc cancel):")
+	hint := tui.MutedStyle.Render("Select model (↑↓ select · ←→ provider · Tab effort · Enter confirm · Esc cancel):")
 	sb.WriteString(hint)
 	sb.WriteString("\n\n")
 
@@ -337,7 +337,7 @@ func (c *ModelCommand) renderThinkingIndicator() string {
 }
 
 func currentThinkingIndex(session *agent.Session, levels []string) int {
-	current := session.Settings().ThinkingLevel
+	current := session.Settings().ReasoningEffort
 	for i, l := range levels {
 		if l == current {
 			return i
