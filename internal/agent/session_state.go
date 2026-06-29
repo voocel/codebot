@@ -169,7 +169,9 @@ func (s *Session) ApplySkillDelta(name string, delta skill.Delta) error {
 	if err := s.applyTemporarySkillModel(delta.ModelOverride); err != nil {
 		return err
 	}
-	s.applyTemporarySkillThinking(delta.Effort)
+	if err := s.applyTemporarySkillThinking(delta.Effort); err != nil {
+		return err
+	}
 
 	if s.skillAllowsSetter != nil {
 		s.skillAllowsSetter(delta.AllowedTools)

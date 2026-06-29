@@ -53,8 +53,8 @@ func (r *ModelRegistry) Resolve(pattern string) (*ModelEntry, agentcore.Thinking
 	thinkingLevel := agentcore.ThinkingLevel("")
 	if idx := strings.LastIndex(pattern, ":"); idx > 0 {
 		suffix := pattern[idx+1:]
-		if IsValidThinkingLevel(suffix) {
-			thinkingLevel = agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(suffix))
+		if IsExplicitThinkingLevel(suffix) {
+			thinkingLevel = agentcore.ThinkingLevel(suffix)
 			pattern = pattern[:idx]
 		}
 	}
@@ -186,13 +186,15 @@ func (r *ModelRegistry) MergeModels(fetched []ModelEntry) {
 
 // IsValidThinkingLevel reports whether s is a recognized thinking level.
 func IsValidThinkingLevel(s string) bool {
-	switch agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(s)) {
-	case agentcore.ThinkingAuto, agentcore.ThinkingOff, agentcore.ThinkingMinimal, agentcore.ThinkingLow,
-		agentcore.ThinkingMedium, agentcore.ThinkingHigh, agentcore.ThinkingXHigh,
-		agentcore.ThinkingMax:
+	switch s {
+	case "", "off", "low", "medium", "high", "xhigh", "max":
 		return true
 	}
 	return false
+}
+
+func IsExplicitThinkingLevel(s string) bool {
+	return s != "" && IsValidThinkingLevel(s)
 }
 
 // hasDatedSuffix checks if a model ID ends with a date pattern like -20250514.
@@ -204,7 +206,7 @@ func hasDatedSuffix(id string) bool {
 }
 
 // ThinkingLevelOrder defines the ordered progression of thinking levels.
-var ThinkingLevelOrder = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+var ThinkingLevelOrder = []string{"off", "low", "medium", "high", "xhigh", "max"}
 
 func ThinkingLevelsForModel(model agentcore.ChatModel) []string {
 	if model == nil {
@@ -214,10 +216,16 @@ func ThinkingLevelsForModel(model agentcore.ChatModel) []string {
 }
 
 func ResolveThinkingLevel(model agentcore.ChatModel, level string) (string, bool) {
+	if !IsValidThinkingLevel(level) {
+		return string(agentcore.ThinkingAuto), false
+	}
 	if model == nil {
-		return string(agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(level))), true
+		return level, true
 	}
 	resolved, ok := llm.ThinkingPolicyFor(model).Resolve(agentcore.ThinkingLevel(level))
+	if ok && !IsValidThinkingLevel(string(resolved)) {
+		return string(agentcore.ThinkingAuto), false
+	}
 	return string(resolved), ok
 }
 
@@ -243,46 +251,27 @@ func thinkingLevelsFromPolicy(policy llm.ThinkingPolicy) []string {
 	}
 	out := make([]string, 0, len(policy.Available))
 	for _, level := range policy.Available {
-		out = append(out, string(level))
+		value := string(level)
+		if IsValidThinkingLevel(value) {
+			out = append(out, value)
+		}
 	}
 	return out
 }
 
-// ClampThinkingLevel adjusts level to the nearest valid level from available.
-// It searches backward then forward in ThinkingLevelOrder for the closest match.
-func ClampThinkingLevel(level string, available []string) string {
-	level = string(agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(level)))
+// ClampThinkingLevel resolves a supported level against the available set.
+// Unsupported or unavailable levels are rejected instead of downgraded.
+func ClampThinkingLevel(level string, available []string) (string, bool) {
+	if !IsValidThinkingLevel(level) {
+		return string(agentcore.ThinkingAuto), false
+	}
 	if len(available) == 0 {
-		return ""
+		return "", true
 	}
-	avSet := make(map[string]bool, len(available))
 	for _, a := range available {
-		avSet[a] = true
-	}
-	if avSet[level] {
-		return level
-	}
-
-	// Find position of requested level in the ordered list.
-	pos := -1
-	for i, l := range ThinkingLevelOrder {
-		if l == level {
-			pos = i
-			break
+		if a == level {
+			return level, true
 		}
 	}
-	if pos < 0 {
-		return available[0]
-	}
-
-	// Search backward then forward for nearest available level.
-	for dist := 1; dist < len(ThinkingLevelOrder); dist++ {
-		if lo := pos - dist; lo >= 0 && avSet[ThinkingLevelOrder[lo]] {
-			return ThinkingLevelOrder[lo]
-		}
-		if hi := pos + dist; hi < len(ThinkingLevelOrder) && avSet[ThinkingLevelOrder[hi]] {
-			return ThinkingLevelOrder[hi]
-		}
-	}
-	return available[0]
+	return string(agentcore.ThinkingAuto), false
 }

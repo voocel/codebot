@@ -563,7 +563,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	}
 }
 
-func TestSwitchSessionResolvesReasoningEffortAgainstCurrentModelWhenSnapshotHasNoModel(t *testing.T) {
+func TestSwitchSessionRejectsUnsupportedReasoningEffort(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -593,11 +593,12 @@ func TestSwitchSessionResolvesReasoningEffortAgainstCurrentModelWhenSnapshotHasN
 	})
 	t.Cleanup(s.Close)
 
-	if err := s.SwitchSession(target.Header().SessionID); err != nil {
-		t.Fatalf("SwitchSession: %v", err)
+	err = s.SwitchSession(target.Header().SessionID)
+	if err == nil {
+		t.Fatal("SwitchSession succeeded with unsupported reasoning_effort")
 	}
-	if got := s.Settings().ReasoningEffort; got != "" {
-		t.Fatalf("reasoning effort after switch = %q, want auto/empty", got)
+	if !strings.Contains(err.Error(), `unsupported reasoning_effort "high"`) {
+		t.Fatalf("SwitchSession error = %v, want unsupported reasoning_effort", err)
 	}
 }
 
@@ -651,6 +652,53 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 	}
 	if got := s.ModelName(); got != oldModel {
 		t.Fatalf("model changed after failed set model: got %s want %s", got, oldModel)
+	}
+}
+
+func TestSetModelRejectsUnsupportedCurrentReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mgr := storage.NewManager(dir)
+	store, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent:   agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Store:   store,
+		Manager: mgr,
+		Settings: config.Resolved{
+			Provider:        "openai",
+			Model:           "base-model",
+			ReasoningEffort: "high",
+			Providers: map[string]config.ProviderConfig{
+				"openai": {APIKey: "openai-key"},
+			},
+			ContextWindow: 128000,
+			MaxTurns:      30,
+		},
+		Cwd: dir,
+		CreateModel: func(_ string, _ string, _ string, _ string, _ map[string]any) (agentcore.ChatModel, error) {
+			return &noEffortChatModel{}, nil
+		},
+		ChatModel: &stubChatModel{},
+	})
+	t.Cleanup(s.Close)
+
+	err = s.SetModel("openai", "no-effort-model")
+	if err == nil {
+		t.Fatal("SetModel succeeded with unsupported current reasoning_effort")
+	}
+	if !strings.Contains(err.Error(), `unsupported reasoning_effort "high"`) {
+		t.Fatalf("SetModel error = %v, want unsupported reasoning_effort", err)
+	}
+	if got := s.ModelName(); got != "base-model" {
+		t.Fatalf("model changed after failed set model: got %q", got)
+	}
+	if got := s.Settings().ReasoningEffort; got != "high" {
+		t.Fatalf("reasoning effort changed after failed set model: got %q", got)
 	}
 }
 
@@ -794,6 +842,58 @@ func TestSetReasoningEffortPersistsToProjectSettingsWhenPresent(t *testing.T) {
 	}
 	if !strings.Contains(string(globalRaw), `"reasoning_effort":"low"`) && !strings.Contains(string(globalRaw), `"reasoning_effort": "low"`) {
 		t.Fatalf("global settings was unexpectedly changed: %s", globalRaw)
+	}
+}
+
+func TestSetThinkingLevelRejectsMinimal(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mgr := storage.NewManager(dir)
+	store, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	s := NewSession(SessionConfig{
+		Agent: agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Store: store,
+		Settings: config.Resolved{
+			Provider:        "openai",
+			Model:           "gpt-5",
+			ReasoningEffort: "low",
+			Providers: map[string]config.ProviderConfig{
+				"openai": {APIKey: "openai-key"},
+			},
+			ContextWindow: 128000,
+			MaxTurns:      30,
+		},
+		Cwd:       dir,
+		ChatModel: &stubChatModel{},
+	})
+	t.Cleanup(s.Close)
+
+	var sawError bool
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SEError && ev.Error != nil && strings.Contains(ev.Error.Error(), `unsupported reasoning_effort "minimal"`) {
+			sawError = true
+		}
+	})
+	defer unsub()
+
+	s.SetThinkingLevel(agentcore.ThinkingLevel("minimal"))
+	if got := s.Settings().ReasoningEffort; got != "low" {
+		t.Fatalf("reasoning effort = %q, want unchanged low", got)
+	}
+	if !sawError {
+		t.Fatal("expected unsupported reasoning_effort error event")
+	}
+	snapshot, err := store.BuildSnapshot()
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	if got := snapshot.ReasoningEffort; got != "" {
+		t.Fatalf("persisted reasoning effort = %q, want none", got)
 	}
 }
 

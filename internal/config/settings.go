@@ -89,7 +89,7 @@ type HooksConfig map[string][]HookEntry
 type Settings struct {
 	Provider        *string                    `json:"provider,omitempty"`         // provider name (matches key in providers map)
 	Model           *string                    `json:"model,omitempty"`            // model name sent to API as-is
-	ReasoningEffort *string                    `json:"reasoning_effort,omitempty"` // "" = auto/provider default; off | minimal | low | medium | high | xhigh | max
+	ReasoningEffort *string                    `json:"reasoning_effort,omitempty"` // "" = provider default; off | low | medium | high | xhigh | max
 	SmallModel      *string                    `json:"small_model,omitempty"`      // sub-agent model; defaults to Model if empty
 	Providers       map[string]*ProviderConfig `json:"providers,omitempty"`
 
@@ -281,6 +281,15 @@ func (s Settings) Resolve() Resolved {
 	return r
 }
 
+// ValidateResolved rejects unsupported values after global/project settings
+// have been merged and defaults applied.
+func ValidateResolved(r Resolved) error {
+	if _, ok := provider.ResolveThinkingLevel(nil, r.ReasoningEffort); !ok {
+		return fmt.Errorf("configuration error: reasoning_effort=%q is unsupported; use empty string, off, low, medium, high, xhigh, or max: %w", r.ReasoningEffort, diag.ErrConfig)
+	}
+	return nil
+}
+
 // SettingsPath returns <cwd>/.codebot/settings.json.
 func SettingsPath(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "settings.json")
@@ -404,7 +413,11 @@ func LoadSettingsStrict(cwd string) (Resolved, error) {
 		return Resolved{}, err
 	}
 
-	return mergeSettings(global, project).Resolve(), nil
+	resolved := mergeSettings(global, project).Resolve()
+	if err := ValidateResolved(resolved); err != nil {
+		return Resolved{}, err
+	}
+	return resolved, nil
 }
 
 // mergeSettings merges two Settings; non-nil fields in override take precedence.

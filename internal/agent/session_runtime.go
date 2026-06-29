@@ -436,6 +436,13 @@ func (s *Session) applyTemporarySkillModel(model string) error {
 	if err != nil {
 		return fmt.Errorf("resolve skill model %q: %w", model, err)
 	}
+	s.mu.Lock()
+	currentThinking := s.settings.ReasoningEffort
+	s.mu.Unlock()
+	effectiveThinking, ok := resolveThinkingLevelForModelStrict(chatModel, currentThinking)
+	if !ok {
+		return fmt.Errorf("resolve skill model %q: unsupported reasoning_effort %q", model, currentThinking)
+	}
 
 	s.mu.Lock()
 	if !s.skillRuntime.active {
@@ -448,17 +455,17 @@ func (s *Session) applyTemporarySkillModel(model string) error {
 	s.provider = prov
 	s.modelName = resolved
 	s.chatModel = chatModel
+	s.settings.ReasoningEffort = effectiveThinking
 	s.mu.Unlock()
 
 	s.agent.SetModel(chatModel)
-	s.reclampThinkingTemporary()
+	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(effectiveThinking))
 	return nil
 }
 
-func (s *Session) applyTemporarySkillThinking(level string) {
-	level = strings.TrimSpace(level)
+func (s *Session) applyTemporarySkillThinking(level string) error {
 	if level == "" {
-		return
+		return nil
 	}
 
 	s.mu.Lock()
@@ -471,11 +478,17 @@ func (s *Session) applyTemporarySkillThinking(level string) {
 	}
 	s.mu.Unlock()
 
-	level, _ = s.resolveThinkingLevel(level)
+	requested := level
+	var ok bool
+	level, ok = s.resolveThinkingLevel(level)
+	if !ok {
+		return fmt.Errorf("unsupported reasoning_effort %q", requested)
+	}
 	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(level))
 	s.mu.Lock()
 	s.settings.ReasoningEffort = level
 	s.mu.Unlock()
+	return nil
 }
 
 func (s *Session) applySkillPathHints(name string, paths []string) {
@@ -523,7 +536,14 @@ func (s *Session) clearTemporarySkillOverrides() {
 	if baseChatModel != nil {
 		s.agent.SetModel(baseChatModel)
 	}
-	effectiveThinking := resolveThinkingLevelForModel(baseChatModel, baseThinking)
+	effectiveThinking, ok := resolveThinkingLevelForModelStrict(baseChatModel, baseThinking)
+	if !ok {
+		s.emit(SessionEvent{
+			Type:  SEError,
+			Error: fmt.Errorf("unsupported reasoning_effort %q", baseThinking),
+		})
+		return
+	}
 	if effectiveThinking != "" {
 		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(effectiveThinking))
 	} else {
@@ -608,17 +628,6 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 	}
 }
 
-func (s *Session) reclampThinkingTemporary() {
-	s.mu.Lock()
-	current := s.settings.ReasoningEffort
-	s.mu.Unlock()
-	clamped, _ := s.resolveThinkingLevel(current)
-	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
-	s.mu.Lock()
-	s.settings.ReasoningEffort = clamped
-	s.mu.Unlock()
-}
-
 func (s *Session) SetModel(prov, model string) error {
 	provType, err := s.providerType(prov)
 	if err != nil {
@@ -632,6 +641,11 @@ func (s *Session) SetModel(prov, model string) error {
 	chatModel, err := s.createModel(provType, model, apiKey, baseURL, providerExtra)
 	if err != nil {
 		return fmt.Errorf("create model %s/%s: %w", prov, model, err)
+	}
+	currentThinking := s.Settings().ReasoningEffort
+	resolvedThinking, ok := provider.ResolveThinkingLevel(chatModel, currentThinking)
+	if !ok {
+		return fmt.Errorf("switch model %s/%s: unsupported reasoning_effort %q", prov, model, currentThinking)
 	}
 
 	if store != nil {
@@ -651,6 +665,7 @@ func (s *Session) SetModel(prov, model string) error {
 	s.provider = prov
 	s.modelName = model
 	s.chatModel = chatModel
+	s.settings.ReasoningEffort = resolvedThinking
 	s.settings.SmallModel = smallModel
 	s.mu.Unlock()
 
@@ -660,7 +675,7 @@ func (s *Session) SetModel(prov, model string) error {
 		Provider:  prov,
 	})
 
-	s.reclampThinking()
+	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(resolvedThinking))
 	s.updateContextFromRegistry(prov, model)
 
 	return nil
@@ -733,7 +748,14 @@ func (s *Session) applyContextWindow(window int) {
 }
 
 func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
-	resolved, _ := s.resolveThinkingLevel(string(level))
+	resolved, ok := s.resolveThinkingLevel(string(level))
+	if !ok {
+		s.emit(SessionEvent{
+			Type:  SEError,
+			Error: fmt.Errorf("unsupported reasoning_effort %q", string(level)),
+		})
+		return
+	}
 	level = agentcore.ThinkingLevel(resolved)
 
 	s.agent.SetThinkingLevel(level)
@@ -844,17 +866,16 @@ func (s *Session) resolveThinkingLevel(level string) (string, bool) {
 		return provider.ResolveThinkingLevel(model, level)
 	}
 	if reg != nil {
-		return provider.ClampThinkingLevel(level, reg.AvailableThinkingLevels(modelName)), true
+		return provider.ClampThinkingLevel(level, reg.AvailableThinkingLevels(modelName))
 	}
-	return string(agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(level))), true
+	return provider.ResolveThinkingLevel(nil, level)
 }
 
-func resolveThinkingLevelForModel(model agentcore.ChatModel, level string) string {
+func resolveThinkingLevelForModelStrict(model agentcore.ChatModel, level string) (string, bool) {
 	if levels := provider.ThinkingLevelsForModel(model); len(levels) == 0 {
-		return string(agentcore.NormalizeThinkingLevel(agentcore.ThinkingLevel(level)))
+		return provider.ResolveThinkingLevel(nil, level)
 	}
-	resolved, _ := provider.ResolveThinkingLevel(model, level)
-	return resolved
+	return provider.ResolveThinkingLevel(model, level)
 }
 
 func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
@@ -865,20 +886,6 @@ func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 		return pc.APIKey, pc.BaseURL
 	}
 	return config.EnvCredentials(prov)
-}
-
-func (s *Session) reclampThinking() {
-	s.mu.Lock()
-	current := s.settings.ReasoningEffort
-	s.mu.Unlock()
-
-	if current == "" {
-		return
-	}
-	clamped, _ := s.resolveThinkingLevel(current)
-	if clamped != current {
-		s.SetThinkingLevel(agentcore.ThinkingLevel(clamped))
-	}
 }
 
 // Reset closes the current session log and starts a fresh session in the same cwd.
@@ -979,8 +986,14 @@ func (s *Session) SwitchSession(id string) error {
 		}
 		agentcore.ReactivateDeferred(s.allTools, snapshot.Messages)
 	}
+	restoredThinking := ""
 	if snapshot.ReasoningEffort != "" {
-		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(resolveThinkingLevelForModel(restoredModel, snapshot.ReasoningEffort)))
+		var ok bool
+		restoredThinking, ok = resolveThinkingLevelForModelStrict(restoredModel, snapshot.ReasoningEffort)
+		if !ok {
+			return fmt.Errorf("restore reasoning_effort from session: unsupported reasoning_effort %q", snapshot.ReasoningEffort)
+		}
+		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(restoredThinking))
 	} else {
 		s.agent.SetThinkingLevel("")
 	}
@@ -994,7 +1007,7 @@ func (s *Session) SwitchSession(id string) error {
 	s.modelName = targetModel
 	s.autoNamed = newStore.Header().Name != ""
 	if snapshot.ReasoningEffort != "" {
-		s.settings.ReasoningEffort = resolveThinkingLevelForModel(restoredModel, snapshot.ReasoningEffort)
+		s.settings.ReasoningEffort = restoredThinking
 	} else {
 		s.settings.ReasoningEffort = ""
 	}

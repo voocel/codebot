@@ -13,11 +13,11 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
-	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/snapshot"
 	"github.com/voocel/codebot/internal/storage"
 	cbteam "github.com/voocel/codebot/internal/team"
@@ -337,29 +337,29 @@ func restoreAgentState(input *resolvedInput, assembly *sessionAssembly, tools []
 		agentcore.ReactivateDeferred(tools, input.sessionSnapshot.Messages)
 	}
 	if input.sessionSnapshot.ReasoningEffort != "" {
-		thinking := resolveThinkingForModel(assembly.chatModel, input.sessionSnapshot.ReasoningEffort)
+		thinking, err := resolveThinkingForModel(assembly.chatModel, input.sessionSnapshot.ReasoningEffort)
+		if err != nil {
+			return fmt.Errorf("restore reasoning_effort from session: %w", err)
+		}
 		ag.SetThinkingLevel(agentcore.ThinkingLevel(thinking))
 		assembly.settings.ReasoningEffort = thinking
 	} else if assembly.settings.ReasoningEffort != "" {
-		thinking := resolveThinkingForModel(assembly.chatModel, assembly.settings.ReasoningEffort)
-		ag.SetThinkingLevel(agentcore.ThinkingLevel(thinking))
-		if thinking != assembly.settings.ReasoningEffort {
-			persistThinkingSetting(input.cwd, thinking)
+		thinking, err := resolveThinkingForModel(assembly.chatModel, assembly.settings.ReasoningEffort)
+		if err != nil {
+			return fmt.Errorf("apply reasoning_effort from settings: %w", err)
 		}
+		ag.SetThinkingLevel(agentcore.ThinkingLevel(thinking))
 		assembly.settings.ReasoningEffort = thinking
 	}
 	return nil
 }
 
-func resolveThinkingForModel(model agentcore.ChatModel, level string) string {
-	resolved, _ := llm.ThinkingPolicyFor(model).Resolve(agentcore.ThinkingLevel(strings.TrimSpace(level)))
-	return string(resolved)
-}
-
-func persistThinkingSetting(cwd, level string) {
-	if err := config.PatchEffectiveSettings(cwd, config.Settings{ReasoningEffort: &level}); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: persist thinking level setting: %v\n", err)
+func resolveThinkingForModel(model agentcore.ChatModel, level string) (string, error) {
+	resolved, ok := provider.ResolveThinkingLevel(model, level)
+	if !ok {
+		return "", fmt.Errorf("unsupported reasoning_effort %q", level)
 	}
+	return resolved, nil
 }
 
 func buildSession(input *resolvedInput, services *bootServices, assembly *sessionAssembly, contextEngine agentcore.ContextManager, ag *agentcore.Agent, tools []agentcore.Tool) *agent.Session {

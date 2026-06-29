@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/voocel/agentcore"
@@ -38,6 +39,69 @@ func (m *cfgModel) GenerateStream(
 func (m *cfgModel) SupportsTools() bool { return true }
 
 func (m *cfgModel) GetConfig() *llm.GenerationConfig { return &m.cfg }
+
+type thinkingCapsModel struct {
+	cfgModel
+	efforts []agentcore.ThinkingLevel
+}
+
+func (m *thinkingCapsModel) Capabilities() llm.Capabilities {
+	return llm.Capabilities{
+		Thinking: llm.ThinkingCapabilities{
+			Supported: llm.SupportYes,
+			Disable:   llm.SupportYes,
+			Efforts:   m.efforts,
+		},
+	}
+}
+
+func TestReasoningEffortMinimalIsNotUserSelectable(t *testing.T) {
+	t.Parallel()
+
+	if IsValidThinkingLevel("minimal") {
+		t.Fatal("minimal should not be accepted as a user-selectable reasoning effort")
+	}
+	if IsValidThinkingLevel("auto") {
+		t.Fatal("auto should not be accepted as a user-selectable reasoning effort")
+	}
+	if IsValidThinkingLevel("High") || IsValidThinkingLevel(" high ") {
+		t.Fatal("reasoning effort values must match exactly")
+	}
+	if slices.Contains(ThinkingLevelOrder, "minimal") {
+		t.Fatalf("thinking order contains minimal: %v", ThinkingLevelOrder)
+	}
+
+	reg := NewModelRegistry()
+	if levels := reg.AvailableThinkingLevels("unknown-model"); slices.Contains(levels, "minimal") {
+		t.Fatalf("unknown model levels contain minimal: %v", levels)
+	}
+}
+
+func TestThinkingLevelsForModelFiltersMinimal(t *testing.T) {
+	t.Parallel()
+
+	model := &thinkingCapsModel{efforts: []agentcore.ThinkingLevel{
+		agentcore.ThinkingMinimal,
+		agentcore.ThinkingLow,
+		agentcore.ThinkingHigh,
+	}}
+	levels := ThinkingLevelsForModel(model)
+	if slices.Contains(levels, "minimal") {
+		t.Fatalf("thinking levels contain minimal: %v", levels)
+	}
+	for _, want := range []string{"", "off", "low", "high"} {
+		if !slices.Contains(levels, want) {
+			t.Fatalf("thinking levels missing %q: %v", want, levels)
+		}
+	}
+
+	if got, ok := ResolveThinkingLevel(model, "minimal"); ok || got != "" {
+		t.Fatalf("ResolveThinkingLevel(minimal) = %q, %v; want auto, false", got, ok)
+	}
+	if got, ok := ResolveThinkingLevel(model, "auto"); ok || got != "" {
+		t.Fatalf("ResolveThinkingLevel(auto) = %q, %v; want auto, false", got, ok)
+	}
+}
 
 func TestApplyProviderDefaultsAnthropicClamp(t *testing.T) {
 	t.Parallel()
