@@ -16,6 +16,9 @@
     "openai": {
       "api_key": "",
       "base_url": "",
+      // Optional OpenAI protocol endpoint: chat (default, /v1/chat/completions)
+      // or responses (/v1/responses). Codex-style proxies usually need responses.
+      "api": "chat",
       "models": ["gpt-5.4", "gpt-5.3-codex"],
       "small_model": "gpt-5-mini"
     },
@@ -53,6 +56,21 @@
           "X-Stainless-Lang": "js",
           "X-Stainless-Package-Version": "0.94.0",
           "X-Stainless-Runtime": "node"
+        }
+      }
+    },
+    "codex-proxy": {
+      "type": "openai",
+      "api": "responses",
+      "api_key": "sk-xxx",
+      "base_url": "https://proxy.example.com/v1",
+      "models": ["gpt-5.4", "gpt-5.4-mini"],
+      "small_model": "gpt-5.4-mini",
+      "extra": {
+        "user_agent": "codex-tui/0.142.3",
+        "headers": {
+          "Originator": "codex-tui",
+          "Session_id": "replace-with-random-session-id"
         }
       }
     }

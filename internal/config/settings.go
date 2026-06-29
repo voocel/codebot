@@ -19,6 +19,7 @@ const ConfigDir = ".codebot"
 // ProviderConfig holds credentials and model configuration for a single provider.
 type ProviderConfig struct {
 	Type       string         `json:"type,omitempty"` // LiteLLM protocol type; required only when the provider name is not a known litellm provider
+	API        string         `json:"api,omitempty"`  // OpenAI protocol endpoint: chat (default) or responses
 	APIKey     string         `json:"api_key,omitempty"`
 	BaseURL    string         `json:"base_url,omitempty"`
 	Models     []string       `json:"models,omitempty"`      // available model list for this provider
@@ -160,9 +161,22 @@ func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
 // ProviderExtra returns provider-level litellm config for the given provider.
 func (r Resolved) ProviderExtra(prov string) map[string]any {
 	if pc, ok := r.Providers[prov]; ok {
-		return pc.Extra
+		return pc.ProviderExtra()
 	}
 	return nil
+}
+
+// ProviderExtra returns provider-level litellm config, including codebot's
+// first-class provider fields that agentcore still receives through Extra.
+func (pc ProviderConfig) ProviderExtra() map[string]any {
+	extra := cloneExtra(pc.Extra)
+	if pc.API != "" {
+		if extra == nil {
+			extra = make(map[string]any, 1)
+		}
+		extra["api"] = pc.API
+	}
+	return extra
 }
 
 // ProviderEnvKey derives the standard env var name for a provider's API key
@@ -286,6 +300,30 @@ func (s Settings) Resolve() Resolved {
 func ValidateResolved(r Resolved) error {
 	if _, ok := provider.ResolveThinkingLevel(nil, r.ReasoningEffort); !ok {
 		return fmt.Errorf("configuration error: reasoning_effort=%q is unsupported; use empty string, off, low, medium, high, xhigh, or max: %w", r.ReasoningEffort, diag.ErrConfig)
+	}
+	for name, pc := range r.Providers {
+		if err := validateProviderAPI(name, pc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateProviderAPI(name string, pc ProviderConfig) error {
+	switch pc.API {
+	case "", "chat", "responses":
+	default:
+		return fmt.Errorf("configuration error: providers.%s.api=%q is unsupported; use chat or responses: %w", name, pc.API, diag.ErrConfig)
+	}
+	if pc.API == "" {
+		return nil
+	}
+	provType, err := pc.ProviderType(name)
+	if err != nil {
+		return err
+	}
+	if provType != "openai" {
+		return fmt.Errorf("configuration error: providers.%s.api is only supported for OpenAI protocol providers: %w", name, diag.ErrConfig)
 	}
 	return nil
 }
@@ -447,6 +485,9 @@ func mergeSettings(base, override Settings) Settings {
 			// Field-level merge: override only non-zero fields.
 			if v.Type != "" {
 				existing.Type = v.Type
+			}
+			if v.API != "" {
+				existing.API = v.API
 			}
 			if v.APIKey != "" {
 				existing.APIKey = v.APIKey

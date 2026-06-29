@@ -217,7 +217,7 @@ func resolveFromProviders(providers map[string]config.ProviderConfig, prov strin
 
 func resolveExtraFromProviders(providers map[string]config.ProviderConfig, prov string) map[string]any {
 	if pc, ok := providers[prov]; ok {
-		return pc.Extra
+		return pc.ProviderExtra()
 	}
 	return nil
 }

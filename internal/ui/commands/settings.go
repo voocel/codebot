@@ -167,6 +167,9 @@ func (c *SettingsCommand) renderProviders(width int) string {
 	for _, n := range names {
 		pc := s.Providers[n]
 		parts := []string{fmt.Sprintf("%d model(s)", len(pc.Models))}
+		if pc.API != "" && pc.API != "chat" {
+			parts = append(parts, "api:"+pc.API)
+		}
 		if pc.BaseURL != "" {
 			parts = append(parts, pc.BaseURL)
 		}

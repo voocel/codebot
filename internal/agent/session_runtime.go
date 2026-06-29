@@ -697,7 +697,7 @@ func (s *Session) resolveProviderExtra(prov string) map[string]any {
 	pc, ok := s.providers[prov]
 	s.mu.Unlock()
 	if ok {
-		return pc.Extra
+		return pc.ProviderExtra()
 	}
 	return nil
 }

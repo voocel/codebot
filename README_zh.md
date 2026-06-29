@@ -153,6 +153,8 @@ Codebot 采用分层的 Coding Agent 架构：
 
 Provider 条目支持 `extra`，用于配置 provider 级 litellm 选项，例如 `user_agent`、`headers`、`anthropic_beta`；这些会作为 HTTP/客户端配置发送，不会进入请求体。
 
+OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`，用于在 `/v1/chat/completions` 和 `/v1/responses` 之间切换。
+
 Plugin 开发参考 [docs/plugins.md](docs/plugins.md)。真实示例 plugin 放在 `docs/examples/plugins/`，目前包含 `review-assistant`、`release-ops`、`docs-context`。
 
 ## 环境要求

@@ -153,6 +153,8 @@ All fields are optional. See [settings.example.jsonc](settings.example.jsonc) fo
 
 Provider entries support `extra` for provider-level litellm options such as `user_agent`, `headers`, and `anthropic_beta`; these are sent as HTTP/client config, not request-body fields.
 
+OpenAI-protocol providers also support `api: "chat"` (default) or `api: "responses"` to choose between `/v1/chat/completions` and `/v1/responses`.
+
 Plugin authoring guide: [docs/plugins.md](docs/plugins.md). Real example plugins live under `docs/examples/plugins/`, including `review-assistant`, `release-ops`, and `docs-context`.
 
 ## Requirements

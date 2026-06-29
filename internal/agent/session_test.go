@@ -987,6 +987,11 @@ func TestSetModelPassesProviderExtra(t *testing.T) {
 						"anthropic_beta": "claude-code-20250219",
 					},
 				},
+				"openai-proxy": {
+					Type:   "openai",
+					API:    "responses",
+					APIKey: "openai-proxy-key",
+				},
 			},
 		},
 		Cwd: dir,
@@ -1005,6 +1010,13 @@ func TestSetModelPassesProviderExtra(t *testing.T) {
 	}
 	if gotExtra["anthropic_beta"] != "claude-code-20250219" {
 		t.Fatalf("anthropic_beta extra = %#v", gotExtra["anthropic_beta"])
+	}
+
+	if err := s.SetModel("openai-proxy", "gpt-5.4"); err != nil {
+		t.Fatalf("SetModel openai-proxy: %v", err)
+	}
+	if gotExtra["api"] != "responses" {
+		t.Fatalf("api extra = %#v, want responses", gotExtra["api"])
 	}
 }
 
