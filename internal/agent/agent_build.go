@@ -49,6 +49,11 @@ type BuildDeps struct {
 	// operates on. Threaded so sub-agents share the parent's backend (e.g.
 	// editor buffers under ACP). Nil means the local filesystem.
 	WorkspaceFS tools.WorkspaceFS
+
+	// SessionID is the parent session's identity, used as the base of each
+	// sub-agent's prompt-cache routing key (agentcore appends "#<seq>" per
+	// spawn). Empty disables the routing hint; cache breakpoints still apply.
+	SessionID string
 }
 
 // BuildConfig converts an AgentDefinition into a subagent.Config ready to be
@@ -92,8 +97,23 @@ func (d *AgentDefinition) BuildConfig(deps BuildDeps, ctxFactory func(agentcore.
 		MaxTurns:              d.MaxTurns,
 		ContextManagerFactory: ctxFactory,
 		ConvertToLLM:          agentctx.ContextConvertToLLM,
+		// Prompt caching: rolling breakpoint each turn (Anthropic-style
+		// providers) plus a per-spawn routing key (OpenAI-style providers).
+		// The adapter drops whichever mechanism a provider doesn't support.
+		CacheLastMessage: "ephemeral",
+		PromptCacheKey:   promptCacheKey(deps.SessionID, d.Name),
 	}
 	return cfg, nil
+}
+
+// promptCacheKey derives a sub-agent's cache routing base from the session
+// identity. One conversation, one key: agentcore appends "#<seq>" per spawn,
+// so runs of the same definition don't pile into a single routing bucket.
+func promptCacheKey(sessionID, agentName string) string {
+	if sessionID == "" {
+		return ""
+	}
+	return sessionID + "-" + agentName
 }
 
 // resolveModel maps AgentDefinition.Model to a ChatModel.

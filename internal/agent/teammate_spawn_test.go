@@ -97,10 +97,10 @@ func (m *captureModel) GenerateStream(ctx context.Context, msgs []agentcore.Mess
 // passes tools through to the loop, but our stub model never invokes them).
 type fakeNamedTool struct{ n string }
 
-func (f *fakeNamedTool) Name() string                                       { return f.n }
-func (f *fakeNamedTool) Label() string                                      { return f.n }
-func (f *fakeNamedTool) Description() string                                { return "" }
-func (f *fakeNamedTool) Schema() map[string]any                             { return map[string]any{"type": "object"} }
+func (f *fakeNamedTool) Name() string           { return f.n }
+func (f *fakeNamedTool) Label() string          { return f.n }
+func (f *fakeNamedTool) Description() string    { return "" }
+func (f *fakeNamedTool) Schema() map[string]any { return map[string]any{"type": "object"} }
 func (f *fakeNamedTool) Execute(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return nil, nil
 }
@@ -135,7 +135,7 @@ func TestMergeTeammateTools_NilExtras(t *testing.T) {
 func TestBuildTeammateExecutor_ProducesAssistantMessage(t *testing.T) {
 	cfg := subagent.Config{Name: "researcher", SystemPrompt: "you are a researcher"}
 	model := newScriptModel("first turn output")
-	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil, "")
 
 	prompt := agentcore.UserMsg("go investigate")
 	produced, err := exec(context.Background(), []agentcore.AgentMessage{prompt})
@@ -157,7 +157,7 @@ func TestBuildTeammateExecutor_ProducesAssistantMessage(t *testing.T) {
 }
 
 func TestBuildTeammateExecutor_RejectsEmpty(t *testing.T) {
-	exec := buildTeammateExecutor(subagent.Config{}, nil, newScriptModel(), nil, nil, nil)
+	exec := buildTeammateExecutor(subagent.Config{}, nil, newScriptModel(), nil, nil, nil, "")
 	_, err := exec(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error on empty msgs")
@@ -176,7 +176,7 @@ func TestBuildTeammateExecutor_ReplaceMode_SingleBlockWithCacheControl(t *testin
 		SystemPromptMode: config.SystemPromptModeReplace,
 	}
 	model := newCaptureModel("done")
-	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil, "")
 
 	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
 		t.Fatalf("executor: %v", err)
@@ -209,7 +209,7 @@ func TestBuildTeammateExecutor_ReplaceMode_EmptyPromptSendsNoSystemBlock(t *test
 		SystemPromptMode: config.SystemPromptModeReplace,
 	}
 	model := newCaptureModel("done")
-	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, nil, nil, "")
 
 	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("hi")}); err != nil {
 		t.Fatalf("executor: %v", err)
@@ -232,7 +232,7 @@ func TestBuildTeammateExecutor_DefaultMode_PrependsBaseBlocks(t *testing.T) {
 	// Zero-value SystemPromptMode → falls back to default.
 	model := newCaptureModel("done")
 	baseBlocks := []agentcore.SystemBlock{{Text: baseText, CacheControl: "ephemeral"}}
-	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil, "")
 
 	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
 		t.Fatalf("executor: %v", err)
@@ -279,7 +279,7 @@ func TestBuildTeammateExecutor_DefaultMode_AppendsDynamicBlock(t *testing.T) {
 	model := newCaptureModel("done")
 	baseBlocks := []agentcore.SystemBlock{{Text: baseText, CacheControl: "ephemeral"}}
 	dynamic := &agentcore.SystemBlock{Text: dynamicText}
-	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, dynamic)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, dynamic, "")
 
 	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
 		t.Fatalf("executor: %v", err)
@@ -317,7 +317,7 @@ func TestBuildTeammateExecutor_DefaultMode_NilDynamicSkipsThirdBlock(t *testing.
 	baseBlocks := []agentcore.SystemBlock{{Text: "BASE", CacheControl: "ephemeral"}}
 
 	// nil dynamic
-	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil, "")
 	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
 		t.Fatalf("executor: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestBuildTeammateExecutor_DefaultMode_NilDynamicSkipsThirdBlock(t *testing.
 	// empty-Text dynamic
 	model2 := newCaptureModel("done")
 	emptyDyn := &agentcore.SystemBlock{Text: ""}
-	exec2 := buildTeammateExecutor(cfg, nil, model2, nil, baseBlocks, emptyDyn)
+	exec2 := buildTeammateExecutor(cfg, nil, model2, nil, baseBlocks, emptyDyn, "")
 	if _, err := exec2(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
 		t.Fatalf("executor: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestBuildTeammateExecutor_AppendMode_NoExtraCacheBlock(t *testing.T) {
 	}
 	model := newCaptureModel("done")
 	baseBlocks := []agentcore.SystemBlock{{Text: "BASE", CacheControl: "ephemeral"}}
-	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil)
+	exec := buildTeammateExecutor(cfg, nil, model, nil, baseBlocks, nil, "")
 
 	if _, err := exec(context.Background(), []agentcore.AgentMessage{agentcore.UserMsg("go")}); err != nil {
 		t.Fatalf("executor: %v", err)
@@ -422,7 +422,7 @@ func TestBuildTeammateExecutor_ReusesContextManagerAcrossTurns(t *testing.T) {
 			return mgr
 		},
 	}
-	exec := buildTeammateExecutor(cfg, nil, newScriptModel("turn1", "turn2", "turn3"), nil, nil, nil)
+	exec := buildTeammateExecutor(cfg, nil, newScriptModel("turn1", "turn2", "turn3"), nil, nil, nil, "")
 
 	// Drive three turns. Each turn calls AgentLoop once → ContextManager.Project
 	// is invoked at least once per turn. The factory must only fire once.
@@ -973,4 +973,3 @@ func toolNames(in []agentcore.Tool) []string {
 	}
 	return out
 }
-

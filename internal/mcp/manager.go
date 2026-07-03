@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -90,13 +92,27 @@ func (m *Manager) RefreshIfDirty(ctx context.Context) ([]agentcore.Tool, bool) {
 	return m.Tools(ctx), true
 }
 
+// sortedClients returns connected clients in deterministic (server name)
+// order. Tools and instructions feed the LLM request's tools array and the
+// system prompt's mcp overlay; iterating the map directly would shuffle
+// their bytes across refreshes and bust the provider prompt cache from the
+// prefix onward. Caller must hold m.mu.
+func (m *Manager) sortedClients() []*Client {
+	names := slices.Sorted(maps.Keys(m.clients))
+	out := make([]*Client, 0, len(names))
+	for _, name := range names {
+		out = append(out, m.clients[name])
+	}
+	return out
+}
+
 // Tools returns all MCP tools from connected servers as agentcore.Tool adapters.
 func (m *Manager) Tools(ctx context.Context) []agentcore.Tool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var tools []agentcore.Tool
-	for _, c := range m.clients {
+	for _, c := range m.sortedClients() {
 		mcpTools, err := c.ListTools(ctx)
 		if err != nil {
 			continue
@@ -114,7 +130,7 @@ func (m *Manager) Instructions() []string {
 	defer m.mu.Unlock()
 
 	var out []string
-	for _, c := range m.clients {
+	for _, c := range m.sortedClients() {
 		if inst := c.Instructions(); inst != "" {
 			out = append(out, fmt.Sprintf("## %s\n%s", c.Name(), inst))
 		}

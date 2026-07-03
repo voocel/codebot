@@ -208,3 +208,25 @@ func writeMCPConfig(t *testing.T, data string) string {
 	os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(data), 0o644)
 	return dir
 }
+
+// TestSortedClientsDeterministic guards the prompt-cache invariant: tools and
+// instructions must serialize in the same byte order across refreshes, so
+// client iteration must not depend on map order.
+func TestSortedClientsDeterministic(t *testing.T) {
+	m := NewManager()
+	for _, name := range []string{"zeta", "alpha", "mid", "beta"} {
+		m.clients[name] = &Client{name: name}
+	}
+	want := []string{"alpha", "beta", "mid", "zeta"}
+	for range 50 {
+		got := m.sortedClients()
+		if len(got) != len(want) {
+			t.Fatalf("sortedClients len=%d want %d", len(got), len(want))
+		}
+		for i, c := range got {
+			if c.name != want[i] {
+				t.Fatalf("sortedClients[%d]=%s want %s", i, c.name, want[i])
+			}
+		}
+	}
+}

@@ -185,6 +185,7 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 		Providers:     settings.Providers,
 		SmallModel:    settings.SmallModel,
 		WorkspaceFS:   fs,
+		SessionID:     input.sessionStore.Header().SessionID,
 	})
 	builtTools = append(builtTools, subagentTool)
 

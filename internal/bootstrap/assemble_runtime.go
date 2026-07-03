@@ -58,7 +58,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	}
 	contextEngine, summaryCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens, input.cwd)
 
-	agentCore, err := buildAgent(assembly, services, contextEngine, tools)
+	agentCore, err := buildAgent(assembly, services, contextEngine, tools, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +295,7 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 	return engine, summaryCompact
 }
 
-func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine agentcore.ContextManager, tools []agentcore.Tool) (*agentcore.Agent, error) {
+func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine agentcore.ContextManager, tools []agentcore.Tool, sessionID string) (*agentcore.Agent, error) {
 	opts := []agentcore.AgentOption{
 		agentcore.WithModel(assembly.chatModel),
 		agentcore.WithSystemBlocks(assembly.systemBlocks),
@@ -313,6 +313,11 @@ func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine
 		// the previous tool_use+tool_result pair from cache instead of
 		// re-uploading them.
 		agentcore.WithCacheLastMessage("ephemeral"),
+		// Cache routing identity for OpenAI-style providers (Anthropic-style
+		// ones use the breakpoints above; the adapter gates by capability).
+		// One conversation, one key — Reset/SwitchSession must re-point it
+		// via SetPromptCacheKey, see session_runtime.go.
+		agentcore.WithPromptCacheKey(sessionID),
 	}
 	middlewares := make([]agentcore.ToolMiddleware, 0, 2)
 	if assembly.telemetryTracer != nil {

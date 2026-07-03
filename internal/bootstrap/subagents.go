@@ -31,6 +31,10 @@ type subAgentDeps struct {
 	// WorkspaceFS is the session's file backend, threaded into each sub-agent's
 	// rebuilt read/write/edit pool so sub-agents share the parent's backend.
 	WorkspaceFS agentcoretools.WorkspaceFS
+
+	// SessionID seeds each sub-agent's prompt-cache routing key. See
+	// agent.BuildDeps.SessionID.
+	SessionID string
 }
 
 // buildSubAgentTool constructs a SubAgentTool with every sub-agent registered.
@@ -78,6 +82,7 @@ func buildSubAgentTool(deps subAgentDeps) (*subagent.Tool, map[string]string) {
 		ContextWindow: deps.ContextWindow,
 		ResolveModel:  resolveModel,
 		WorkspaceFS:   deps.WorkspaceFS,
+		SessionID:     deps.SessionID,
 	}
 	ctxFactory := func(model agentcore.ChatModel) agentcore.ContextManager {
 		return newSubAgentContextManager(model, deps.ContextWindow)

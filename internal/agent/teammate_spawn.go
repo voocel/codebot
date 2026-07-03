@@ -263,7 +263,10 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 			dynamicBlock = dynamicProvider()
 		}
 
-		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, teammateBaseBlocks(baseBlocks, wt), dynamicBlock)
+		// One teammate, one cache lineage: suffix the unique teammate name so
+		// same-type teammates don't share a routing bucket, while a resumed
+		// teammate (same name) keeps its warm cache.
+		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, teammateBaseBlocks(baseBlocks, wt), dynamicBlock, promptCacheKey(req.Config.PromptCacheKey, agentName))
 
 		// Wrap the executor to append each turn (the prompt the runner fed +
 		// the messages produced) to the teammate's transcript. This is the
@@ -432,7 +435,7 @@ func mergeTeammateTools(base, extras []agentcore.Tool) []agentcore.Tool {
 // Identity (AgentName / TeamName / Color) is NOT plumbed through here —
 // agentcore/team.Runner wraps every Execute call with WithIdentity, so
 // tools that vary by caller read it from coreteam.IdentityFromContext.
-func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event), baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock) team.TurnExecutor {
+func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event), baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock, promptCacheKey string) team.TurnExecutor {
 	var ctxMgr agentcore.ContextManager
 	switch {
 	case cfg.ContextManagerFactory != nil:
@@ -465,6 +468,13 @@ func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model ag
 			MaxRetries:     cfg.MaxRetries,
 			ContextManager: ctxMgr,
 			ConvertToLLM:   cfg.ConvertToLLM,
+			// Prompt caching pays off most here: a teammate is a long-lived
+			// conversation that replays its full history on every wake-up.
+			// The rolling breakpoint adds a third cache_control on top of the
+			// two frozen system blocks (Anthropic allows 4 per request); the
+			// routing key keeps all wake-ups on one cache shard.
+			CacheLastMessage: cfg.CacheLastMessage,
+			PromptCacheKey:   promptCacheKey,
 		}
 
 		events := agentcore.AgentLoop(ctx, []agentcore.AgentMessage{prompt}, agentCtx, loopCfg)

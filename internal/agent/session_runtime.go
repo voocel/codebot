@@ -906,6 +906,9 @@ func (s *Session) Reset() error {
 	s.agent.ClearMessages()
 	s.agent.ClearAllQueues()
 	s.agent.SetThinkingLevel("")
+	// Re-point the cache routing key: a fresh session is a new conversation
+	// and must not inherit the previous one's cache lineage.
+	s.agent.SetPromptCacheKey(newStore.Header().SessionID)
 
 	s.mu.Lock()
 	s.store = newStore
@@ -980,6 +983,9 @@ func (s *Session) SwitchSession(id string) error {
 
 	s.agent.ClearMessages()
 	s.agent.ClearAllQueues()
+	// Re-point the cache routing key to the target session so its requests
+	// rejoin that conversation's cache lineage (warm if recently active).
+	s.agent.SetPromptCacheKey(newStore.Header().SessionID)
 	if len(snapshot.Messages) > 0 {
 		if err := s.agent.SetMessages(snapshot.Messages); err != nil {
 			return fmt.Errorf("restore messages: %w", err)
@@ -1317,6 +1323,10 @@ func wrapHookContext(text string) string {
 func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	s.mu.Lock()
 	model := s.chatModel
+	sessionID := ""
+	if s.store != nil {
+		sessionID = s.store.Header().SessionID
+	}
 	s.mu.Unlock()
 
 	if model == nil {
@@ -1365,7 +1375,14 @@ func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...a
 	// system-block breakpoint. See the docstring for why we don't also set
 	// tool_choice: "none".
 	toolSpecs := s.agent.BuildLLMTools()
+	// Same routing key as the main loop, for the same reason as the tools
+	// forwarding above: on key-routed providers (OpenAI prompt_cache_key)
+	// the side query only hits the main conversation's cache when it lands
+	// on the same shard.
 	defaults := []agentcore.CallOption{agentcore.WithThinking(agentcore.ThinkingOff)}
+	if sessionID != "" {
+		defaults = append(defaults, agentcore.WithCallPromptCacheKey(sessionID))
+	}
 	return model.Generate(ctx, msgs, toolSpecs, append(defaults, opts...)...)
 }
 
