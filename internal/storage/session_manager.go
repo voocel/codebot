@@ -148,8 +148,8 @@ func readSessionInfo(path string) (SessionInfo, error) {
 			messageCount++
 			if firstMessage == "" {
 				var msg struct {
-					Role     string `json:"role"`
-					Content  []struct {
+					Role    string `json:"role"`
+					Content []struct {
 						Text string `json:"text"`
 					} `json:"content"`
 					Metadata map[string]any `json:"metadata,omitempty"`

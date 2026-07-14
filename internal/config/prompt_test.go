@@ -416,12 +416,12 @@ func TestBuildTeammateRoleBlock_AppendsCustomPrompt(t *testing.T) {
 		"You are a researcher. Cite sources.",
 	)
 	for _, marker := range []string{
-		"team lead",                  // identity
-		"## Tools",                   // tool inventory
-		"**read**",                   // a specific tool
-		"## Mailbox & Coordination",  // addendum
+		"team lead",                       // identity
+		"## Tools",                        // tool inventory
+		"**read**",                        // a specific tool
+		"## Mailbox & Coordination",       // addendum
 		"\n# Custom Agent Instructions\n", // H1 wrapper with the leading newline
-		"You are a researcher",       // role prompt body
+		"You are a researcher",            // role prompt body
 	} {
 		if !strings.Contains(got, marker) {
 			t.Errorf("teammate role block missing %q", marker)

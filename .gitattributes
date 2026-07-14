@@ -1,0 +1,3 @@
+# 行尾统一固化:blob 与工作区一律 LF,覆盖各机器的 core.autocrlf 差异。
+# 仓库全部 blob 本就以 LF 入库;Windows 上混用行尾的工具曾制造大量幻影变更。
+* text=auto eol=lf

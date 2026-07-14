@@ -435,4 +435,3 @@ func TestHandleAgentEventProgressBuffers(t *testing.T) {
 		})
 	}
 }
-

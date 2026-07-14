@@ -59,4 +59,3 @@ func TestBuildToolsEmptyWhenAllFactoriesInvalid(t *testing.T) {
 		t.Fatalf("expected empty tools for invalid factories, got %d", len(tools))
 	}
 }
-

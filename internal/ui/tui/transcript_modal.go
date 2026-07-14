@@ -328,4 +328,3 @@ func (m *Model) transcriptOnResize() {
 	}
 	m.TranscriptModal.SetSize(m.Width, m.Height)
 }
-

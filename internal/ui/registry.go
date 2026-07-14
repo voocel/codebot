@@ -21,11 +21,11 @@ var _ commands.Registry = (*Registry)(nil)
 // Registry manages command registration, lookup by name/alias, and the
 // active interactive overlay.
 type Registry struct {
-	aliases       map[string]commands.Command  // name + alias -> command
-	entries       map[string]commands.Command  // canonical name -> command
-	ordered       []string                     // canonical names, registration order
-	activeAliases map[string][]string          // canonical name -> effective aliases
-	overlay       commands.InteractiveCommand  // active interactive command (nil = none)
+	aliases       map[string]commands.Command // name + alias -> command
+	entries       map[string]commands.Command // canonical name -> command
+	ordered       []string                    // canonical names, registration order
+	activeAliases map[string][]string         // canonical name -> effective aliases
+	overlay       commands.InteractiveCommand // active interactive command (nil = none)
 }
 
 // NewRegistry creates an empty Registry.

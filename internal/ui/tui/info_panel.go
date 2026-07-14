@@ -26,11 +26,11 @@ type InfoPanel struct {
 type panelRowKind int
 
 const (
-	rowNormal panelRowKind = iota
-	rowHint                // subdued value (paths, metadata)
-	rowWarn                // accent-colored value
-	rowSection             // section divider
-	rowBlank               // empty line
+	rowNormal  panelRowKind = iota
+	rowHint                 // subdued value (paths, metadata)
+	rowWarn                 // accent-colored value
+	rowSection              // section divider
+	rowBlank                // empty line
 )
 
 type panelRow struct {

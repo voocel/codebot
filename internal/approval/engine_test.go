@@ -143,4 +143,3 @@ func TestApproveCommandRespectsPlanMode(t *testing.T) {
 		t.Fatal("session command should be denied in plan mode")
 	}
 }
-

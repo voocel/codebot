@@ -191,4 +191,3 @@ func Reload(reload func() (ReloadResult, error)) Command {
 		)))
 	})
 }
-

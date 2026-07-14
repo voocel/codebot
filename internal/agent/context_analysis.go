@@ -63,7 +63,7 @@ func (s *Session) ContextSuggestions() []ContextSuggestion {
 
 func analyzeBreakdown(msgs []agentcore.AgentMessage, contextWindow int) ContextBreakdown {
 	bd := ContextBreakdown{ContextWindow: contextWindow}
-	toolNames := make(map[string]string)    // tool_call_id → tool name
+	toolNames := make(map[string]string)        // tool_call_id → tool name
 	toolMap := make(map[string]*ToolTokenUsage) // tool name → usage
 
 	for _, am := range msgs {

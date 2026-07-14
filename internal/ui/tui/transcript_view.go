@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/voocel/agentcore"
 	reflowwrap "github.com/muesli/reflow/wrap"
+	"github.com/voocel/agentcore"
 )
 
 // TranscriptView renders an agentcore.Event stream as a scrollable in-memory
