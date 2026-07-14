@@ -39,6 +39,41 @@ func TestMergeSettingsProviderAPI(t *testing.T) {
 	}
 }
 
+func TestResolveDreamDefaults(t *testing.T) {
+	r := Settings{}.Resolve()
+	want := DreamSettings{Enabled: true, MinHours: 24, MinSessions: 5}
+	if r.Dream != want {
+		t.Fatalf("Dream = %+v, want %+v", r.Dream, want)
+	}
+}
+
+func TestResolveDreamOverridesAndInvalidValues(t *testing.T) {
+	off := false
+	bad := -1
+	hours := 48
+	r := Settings{Dream: &DreamConfig{Enabled: &off, MinHours: &hours, MinSessions: &bad}}.Resolve()
+	want := DreamSettings{Enabled: false, MinHours: 48, MinSessions: 5}
+	if r.Dream != want {
+		t.Fatalf("Dream = %+v, want %+v", r.Dream, want)
+	}
+}
+
+func TestMergeSettingsDreamReplacesWhole(t *testing.T) {
+	on := true
+	off := false
+	base := Settings{Dream: &DreamConfig{Enabled: &on}}
+	override := Settings{Dream: &DreamConfig{Enabled: &off}}
+	merged := mergeSettings(base, override)
+	if merged.Dream.Enabled == nil || *merged.Dream.Enabled {
+		t.Fatalf("Dream.Enabled = %v, want false (project overrides global)", merged.Dream.Enabled)
+	}
+	// No override → base kept.
+	merged = mergeSettings(base, Settings{})
+	if merged.Dream.Enabled == nil || !*merged.Dream.Enabled {
+		t.Fatalf("Dream.Enabled = %v, want true (base preserved)", merged.Dream.Enabled)
+	}
+}
+
 func TestProviderExtraIncludesAPI(t *testing.T) {
 	pc := ProviderConfig{
 		API:   "responses",

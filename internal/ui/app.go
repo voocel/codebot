@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
+	"github.com/voocel/codebot/internal/dream"
 	"github.com/voocel/codebot/internal/goal"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
 	"github.com/voocel/codebot/internal/plan"
@@ -51,6 +52,10 @@ type App struct {
 
 	// CronStore holds session-scoped cron jobs for /loop command.
 	CronStore *cron.Store
+
+	// Dreamer triggers background memory consolidation for /dream.
+	// nil in modes without one (print); the command degrades gracefully.
+	Dreamer *dream.Dreamer
 
 	// TaskRuntime provides unified access to all background tasks (shells + agents).
 	TaskRuntime *task.Runtime

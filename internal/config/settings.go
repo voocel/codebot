@@ -36,6 +36,22 @@ type TelemetryConfig struct {
 	SecretKey string `json:"secret_key,omitempty"` // basic-auth password
 }
 
+// DreamConfig configures background memory consolidation ("dream"): when the
+// session goes idle, a restricted subagent reorganizes the auto-memory
+// directory. Fields are pointers so unset falls back to defaults (on, 24h, 5).
+type DreamConfig struct {
+	Enabled     *bool `json:"enabled,omitempty"`      // nil = enabled
+	MinHours    *int  `json:"min_hours,omitempty"`    // hours since last consolidation; default 24
+	MinSessions *int  `json:"min_sessions,omitempty"` // other sessions touched since; default 5
+}
+
+// DreamSettings is the resolved form of DreamConfig.
+type DreamSettings struct {
+	Enabled     bool
+	MinHours    int
+	MinSessions int
+}
+
 // ProviderType resolves the protocol type for this provider.
 // The protocol type maps to a name registered in litellm's provider registry.
 func (pc ProviderConfig) ProviderType(name string) (string, error) {
@@ -112,6 +128,8 @@ type Settings struct {
 
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"` // OpenTelemetry trace export
 
+	Dream *DreamConfig `json:"dream,omitempty"` // background memory consolidation
+
 	// Snapshot toggles workspace file checkpoints backing /undo. Unset means on;
 	// set false to disable (e.g. on a large repo where per-turn scans lag).
 	Snapshot *bool `json:"snapshot,omitempty"`
@@ -145,6 +163,8 @@ type Resolved struct {
 	Permissions PermissionsConfig // user-defined permission rules
 
 	Telemetry TelemetryConfig // OTLP trace export config
+
+	Dream DreamSettings // background memory consolidation; defaults on
 
 	Snapshot bool // workspace checkpoints for /undo; defaults on
 }
@@ -244,6 +264,7 @@ func (s Settings) Resolve() Resolved {
 		Providers: make(map[string]ProviderConfig),
 		MaxTurns:  200,
 		Snapshot:  true,
+		Dream:     DreamSettings{Enabled: true, MinHours: 24, MinSessions: 5},
 	}
 	if s.Provider != nil && *s.Provider != "" {
 		r.Provider = *s.Provider
@@ -288,6 +309,18 @@ func (s Settings) Resolve() Resolved {
 	}
 	if s.Telemetry != nil {
 		r.Telemetry = *s.Telemetry
+	}
+	if s.Dream != nil {
+		if s.Dream.Enabled != nil {
+			r.Dream.Enabled = *s.Dream.Enabled
+		}
+		// Invalid values (<= 0) silently keep defaults, same as CompactRatio.
+		if s.Dream.MinHours != nil && *s.Dream.MinHours > 0 {
+			r.Dream.MinHours = *s.Dream.MinHours
+		}
+		if s.Dream.MinSessions != nil && *s.Dream.MinSessions > 0 {
+			r.Dream.MinSessions = *s.Dream.MinSessions
+		}
 	}
 	if s.Snapshot != nil {
 		r.Snapshot = *s.Snapshot
@@ -544,6 +577,9 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.Telemetry != nil {
 		base.Telemetry = override.Telemetry
+	}
+	if override.Dream != nil {
+		base.Dream = override.Dream
 	}
 	if override.Snapshot != nil {
 		base.Snapshot = override.Snapshot

@@ -100,6 +100,9 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 			s.hookRunner.RunNotification(context.Background(), "agent response complete")
 		}
 		s.clearSkillDelta()
+		if s.idleHook != nil {
+			s.idleHook()
+		}
 	}
 
 	s.emit(SessionEvent{

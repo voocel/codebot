@@ -13,10 +13,12 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
+	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/dream"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/snapshot"
 	"github.com/voocel/codebot/internal/storage"
@@ -189,7 +191,33 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	// Bind the worktree enter/exit tools now the Runtime (their backend) exists.
 	wireWorktreeTools(tools, rt)
 
+	rt.Dreamer = wireDream(input, assembly, session, taskRT, sessionID)
+
 	return rt, nil
+}
+
+// wireDream attaches background memory consolidation. The dream agent lives
+// in a private subagent.Tool instance: it is invisible to the main model and
+// its completion never feeds back into the conversation (no notify). Print
+// mode is a one-shot run — no idle hook, no dreamer.
+func wireDream(input *resolvedInput, assembly *sessionAssembly, session *agent.Session, taskRT *task.Runtime, sessionID string) *dream.Dreamer {
+	if input.nonTTY {
+		return nil
+	}
+	cfg := dream.BuildAgentConfig(input.cwd, assembly.chatModel,
+		func(m agentcore.ChatModel) agentcore.ContextManager {
+			return newSubAgentContextManager(m, assembly.settings.ContextWindow)
+		}, sessionID)
+	dreamer := dream.New(dream.Config{
+		MemoryDir:      config.MemoryDir(input.cwd),
+		SessionsDir:    config.SessionsDir(input.cwd),
+		Settings:       assembly.settings.Dream,
+		CurrentSession: session.SessionID,
+		TaskRT:         taskRT,
+		Runner:         subagent.New(cfg),
+	})
+	session.SetIdleHook(dreamer.MaybeStart)
+	return dreamer
 }
 
 // wireWorktreeTools binds the Runtime worktree backend onto the enter/exit

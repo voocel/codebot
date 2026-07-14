@@ -48,6 +48,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		MCPManager:     rt.MCPManager,
 		MCPServers:     rt.MCPServers,
 		CronStore:      rt.CronStore,
+		Dreamer:        rt.Dreamer,
 		History:        newInputHistory(sess, cwd),
 	}
 	adapter.Commands = adapter.loadPluginCommands()

@@ -11,6 +11,7 @@ import (
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/cron"
+	"github.com/voocel/codebot/internal/dream"
 	"github.com/voocel/codebot/internal/goal"
 	"github.com/voocel/codebot/internal/hooks"
 	mcpclient "github.com/voocel/codebot/internal/mcp"
@@ -60,6 +61,7 @@ type Runtime struct {
 	MCPServers    map[string]mcpclient.ServerConfig // for async connection in TUI
 	HookRunner    *hooks.Runner                     // nil if no hooks configured
 	EnvHint       string                            // non-empty when credentials come from environment variable
+	Dreamer       *dream.Dreamer                    // background memory consolidation; nil in print mode
 
 	// Frontend-neutral session lifecycle, assembled by wireLifecycle.
 	// Restored from the session snapshot before any frontend runs.

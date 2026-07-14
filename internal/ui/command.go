@@ -110,6 +110,7 @@ func (a *App) builtinCommands() []commands.Command {
 		},
 		commands.Reload(a.reloadAll),
 		commands.Memory(a.Cwd, func() { a.Session.Reload() }),
+		commands.Dream(a.Dreamer),
 		commands.Loop(a.CronStore),
 		commands.Undo(a.Session),
 		commands.Redo(a.Session),

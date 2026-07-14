@@ -115,6 +115,7 @@ type Session struct {
 	skillUsage        *skill.UsageTracker
 	overlays          overlayStore
 	beforePrompt      func()
+	idleHook          func()
 	planModeSignal    func() PlanModeSignal
 	goalSignal        func() goal.Signal
 	goalUsageLimit    func(string) (goal.State, error)

@@ -105,6 +105,17 @@
     "secret_key": "sk-lf-..."
   },
 
+  // Background memory consolidation ("dream"). When the session goes idle, a
+  // restricted subagent reorganizes ~/.codebot/projects/<id>/memory/ — merging
+  // duplicates, fixing stale facts, pruning the MEMORY.md index. Fires at most
+  // once per min_hours, and only after min_sessions other sessions have been
+  // active since the last run. /dream triggers one immediately. On by default.
+  "dream": {
+    "enabled": true,
+    "min_hours": 24,
+    "min_sessions": 5
+  },
+
   // Hooks: commands/prompts/http triggered on lifecycle events.
   // Global + project-level hooks are merged (appended, not replaced).
   // A hook may print JSON to stdout to influence the run:

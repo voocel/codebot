@@ -400,6 +400,13 @@ func (s *Session) SetBeforePrompt(fn func()) {
 	s.beforePrompt = fn
 }
 
+// SetIdleHook registers a callback invoked after each turn fully settles
+// (EventAgentEnd with no pending compaction resume or queued reminder).
+// Must be cheap on its fast path — it runs on the event dispatch goroutine.
+func (s *Session) SetIdleHook(fn func()) {
+	s.idleHook = fn
+}
+
 func (s *Session) Steer(text string) {
 	s.agent.Steer(agentcore.UserMsg(text))
 }
