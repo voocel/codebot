@@ -1,123 +1,74 @@
 package config
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 
-	"github.com/voocel/codebot/internal/provider"
+	"github.com/voocel/codebot/internal/diag"
 )
 
-var providerList = []struct {
-	key  string
-	name string
-}{
-	{"openai", "OpenAI"},
-	{"anthropic", "Anthropic"},
-	{"gemini", "Google Gemini"},
-	{"openrouter", "OpenRouter"},
-	{"deepseek", "DeepSeek"},
+// setup.go — first-run configuration logic. The interactive wizard itself
+// lives in the TUI (internal/ui/tui/onboarding.go); this file owns detection
+// and persistence so the flow stays testable without a terminal.
+
+// SetupChoice is the input collected by the onboarding wizard.
+type SetupChoice struct {
+	Provider string // provider key, e.g. "anthropic", or a custom name
+	Type     string // protocol type for custom providers; empty = derive from name
+	BaseURL  string // optional custom endpoint
+	APIKey   string
+	Model    string // exact model id; required — hardcoded defaults go stale
 }
 
-// RunSetup runs an interactive first-time configuration wizard.
-func RunSetup(settings Resolved) error {
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Println("\nWelcome to codebot! Let's configure your settings.")
-
-	// Provider selection: predefined + custom option.
-	fmt.Println("Select provider:")
-	for i, p := range providerList {
-		marker := ""
-		if p.key == settings.Provider {
-			marker = " (current)"
-		}
-		fmt.Printf("  %d. %s%s\n", i+1, p.name, marker)
-	}
-	fmt.Printf("  %d. Other (custom)\n", len(providerList)+1)
-	fmt.Print("\n> ")
-	totalChoices := len(providerList) + 1
-	providerIdx := readChoice(reader, totalChoices, 1)
-
-	var provName, provDisplayName, provType, baseURL string
-	if providerIdx <= len(providerList) {
-		p := providerList[providerIdx-1]
-		provName = p.key
-		provDisplayName = p.name
-	} else {
-		// Custom provider.
-		fmt.Print("\nProvider name (e.g. my-proxy): ")
-		provName = readLine(reader)
-		if provName == "" {
-			return fmt.Errorf("provider name is required")
-		}
-		provDisplayName = provName
-
-		fmt.Printf("Protocol type (%s) [openai]: ", strings.Join(provider.SupportedTypeNames(), "/"))
-		provType = strings.ToLower(readLine(reader))
-		switch {
-		case provType == "":
-			provType = "openai"
-		case !provider.IsSupportedType(provType):
-			return fmt.Errorf("unsupported protocol type %q (allowed: %s)", provType, strings.Join(provider.SupportedTypeNames(), ", "))
-		}
-
-		fmt.Print("Base URL: ")
-		baseURL = readLine(reader)
-	}
-
-	fmt.Printf("\nEnter %s API key: ", provDisplayName)
-	apiKey := readLine(reader)
-	if apiKey == "" {
-		return fmt.Errorf("API key is required")
-	}
-
-	// Auto-resolve default model.
-	resolvedType, err := ResolveProviderType(provName, provType)
-	if err != nil {
-		return err
-	}
-	model := DefaultModelName(resolvedType)
-
-	// Build config.
-	pc := &ProviderConfig{APIKey: apiKey, Models: []string{model}}
-	if provType != "" {
-		pc.Type = provType
-	}
-	if baseURL != "" {
-		pc.BaseURL = baseURL
-	}
-
-	s := Settings{
-		Provider:  &provName,
-		Model:     &model,
-		Providers: map[string]*ProviderConfig{provName: pc},
-	}
-
-	if err := SaveSettings(s); err != nil {
-		return fmt.Errorf("save settings: %w", err)
-	}
-
-	fmt.Printf("\nSettings saved to %s\n", filepath.Join(UserConfigDir(), "settings.json"))
-	fmt.Printf("Using model: %s (edit settings.json to customize)\n\n", model)
-	return nil
+// SetupOutcome reports what ApplySetup wrote.
+type SetupOutcome struct {
+	Provider string
+	Model    string
+	Path     string // settings.json that was written
 }
 
-func readLine(reader *bufio.Reader) string {
-	line, _ := reader.ReadString('\n')
-	return strings.TrimSpace(line)
+// NeedsSetup reports whether no settings file exists (global or project).
+// Credentials come exclusively from settings.json, so a missing file means
+// the interactive frontend must run onboarding before booting the runtime.
+func NeedsSetup(cwd string) bool {
+	return !GlobalConfigExists() && !ProjectConfigExists(cwd)
 }
 
-func readChoice(reader *bufio.Reader, max, defaultVal int) int {
-	line := readLine(reader)
-	if line == "" {
-		return defaultVal
+// ApplySetup persists the choice into ~/.codebot/settings.json. It patches
+// rather than overwrites, so unrelated fields in an existing file survive a
+// re-run (codebot -setup).
+func ApplySetup(c SetupChoice) (SetupOutcome, error) {
+	if c.Provider == "" {
+		return SetupOutcome{}, fmt.Errorf("provider is required: %w", diag.ErrConfig)
 	}
-	var n int
-	if _, err := fmt.Sscanf(line, "%d", &n); err != nil || n < 1 || n > max {
-		return defaultVal
+	if c.APIKey == "" {
+		return SetupOutcome{}, fmt.Errorf("API key is required: %w", diag.ErrConfig)
 	}
-	return n
+	if c.Model == "" {
+		return SetupOutcome{}, fmt.Errorf("model is required: %w", diag.ErrConfig)
+	}
+	if _, err := ResolveProviderType(c.Provider, c.Type); err != nil {
+		return SetupOutcome{}, err
+	}
+
+	pc := &ProviderConfig{APIKey: c.APIKey, Models: []string{c.Model}}
+	if c.Type != "" {
+		pc.Type = c.Type
+	}
+	if c.BaseURL != "" {
+		pc.BaseURL = c.BaseURL
+	}
+	patch := Settings{
+		Provider:  &c.Provider,
+		Model:     &c.Model,
+		Providers: map[string]*ProviderConfig{c.Provider: pc},
+	}
+	if err := PatchGlobalSettings(patch); err != nil {
+		return SetupOutcome{}, fmt.Errorf("save settings: %w", err)
+	}
+	return SetupOutcome{
+		Provider: c.Provider,
+		Model:    c.Model,
+		Path:     filepath.Join(UserConfigDir(), "settings.json"),
+	}, nil
 }

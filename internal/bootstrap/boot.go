@@ -60,7 +60,6 @@ type Runtime struct {
 	MCPManager    *mcpclient.Manager
 	MCPServers    map[string]mcpclient.ServerConfig // for async connection in TUI
 	HookRunner    *hooks.Runner                     // nil if no hooks configured
-	EnvHint       string                            // non-empty when credentials come from environment variable
 	Dreamer       *dream.Dreamer                    // background memory consolidation; nil in print mode
 
 	// Frontend-neutral session lifecycle, assembled by wireLifecycle.

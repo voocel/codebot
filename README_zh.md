@@ -90,12 +90,10 @@ cd codebot && go build -o codebot ./cmd/codebot
 ## 快速开始
 
 ```bash
-# 设置 API Key 并运行
-export ANTHROPIC_API_KEY=sk-ant-...
 codebot
 ```
 
-支持的环境变量：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`OPENROUTER_API_KEY`、`GEMINI_API_KEY`、`DEEPSEEK_API_KEY`。更多配置项参考 [settings.example.jsonc](settings.example.jsonc)。
+首次运行会进入配置向导：选择 provider、填写模型 id、粘贴 API Key，全部保存到 `~/.codebot/settings.json`（配置的唯一来源），之后可随时用 `codebot -setup` 重新配置。更多配置项参考 [settings.example.jsonc](settings.example.jsonc)。
 
 OpenRouter 也可以作为一等 provider 使用，在 `settings.json` 中这样配置：
 

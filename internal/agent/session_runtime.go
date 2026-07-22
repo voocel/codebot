@@ -885,14 +885,16 @@ func resolveThinkingLevelForModelStrict(model agentcore.ChatModel, level string)
 	return provider.ResolveThinkingLevel(model, level)
 }
 
+// resolveCredentials returns provider credentials from settings only — no
+// environment fallback.
 func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 	s.mu.Lock()
 	pc, ok := s.providers[prov]
 	s.mu.Unlock()
-	if ok && pc.APIKey != "" {
+	if ok {
 		return pc.APIKey, pc.BaseURL
 	}
-	return config.EnvCredentials(prov)
+	return "", ""
 }
 
 // Reset closes the current session log and starts a fresh session in the same cwd.

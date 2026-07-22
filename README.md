@@ -90,12 +90,10 @@ cd codebot && go build -o codebot ./cmd/codebot
 ## Quick Start
 
 ```bash
-# Set API key and run
-export ANTHROPIC_API_KEY=sk-ant-...
 codebot
 ```
 
-Supported environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`. For more options see [settings.example.jsonc](settings.example.jsonc).
+The first run launches a setup wizard: pick a provider, type a model id, paste your API key. Everything lands in `~/.codebot/settings.json` — the single source of configuration — and can be re-run anytime with `codebot -setup`. For more options see [settings.example.jsonc](settings.example.jsonc).
 
 OpenRouter can be used as a first-class provider in `settings.json`:
 

@@ -170,12 +170,12 @@ type Resolved struct {
 }
 
 // ProviderCredentials returns API key and base URL for the given provider.
-// It checks the providers map first, then falls back to standard environment variables.
+// Credentials come exclusively from settings.json — no environment fallback.
 func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
-	if pc, ok := r.Providers[prov]; ok && pc.APIKey != "" {
+	if pc, ok := r.Providers[prov]; ok {
 		return pc.APIKey, pc.BaseURL
 	}
-	return EnvCredentials(prov)
+	return "", ""
 }
 
 // ProviderExtra returns provider-level litellm config for the given provider.
@@ -197,55 +197,6 @@ func (pc ProviderConfig) ProviderExtra() map[string]any {
 		extra["api"] = pc.API
 	}
 	return extra
-}
-
-// ProviderEnvKey derives the standard env var name for a provider's API key
-// (e.g. "openai" → "OPENAI_API_KEY"). All provider env conventions follow the
-// same UPPER(name)_API_KEY / UPPER(name)_BASE_URL pattern.
-func ProviderEnvKey(prov string) string {
-	return providerEnvVar(prov, "API_KEY")
-}
-
-// EnvCredentials reads the API key and base URL from the standard env vars
-// derived from the provider name.
-func EnvCredentials(prov string) (apiKey, baseURL string) {
-	prov = strings.TrimSpace(prov)
-	if prov == "" {
-		return "", ""
-	}
-	apiKey = os.Getenv(providerEnvVar(prov, "API_KEY"))
-	baseURL = os.Getenv(providerEnvVar(prov, "BASE_URL"))
-	return apiKey, baseURL
-}
-
-// DetectEnvProvider scans every registered litellm provider for available env
-// credentials. Returns the first match's provider name and env var key.
-func DetectEnvProvider() (providerName, envKey string) {
-	for _, prov := range provider.SupportedTypeNames() {
-		if key, _ := EnvCredentials(prov); key != "" {
-			return prov, providerEnvVar(prov, "API_KEY")
-		}
-	}
-	return "", ""
-}
-
-// providerEnvVar returns UPPER(name)_SUFFIX, with non-alphanumeric chars in
-// the provider name collapsed to underscores so names like "open-router" map
-// cleanly to "OPEN_ROUTER_API_KEY".
-func providerEnvVar(prov, suffix string) string {
-	var b strings.Builder
-	b.Grow(len(prov) + 1 + len(suffix))
-	for _, r := range strings.ToUpper(strings.TrimSpace(prov)) {
-		switch {
-		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	b.WriteByte('_')
-	b.WriteString(suffix)
-	return b.String()
 }
 
 // FormatModelID combines provider and model into "provider/model".
@@ -621,6 +572,9 @@ func PatchGlobalSettings(patch Settings) error {
 	if dir == "" {
 		return fmt.Errorf("cannot determine user config directory: %w", diag.ErrConfig)
 	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
 	settingsWriteMu.Lock()
 	defer settingsWriteMu.Unlock()
 	existing, err := loadSettingsFileStrict(filepath.Join(dir, "settings.json"))
@@ -723,31 +677,14 @@ func loadSettingsFileStrict(path string) (Settings, error) {
 	return s, nil
 }
 
-// DefaultModelName returns the default model name for a given provider.
-func DefaultModelName(prov string) string {
-	switch prov {
-	case "anthropic":
-		return "claude-sonnet-4-6"
-	case "gemini":
-		return "gemini-3.0-flash"
-	case "deepseek":
-		return "deepseek-chat"
-	default:
-		return "gpt-5-mini"
-	}
-}
-
 // ResolveAllStrict merges global and project settings, applies defaults, and
 // returns a fully resolved configuration. Refuses to continue
-// when an existing settings file is malformed.
+// when an existing settings file is malformed. Model is deliberately never
+// defaulted — hardcoded model names go stale; boot validates it is set.
 func ResolveAllStrict(cwd string) (Resolved, error) {
 	settings, err := LoadSettingsStrict(cwd)
 	if err != nil {
 		return Resolved{}, err
-	}
-
-	if settings.Model == "" {
-		settings.Model = DefaultModelName(settings.Provider)
 	}
 
 	if settings.SmallModel == "" {

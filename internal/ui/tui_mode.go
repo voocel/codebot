@@ -19,6 +19,12 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
+// RunOnboarding runs the first-run setup wizard. Called by main() before the
+// runtime boots when no configuration exists (or with -setup).
+func RunOnboarding() (tui.OnboardingResult, error) {
+	return tui.RunOnboarding()
+}
+
 // RunTUI executes interactive TUI mode. The frontend-neutral session
 // lifecycle (plan/goal managers, goal tool callbacks, MCP manager, cron
 // store) is already assembled by bootstrap; this function only adds the
@@ -58,8 +64,18 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 	cfg := adapter.Config()
 	cfg.Version = version
 	cfg.Provider = sess.Provider()
+	// "" means provider default: reasoning models are effectively thinking on
+	// auto, so surface that on the welcome card (same wording as /model).
+	cfg.ReasoningEffort = sess.Settings().ReasoningEffort
+	if cfg.ReasoningEffort == "" {
+		for _, lvl := range sess.AvailableThinkingLevelsFor(sess.Provider(), sess.ModelName()) {
+			if lvl != "" && lvl != "off" {
+				cfg.ReasoningEffort = "auto"
+				break
+			}
+		}
+	}
 	cfg.ContextWindow = rt.Settings.ContextWindow
-	cfg.EnvHint = rt.EnvHint
 	cfg.RestoredMessages = sess.Messages()
 	if snap := sess.TaskSnapshot(); snap.Total > 0 {
 		cfg.InitialTasks = &snap

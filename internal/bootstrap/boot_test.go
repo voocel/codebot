@@ -75,35 +75,27 @@ func TestBootNonTTYWithTestProvider(t *testing.T) {
 	}
 }
 
-func TestResolveInputEnvProviderDoesNotCreateSettingsFile(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+// TestResolveInputIgnoresEnvCredentials locks in the no-env-mode contract:
+// credentials come exclusively from settings.json, so an API key in the
+// environment alone must not boot.
+func TestResolveInputIgnoresEnvCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("OPENAI_API_KEY", "test-openai-key")
 
-	cwd := t.TempDir()
-	input, err := resolveInput(Options{
-		Cwd:        cwd,
+	_, err := resolveInput(Options{
+		Cwd:        t.TempDir(),
 		NonTTYMode: true,
 	})
-	if err != nil {
-		t.Fatalf("resolveInput() error: %v", err)
+	if err == nil {
+		t.Fatal("env API key alone must not satisfy boot")
 	}
-	defer input.sessionStore.Close()
-
-	if input.settings.Provider != "openai" {
-		t.Fatalf("provider = %q, want openai", input.settings.Provider)
+	if !errors.Is(err, diag.ErrConfig) {
+		t.Fatalf("expected diag.ErrConfig, got: %v", err)
 	}
-	if input.settings.SmallModel != input.settings.Model {
-		t.Fatalf("small model = %q, want %q", input.settings.SmallModel, input.settings.Model)
-	}
-	if input.envHint != "Using OPENAI_API_KEY from environment" {
-		t.Fatalf("envHint = %q", input.envHint)
-	}
-
-	if _, err := os.Stat(config.GlobalSettingsPath()); !os.IsNotExist(err) {
-		t.Fatalf("global settings file should not be created, stat err = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(cwd, ".codebot", "settings.json")); !os.IsNotExist(err) {
-		t.Fatalf("project settings file should not be created, stat err = %v", err)
+	if _, statErr := os.Stat(config.GlobalSettingsPath()); !os.IsNotExist(statErr) {
+		t.Fatalf("global settings file should not be created, stat err = %v", statErr)
 	}
 }
 

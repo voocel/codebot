@@ -182,7 +182,6 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		MCPManager:     services.mcpManager,
 		MCPServers:     services.mcpServers,
 		HookRunner:     assembly.hookRunner,
-		EnvHint:        input.envHint,
 		stopTeamPump:   stopPump,
 
 		originalRoots: services.approvalEngine.FilesystemRoots(),

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -31,7 +30,6 @@ type resolvedInput struct {
 	sessionStore      *storage.Store
 	sessionSnapshot   storage.ContextSnapshot
 	nonTTY            bool
-	envHint           string
 	telemetryShutdown func(context.Context) error
 	telemetryTracer   *telemetry.Tracer
 }
@@ -75,8 +73,7 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 		}
 	}
 
-	settings, envHint, err := ensureProviderSetup(cwd, settings, opts.NonTTYMode)
-	if err != nil {
+	if err := ensureProviderSetup(cwd, settings); err != nil {
 		return nil, err
 	}
 
@@ -105,53 +102,26 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 		sessionStore:      sessionStore,
 		sessionSnapshot:   sessionSnapshot,
 		nonTTY:            opts.NonTTYMode,
-		envHint:           envHint,
 		telemetryShutdown: telemetryShutdown,
 		telemetryTracer:   telemetryTracer,
 	}, nil
 }
 
-func ensureProviderSetup(cwd string, settings config.Resolved, nonTTY bool) (config.Resolved, string, error) {
-	configExists := config.GlobalConfigExists() || config.ProjectConfigExists(cwd)
-	if configExists {
-		if hasConfiguredProviderCredentials(settings, settings.Provider) {
-			return settings, "", nil
-		}
-		return settings, "", fmt.Errorf("configuration error: settings.provider=%q is missing or not configured in settings.json: %w", settings.Provider, diag.ErrConfig)
+// ensureProviderSetup validates that settings.json fully configures the
+// active provider. Credentials come exclusively from the config file; the
+// interactive first-run wizard runs in main() before Boot (tui.RunOnboarding),
+// so by the time we get here anything missing is an error, not a prompt.
+func ensureProviderSetup(cwd string, settings config.Resolved) error {
+	if !config.GlobalConfigExists() && !config.ProjectConfigExists(cwd) {
+		return fmt.Errorf("no configuration found; run codebot -setup to create one: %w", diag.ErrConfig)
 	}
-
-	apiKey, _ := settings.ProviderCredentials(settings.Provider)
-	if apiKey != "" {
-		return settings, envHintFor(settings), nil
+	if !hasConfiguredProviderCredentials(settings, settings.Provider) {
+		return fmt.Errorf("configuration error: settings.provider=%q is missing or not configured in settings.json: %w", settings.Provider, diag.ErrConfig)
 	}
-
-	if prov, envKey := config.DetectEnvProvider(); prov != "" {
-		settings.Provider = prov
-		settings.Model = config.DefaultModelName(prov)
-		settings.SmallModel = settings.Model
-		return settings, fmt.Sprintf("Using %s from environment", envKey), nil
+	if settings.Model == "" {
+		return fmt.Errorf("configuration error: model is not set in settings.json: %w", diag.ErrConfig)
 	}
-
-	if nonTTY {
-		return settings, "", fmt.Errorf("api key not set; set %s or configure providers in %s: %w",
-			config.ProviderEnvKey(settings.Provider), filepath.Join(config.UserConfigDir(), "settings.json"), diag.ErrConfig)
-	}
-
-	if err := config.RunSetup(settings); err != nil {
-		return settings, "", fmt.Errorf("setup failed: %w: %w", diag.ErrConfig, err)
-	}
-	resolved, err := config.ResolveAllStrict(cwd)
-	if err != nil {
-		return settings, "", err
-	}
-	return resolved, "", nil
-}
-
-func envHintFor(settings config.Resolved) string {
-	if pc, ok := settings.Providers[settings.Provider]; ok && pc.APIKey != "" {
-		return ""
-	}
-	return fmt.Sprintf("Using %s from environment", config.ProviderEnvKey(settings.Provider))
+	return nil
 }
 
 func hasConfiguredProviderCredentials(settings config.Resolved, provider string) bool {

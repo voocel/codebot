@@ -211,13 +211,13 @@ func newSubAgentContextManager(model agentcore.ChatModel, window int) agentcore.
 	})
 }
 
-// resolveFromProviders returns credentials for a provider from the map,
-// falling back to standard environment variables.
+// resolveFromProviders returns credentials for a provider from the settings
+// map. Credentials come exclusively from settings.json — no env fallback.
 func resolveFromProviders(providers map[string]config.ProviderConfig, prov string) (apiKey, baseURL string) {
-	if pc, ok := providers[prov]; ok && pc.APIKey != "" {
+	if pc, ok := providers[prov]; ok {
 		return pc.APIKey, pc.BaseURL
 	}
-	return config.EnvCredentials(prov)
+	return "", ""
 }
 
 func resolveExtraFromProviders(providers map[string]config.ProviderConfig, prov string) map[string]any {

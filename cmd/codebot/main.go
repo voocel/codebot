@@ -8,6 +8,7 @@ import (
 
 	"github.com/voocel/codebot/internal/acp"
 	"github.com/voocel/codebot/internal/bootstrap"
+	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui"
 )
 
@@ -54,6 +55,7 @@ func main() {
 	resumeFlag := flag.Bool("r", false, "Select a session to resume")
 	modeFlag := flag.String("mode", "balanced", "Permission mode: strict, balanced, accept-edits, trust")
 	acpFlag := flag.Bool("acp", false, "Run as an ACP (Agent Client Protocol) agent over stdio")
+	setupFlag := flag.Bool("setup", false, "Run the setup wizard (provider + model + API key)")
 	flag.Parse()
 
 	fillBuildInfo()
@@ -65,6 +67,26 @@ func main() {
 
 	printMode := *printFlag || *jsonFlag
 	acpMode := *acpFlag
+
+	// First-run onboarding happens before Boot: the wizard writes
+	// ~/.codebot/settings.json, then the normal boot path picks it up.
+	if interactive := !printMode && !acpMode; interactive {
+		cwd, _ := os.Getwd()
+		if *setupFlag || config.NeedsSetup(cwd) {
+			result, err := ui.RunOnboarding()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, formatCLIError(err))
+				os.Exit(1)
+			}
+			if !result.Saved {
+				fmt.Println("Setup cancelled — run codebot again anytime.")
+				return
+			}
+		}
+	} else if *setupFlag {
+		fmt.Fprintln(os.Stderr, "-setup requires an interactive terminal")
+		os.Exit(1)
+	}
 
 	opts := bootstrap.Options{
 		Continue:     *continueFlag,

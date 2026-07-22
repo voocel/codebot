@@ -19,11 +19,11 @@ type Config struct {
 	Placeholder          string
 	Version              string
 	Provider             string
+	ReasoningEffort      string // current thinking level shown on the welcome card
 	ContextWindow        int
 	Cwd                  string
 	PlansDir             string // absolute path to the plan files directory; enables hidden rendering for write/edit on plan files
 	GitBranch            string
-	EnvHint              string                   // shown below welcome when using env var credentials
 	History              *storage.History         // input history (Up/Down navigation)
 	InitialTasks         *storage.TaskSnapshot    // initial task snapshot restored before first render
 	RestoredMessages     []agentcore.AgentMessage // messages restored from a previous session (rendered on Init)
@@ -101,12 +101,13 @@ type runStats struct {
 
 // Deps holds external dependencies and static configuration for the TUI.
 type Deps struct {
-	Driver        Driver
-	ModelName     string
-	ContextWindow int
-	Provider      string
-	Version       string
-	config        Config
+	Driver          Driver
+	ModelName       string
+	ContextWindow   int
+	Provider        string
+	ReasoningEffort string // welcome-chip display; "" or "off" hides it
+	Version         string
+	config          Config
 }
 
 // State holds mutable runtime state for the TUI.
@@ -141,7 +142,6 @@ type State struct {
 	PlansDir    string
 	GitBranch   string
 	ShowWelcome bool
-	EnvHint     string // env var hint shown below welcome
 	RunStats    runStats
 	Images      []agentcore.ContentBlock // attached images (from Ctrl+V clipboard paste)
 	ImageCursor int                      // -1 = not selecting; 0+ = selected image index
@@ -292,12 +292,13 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 
 	return &Model{
 		Deps: Deps{
-			Driver:        driver,
-			ModelName:     modelName,
-			ContextWindow: c.ContextWindow,
-			Provider:      c.Provider,
-			Version:       c.Version,
-			config:        c,
+			Driver:          driver,
+			ModelName:       modelName,
+			ContextWindow:   c.ContextWindow,
+			Provider:        c.Provider,
+			ReasoningEffort: c.ReasoningEffort,
+			Version:         c.Version,
+			config:          c,
 		},
 		State: State{
 			Spinner:         sp,
@@ -315,7 +316,6 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 			PlansDir:        c.PlansDir,
 			GitBranch:       c.GitBranch,
 			ShowWelcome:     true,
-			EnvHint:         c.EnvHint,
 			ImageCursor:     -1,
 			Markdown:        markdown.NewRenderer(80),
 			Tasks:           initialTasks,

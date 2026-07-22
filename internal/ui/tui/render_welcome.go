@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/truncate"
 )
 
 var (
@@ -110,6 +111,62 @@ func renderWordmark() string {
 
 const wordmarkWidth = 41 // see renderWordmark — must match the glyph layout
 
+// frameCard wraps pre-rendered body lines in a rounded BrandSoft frame with an
+// embedded title tag, the card chrome shared by the welcome banner and the
+// onboarding wizard. Body lines are padded to width-4 inner columns; a line
+// wider than that is truncated (ANSI-aware) so the frame can never break.
+func frameCard(titleTag string, body []string, width int) string {
+	bc := lipgloss.NewStyle().Foreground(BrandSoft)
+	innerW := width - 4
+	topDash := max(width-lipgloss.Width(titleTag)-5, 1)
+	framed := make([]string, 0, len(body)+2)
+	framed = append(framed, bc.Render("╭─ ")+titleTag+" "+bc.Render(strings.Repeat("─", topDash)+"╮"))
+	for _, line := range body {
+		if lipgloss.Width(line) > innerW {
+			line = truncate.StringWithTail(line, uint(innerW), "…")
+		}
+		pad := max(innerW-lipgloss.Width(line), 0)
+		framed = append(framed, bc.Render("│ ")+line+strings.Repeat(" ", pad)+bc.Render(" │"))
+	}
+	framed = append(framed, bc.Render("╰"+strings.Repeat("─", width-2)+"╯"))
+	return strings.Join(framed, "\n")
+}
+
+// pairClamp clamps two chips to jointly fit one line of the given width
+// (separator included): if both fit they pass through; otherwise the shorter
+// chip keeps its natural size (guaranteed at least half the line) and the
+// longer one is middle-clamped into the remainder.
+func pairClamp(a, b string, width int) (string, string) {
+	const sepW = 3
+	if a == "" || b == "" {
+		return middleClamp(a, width), middleClamp(b, width)
+	}
+	avail := width - sepW
+	wa, wb := len([]rune(a)), len([]rune(b))
+	if wa+wb <= avail {
+		return a, b
+	}
+	if wa <= wb {
+		a = middleClamp(a, max(avail/2, avail-wb))
+		return a, middleClamp(b, avail-len([]rune(a)))
+	}
+	b = middleClamp(b, max(avail/2, avail-wa))
+	return middleClamp(a, avail-len([]rune(b))), b
+}
+
+// middleClamp truncates s to at most w runes with a middle ellipsis, keeping
+// both ends visible — for paths and model ids the head and tail carry the
+// meaning, the middle is expendable.
+func middleClamp(s string, w int) string {
+	r := []rune(s)
+	if len(r) <= w || w <= 1 {
+		return s
+	}
+	head := (w - 1) / 2
+	tail := w - 1 - head
+	return string(r[:head]) + "…" + string(r[len(r)-tail:])
+}
+
 func (m *Model) renderWelcome() string {
 	// Sized to hug the widest content (wordmark 41 + tagline 44 + subline 48)
 	// plus light breathing padding. Capped tighter than before so the card
@@ -159,21 +216,42 @@ func (m *Model) renderWelcome() string {
 		center(lipgloss.Width(hint), hint),
 	}
 
-	// --- footer chips (provider · model · path · branch) ---
-	var footerBits []string
-	if m.Provider != "" {
-		footerBits = append(footerBits, ContextChipAccentStyle.Render(m.Provider))
+	// --- footer: two fixed lines — provider · model, then path · branch ---
+	// pairClamp budgets each line jointly (the short chip keeps its natural
+	// size, the long one takes the rest), so a deep path or long model id
+	// shrinks with a middle ellipsis instead of pushing the border out.
+	sep := ContextChipStyle.Render(" · ")
+	var footerLines []string
+	appendPair := func(a, b string, styleA, styleB lipgloss.Style) {
+		a, b = pairClamp(a, b, innerW)
+		var parts []string
+		if a != "" {
+			parts = append(parts, styleA.Render(a))
+		}
+		if b != "" {
+			parts = append(parts, styleB.Render(b))
+		}
+		if len(parts) > 0 {
+			footerLines = append(footerLines, strings.Join(parts, sep))
+		}
 	}
+	var modelChip, pathChip, branchChip string
 	if m.ModelName != "" {
-		footerBits = append(footerBits, ContextChipStyle.Render(m.formatModelChip()))
+		modelChip = m.formatModelChip()
+		// Thinking level rides on the model chip — same muted style, and
+		// pairClamp keeps the tail visible when the model id runs long.
+		if m.ReasoningEffort != "" && m.ReasoningEffort != "off" {
+			modelChip += " · thinking " + m.ReasoningEffort
+		}
 	}
 	if m.Cwd != "" {
-		footerBits = append(footerBits, ContextChipStyle.Render(ShortenPath(m.Cwd)))
+		pathChip = ShortenPath(m.Cwd)
 	}
 	if m.GitBranch != "" {
-		footerBits = append(footerBits, ContextChipStyle.Render("branch "+m.GitBranch))
+		branchChip = "branch " + m.GitBranch
 	}
-	footer := strings.Join(footerBits, ContextChipStyle.Render(" · "))
+	appendPair(m.Provider, modelChip, ContextChipAccentStyle, ContextChipStyle)
+	appendPair(pathChip, branchChip, ContextChipStyle, ContextChipStyle)
 
 	// --- assemble ---
 	var body []string
@@ -181,31 +259,16 @@ func (m *Model) renderWelcome() string {
 	body = append(body, logoLines...)
 	body = append(body, "")
 	body = append(body, taglineLines...)
-	if footer != "" {
+	if len(footerLines) > 0 {
 		body = append(body, "")
-		body = append(body, center(lipgloss.Width(footer), footer))
+		for _, line := range footerLines {
+			body = append(body, center(lipgloss.Width(line), line))
+		}
 	}
 	body = append(body, "")
 
-	// Framed rounded box with embedded title tag.
 	titleTag := WelcomeKickerStyle.Render("codebot") + " " + ContextChipAccentStyle.Render(ver)
-	titleW := lipgloss.Width(titleTag)
-	topDash := max(width-titleW-5, 1)
-	topLine := bc.Render("╭─ ") + titleTag + " " + bc.Render(strings.Repeat("─", topDash)+"╮")
-	botLine := bc.Render("╰" + strings.Repeat("─", width-2) + "╯")
-
-	framed := make([]string, 0, len(body)+2)
-	framed = append(framed, topLine)
-	for _, line := range body {
-		pad := max(innerW-lipgloss.Width(line), 0)
-		framed = append(framed, bc.Render("│ ")+line+strings.Repeat(" ", pad)+bc.Render(" │"))
-	}
-	framed = append(framed, botLine)
-
-	result := "\n" + strings.Join(framed, "\n")
-	if m.EnvHint != "" {
-		result += "\n" + InputHintStyle.Render("  "+m.EnvHint)
-	}
+	result := "\n" + frameCard(titleTag, body, width)
 	if m.MCPLoading {
 		result += "\n" + InputHintStyle.Render("  ") + m.ToolSpinner.View() + InputHintStyle.Render(" MCP servers connecting...")
 	}
