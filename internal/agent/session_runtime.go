@@ -140,6 +140,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 
 // buildUserMessage creates a user message with reminders prepended as text blocks.
 func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentcore.Message {
+	recallReminders := s.memoryRecallReminders(userBlocks)
 	s.mu.Lock()
 	runtimeReminders := append([]string(nil), s.reminders.runtime...)
 	s.reminders.runtime = nil
@@ -147,7 +148,7 @@ func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentco
 	staticReminders := append([]string(nil), s.reminders.static...)
 	s.mu.Unlock()
 
-	if len(runtimeReminders) == 0 && len(staticReminders) == 0 {
+	if len(runtimeReminders) == 0 && len(staticReminders) == 0 && len(recallReminders) == 0 {
 		return agentcore.Message{
 			Role:      agentcore.RoleUser,
 			Content:   userBlocks,
@@ -155,11 +156,16 @@ func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentco
 		}
 	}
 
-	blocks := make([]agentcore.ContentBlock, 0, len(runtimeReminders)+len(staticReminders)+len(userBlocks))
+	blocks := make([]agentcore.ContentBlock, 0, len(runtimeReminders)+len(staticReminders)+len(recallReminders)+len(userBlocks))
 	for _, r := range runtimeReminders {
 		blocks = append(blocks, agentcore.TextBlock(r))
 	}
 	for _, r := range staticReminders {
+		blocks = append(blocks, agentcore.TextBlock(r))
+	}
+	// Recalled memories sit closest to the user text — the freshest, most
+	// specific context right next to the question it relates to.
+	for _, r := range recallReminders {
 		blocks = append(blocks, agentcore.TextBlock(r))
 	}
 	blocks = append(blocks, userBlocks...)
@@ -168,6 +174,65 @@ func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentco
 		Content:   blocks,
 		Timestamp: time.Now(),
 	}
+}
+
+const (
+	memoryRecallMaxFiles     = 3         // files surfaced per prompt
+	memoryRecallSessionBytes = 60 * 1024 // recall budget per context window
+)
+
+// memoryRecallReminders surfaces auto-memory topic files relevant to the
+// user's message as system reminders. Recall is lexical (no model call), so
+// it runs synchronously on the prompt path; a session-scoped dedup set and
+// byte budget keep repeated prompts from re-injecting the same files. Both
+// reset when the context window resets (clear, reset, compaction).
+func (s *Session) memoryRecallReminders(userBlocks []agentcore.ContentBlock) []string {
+	var text string
+	for _, b := range userBlocks {
+		if b.Type == agentcore.ContentText && b.Text != "" {
+			text = b.Text
+		}
+	}
+	s.mu.Lock()
+	dir := s.contextFiles.MemoryDir
+	budgetLeft := memoryRecallSessionBytes - s.memRecallBytes
+	exclude := make(map[string]bool, len(s.memRecallSurfaced))
+	for p := range s.memRecallSurfaced {
+		exclude[p] = true
+	}
+	s.mu.Unlock()
+	if dir == "" || text == "" || budgetLeft <= 0 {
+		return nil
+	}
+
+	recalls := config.RecallMemories(dir, text, exclude, memoryRecallMaxFiles)
+	if len(recalls) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(recalls))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range recalls {
+		if s.memRecallBytes >= memoryRecallSessionBytes {
+			break
+		}
+		if s.memRecallSurfaced == nil {
+			s.memRecallSurfaced = make(map[string]bool)
+		}
+		s.memRecallSurfaced[r.Path] = true
+		s.memRecallBytes += len(r.Content)
+		out = append(out, config.FormatMemoryRecallReminder(r))
+	}
+	return out
+}
+
+// resetMemoryRecall clears the recall dedup set and budget — call whenever
+// the context window is rebuilt and previously injected memories are gone.
+func (s *Session) resetMemoryRecall() {
+	s.mu.Lock()
+	s.memRecallSurfaced = nil
+	s.memRecallBytes = 0
+	s.mu.Unlock()
 }
 
 func (s *Session) queueRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) {
@@ -431,6 +496,7 @@ func (s *Session) ClearConversation() {
 	if s.fileReadState != nil {
 		s.fileReadState.Reset()
 	}
+	s.resetMemoryRecall()
 }
 
 func (s *Session) applyTemporarySkillModel(model string) error {

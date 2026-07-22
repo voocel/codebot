@@ -1,6 +1,9 @@
 package dream
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+)
 
 // dreamSystemPrompt fixes the dream sub-agent's role and tool boundary. The
 // constraints stated here are only a hint — the hard enforcement is in
@@ -34,13 +37,15 @@ Sessions active since the last consolidation: %d
 Look for new information worth persisting, in priority order:
 
 1. Existing memories that drifted — facts contradicted by what the codebase shows now
-2. Transcript search — grep the *.jsonl transcripts for narrow terms you already suspect matter
+2. The session digest at %s — its "Errors & Corrections" and "Learnings" sections are already-distilled signal from recent sessions; read it before touching transcripts
+3. Transcript search — grep the *.jsonl transcripts for narrow terms you already suspect matter
 
 Do not exhaustively read transcripts. Look only for things you already suspect are important.
 
 ## Phase 3 — Consolidate
 
 - Merge new signal INTO existing topic files rather than creating near-duplicates
+- Ensure every topic file starts with a frontmatter header (name, description, type: user | feedback | project | reference) — add one to files missing it; the description drives future recall, so make it specific
 - Convert relative dates ("yesterday", "last week") to absolute dates so they stay interpretable
 - Delete facts that have been disproven — fix them at the source
 - Keep detailed notes in topic files (e.g. debugging.md, patterns.md), never in MEMORY.md
@@ -54,5 +59,5 @@ MEMORY.md is injected into every conversation and hard-truncated at 200 lines �
 - Resolve contradictions — if two files disagree, fix the wrong one
 
 Return a brief summary of what you consolidated, updated, or pruned. If memories are already tight, say so and change nothing.`,
-		memoryDir, transcriptDir, sessionsTouched)
+		memoryDir, transcriptDir, sessionsTouched, filepath.Join(transcriptDir, "session-memory.md"))
 }

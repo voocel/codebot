@@ -650,18 +650,6 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-func loadSettingsFile(path string) Settings {
-	var s Settings
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return s
-	}
-	if err := json.Unmarshal(data, &s); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: malformed %s: %v\n", path, err)
-	}
-	return s
-}
-
 func loadSettingsFileStrict(path string) (Settings, error) {
 	var s Settings
 	data, err := os.ReadFile(path)

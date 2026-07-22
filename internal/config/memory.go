@@ -74,17 +74,37 @@ As you work, consult your memory files to build on previous experience.
 - Update or remove memories that turn out to be wrong or outdated
 - Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.
 
+## Topic file format:
+Start every topic file with a frontmatter header. Relevant topic files are
+recalled into future conversations by matching against this header, so a vague
+description means the memory is never found again:
+
+`+"```markdown"+`
+---
+name: short-kebab-case-slug
+description: one specific line — what future sessions match against to recall this file
+type: user | feedback | project | reference
+---
+
+<the notes themselves>
+`+"```"+`
+
+Types: `+"`user`"+` — who the user is (role, expertise, preferences); `+"`feedback`"+` — corrections and confirmed approaches, with the why; `+"`project`"+` — ongoing goals and constraints not derivable from the code; `+"`reference`"+` — pointers to external resources.
+
 ## What to save:
 - Stable patterns and conventions confirmed across multiple interactions
-- Key architectural decisions, important file paths, and project structure
+- Key architectural decisions and their rationale — the why that the code alone does not show
 - User preferences for workflow, tools, and communication style
 - Solutions to recurring problems and debugging insights
 
 ## What NOT to save:
+- Anything derivable from the repo itself: code structure, file listings, what a function does, git history
 - Session-specific context (current task details, in-progress work, temporary state)
 - Information that might be incomplete — verify against project docs before writing
 - Anything that duplicates or contradicts existing AGENTS.md instructions
 - Speculative or unverified conclusions from reading a single file
+
+These exclusions hold even when the user explicitly asks you to remember such content — ask what the non-obvious part is and save that instead.
 
 ## Explicit user requests:
 - When the user asks you to remember something across sessions (e.g., "always use bun", "never auto-commit"), save it — no need to wait for multiple interactions

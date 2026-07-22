@@ -424,7 +424,7 @@ func BuildReminders(ctx ContextFiles, skills []skill.Spec) []string {
 			// first session before any memory has been written.
 			body = "Your MEMORY.md is currently empty. When you save new memories, they will appear here."
 		}
-		reminders = append(reminders, "<system-reminder>\nContents of "+memPath+" (auto-memory, persists across conversations):\n\n"+body+"\n</system-reminder>")
+		reminders = append(reminders, "<system-reminder>\nContents of "+memPath+" (auto-memory, persists across conversations):\n\n"+body+"\n\nMemories reflect what was true when they were written. Before relying on one, verify that the files, functions, or flags it mentions still exist — a memory saying X exists is not the same as X existing now.\n</system-reminder>")
 	}
 	return reminders
 }

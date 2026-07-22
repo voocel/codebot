@@ -125,6 +125,8 @@ type Session struct {
 	skillAllowsSetter func([]string)
 	skillRuntime      skillRuntimeState
 	fileReadState     *agenttools.FileReadState
+	memRecallSurfaced map[string]bool // memory files already recall-injected this context window
+	memRecallBytes    int             // recall bytes injected this context window (budgeted)
 
 	frozenIdentity     string // block 1 — process-stable, never recomputed
 	frozenInstructions string // block 2 — process-stable, never recomputed
@@ -384,6 +386,8 @@ func (s *Session) resetHarnessStateLocked() {
 	s.dirtySeq = 0
 	s.metrics = newRuntimeMetrics()
 	s.skillRuntime = skillRuntimeState{}
+	s.memRecallSurfaced = nil
+	s.memRecallBytes = 0
 	// Drop file-read stamps along with the rest of the harness state. After
 	// a reset the LLM has no read history; keeping stamps would let write/edit
 	// validate against reads the LLM no longer remembers.

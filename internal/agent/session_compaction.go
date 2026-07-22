@@ -105,6 +105,9 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 	if err := c.session.agent.SetMessages(commit.Messages); err != nil {
 		return result, fmt.Errorf("set compacted messages: %w", err)
 	}
+	// Recalled memories were summarized away with the rest of the window —
+	// clear the dedup set and budget so they can resurface when relevant.
+	c.session.resetMemoryRecall()
 	result.Changed = true
 	result.TokensAfter = tokensAfter
 	return result, nil
