@@ -91,7 +91,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	// SystemOverride sessions leave frozenIdentity empty; in that case we
 	// pass nil so teammates degrade to their role block as the only system
 	// content rather than carrying an empty cache-controlled block.
-	if assembly.subagentTool != nil {
+	if assembly.subagents.tool != nil {
 		var baseBlocks []agentcore.SystemBlock
 		if assembly.frozenIdentity != "" {
 			baseBlocks = []agentcore.SystemBlock{
@@ -131,16 +131,16 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			&agent.TeammatePersist{Roster: services.rosterStore, Transcripts: services.transcripts},
 			&agent.TeammateIsolation{
 				RepoRoot: input.cwd,
-				Of:       assembly.agentIsolation,
+				Of:       assembly.subagents.isolation,
 			},
 		)
-		assembly.subagentTool.SetTeamSpawner(spawner)
+		assembly.subagents.tool.SetTeamSpawner(spawner)
 
 		// Fan one-shot / background sub-agent runs into the same event hub the
 		// teammate spawner feeds, so the live-preview modal lists and streams
 		// them too. Teammates publish via the spawner's onEvent; sub-agents via
 		// this observer — one hub, two producers.
-		assembly.subagentTool.SetEventObserver(agent.SubagentHubObserver(teammateEvents))
+		assembly.subagents.runner.SetEventObserver(agent.SubagentHubObserver(teammateEvents))
 
 		// Lazy teammate resume: boot does NO team work. Instead of eagerly
 		// re-spawning prior teammates, each wakes on demand the first time the
@@ -149,7 +149,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		// / roster upsert. A woken teammate joins the active (default) team; the
 		// prior team's display name is not restored.
 		if services.rosterStore != nil {
-			waker := agent.NewTeammateWaker(spawner, assembly.subagentTool.AgentConfig, teamReg, services.rosterStore, services.transcripts)
+			waker := agent.NewTeammateWaker(spawner, assembly.subagents.runner.AgentConfig, teamReg, services.rosterStore, services.transcripts)
 			for _, t := range teamTools {
 				if sm, ok := t.(*localtools.SendMessageTool); ok {
 					sm.SetWaker(waker)
@@ -196,7 +196,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 }
 
 // wireDream attaches background memory consolidation. The dream agent lives
-// in a private subagent.Tool instance: it is invisible to the main model and
+// in a private subagent.Runner: it is invisible to the main model and
 // its completion never feeds back into the conversation (no notify). Print
 // mode is a one-shot run — no idle hook, no dreamer.
 func wireDream(input *resolvedInput, assembly *sessionAssembly, session *agent.Session, taskRT *task.Runtime, sessionID string) *dream.Dreamer {
@@ -213,7 +213,7 @@ func wireDream(input *resolvedInput, assembly *sessionAssembly, session *agent.S
 		Settings:       assembly.settings.Dream,
 		CurrentSession: session.SessionID,
 		TaskRT:         taskRT,
-		Runner:         subagent.New(cfg),
+		Runner:         subagent.NewRunner(cfg),
 	})
 	session.SetIdleHook(dreamer.MaybeStart)
 	return dreamer
@@ -448,12 +448,12 @@ func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, service
 		}
 	}
 
-	assembly.subagentTool.SetTaskRuntime(taskRT)
-	assembly.subagentTool.SetNotifyFn(ag.FollowUp)
+	assembly.subagents.tool.SetTaskRuntime(taskRT)
+	assembly.subagents.tool.SetNotifyFn(session.EnqueueBackgroundResult)
 
 	sessionID := input.sessionStore.Header().SessionID
 	bgDir := filepath.Join(config.SessionsDir(input.cwd), sessionID, "bg")
-	assembly.subagentTool.SetBgOutputFactory(func(taskID, agentName string) (io.WriteCloser, string, error) {
+	assembly.subagents.tool.SetBgOutputFactory(func(taskID, agentName string) (io.WriteCloser, string, error) {
 		dir := filepath.Join(bgDir, taskID)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, "", err
@@ -470,7 +470,7 @@ func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, service
 
 	if assembly.bashTool != nil {
 		assembly.bashTool.SetTaskRuntime(taskRT)
-		assembly.bashTool.SetNotifyFn(ag.FollowUp)
+		assembly.bashTool.SetNotifyFn(session.EnqueueBackgroundResult)
 		assembly.bashTool.SetBgOutputFactory(func(shellID string) (io.WriteCloser, string, error) {
 			dir := filepath.Join(bgDir, shellID)
 			if err := os.MkdirAll(dir, 0o700); err != nil {

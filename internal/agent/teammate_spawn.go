@@ -256,6 +256,15 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 				hub.Publish(agentName, ev)
 			}
 		}
+		var commitMessage func(agentcore.AgentMessage) error
+		if persist != nil && persist.Transcripts != nil {
+			commitMessage = func(message agentcore.AgentMessage) error {
+				if err := persist.Transcripts.Append(agentName, []agentcore.AgentMessage{message}); err != nil {
+					return fmt.Errorf("append transcript for %q: %w", agentName, err)
+				}
+				return nil
+			}
+		}
 		// Snapshot the dynamic block once per spawn — the teammate freezes it
 		// at construction and ignores subsequent leader-side changes.
 		var dynamicBlock *agentcore.SystemBlock
@@ -266,28 +275,7 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		// One teammate, one cache lineage: suffix the unique teammate name so
 		// same-type teammates don't share a routing bucket, while a resumed
 		// teammate (same name) keeps its warm cache.
-		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, teammateBaseBlocks(baseBlocks, wt), dynamicBlock, promptCacheKey(req.Config.PromptCacheKey, agentName))
-
-		// Wrap the executor to append each turn (the prompt the runner fed +
-		// the messages produced) to the teammate's transcript. This is the
-		// lossless capture point — identical to what the runner stitches into
-		// its history — unlike the drop-oldest event hub. Best-effort: a write
-		// failure is logged but never fails the turn.
-		if persist != nil && persist.Transcripts != nil {
-			base := executor
-			executor = func(ctx context.Context, msgs []agentcore.AgentMessage) ([]agentcore.AgentMessage, error) {
-				produced, err := base(ctx, msgs)
-				if len(msgs) > 0 {
-					turn := make([]agentcore.AgentMessage, 0, 1+len(produced))
-					turn = append(turn, msgs[len(msgs)-1])
-					turn = append(turn, produced...)
-					if werr := persist.Transcripts.Append(agentName, turn); werr != nil {
-						fmt.Fprintf(os.Stderr, "warning: transcript append for %q: %v\n", agentName, werr)
-					}
-				}
-				return produced, err
-			}
-		}
+		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, commitMessage, teammateBaseBlocks(baseBlocks, wt), dynamicBlock, promptCacheKey(req.Config.PromptCacheKey, agentName))
 
 		depth := task.DepthFromContext(ctx) + 1
 		if depth > task.MaxAgentDepth {
@@ -430,12 +418,14 @@ func mergeTeammateTools(base, extras []agentcore.Tool) []agentcore.Tool {
 // per turn would produce identical bytes for no benefit.
 //
 // onEvent fans every AgentLoop event to an external observer after the
-// executor's own bookkeeping; nil disables.
+// executor's own bookkeeping; nil disables. commitMessage runs synchronously
+// before a message enters context or starts a requested tool; teammate
+// transcript persistence is attached here.
 //
 // Identity (AgentName / TeamName / Color) is NOT plumbed through here —
 // agentcore/team.Runner wraps every Execute call with WithIdentity, so
 // tools that vary by caller read it from coreteam.IdentityFromContext.
-func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event), baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock, promptCacheKey string) team.TurnExecutor {
+func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event), commitMessage func(agentcore.AgentMessage) error, baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock, promptCacheKey string) team.TurnExecutor {
 	var ctxMgr agentcore.ContextManager
 	switch {
 	case cfg.ContextManagerFactory != nil:
@@ -468,6 +458,7 @@ func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model ag
 			MaxRetries:     cfg.MaxRetries,
 			ContextManager: ctxMgr,
 			ConvertToLLM:   cfg.ConvertToLLM,
+			CommitMessage:  commitMessage,
 			// Prompt caching pays off most here: a teammate is a long-lived
 			// conversation that replays its full history on every wake-up.
 			// The rolling breakpoint adds a third cache_control on top of the

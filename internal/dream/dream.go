@@ -23,8 +23,8 @@ const (
 	runTimeout = 10 * time.Minute
 )
 
-// agentRunner is the slice of *subagent.Tool the Dreamer needs; tests
-// inject a fake.
+// agentRunner is the narrow execution contract the Dreamer needs; tests inject
+// a fake.
 type agentRunner interface {
 	Run(ctx context.Context, agent, task string) (subagent.RunResult, error)
 }
@@ -41,7 +41,7 @@ type Config struct {
 	CurrentSession func() string
 	// TaskRT registers the run so /tasks shows it and can kill it.
 	TaskRT *task.Runtime
-	// Runner executes the dream agent; a private subagent.Tool instance so
+	// Runner executes the dream agent; a private subagent.Runner so
 	// the run never touches the main agent (no notify, no follow-up).
 	Runner agentRunner
 	// OnDone fires after a run finishes; err is nil on success. Optional.
@@ -144,6 +144,7 @@ func (d *Dreamer) start(prior time.Time, sessionsTouched int) string {
 }
 
 func (d *Dreamer) run(ctx context.Context, cancel context.CancelFunc, taskID string, prior time.Time, prompt string) {
+	defer d.cfg.TaskRT.Done(taskID)
 	defer cancel()
 	defer func() {
 		d.mu.Lock()

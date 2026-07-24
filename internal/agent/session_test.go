@@ -58,6 +58,54 @@ func (m *stubChatModel) GenerateStream(
 
 func (m *stubChatModel) SupportsTools() bool { return true }
 
+type toolCallThenStopModel struct {
+	calls atomic.Int32
+}
+
+func (m *toolCallThenStopModel) Generate(
+	context.Context,
+	[]agentcore.Message,
+	[]agentcore.ToolSpec,
+	...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	return nil, errors.New("Generate not used")
+}
+
+func (m *toolCallThenStopModel) GenerateStream(
+	context.Context,
+	[]agentcore.Message,
+	[]agentcore.ToolSpec,
+	...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	ch := make(chan agentcore.StreamEvent, 3)
+	if m.calls.Add(1) == 1 {
+		call := agentcore.ToolCall{
+			ID:   "persist-before-execute",
+			Name: "inspect_persistence",
+			Args: json.RawMessage(`{}`),
+		}
+		msg := agentcore.Message{
+			Role:       agentcore.RoleAssistant,
+			Content:    []agentcore.ContentBlock{agentcore.ToolCallBlock(call)},
+			StopReason: agentcore.StopReasonToolUse,
+		}
+		ch <- agentcore.StreamEvent{Type: agentcore.StreamEventToolCallStart, Message: msg}
+		ch <- agentcore.StreamEvent{Type: agentcore.StreamEventToolCallEnd, Message: msg, CompletedToolCall: &call}
+		ch <- agentcore.StreamEvent{Type: agentcore.StreamEventDone, Message: msg, StopReason: agentcore.StopReasonToolUse}
+	} else {
+		msg := agentcore.Message{
+			Role:       agentcore.RoleAssistant,
+			Content:    []agentcore.ContentBlock{agentcore.TextBlock("done")},
+			StopReason: agentcore.StopReasonStop,
+		}
+		ch <- agentcore.StreamEvent{Type: agentcore.StreamEventDone, Message: msg, StopReason: agentcore.StopReasonStop}
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *toolCallThenStopModel) SupportsTools() bool { return true }
+
 type noEffortChatModel struct {
 	stubChatModel
 }
@@ -364,6 +412,69 @@ func (m *countingChatModel) Calls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.callCount
+}
+
+type blockingChatModel struct {
+	started chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func newBlockingChatModel() *blockingChatModel {
+	return &blockingChatModel{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (m *blockingChatModel) Generate(
+	ctx context.Context,
+	_ []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	m.mu.Lock()
+	m.calls++
+	call := m.calls
+	m.mu.Unlock()
+	if call == 1 {
+		close(m.started)
+		select {
+		case <-m.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return &agentcore.LLMResponse{Message: assistantTextMessage(fmt.Sprintf("call %d", call))}, nil
+}
+
+func (m *blockingChatModel) GenerateStream(
+	ctx context.Context,
+	msgs []agentcore.Message,
+	tools []agentcore.ToolSpec,
+	opts ...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	resp, err := m.Generate(ctx, msgs, tools, opts...)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{
+		Type:       agentcore.StreamEventDone,
+		Message:    resp.Message,
+		StopReason: resp.Message.StopReason,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *blockingChatModel) SupportsTools() bool { return true }
+
+func (m *blockingChatModel) Calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 type captureChatModel struct {
@@ -705,6 +816,7 @@ func TestSetModelRejectsUnsupportedCurrentReasoningEffort(t *testing.T) {
 func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 
 	configDir := filepath.Join(home, ".codebot")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -779,6 +891,7 @@ func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 func TestSetReasoningEffortPersistsToProjectSettingsWhenPresent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 
 	globalDir := filepath.Join(home, ".codebot")
 	if err := os.MkdirAll(globalDir, 0o755); err != nil {
@@ -1289,6 +1402,120 @@ func TestRepeatedToolCallQueuesRuntimeReminder(t *testing.T) {
 	}
 }
 
+func TestSessionPersistsAssistantToolCallBeforeExecution(t *testing.T) {
+	dir := t.TempDir()
+	store, err := storage.NewManager(dir).Create(dir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	checked := make(chan error, 1)
+	tool := agentcore.NewFuncTool(
+		"inspect_persistence",
+		"verify the tool call is durable before execution",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			snapshot, err := store.BuildSnapshot()
+			if err != nil {
+				checked <- fmt.Errorf("build snapshot during tool execution: %w", err)
+				return nil, err
+			}
+			for _, message := range snapshot.Messages {
+				concrete, ok := message.(agentcore.Message)
+				if !ok || concrete.Role != agentcore.RoleAssistant {
+					continue
+				}
+				for _, call := range concrete.ToolCalls() {
+					if call.ID == "persist-before-execute" {
+						checked <- nil
+						return json.RawMessage(`"ok"`), nil
+					}
+				}
+			}
+			err = errors.New("assistant tool-call message was not persisted before execution")
+			checked <- err
+			return nil, err
+		},
+	)
+	model := &toolCallThenStopModel{}
+	ag := agentcore.NewAgent(
+		agentcore.WithModel(model),
+		agentcore.WithTools(tool),
+		agentcore.WithMaxTurns(3),
+	)
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Store:    store,
+		Settings: config.Resolved{MaxTurns: 3},
+		Cwd:      dir,
+		Tools:    []agentcore.Tool{tool},
+	})
+	t.Cleanup(s.Close)
+
+	if err := s.Prompt("run tool"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	ag.WaitForIdle()
+
+	select {
+	case err := <-checked:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tool did not verify persisted assistant call")
+	}
+}
+
+func TestSessionPersistenceFailurePreventsToolExecution(t *testing.T) {
+	dir := t.TempDir()
+	store, err := storage.NewManager(dir).Create(dir)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var executeCalls atomic.Int64
+	tool := agentcore.NewFuncTool(
+		"inspect_persistence",
+		"must not execute after persistence failure",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			executeCalls.Add(1)
+			return json.RawMessage(`"unexpected"`), nil
+		},
+	)
+	model := &toolCallThenStopModel{}
+	ag := agentcore.NewAgent(
+		agentcore.WithModel(model),
+		agentcore.WithTools(tool),
+		agentcore.WithMaxTurns(3),
+	)
+	s := NewSession(SessionConfig{
+		Agent:       ag,
+		Store:       store,
+		LazyPersist: true,
+		Settings:    config.Resolved{MaxTurns: 3},
+		Cwd:         dir,
+		Tools:       []agentcore.Tool{tool},
+	})
+	t.Cleanup(s.Close)
+
+	if err := s.Prompt("run tool"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	ag.WaitForIdle()
+
+	if executeCalls.Load() != 0 {
+		t.Fatalf("tool execute calls = %d, want 0", executeCalls.Load())
+	}
+	if state := ag.State(); !strings.Contains(state.Error, "persist message") {
+		t.Fatalf("agent error = %q, want persistence failure", state.Error)
+	}
+}
+
 func TestDeliverRuntimeReminderSteersCurrentRun(t *testing.T) {
 	t.Parallel()
 
@@ -1332,6 +1559,159 @@ func TestContinueWithRuntimeReminderAutoContinuesWhenIdle(t *testing.T) {
 	s.continueWithRuntimeReminder("test_reminder:1:0", ReminderRepeatToolCall, "<system-reminder>\ntest runtime reminder.\n</system-reminder>")
 	waitFor(t, time.Second, func() bool {
 		return s.LastAssistantText() == "steered"
+	})
+}
+
+func TestBackgroundResultAutoContinuesWhenIdle(t *testing.T) {
+	t.Parallel()
+
+	model := &countingChatModel{}
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "initial task"),
+		textMessage(agentcore.RoleAssistant, "task completed"),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{Agent: ag, Cwd: t.TempDir()})
+	t.Cleanup(s.Close)
+
+	s.EnqueueBackgroundResult(agentcore.UserMsg("background result"))
+	waitFor(t, time.Second, func() bool {
+		return model.Calls() == 1 && !ag.HasFollowUps()
+	})
+
+	messages := ag.Messages()
+	if len(messages) < 2 || messages[len(messages)-2].TextContent() != "background result" {
+		t.Fatalf("background result was not delivered before the response: %#v", messages)
+	}
+}
+
+func TestBackgroundResultWaitsForRunningTurn(t *testing.T) {
+	t.Parallel()
+
+	model := newBlockingChatModel()
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
+	s := NewSession(SessionConfig{Agent: ag, Cwd: t.TempDir()})
+	t.Cleanup(s.Close)
+
+	if err := s.Prompt("start"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	select {
+	case <-model.started:
+	case <-time.After(time.Second):
+		t.Fatal("first model call did not start")
+	}
+
+	s.EnqueueBackgroundResult(agentcore.UserMsg("background result"))
+	if got := model.Calls(); got != 1 {
+		t.Fatalf("background result interrupted the active call: calls = %d", got)
+	}
+	close(model.release)
+
+	waitFor(t, time.Second, func() bool {
+		return model.Calls() == 2 && !ag.HasFollowUps()
+	})
+	messages := ag.Messages()
+	if len(messages) < 2 || messages[len(messages)-2].TextContent() != "background result" {
+		t.Fatalf("background result was not consumed after the active turn: %#v", messages)
+	}
+}
+
+func TestConcurrentBackgroundResultsAreAllConsumed(t *testing.T) {
+	t.Parallel()
+
+	model := &countingChatModel{}
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "initial task"),
+		textMessage(agentcore.RoleAssistant, "task completed"),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{Agent: ag, Cwd: t.TempDir()})
+	t.Cleanup(s.Close)
+
+	var (
+		wg       sync.WaitGroup
+		errorMu  sync.Mutex
+		runError error
+	)
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type != SEError {
+			return
+		}
+		errorMu.Lock()
+		runError = ev.Error
+		errorMu.Unlock()
+	})
+	defer unsub()
+
+	const resultCount = 8
+	for i := 0; i < resultCount; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s.EnqueueBackgroundResult(agentcore.UserMsg(fmt.Sprintf("background result %d", i)))
+		}(i)
+	}
+	wg.Wait()
+	waitFor(t, time.Second, func() bool {
+		return !ag.State().IsRunning && !ag.HasFollowUps()
+	})
+
+	errorMu.Lock()
+	err := runError
+	errorMu.Unlock()
+	if err != nil {
+		t.Fatalf("concurrent background results caused an error: %v", err)
+	}
+
+	seen := make(map[string]bool, resultCount)
+	for _, message := range ag.Messages() {
+		seen[message.TextContent()] = true
+	}
+	for i := 0; i < resultCount; i++ {
+		text := fmt.Sprintf("background result %d", i)
+		if !seen[text] {
+			t.Fatalf("missing %q from conversation", text)
+		}
+	}
+}
+
+func TestAbortKeepsBackgroundResultQueuedWithoutRestart(t *testing.T) {
+	t.Parallel()
+
+	model := newBlockingChatModel()
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
+	s := NewSession(SessionConfig{Agent: ag, Cwd: t.TempDir()})
+	t.Cleanup(s.Close)
+
+	if err := s.Prompt("start"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	select {
+	case <-model.started:
+	case <-time.After(time.Second):
+		t.Fatal("first model call did not start")
+	}
+	s.Abort()
+	ag.WaitForIdle()
+	s.EnqueueBackgroundResult(agentcore.UserMsg("background result"))
+	time.Sleep(50 * time.Millisecond)
+	if got := model.Calls(); got != 1 {
+		t.Fatalf("background result restarted an aborted session: calls = %d", got)
+	}
+	if !ag.HasFollowUps() {
+		t.Fatal("background result was lost after abort")
+	}
+
+	if err := s.Prompt("next request"); err != nil {
+		t.Fatalf("prompt after abort: %v", err)
+	}
+	waitFor(t, time.Second, func() bool {
+		return model.Calls() == 3 && !ag.HasFollowUps()
 	})
 }
 

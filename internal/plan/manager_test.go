@@ -241,9 +241,16 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 	}
 	otherPath := dir + "/main.go"
 
+	// Marshal instead of concatenating paths into raw JSON: Windows paths
+	// contain backslashes, which are invalid JSON escape sequences.
+	writeArgs, _ := json.Marshal(map[string]string{"file_path": otherPath, "content": "x"})
+	editArgs, _ := json.Marshal(map[string]string{"file_path": otherPath})
+	planWriteArgs, _ := json.Marshal(map[string]string{"file_path": planPath, "content": "# Plan"})
+	planEditArgs, _ := json.Marshal(map[string]string{"file_path": planPath})
+
 	denyCases := []permission.Request{
-		{ToolName: "write", Args: json.RawMessage(`{"file_path":"` + otherPath + `","content":"x"}`)},
-		{ToolName: "edit", Args: json.RawMessage(`{"file_path":"` + otherPath + `"}`)},
+		{ToolName: "write", Args: writeArgs},
+		{ToolName: "edit", Args: editArgs},
 		{ToolName: "task_create"},
 		{ToolName: "subagent"},
 	}
@@ -262,8 +269,8 @@ func TestPlanModeKeepsToolListAndDelegatesToPermission(t *testing.T) {
 		{ToolName: "grep", Args: json.RawMessage(`{"pattern":"foo"}`)},
 		{ToolName: "bash", Args: json.RawMessage(`{"command":"grep -r foo ."}`)},
 		{ToolName: "ask_user"},
-		{ToolName: "write", Args: json.RawMessage(`{"file_path":"` + planPath + `","content":"# Plan"}`)},
-		{ToolName: "edit", Args: json.RawMessage(`{"file_path":"` + planPath + `"}`)},
+		{ToolName: "write", Args: planWriteArgs},
+		{ToolName: "edit", Args: planEditArgs},
 	}
 	for _, req := range allowCases {
 		decision, err := engine.Decide(context.Background(), req)
@@ -346,8 +353,16 @@ func TestEnterPlanToolSynchronouslyEntersPlanMode(t *testing.T) {
 	if controller.Snapshot().Phase != PhasePlanning {
 		t.Fatalf("phase = %q, want planning", controller.Snapshot().Phase)
 	}
-	if !strings.Contains(string(result), controller.CurrentPlanPath()) {
-		t.Fatalf("expected plan file path in result prompt, got %s", result)
+	// Decode before matching: json.Marshal escapes backslashes in Windows
+	// paths, so a raw-bytes Contains would miss the plan path.
+	var enterResult struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(result, &enterResult); err != nil {
+		t.Fatalf("decode enter result: %v", err)
+	}
+	if !strings.Contains(enterResult.Message, controller.CurrentPlanPath()) {
+		t.Fatalf("expected plan file path in result prompt, got %s", enterResult.Message)
 	}
 }
 

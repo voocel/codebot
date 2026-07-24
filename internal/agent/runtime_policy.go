@@ -222,6 +222,7 @@ func hasToolNamed(tools []agentcore.Tool, name string) bool {
 func (s *Session) beginTurn() {
 	s.mu.Lock()
 	s.currentTurn = TurnOutcomeSnapshot{}
+	s.backgroundWakeSuppressed = false
 	s.reminders.resetTurnDelivery()
 	s.mu.Unlock()
 	// Checkpoint the workspace before the turn touches files. Runs outside the

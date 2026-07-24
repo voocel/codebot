@@ -162,6 +162,8 @@ type Session struct {
 	dirtySeq           uint64 // incremented each time a repo-mutating tool succeeds; hook goroutine captures this and only clears if unchanged
 	generation         uint64 // incremented on session switch; async goroutines check this to avoid cross-session callbacks
 
+	backgroundWakeSuppressed bool // explicit cancellation keeps results queued without restarting the agent
+
 	prompts     *sessionPromptManager
 	persistence *sessionPersistence
 	context     *sessionContextController
@@ -322,6 +324,7 @@ func NewSession(cfg SessionConfig) *Session {
 	s.runtime = newSessionRuntimePolicy(s)
 	s.metrics = newRuntimeMetrics()
 
+	cfg.Agent.SetMessageCommitter(s.persistence.handleCommittedMessage)
 	s.unsub = cfg.Agent.Subscribe(s.handleAgentEvent)
 	return s
 }
@@ -374,6 +377,7 @@ func (s *Session) ResetTaskList() error {
 
 func (s *Session) resetHarnessStateLocked() {
 	s.generation++
+	s.backgroundWakeSuppressed = false
 	s.reminders.resetAll()
 	s.pendingToolCalls = make(map[string]pendingToolCall)
 	s.recentToolCalls = nil

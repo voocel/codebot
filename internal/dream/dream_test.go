@@ -81,6 +81,10 @@ func TestManualRunSuccess(t *testing.T) {
 	if err := waitDone(t, done); err != nil {
 		t.Fatalf("OnDone err = %v", err)
 	}
+	rt.Wait()
+	if got := rt.Active(); got != 0 {
+		t.Fatalf("active tasks = %d, want 0 after dream completion", got)
+	}
 
 	e := taskByID(t, rt, id)
 	if e.Status != task.Completed || e.Result != "merged 3 memories" {

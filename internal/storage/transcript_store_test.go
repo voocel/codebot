@@ -81,6 +81,18 @@ func TestTranscriptStore_SkipsTornTailLine(t *testing.T) {
 	if len(got) != 2 {
 		t.Errorf("torn tail should be skipped, leaving 2 messages, got %d", len(got))
 	}
+	if err := s.Append("researcher", []agentcore.AgentMessage{
+		agentcore.UserMsg("after recovery"),
+	}); err != nil {
+		t.Fatalf("append after recovery: %v", err)
+	}
+	got, err = s.Load("researcher")
+	if err != nil {
+		t.Fatalf("reload after recovery append: %v", err)
+	}
+	if len(got) != 3 || got[2].TextContent() != "after recovery" {
+		t.Fatalf("unexpected transcript after recovery append: %+v", got)
+	}
 }
 
 func TestTranscriptStore_NoDirIsNoOp(t *testing.T) {

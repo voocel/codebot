@@ -14,7 +14,7 @@ import (
 	"github.com/voocel/codebot/internal/config"
 )
 
-// subAgentDeps holds everything needed to build and configure the SubAgentTool.
+// subAgentDeps holds everything needed to build the sub-agent runtime.
 type subAgentDeps struct {
 	Cwd           string
 	Model         agentcore.ChatModel // main agent's model (default for inherit)
@@ -37,12 +37,20 @@ type subAgentDeps struct {
 	SessionID string
 }
 
-// buildSubAgentTool constructs a SubAgentTool with every sub-agent registered.
+type subAgents struct {
+	runner *subagent.Runner
+	tool   *subagent.Tool
+	// isolation maps agent type to "worktree" for definitions that opt into a
+	// private worktree. The teammate spawner applies the cwd override.
+	isolation map[string]string
+}
+
+// buildSubAgents constructs the typed runner and its model-facing adapter.
 //
 // The pipeline:
 //
 //	BuiltinDefinitions  ─┐
-//	                     ├─►  MergeAgents  ─►  BuildConfig  ─►  subagent.New(cfgs...)
+//	                     ├─►  MergeAgents  ─►  BuildConfig  ─►  subagent.NewRunner(cfgs...)
 //	LoadAgentsDir(proj) ─┤      (later src
 //	LoadAgentsDir(user) ─┘       overrides)
 //
@@ -55,7 +63,7 @@ type subAgentDeps struct {
 // The returned isolationOf maps each agent type to its declared isolation
 // mode (only "worktree" entries are kept; shared agents are simply absent), so
 // the teammate spawner can sandbox the opted-in types without re-reading defs.
-func buildSubAgentTool(deps subAgentDeps) (*subagent.Tool, map[string]string) {
+func buildSubAgents(deps subAgentDeps) subAgents {
 	resolveModel := buildModelResolver(deps)
 
 	builtin := agent.BuiltinDefinitions(deps.Cwd)
@@ -98,13 +106,14 @@ func buildSubAgentTool(deps subAgentDeps) (*subagent.Tool, map[string]string) {
 		cfgs = append(cfgs, cfg)
 	}
 
-	sat := subagent.New(cfgs...)
+	runner := subagent.NewRunner(cfgs...)
+	tool := runner.AsTool()
 
 	if resolveModel != nil {
-		sat.SetCreateModel(resolveModel)
+		tool.SetCreateModel(resolveModel)
 	}
 
-	return sat, isolationOf
+	return subAgents{runner: runner, tool: tool, isolation: isolationOf}
 }
 
 // applyExploreSmallModel reassigns the explore agent's Model to the

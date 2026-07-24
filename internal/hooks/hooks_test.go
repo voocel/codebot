@@ -105,15 +105,29 @@ func TestRunPostToolUse_FireAndForget(t *testing.T) {
 	marker := filepath.Join(dir, "marker")
 	cfg := config.HooksConfig{
 		"PostToolUse": {
-			{Type: "command", Command: "touch " + marker},
+			// ToSlash: the command runs via `sh -c`, where backslashes escape.
+			{Type: "command", Command: "touch " + filepath.ToSlash(marker)},
 		},
 	}
 	r := New(cfg, "test", nil, nil)
 	r.RunPostToolUse(context.Background(), "bash", nil, json.RawMessage(`"ok"`), false)
 
-	time.Sleep(200 * time.Millisecond)
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("expected PostToolUse hook to run: %v", err)
+	waitFor(t, "expected PostToolUse hook to run", func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+}
+
+// waitFor polls until ok reports true, failing the test after a deadline.
+// Fire-and-forget hooks give no completion signal, so tests must poll.
+func waitFor(t *testing.T, desc string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal(desc)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -147,7 +161,8 @@ func TestRunTaskCreated_Payload(t *testing.T) {
 	outFile := filepath.Join(dir, "task-created.json")
 	cfg := config.HooksConfig{
 		"TaskCreated": {
-			{Type: "command", Command: "cat > " + outFile},
+			// ToSlash: the command runs via `sh -c`, where backslashes escape.
+			{Type: "command", Command: "cat > " + filepath.ToSlash(outFile)},
 		},
 	}
 	r := New(cfg, "test", nil, nil)
@@ -288,17 +303,22 @@ func TestRunSubagentStop_FireAndForget(t *testing.T) {
 	marker := filepath.Join(dir, "stop.json")
 	cfg := config.HooksConfig{
 		"SubagentStop": {
-			{Type: "command", Command: "cat > " + marker, Matcher: "researcher"},
+			// ToSlash: the command runs via `sh -c`, where backslashes escape.
+			{Type: "command", Command: "cat > " + filepath.ToSlash(marker), Matcher: "researcher"},
 		},
 	}
 	r := New(cfg, "test", nil, nil)
 	r.RunSubagentStop(context.Background(), "researcher")
 
-	time.Sleep(200 * time.Millisecond)
-	data, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatalf("expected SubagentStop hook to run: %v", err)
-	}
+	var data []byte
+	waitFor(t, "expected SubagentStop hook to run", func() bool {
+		b, err := os.ReadFile(marker)
+		if err != nil || len(b) == 0 {
+			return false
+		}
+		data = b
+		return true
+	})
 	var payload Payload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatal(err)

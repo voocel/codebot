@@ -66,7 +66,7 @@ var customAgentDisallowed = map[string]bool{}
 // safe to run without supervision.
 //
 // Skill and tool_search are deliberately omitted: at bootstrap time they are
-// wired AFTER buildSubAgentTool runs (Skill needs subagentTool as its fork
+// wired AFTER buildSubAgents runs (Skill needs subagentTool as its fork
 // executor; tool_search wraps the final tool list), so the pool handed to a
 // sub-agent never contains them. Listing them here would be a false promise.
 var asyncAgentAllowed = map[string]bool{

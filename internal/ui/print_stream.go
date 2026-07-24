@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/task"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/bootstrap"
 	"github.com/voocel/codebot/internal/diag"
@@ -47,7 +48,7 @@ func RunPrint(rt *bootstrap.Runtime, args []string, jsonMode bool) error {
 		}
 	}
 
-	if err := RunPrintMode(rt.Session, prompt, jsonMode); err != nil {
+	if err := RunPrintMode(rt.Session, rt.TaskRuntime, prompt, jsonMode); err != nil {
 		return fmt.Errorf("print mode: %w", err)
 	}
 	return nil
@@ -56,10 +57,7 @@ func RunPrint(rt *bootstrap.Runtime, args []string, jsonMode bool) error {
 // RunPrintMode runs the agent in non-interactive mode.
 // stdout receives assistant text (pipe-friendly), stderr receives tool/status info.
 // When jsonMode is true, all events are streamed as JSONL to stdout.
-func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
-	done := make(chan struct{})
-	var once sync.Once
-	closeDone := func() { once.Do(func() { close(done) }) }
+func RunPrintMode(sess *agent.Session, taskRT *task.Runtime, prompt string, jsonMode bool) error {
 	var errMu sync.Mutex
 	var exitErr error
 	setExitErr := func(err error) {
@@ -145,10 +143,6 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 				fmt.Fprintf(os.Stderr, "error: %v\n", ae.Err)
 				setExitErr(ae.Err)
 			}
-			closeDone()
-
-		case agentcore.EventAgentEnd:
-			closeDone()
 		}
 	})
 	defer unsub()
@@ -157,7 +151,7 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 		return err
 	}
 
-	<-done
+	waitForPrintCompletion(sess, taskRT)
 
 	// Final newline for text mode.
 	if !jsonMode {
@@ -165,6 +159,19 @@ func RunPrintMode(sess *agent.Session, prompt string, jsonMode bool) error {
 	}
 
 	return getExitErr()
+}
+
+func waitForPrintCompletion(sess *agent.Session, taskRT *task.Runtime) {
+	for {
+		sess.WaitForIdle()
+		if taskRT == nil {
+			return
+		}
+		taskRT.Wait()
+		if !sess.IsRunning() && taskRT.Active() == 0 {
+			return
+		}
+	}
 }
 
 // ReadStdinPrompt reads all of stdin as a prompt (for pipe usage).

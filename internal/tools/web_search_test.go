@@ -10,6 +10,9 @@ import (
 
 func TestTavilySearchReal(t *testing.T) {
 	key := os.Getenv("TAVILY_API_KEY")
+	if key == "" {
+		t.Skip("TAVILY_API_KEY not set")
+	}
 
 	tool := NewWebSearch("tavily", key)
 	args, _ := json.Marshal(webSearchArgs{Query: "Go programming language", MaxResults: 3})
@@ -27,6 +30,9 @@ func TestTavilySearchReal(t *testing.T) {
 
 func TestJinaSearchReal(t *testing.T) {
 	key := os.Getenv("JINA_API_KEY")
+	if key == "" {
+		t.Skip("JINA_API_KEY not set")
+	}
 
 	tool := NewWebSearch("jina", key)
 	args, _ := json.Marshal(webSearchArgs{Query: "Go programming language", MaxResults: 3})

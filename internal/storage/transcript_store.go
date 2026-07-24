@@ -78,14 +78,16 @@ func (s *TranscriptStore) Append(agent string, msgs []agentcore.AgentMessage) er
 
 // Load reads <agent>.jsonl and returns the repaired message sequence ready to
 // seed a resumed teammate via team.SpawnConfig.History. A missing file yields
-// (nil, nil). Malformed lines are skipped — a crash can leave a torn final
-// line — and RepairMessageSequence drops any dangling tool_use the crash left
-// without a matching result.
+// (nil, nil). An invalid, unterminated final line is ignored as a crash-torn
+// append; malformed complete lines are reported.
 func (s *TranscriptStore) Load(agent string) ([]agentcore.AgentMessage, error) {
 	if s == nil || s.dir == "" || agent == "" {
 		return nil, nil
 	}
-	f, err := os.Open(s.path(agent))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, err := os.OpenFile(s.path(agent), os.O_RDWR, 0o644)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -95,26 +97,23 @@ func (s *TranscriptStore) Load(agent string) ([]agentcore.AgentMessage, error) {
 	defer f.Close()
 
 	var msgs []agentcore.Message
-	sc := bufio.NewScanner(f)
-	// Tool outputs can be large; raise the line cap well above the default 64KB.
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+	scan, err := scanJSONLines(f, func(line []byte) error {
 		var m agentcore.Message
-		if json.Unmarshal(line, &m) != nil {
-			continue // torn or malformed tail line — skip
+		if err := json.Unmarshal(line, &m); err != nil {
+			return err
 		}
 		msgs = append(msgs, m)
-	}
-	if err := sc.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
+	}
+	if err := normalizeJSONLTail(f, scan); err != nil {
+		return nil, fmt.Errorf("recover transcript tail: %w", err)
 	}
 	if len(msgs) == 0 {
 		return nil, nil
 	}
-	repaired := agentcore.RepairMessageSequence(msgs)
+	repaired := repairInterruptedToolCalls(msgs)
 	return agentcore.ToAgentMessages(repaired), nil
 }

@@ -94,6 +94,58 @@ func TestBuildSnapshotRepairsMissingToolResult(t *testing.T) {
 	if got := toolMsg.Metadata["is_error"]; got != true {
 		t.Fatalf("is_error = %v, want true", got)
 	}
+	if got := toolMsg.Metadata["interrupted"]; got != true {
+		t.Fatalf("interrupted = %v, want true", got)
+	}
+	if got := toolMsg.Metadata["result_unknown"]; got != true {
+		t.Fatalf("result_unknown = %v, want true", got)
+	}
+	if got := toolMsg.TextContent(); !strings.Contains(got, "outcome and side effects are unknown") {
+		t.Fatalf("tool result should explain unknown outcome, got %q", got)
+	}
+}
+
+func TestBuildSnapshotDoesNotMarkPersistedToolErrorAsInterrupted(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := create(dir, "/workspace/project")
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	assistant := agentcore.Message{
+		Role: agentcore.RoleAssistant,
+		Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID:   "toolu_failed",
+				Name: "read",
+				Args: []byte(`{"file_path":"missing.txt"}`),
+			}),
+		},
+	}
+	if err := store.AppendMessage(assistant); err != nil {
+		t.Fatalf("append assistant message: %v", err)
+	}
+	if err := store.AppendMessage(agentcore.ToolResultMsg("toolu_failed", []byte(`"file not found"`), true)); err != nil {
+		t.Fatalf("append tool result: %v", err)
+	}
+
+	snapshot, err := store.BuildSnapshot()
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	if len(snapshot.Messages) != 2 {
+		t.Fatalf("messages len = %d, want 2", len(snapshot.Messages))
+	}
+	toolMsg, ok := snapshot.Messages[1].(agentcore.Message)
+	if !ok {
+		t.Fatalf("snapshot message[1] type = %T, want agentcore.Message", snapshot.Messages[1])
+	}
+	if _, ok := toolMsg.Metadata["result_unknown"]; ok {
+		t.Fatalf("persisted tool error must not be marked result_unknown: %+v", toolMsg.Metadata)
+	}
 }
 
 func TestBuildSnapshotPreservesPreCompactionStateWhileSkippingMessages(t *testing.T) {

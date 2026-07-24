@@ -12,7 +12,7 @@ import (
 
 // BuildDeps carries the runtime context BuildConfig needs to materialise an
 // AgentDefinition into a subagent.Config. It is constructed once per call to
-// buildSubAgentTool and reused across every definition.
+// buildSubAgents and reused across every definition.
 //
 // Why a struct instead of positional args: BuildConfig is called from
 // bootstrap, and bootstrap already has eight parameters threading through
@@ -24,7 +24,7 @@ type BuildDeps struct {
 	// instances.
 	Cwd string
 
-	// MainTools is the parent agent's tool list AS HANDED TO buildSubAgentTool
+	// MainTools is the parent agent's tool list AS HANDED TO buildSubAgents
 	// — that is, before the subagent and Skill tools are appended. Every
 	// AgentDefinition gets this list re-pooled into independent instances
 	// inside BuildConfig (see BuildToolPool's contract).
@@ -57,7 +57,7 @@ type BuildDeps struct {
 }
 
 // BuildConfig converts an AgentDefinition into a subagent.Config ready to be
-// passed to subagent.New(...). It is responsible for:
+// passed to subagent.NewRunner(...). It is responsible for:
 //
 //   - Resolving the model name to a ChatModel (inherit vs explicit).
 //   - Calling BuildToolPool to give the sub-agent its own read/write/edit

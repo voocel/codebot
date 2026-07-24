@@ -88,11 +88,16 @@ type Runtime struct {
 
 // Close releases runtime resources.
 func (r *Runtime) Close() {
+	if r.Session != nil {
+		r.Session.AbortSilent()
+		r.Session.WaitForIdle()
+	}
 	if r.HookRunner != nil {
 		r.HookRunner.RunSessionEnd(context.Background())
 	}
 	if r.TaskRuntime != nil {
 		r.TaskRuntime.StopAll()
+		r.TaskRuntime.Wait()
 	}
 	// Stop the leader inbox pump before tearing down the team so it doesn't
 	// race a closing mailbox.

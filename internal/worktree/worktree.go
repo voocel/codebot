@@ -212,7 +212,10 @@ func List(repoRoot string) ([]Info, error) {
 		switch {
 		case strings.HasPrefix(line, "worktree "):
 			flush()
-			cur.Path = strings.TrimPrefix(line, "worktree ")
+			// git prints forward slashes even on Windows; normalize to the
+			// OS-native form so Path compares equal to filepath-built paths
+			// (isRegisteredWorktree, CleanWorktreeOrphans).
+			cur.Path = filepath.FromSlash(strings.TrimPrefix(line, "worktree "))
 		case strings.HasPrefix(line, "branch "):
 			cur.Branch = strings.TrimPrefix(line, "branch ")
 		case line == "":

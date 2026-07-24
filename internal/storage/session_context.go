@@ -7,6 +7,8 @@ import (
 	"github.com/voocel/agentcore"
 )
 
+const interruptedToolResult = `"Tool execution was interrupted by a previous process termination. Its outcome and side effects are unknown; inspect the workspace or external state before retrying."`
+
 // ContextSnapshot is the projected runtime state from a session log.
 type ContextSnapshot struct {
 	Messages        []agentcore.AgentMessage
@@ -32,7 +34,7 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 		entries = s.openEntries
 		s.openEntries = nil
 	} else {
-		scanned, _, err := scanEntries(s.path)
+		scanned, _, _, err := scanEntries(s.path)
 		if err != nil {
 			return ContextSnapshot{}, err
 		}
@@ -161,7 +163,7 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 		}
 	}
 
-	repaired := agentcore.RepairMessageSequence(agentcore.CollectMessages(msgs))
+	repaired := repairInterruptedToolCalls(agentcore.CollectMessages(msgs))
 
 	return ContextSnapshot{
 		Messages:        agentcore.ToAgentMessages(repaired),
@@ -173,4 +175,38 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 		PlanPreMode:     lastPlanPreMode,
 		Goal:            lastGoal,
 	}, nil
+}
+
+// repairInterruptedToolCalls keeps provider message invariants valid while
+// preserving the important crash-recovery fact: a missing result does not
+// prove that the tool never ran.
+func repairInterruptedToolCalls(msgs []agentcore.Message) []agentcore.Message {
+	missing := make(map[string]struct{})
+	for _, issue := range agentcore.ValidateMessageSequence(msgs) {
+		if issue.Kind == agentcore.MessageSequenceIssueMissingToolResult {
+			missing[issue.ToolCallID] = struct{}{}
+		}
+	}
+
+	repaired := agentcore.RepairMessageSequence(msgs)
+	if len(missing) == 0 {
+		return repaired
+	}
+
+	for i, msg := range repaired {
+		if msg.Role != agentcore.RoleTool {
+			continue
+		}
+		callID, _ := msg.Metadata["tool_call_id"].(string)
+		if _, ok := missing[callID]; !ok {
+			continue
+		}
+
+		result := agentcore.ToolResultMsg(callID, []byte(interruptedToolResult), true)
+		result.Metadata["interrupted"] = true
+		result.Metadata["result_unknown"] = true
+		repaired[i] = result
+		delete(missing, callID)
+	}
+	return repaired
 }

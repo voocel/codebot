@@ -6,11 +6,47 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/voocel/agentcore/task"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/diag"
 )
+
+func TestRuntimeCloseWaitsForBackgroundTasks(t *testing.T) {
+	taskRT := task.NewRuntime()
+	cancelled := make(chan struct{})
+	release := make(chan struct{})
+	entry := &task.Entry{ID: "bg-1", Status: task.Running}
+	entry.SetCancel(func() { close(cancelled) })
+	taskRT.Register(entry)
+
+	go func() {
+		<-cancelled
+		<-release
+		taskRT.Done(entry.ID)
+	}()
+
+	closed := make(chan struct{})
+	go func() {
+		(&Runtime{TaskRuntime: taskRT}).Close()
+		close(closed)
+	}()
+	<-cancelled
+	select {
+	case <-closed:
+		t.Fatal("runtime closed before background task finished")
+	default:
+	}
+
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not close after background task finished")
+	}
+}
 
 func TestParseMode(t *testing.T) {
 	t.Parallel()

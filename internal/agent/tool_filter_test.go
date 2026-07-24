@@ -43,8 +43,8 @@ func contains(xs []string, x string) bool {
 }
 
 // fullMainPool mirrors what the main agent's tool list looks like AS HANDED
-// TO buildSubAgentTool. Skill and tool_search are absent here on purpose —
-// at bootstrap they are appended after buildSubAgentTool runs (see
+// TO buildSubAgents. Skill and tool_search are absent here on purpose —
+// at bootstrap they are appended after buildSubAgents runs (see
 // assemble_session.go) so the filter never sees them. Keeping the test pool
 // in sync with the real input keeps the asyncAgentAllowed list honest.
 func fullMainPool() []agentcore.Tool {

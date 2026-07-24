@@ -87,12 +87,20 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 			s.lastRunSummary = &summary
 			s.mu.Unlock()
 		}
-		s.persistence.flushPendingMessages()
+		if err := s.persistence.flushPendingMessages(); err != nil {
+			s.emit(SessionEvent{
+				Type:  SEError,
+				Error: err,
+			})
+		}
 		if s.context.handleAgentEnd() {
 			return
 		}
 		s.finalizeTurnOutcome()
 		if s.runtime.continuePendingReminder() {
+			return
+		}
+		if s.continuePendingBackgroundResult() {
 			return
 		}
 		s.runtime.afterAgentEnd()
@@ -269,7 +277,12 @@ func truncateRunes(s string, max int) string {
 	return string(runes[:max-1]) + "…"
 }
 
-func (p *sessionPersistence) handleMessageEnd(msg agentcore.Message) {
+func (p *sessionPersistence) handleCommittedMessage(message agentcore.AgentMessage) error {
+	msg, ok := message.(agentcore.Message)
+	if !ok {
+		return nil
+	}
+
 	p.session.mu.Lock()
 	lazy := p.session.lazyPersist
 	p.session.mu.Unlock()
@@ -278,14 +291,18 @@ func (p *sessionPersistence) handleMessageEnd(msg agentcore.Message) {
 		p.session.mu.Lock()
 		p.session.pendingUserMsg = append(p.session.pendingUserMsg, msg)
 		p.session.mu.Unlock()
-		return
+		return nil
 	}
 
 	if lazy && msg.Role == agentcore.RoleAssistant {
-		p.flushPendingMessages()
+		if err := p.flushPendingMessages(); err != nil {
+			return err
+		}
 	}
-	p.persistMessage(msg)
+	return p.persistMessage(msg)
+}
 
+func (p *sessionPersistence) handleMessageEnd(msg agentcore.Message) {
 	if msg.Role == agentcore.RoleAssistant {
 		p.persistLLMCall(msg)
 		p.tryAutoName()
@@ -352,35 +369,42 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 	}
 }
 
-func (p *sessionPersistence) persistMessage(msg agentcore.Message) {
+func (p *sessionPersistence) persistMessage(msg agentcore.Message) error {
 	p.session.mu.Lock()
 	store := p.session.store
 	p.session.mu.Unlock()
-	if store != nil {
-		if err := store.AppendMessage(msg); err != nil {
-			detail := err.Error()
-			for _, tc := range msg.ToolCalls() {
-				if !json.Valid(tc.Args) {
-					detail = fmt.Sprintf("%s [invalid args in %s(%s): %s]",
-						detail, tc.Name, tc.ID, truncateBytes(tc.Args, 200))
-				}
-			}
-			p.session.emit(SessionEvent{
-				Type:  SEError,
-				Error: fmt.Errorf("persist message: %s", detail),
-			})
-		}
+	if store == nil {
+		return nil
 	}
+	if err := store.AppendMessage(msg); err != nil {
+		detail := err.Error()
+		for _, tc := range msg.ToolCalls() {
+			if !json.Valid(tc.Args) {
+				detail = fmt.Sprintf("%s [invalid args in %s(%s): %s]",
+					detail, tc.Name, tc.ID, truncateBytes(tc.Args, 200))
+			}
+		}
+		return fmt.Errorf("persist message: %s", detail)
+	}
+	return nil
 }
 
-func (p *sessionPersistence) flushPendingMessages() {
-	p.session.mu.Lock()
-	pending := p.session.pendingUserMsg
-	p.session.pendingUserMsg = nil
-	p.session.mu.Unlock()
+func (p *sessionPersistence) flushPendingMessages() error {
+	for {
+		p.session.mu.Lock()
+		if len(p.session.pendingUserMsg) == 0 {
+			p.session.mu.Unlock()
+			return nil
+		}
+		msg := p.session.pendingUserMsg[0]
+		p.session.mu.Unlock()
 
-	for _, msg := range pending {
-		p.persistMessage(msg)
+		if err := p.persistMessage(msg); err != nil {
+			return err
+		}
+		p.session.mu.Lock()
+		p.session.pendingUserMsg = p.session.pendingUserMsg[1:]
+		p.session.mu.Unlock()
 	}
 }
 

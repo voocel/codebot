@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -81,15 +80,19 @@ func create(dir, cwd string) (*Store, error) {
 // implementation paid for that scan twice — findLeafID at open + a fresh
 // read in BuildSnapshot).
 func open(path string) (*Store, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open session: %w", err)
 	}
 
-	entries, leafID, err := scanEntries(path)
+	entries, leafID, scan, err := scanEntries(path)
 	if err != nil {
 		f.Close()
 		return nil, fmt.Errorf("scan session: %w", err)
+	}
+	if err := normalizeJSONLTail(f, scan); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("recover session tail: %w", err)
 	}
 
 	headerEntry, ok := entries[headerEntryID]
@@ -310,41 +313,43 @@ func (s *Store) appendChained(kind EntryKind, data json.RawMessage) error {
 // the prior findLeafID + per-BuildSnapshot scan pair: callers that need
 // either the leaf or the full map can share a single IO pass.
 //
-// Tolerance policy mirrors the prior findLeafID + BuildSnapshot pair so
-// any session file the old code could open still opens here. The only
-// hard error is "file cannot be opened at all":
+// Recovery policy is deliberately narrow:
 //
-//   - Lines that fail json.Unmarshal or carry an empty ID are skipped.
+//   - An invalid, unterminated final line is ignored because a process crash
+//     may have interrupted the append.
+//   - Malformed complete lines and entries without IDs are reported instead
+//     of silently discarding durable history.
 //   - Duplicate IDs overwrite (last-write-wins) instead of failing —
 //     mirrors old findLeafID. The chain walk in BuildSnapshot will still
 //     surface real corruption (missing parent, cycle), but a stray dup
 //     mid-file shouldn't lock a user out of an otherwise-recoverable
 //     session.
-//   - scanner.Err() is ignored. The most common trigger is a single
-//     entry serialised larger than the 1MB scanner buffer (huge tool
-//     results from read/grep/bash). Returning an error there would make
-//     resume fail entirely; instead we return the entries scanned so far
-//     and let downstream code work with what's recoverable.
-func scanEntries(path string) (map[string]Entry, string, error) {
+//   - Lines have no fixed size cap, so large tool results remain resumable.
+func scanEntries(path string) (map[string]Entry, string, jsonlScanResult, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, headerEntryID, err
+		return nil, headerEntryID, jsonlScanResult{}, err
 	}
 	defer f.Close()
 
 	entries := make(map[string]Entry)
 	leafID := headerEntryID
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
+	scan, err := scanJSONLines(f, func(line []byte) error {
 		var entry Entry
-		if json.Unmarshal(scanner.Bytes(), &entry) != nil || entry.ID == "" {
-			continue
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return err
+		}
+		if entry.ID == "" {
+			return fmt.Errorf("entry ID is empty")
 		}
 		entries[entry.ID] = entry
 		leafID = entry.ID
+		return nil
+	})
+	if err != nil {
+		return nil, headerEntryID, scan, err
 	}
-	return entries, leafID, nil
+	return entries, leafID, scan, nil
 }
 
 func generateID() string {

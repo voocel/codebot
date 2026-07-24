@@ -108,8 +108,11 @@ func scanBashForSensitiveRead(workspace, cmd string) string {
 }
 
 // bashPathTokens returns tokens from cmd that look like they could be paths:
-// contain a slash, start with ~, or start with . (relative path). Skips
-// flag-shaped tokens and strips surrounding quotes.
+// contain a slash in either direction, start with ~, or start with .
+// (relative path). Backslashes count so Windows absolute paths
+// (C:\Users\...\.ssh\id_rsa) can't slip past; a stray bash escape that gets
+// through only costs a force-ask, never a wrong allow. Skips flag-shaped
+// tokens and strips surrounding quotes.
 func bashPathTokens(cmd string) []string {
 	var out []string
 	for t := range strings.FieldsSeq(cmd) {
@@ -117,7 +120,7 @@ func bashPathTokens(cmd string) []string {
 		if t == "" || strings.HasPrefix(t, "-") {
 			continue
 		}
-		if strings.ContainsAny(t, "/~") || strings.HasPrefix(t, ".") {
+		if strings.ContainsAny(t, `/~\`) || strings.HasPrefix(t, ".") {
 			out = append(out, t)
 		}
 	}

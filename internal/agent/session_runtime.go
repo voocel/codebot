@@ -466,7 +466,7 @@ func (s *Session) SetBeforePrompt(fn func()) {
 }
 
 // SetIdleHook registers a callback invoked after each turn fully settles
-// (EventAgentEnd with no pending compaction resume or queued reminder).
+// (EventAgentEnd with no pending automatic continuation).
 // Must be cheap on its fast path — it runs on the event dispatch goroutine.
 func (s *Session) SetIdleHook(fn func()) {
 	s.idleHook = fn
@@ -476,16 +476,100 @@ func (s *Session) Steer(text string) {
 	s.agent.Steer(agentcore.UserMsg(text))
 }
 
+// EnqueueBackgroundResult delivers a completed background task without
+// interrupting an active run. If the session is idle, it starts a continuation
+// so the result does not wait for another user prompt.
+func (s *Session) EnqueueBackgroundResult(msg agentcore.AgentMessage) {
+	s.agent.FollowUp(msg)
+	s.continuePendingBackgroundResult()
+}
+
+func (s *Session) continuePendingBackgroundResult() bool {
+	if s.agent.State().IsRunning || !s.agent.HasFollowUps() {
+		return false
+	}
+
+	messages := s.agent.Messages()
+	if len(messages) == 0 {
+		return false
+	}
+	last := messages[len(messages)-1]
+	if last == nil || last.GetRole() != agentcore.RoleAssistant {
+		return false
+	}
+
+	s.mu.Lock()
+	if s.backgroundWakeSuppressed {
+		s.mu.Unlock()
+		return false
+	}
+	gen := s.generation
+	s.mu.Unlock()
+
+	return s.resumeBackgroundResult(gen)
+}
+
+func (s *Session) resumeBackgroundResult(gen uint64) bool {
+	s.mu.Lock()
+	if s.generation != gen || s.backgroundWakeSuppressed {
+		s.mu.Unlock()
+		return false
+	}
+	s.mu.Unlock()
+
+	err := s.continueIfCurrentGeneration(gen)
+	if err == nil {
+		// Abort may have raced between the check above and Continue. In that
+		// ordering the new run did not exist when Abort tried to cancel it.
+		s.mu.Lock()
+		suppressed := s.backgroundWakeSuppressed
+		s.mu.Unlock()
+		if suppressed {
+			s.agent.AbortSilent()
+		}
+		return true
+	}
+	if errors.Is(err, errStaleSessionGeneration) {
+		return false
+	}
+	if errors.Is(err, agentcore.ErrAlreadyRunning) {
+		// Another prompt won the idle race and will consume the follow-up at
+		// its natural continuation point.
+		return true
+	}
+	if errors.Is(err, agentcore.ErrBadContinuation) && !s.agent.HasFollowUps() {
+		// A concurrent continuation already consumed the same queued batch.
+		return false
+	}
+
+	s.clearSkillDelta()
+	s.emit(SessionEvent{
+		Type:  SEError,
+		Error: fmt.Errorf("background result continue: %w", err),
+	})
+	return false
+}
+
 func (s *Session) Abort() {
+	s.mu.Lock()
+	s.backgroundWakeSuppressed = true
+	s.mu.Unlock()
 	s.agent.Abort()
 }
 
 func (s *Session) AbortSilent() {
+	s.mu.Lock()
+	s.backgroundWakeSuppressed = true
+	s.mu.Unlock()
 	s.agent.AbortSilent()
 }
 
 func (s *Session) IsRunning() bool {
 	return s.agent.State().IsRunning
+}
+
+func (s *Session) WaitForIdle() {
+	s.agent.WaitForIdle()
 }
 
 func (s *Session) ClearConversation() {
@@ -1332,10 +1416,17 @@ func (s *Session) ListSessions() ([]storage.SessionInfo, error) {
 }
 
 func (s *Session) Close() {
+	s.AbortSilent()
+	s.agent.WaitForIdle()
 	if s.unsub != nil {
 		s.unsub()
 	}
-	s.persistence.flushPendingMessages()
+	if err := s.persistence.flushPendingMessages(); err != nil {
+		s.emit(SessionEvent{
+			Type:  SEError,
+			Error: err,
+		})
+	}
 	s.mu.Lock()
 	store := s.store
 	snapshotter := s.snapshotter
