@@ -92,6 +92,18 @@ type sessionMemoryState struct {
 	extractionStartedAt time.Time // zero when idle
 }
 
+// reset re-arms extraction for a fresh conversation: after a switch,
+// delta = total - tokensAtLast stays negative until the new history outgrows
+// the old one, silently suppressing updates. extractionStartedAt is left
+// alone — an in-flight worker clears it in its own defer, and the generation
+// check already blocks its stale commit.
+func (m *sessionMemoryState) reset() {
+	m.mu.Lock()
+	m.initialized = false
+	m.tokensAtLast = 0
+	m.mu.Unlock()
+}
+
 // SessionMemory is the on-disk shape of a memory file. We write the body as
 // plain markdown (no frontmatter) so the file is readable and editable by a
 // human. UpdatedAt comes from the filesystem mtime, not a stored field.
@@ -104,7 +116,7 @@ type SessionMemory struct {
 // returns (nil, nil) when the file does not exist — callers should fall back
 // to the default template.
 func (s *Session) loadSessionMemory() (*SessionMemory, error) {
-	path := config.SessionMemoryPath(s.cwd)
+	path := config.SessionMemoryPath(s.currentCwd())
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -118,7 +130,7 @@ func (s *Session) loadSessionMemory() (*SessionMemory, error) {
 // saveSessionMemory writes the memory atomically. A temp file + rename keeps
 // a concurrent reader from seeing a half-written file.
 func (s *Session) saveSessionMemory(content string) error {
-	path := config.SessionMemoryPath(s.cwd)
+	path := config.SessionMemoryPath(s.currentCwd())
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir session memory: %w", err)
 	}
@@ -152,7 +164,7 @@ func fileModTime(path string) time.Time {
 func (p *sessionPersistence) maybeExtractSessionMemory() {
 	s := p.session
 
-	msgs := s.agent.Messages()
+	msgs := s.deps.agent.Messages()
 	if !isSafeSummaryBoundary(msgs) {
 		// Trailing assistant tool_use awaiting results — postpone.
 		return
@@ -181,8 +193,13 @@ func (p *sessionPersistence) maybeExtractSessionMemory() {
 	}
 
 	s.sessionMemory.extractionStartedAt = time.Now()
-	gen := s.generation
 	s.sessionMemory.mu.Unlock()
+
+	// generation is guarded by s.mu, not sessionMemory.mu — read it through
+	// the proper lock, after the memory lock is released (no nesting).
+	s.mu.Lock()
+	gen := s.generation
+	s.mu.Unlock()
 
 	go s.runSessionMemoryExtraction(gen, total)
 }

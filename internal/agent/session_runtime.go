@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"strings"
 	"time"
@@ -21,23 +20,19 @@ import (
 
 var errStaleSessionGeneration = errors.New("stale session generation")
 
-// runCtx is the base context for every agent-loop entry (Prompt / Continue /
+// baseRunCtx is the base context for every agent-loop entry (Prompt / Continue /
 // idle resume). It carries the session cwd as a LIVE source (WithCwdFunc), so a
 // worktree switch mid-turn (RetargetWorkspace) is seen by the next tool call —
 // same-turn edits land in the new workspace, without rebuilding any tools.
 // Teammates capture a fixed cwd at spawn (see teammateCwd), so the live source
 // never bleeds across them.
 func (s *Session) baseRunCtx() context.Context {
-	return tools.WithCwdFunc(context.Background(), func() string {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return s.cwd
-	})
+	return tools.WithCwdFunc(context.Background(), s.currentCwd)
 }
 
 func (s *Session) startPromptMessages(msgs ...agentcore.AgentMessage) error {
 	ctx, run, previous := s.beginTelemetryRun(s.baseRunCtx())
-	if err := s.agent.PromptMessages(ctx, msgs...); err != nil {
+	if err := s.deps.agent.PromptMessages(ctx, msgs...); err != nil {
 		s.rollbackTelemetryRun(run, previous, err)
 		return err
 	}
@@ -47,7 +42,7 @@ func (s *Session) startPromptMessages(msgs ...agentcore.AgentMessage) error {
 
 func (s *Session) startContinue() error {
 	ctx, run, previous := s.beginTelemetryRun(s.baseRunCtx())
-	if err := s.agent.Continue(ctx); err != nil {
+	if err := s.deps.agent.Continue(ctx); err != nil {
 		s.rollbackTelemetryRun(run, previous, err)
 		return err
 	}
@@ -56,14 +51,11 @@ func (s *Session) startContinue() error {
 }
 
 func (s *Session) beginTelemetryRun(ctx context.Context) (context.Context, *telemetry.Run, *telemetry.Run) {
-	if s.telemetryTracer == nil {
+	if s.deps.telemetryTracer == nil {
 		return ctx, nil, nil
 	}
-	ctx, run := s.telemetryTracer.StartRun(ctx, "agent run")
-	s.mu.Lock()
-	previous := s.activeRun
-	s.activeRun = run
-	s.mu.Unlock()
+	ctx, run := s.deps.telemetryTracer.StartRun(ctx, "agent run")
+	previous := s.run.beginRun(run)
 	return ctx, run, previous
 }
 
@@ -77,36 +69,28 @@ func (s *Session) rollbackTelemetryRun(run, previous *telemetry.Run, err error) 
 	if run == nil {
 		return
 	}
-	s.mu.Lock()
-	if s.activeRun == run {
-		s.activeRun = previous
-	}
-	s.mu.Unlock()
+	s.run.rollbackRun(run, previous)
 	run.End(err)
 }
 
 func (s *Session) endTelemetryRun(err error) {
-	s.mu.Lock()
-	run := s.activeRun
-	s.activeRun = nil
-	s.mu.Unlock()
-	if run != nil {
+	if run := s.run.endRun(); run != nil {
 		run.End(err)
 	}
 }
 
 func (s *Session) Prompt(text string) error {
 	var hookContext string
-	if s.hookRunner != nil {
-		dec, err := s.hookRunner.RunUserPromptSubmit(context.Background(), text)
+	if s.deps.hookRunner != nil {
+		dec, err := s.deps.hookRunner.RunUserPromptSubmit(context.Background(), text)
 		if err != nil {
 			return err
 		}
 		hookContext = strings.TrimSpace(dec.AdditionalContext)
 	}
 	s.beginTurn()
-	if s.beforePrompt != nil {
-		s.beforePrompt()
+	if fn := s.hooks.getBeforePrompt(); fn != nil {
+		fn()
 	}
 	if hookContext != "" {
 		s.queueRuntimeReminder("hook_context", ReminderHookContext, wrapHookContext(hookContext))
@@ -114,9 +98,8 @@ func (s *Session) Prompt(text string) error {
 	s.runtime.beforeUserPrompt([]agentcore.ContentBlock{agentcore.TextBlock(text)})
 
 	var msgs []agentcore.AgentMessage
-	if !s.preambleInjected && s.deferredToolsPreamble != "" {
-		msgs = append(msgs, injectedUserMsg(s.deferredToolsPreamble))
-		s.preambleInjected = true
+	if preamble, ok := s.prompt.takePreamble(); ok {
+		msgs = append(msgs, injectedUserMsg(preamble))
 	}
 	msgs = append(msgs, s.buildUserMessage(agentcore.TextBlock(text)))
 	return s.startPromptMessages(msgs...)
@@ -124,15 +107,14 @@ func (s *Session) Prompt(text string) error {
 
 func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 	s.beginTurn()
-	if s.beforePrompt != nil {
-		s.beforePrompt()
+	if fn := s.hooks.getBeforePrompt(); fn != nil {
+		fn()
 	}
 	s.runtime.beforeUserPrompt(blocks)
 
 	var msgs []agentcore.AgentMessage
-	if !s.preambleInjected && s.deferredToolsPreamble != "" {
-		msgs = append(msgs, injectedUserMsg(s.deferredToolsPreamble))
-		s.preambleInjected = true
+	if preamble, ok := s.prompt.takePreamble(); ok {
+		msgs = append(msgs, injectedUserMsg(preamble))
 	}
 	msgs = append(msgs, s.buildUserMessage(blocks...))
 	return s.startPromptMessages(msgs...)
@@ -141,12 +123,7 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 // buildUserMessage creates a user message with reminders prepended as text blocks.
 func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentcore.Message {
 	recallReminders := s.memoryRecallReminders(userBlocks)
-	s.mu.Lock()
-	runtimeReminders := append([]string(nil), s.reminders.runtime...)
-	s.reminders.runtime = nil
-	s.reminders.runtimeKeys = make(map[string]struct{})
-	staticReminders := append([]string(nil), s.reminders.static...)
-	s.mu.Unlock()
+	runtimeReminders, staticReminders := s.reminders.drainForPrompt()
 
 	if len(runtimeReminders) == 0 && len(staticReminders) == 0 && len(recallReminders) == 0 {
 		return agentcore.Message{
@@ -193,14 +170,9 @@ func (s *Session) memoryRecallReminders(userBlocks []agentcore.ContentBlock) []s
 			text = b.Text
 		}
 	}
-	s.mu.Lock()
-	dir := s.contextFiles.MemoryDir
-	budgetLeft := memoryRecallSessionBytes - s.memRecallBytes
-	exclude := make(map[string]bool, len(s.memRecallSurfaced))
-	for p := range s.memRecallSurfaced {
-		exclude[p] = true
-	}
-	s.mu.Unlock()
+	dir := s.prompt.memoryDir()
+
+	exclude, budgetLeft := s.reminders.recallBudget()
 	if dir == "" || text == "" || budgetLeft <= 0 {
 		return nil
 	}
@@ -210,17 +182,10 @@ func (s *Session) memoryRecallReminders(userBlocks []agentcore.ContentBlock) []s
 		return nil
 	}
 	out := make([]string, 0, len(recalls))
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, r := range recalls {
-		if s.memRecallBytes >= memoryRecallSessionBytes {
+		if !s.reminders.chargeRecall(r.Path, len(r.Content)) {
 			break
 		}
-		if s.memRecallSurfaced == nil {
-			s.memRecallSurfaced = make(map[string]bool)
-		}
-		s.memRecallSurfaced[r.Path] = true
-		s.memRecallBytes += len(r.Content)
 		out = append(out, config.FormatMemoryRecallReminder(r))
 	}
 	return out
@@ -229,10 +194,7 @@ func (s *Session) memoryRecallReminders(userBlocks []agentcore.ContentBlock) []s
 // resetMemoryRecall clears the recall dedup set and budget — call whenever
 // the context window is rebuilt and previously injected memories are gone.
 func (s *Session) resetMemoryRecall() {
-	s.mu.Lock()
-	s.memRecallSurfaced = nil
-	s.memRecallBytes = 0
-	s.mu.Unlock()
+	s.reminders.resetRecall()
 }
 
 func (s *Session) queueRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) {
@@ -240,19 +202,11 @@ func (s *Session) queueRuntimeReminder(key string, kind RuntimeReminderKind, rem
 		return
 	}
 
-	s.mu.Lock()
-	if s.reminders.runtimeKeys == nil {
-		s.reminders.runtimeKeys = make(map[string]struct{})
-	}
-	if _, exists := s.reminders.runtimeKeys[key]; exists {
-		s.mu.Unlock()
+	if !s.reminders.queue(key, reminder) {
 		return
 	}
-	s.reminders.runtimeKeys[key] = struct{}{}
-	s.reminders.runtime = append(s.reminders.runtime, reminder)
-	s.mu.Unlock()
-	s.recordReminderMetric(kind)
-	s.recordReminderSnapshot(kind, "next_prompt")
+	s.metrics.recordReminder(kind)
+	s.turn.recordReminderSnapshot(kind, "next_prompt")
 
 	s.emit(SessionEvent{
 		Type:         SERuntimeReminder,
@@ -261,13 +215,18 @@ func (s *Session) queueRuntimeReminder(key string, kind RuntimeReminderKind, rem
 	})
 }
 
+// continueIfCurrentGeneration re-checks the generation and starts the
+// continuation in one critical section, so the check-then-act cannot straddle
+// a Reset/SwitchSession teardown: mid-switch the agent's run lifecycle is
+// held (Continue fails fast with ErrRunsHeld), and a completed switch flips
+// the generation. s.mu → agent lock is acyclic — the agent never calls back
+// into the Session under its own lock (Subscribe lifecycle contract).
 func (s *Session) continueIfCurrentGeneration(gen uint64) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.generation != gen {
-		s.mu.Unlock()
 		return errStaleSessionGeneration
 	}
-	s.mu.Unlock()
 	return s.startContinue()
 }
 
@@ -284,7 +243,7 @@ func (s *Session) deliverRuntimeReminder(key string, kind RuntimeReminderKind, r
 }
 
 // continueWithRuntimeReminder prefers in-run steering, then idle auto-resume
-// via agent.InjectContext, and finally falls back to next-prompt injection.
+// via agent.Inject, and finally falls back to next-prompt injection.
 func (s *Session) continueWithRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) {
 	if reminder == "" {
 		return
@@ -299,25 +258,19 @@ func (s *Session) continueWithRuntimeReminder(key string, kind RuntimeReminderKi
 }
 
 func (s *Session) trySteerRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) bool {
-	if !s.agent.State().IsRunning {
+	if !s.deps.agent.State().IsRunning {
 		return false
 	}
 
-	s.mu.Lock()
-	if s.reminders.steeredKeys == nil {
-		s.reminders.steeredKeys = make(map[string]struct{})
-	}
-	if _, exists := s.reminders.steeredKeys[key]; exists {
-		s.mu.Unlock()
+	// Already steered this turn: the reminder is in flight, report it as
+	// delivered so the caller does not fall through to another path.
+	if !s.reminders.markSteered(key) {
 		return true
 	}
-	s.reminders.steeredKeys[key] = struct{}{}
-	s.reminders.pendingContinue = true
-	s.mu.Unlock()
 
-	s.recordReminderMetric(kind)
-	s.recordReminderSnapshot(kind, "steer")
-	s.agent.Steer(injectedUserMsg(reminder))
+	s.metrics.recordReminder(kind)
+	s.turn.recordReminderSnapshot(kind, "steer")
+	s.deps.agent.Steer(injectedUserMsg(reminder))
 	s.emit(SessionEvent{
 		Type:         SERuntimeReminder,
 		Reminder:     reminder,
@@ -327,43 +280,49 @@ func (s *Session) trySteerRuntimeReminder(key string, kind RuntimeReminderKind, 
 }
 
 func (s *Session) tryAutoResumeRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) bool {
-	if s.agent.State().IsRunning {
+	if s.deps.agent.State().IsRunning {
 		return false
 	}
 
-	msgs := s.agent.Messages()
+	msgs := s.deps.agent.Messages()
 	if len(msgs) == 0 || msgs[len(msgs)-1].GetRole() != agentcore.RoleAssistant {
 		return false
 	}
 
-	s.mu.Lock()
-	if s.reminders.autoResumeKeys == nil {
-		s.reminders.autoResumeKeys = make(map[string]struct{})
-	}
-	if _, exists := s.reminders.autoResumeKeys[key]; exists {
-		s.mu.Unlock()
+	if s.reminders.autoResumed(key) {
 		return false
 	}
-	s.mu.Unlock()
 
 	ctx, run, previous := s.beginTelemetryRun(s.baseRunCtx())
-	result, err := s.agent.InjectContext(ctx, injectedUserMsg(reminder))
+	result, err := s.deps.agent.Inject(ctx, injectedUserMsg(reminder))
 	if err != nil {
+		// Only ErrRunsHeld can land here (a Reset/SwitchSession holds the run
+		// lifecycle) and it queues nothing, so falling through to next-prompt
+		// queueing delivers the reminder exactly once.
 		s.rollbackTelemetryRun(run, previous, err)
 		return false
 	}
 	if result.Disposition != agentcore.InjectResumedIdleRun {
+		// A run started between our idle check and the inject: the reminder
+		// was steered into it (or queued for the next launch) — delivered
+		// either way. Falling back to next-prompt queueing here would deliver
+		// it twice. No run was started by us, so roll the telemetry run back.
 		s.rollbackTelemetryRun(run, previous, nil)
-		return false
+		s.metrics.recordReminder(kind)
+		s.turn.recordReminderSnapshot(kind, "steer")
+		s.emit(SessionEvent{
+			Type:         SERuntimeReminder,
+			Reminder:     reminder,
+			ReminderKind: kind,
+		})
+		return true
 	}
 	s.commitTelemetryRun(previous)
 
-	s.mu.Lock()
-	s.reminders.autoResumeKeys[key] = struct{}{}
-	s.mu.Unlock()
+	s.reminders.markAutoResumed(key)
 
-	s.recordReminderMetric(kind)
-	s.recordReminderSnapshot(kind, "auto_continue")
+	s.metrics.recordReminder(kind)
+	s.turn.recordReminderSnapshot(kind, "auto_continue")
 	s.emit(SessionEvent{
 		Type:         SERuntimeReminder,
 		Reminder:     reminder,
@@ -398,15 +357,11 @@ type PlanModeSignal struct {
 // this so the reminder cadence stays driven by the actual plan-mode state
 // rather than a side-channel boolean.
 func (s *Session) SetPlanModeSignal(fn func() PlanModeSignal) {
-	s.mu.Lock()
-	s.planModeSignal = fn
-	s.mu.Unlock()
+	s.hooks.setPlanModeSignal(fn)
 }
 
 func (s *Session) currentPlanModeSignal() PlanModeSignal {
-	s.mu.Lock()
-	fn := s.planModeSignal
-	s.mu.Unlock()
+	fn := s.hooks.getPlanModeSignal()
 	if fn == nil {
 		return PlanModeSignal{}
 	}
@@ -416,15 +371,11 @@ func (s *Session) currentPlanModeSignal() PlanModeSignal {
 // SetGoalSignal registers a callback the runtime polls at natural stop points
 // to decide whether an explicit /goal should auto-continue.
 func (s *Session) SetGoalSignal(fn func() goal.Signal) {
-	s.mu.Lock()
-	s.goalSignal = fn
-	s.mu.Unlock()
+	s.hooks.setGoalSignal(fn)
 }
 
 func (s *Session) currentGoalSignal() goal.Signal {
-	s.mu.Lock()
-	fn := s.goalSignal
-	s.mu.Unlock()
+	fn := s.hooks.getGoalSignal()
 	if fn == nil {
 		return goal.Signal{}
 	}
@@ -432,15 +383,11 @@ func (s *Session) currentGoalSignal() goal.Signal {
 }
 
 func (s *Session) SetGoalUsageLimitHandler(fn func(string) (goal.State, error)) {
-	s.mu.Lock()
-	s.goalUsageLimit = fn
-	s.mu.Unlock()
+	s.hooks.setGoalUsageLimit(fn)
 }
 
 func (s *Session) markGoalUsageLimited(reason string) error {
-	s.mu.Lock()
-	fn := s.goalUsageLimit
-	s.mu.Unlock()
+	fn := s.hooks.getGoalUsageLimit()
 	if fn == nil {
 		return nil
 	}
@@ -462,34 +409,34 @@ func (s *Session) HandleGoalChange(change goal.Change) {
 }
 
 func (s *Session) SetBeforePrompt(fn func()) {
-	s.beforePrompt = fn
+	s.hooks.setBeforePrompt(fn)
 }
 
 // SetIdleHook registers a callback invoked after each turn fully settles
 // (EventAgentEnd with no pending automatic continuation).
 // Must be cheap on its fast path — it runs on the event dispatch goroutine.
 func (s *Session) SetIdleHook(fn func()) {
-	s.idleHook = fn
+	s.hooks.setIdleHook(fn)
 }
 
 func (s *Session) Steer(text string) {
-	s.agent.Steer(agentcore.UserMsg(text))
+	s.deps.agent.Steer(agentcore.UserMsg(text))
 }
 
 // EnqueueBackgroundResult delivers a completed background task without
 // interrupting an active run. If the session is idle, it starts a continuation
 // so the result does not wait for another user prompt.
 func (s *Session) EnqueueBackgroundResult(msg agentcore.AgentMessage) {
-	s.agent.FollowUp(msg)
+	s.deps.agent.FollowUp(msg)
 	s.continuePendingBackgroundResult()
 }
 
 func (s *Session) continuePendingBackgroundResult() bool {
-	if s.agent.State().IsRunning || !s.agent.HasFollowUps() {
+	if s.deps.agent.State().IsRunning || !s.deps.agent.HasFollowUps() {
 		return false
 	}
 
-	messages := s.agent.Messages()
+	messages := s.deps.agent.Messages()
 	if len(messages) == 0 {
 		return false
 	}
@@ -525,7 +472,7 @@ func (s *Session) resumeBackgroundResult(gen uint64) bool {
 		suppressed := s.backgroundWakeSuppressed
 		s.mu.Unlock()
 		if suppressed {
-			s.agent.AbortSilent()
+			s.deps.agent.AbortSilent()
 		}
 		return true
 	}
@@ -537,8 +484,19 @@ func (s *Session) resumeBackgroundResult(gen uint64) bool {
 		// its natural continuation point.
 		return true
 	}
-	if errors.Is(err, agentcore.ErrBadContinuation) && !s.agent.HasFollowUps() {
+	if errors.Is(err, agentcore.ErrBadContinuation) && !s.deps.agent.HasFollowUps() {
 		// A concurrent continuation already consumed the same queued batch.
+		return false
+	}
+	if errors.Is(err, agentcore.ErrNoMessages) {
+		// A concurrent Reset cleared the conversation out from under the
+		// queued result; the result died with the old session.
+		return false
+	}
+	if errors.Is(err, agentcore.ErrRunsHeld) {
+		// A Reset/SwitchSession holds the run lifecycle. The queued result
+		// either dies with the old session (the switch clears the queues) or
+		// is consumed by the next natural continuation.
 		return false
 	}
 
@@ -554,33 +512,49 @@ func (s *Session) Abort() {
 	s.mu.Lock()
 	s.backgroundWakeSuppressed = true
 	s.mu.Unlock()
-	s.agent.Abort()
+	s.deps.agent.Abort()
 }
 
 func (s *Session) AbortSilent() {
 	s.mu.Lock()
 	s.backgroundWakeSuppressed = true
 	s.mu.Unlock()
-	s.agent.AbortSilent()
+	s.deps.agent.AbortSilent()
 }
 
 func (s *Session) IsRunning() bool {
-	return s.agent.State().IsRunning
+	return s.deps.agent.State().IsRunning
 }
 
 func (s *Session) WaitForIdle() {
-	s.agent.WaitForIdle()
+	s.deps.agent.WaitForIdle()
 }
 
 func (s *Session) ClearConversation() {
-	s.agent.ClearMessages()
-	s.agent.ClearAllQueues()
+	// Third holder alongside Reset/SwitchSession: the hold freezes the run
+	// lifecycle but does not mutually exclude holders' surgery — switchMu does.
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
+
+	// /clear arrives at an idle boundary, but idle auto-resume can start a
+	// run between the caller's idle check and the wipe — hold the lifecycle
+	// so the clear cannot race a launch.
+	release := s.deps.agent.HoldRuns()
+	defer release()
+	if err := s.deps.agent.SetMessages(nil); err != nil {
+		s.emit(SessionEvent{Type: SEError, Error: fmt.Errorf("clear conversation: %w", err)})
+		return
+	}
+	s.deps.agent.ClearAllQueues()
 	// Conversation gone → LLM lost its read history. Drop file-read stamps
 	// so the next write/edit forces a fresh read.
-	if s.fileReadState != nil {
-		s.fileReadState.Reset()
+	if s.deps.fileReadState != nil {
+		s.deps.fileReadState.Reset()
 	}
 	s.resetMemoryRecall()
+	// The deferred-tools preamble was wiped with the history — rearm it so
+	// the next prompt re-injects the deferred tool list.
+	s.prompt.setPreambleInjected(false)
 }
 
 func (s *Session) applyTemporarySkillModel(model string) error {
@@ -593,30 +567,9 @@ func (s *Session) applyTemporarySkillModel(model string) error {
 	if err != nil {
 		return fmt.Errorf("resolve skill model %q: %w", model, err)
 	}
-	s.mu.Lock()
-	currentThinking := s.settings.ReasoningEffort
-	s.mu.Unlock()
-	effectiveThinking, ok := resolveThinkingLevelForModelStrict(chatModel, currentThinking)
-	if !ok {
-		return fmt.Errorf("resolve skill model %q: unsupported reasoning_effort %q", model, currentThinking)
+	if err := s.model.overrideForSkill(prov, resolved, chatModel); err != nil {
+		return fmt.Errorf("resolve skill model %q: %w", model, err)
 	}
-
-	s.mu.Lock()
-	if !s.skillRuntime.active {
-		s.skillRuntime.active = true
-		s.skillRuntime.baseProvider = s.provider
-		s.skillRuntime.baseModel = s.modelName
-		s.skillRuntime.baseChatModel = s.chatModel
-		s.skillRuntime.baseThinking = s.settings.ReasoningEffort
-	}
-	s.provider = prov
-	s.modelName = resolved
-	s.chatModel = chatModel
-	s.settings.ReasoningEffort = effectiveThinking
-	s.mu.Unlock()
-
-	s.agent.SetModel(chatModel)
-	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(effectiveThinking))
 	return nil
 }
 
@@ -624,28 +577,7 @@ func (s *Session) applyTemporarySkillThinking(level string) error {
 	if level == "" {
 		return nil
 	}
-
-	s.mu.Lock()
-	if !s.skillRuntime.active {
-		s.skillRuntime.active = true
-		s.skillRuntime.baseProvider = s.provider
-		s.skillRuntime.baseModel = s.modelName
-		s.skillRuntime.baseChatModel = s.chatModel
-		s.skillRuntime.baseThinking = s.settings.ReasoningEffort
-	}
-	s.mu.Unlock()
-
-	requested := level
-	var ok bool
-	level, ok = s.resolveThinkingLevel(level)
-	if !ok {
-		return fmt.Errorf("unsupported reasoning_effort %q", requested)
-	}
-	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(level))
-	s.mu.Lock()
-	s.settings.ReasoningEffort = level
-	s.mu.Unlock()
-	return nil
+	return s.model.overrideThinkingForSkill(level, s.deps.registry)
 }
 
 func (s *Session) applySkillPathHints(name string, paths []string) {
@@ -674,44 +606,12 @@ func (s *Session) applySkillPathHints(name string, paths []string) {
 }
 
 func (s *Session) clearTemporarySkillOverrides() {
-	s.mu.Lock()
-	active := s.skillRuntime.active
-	baseProvider := s.skillRuntime.baseProvider
-	baseModel := s.skillRuntime.baseModel
-	baseChatModel := s.skillRuntime.baseChatModel
-	baseThinking := s.skillRuntime.baseThinking
-	s.skillRuntime.active = false
-	s.skillRuntime.baseProvider = ""
-	s.skillRuntime.baseModel = ""
-	s.skillRuntime.baseChatModel = nil
-	s.skillRuntime.baseThinking = ""
-	s.mu.Unlock()
-
-	if !active {
-		return
-	}
-	if baseChatModel != nil {
-		s.agent.SetModel(baseChatModel)
-	}
-	effectiveThinking, ok := resolveThinkingLevelForModelStrict(baseChatModel, baseThinking)
-	if !ok {
+	if unsupported := s.model.restoreBaseline(); unsupported != "" {
 		s.emit(SessionEvent{
 			Type:  SEError,
-			Error: fmt.Errorf("unsupported reasoning_effort %q", baseThinking),
+			Error: fmt.Errorf("unsupported reasoning_effort %q", unsupported),
 		})
-		return
 	}
-	if effectiveThinking != "" {
-		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(effectiveThinking))
-	} else {
-		s.agent.SetThinkingLevel("")
-	}
-	s.mu.Lock()
-	s.provider = baseProvider
-	s.modelName = baseModel
-	s.chatModel = baseChatModel
-	s.settings.ReasoningEffort = baseThinking
-	s.mu.Unlock()
 }
 
 func (s *Session) resolveModelOverride(pattern string) (string, string, agentcore.ChatModel, error) {
@@ -720,11 +620,7 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 		return "", "", nil, fmt.Errorf("empty model override")
 	}
 
-	s.mu.Lock()
-	curProv := s.provider
-	provSnapshot := make(map[string]config.ProviderConfig, len(s.providers))
-	maps.Copy(provSnapshot, s.providers)
-	s.mu.Unlock()
+	curProv, _, _ := s.model.current()
 
 	if strings.Contains(pattern, "/") {
 		if prov, model, ok := strings.Cut(pattern, "/"); ok {
@@ -734,7 +630,7 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 			}
 			apiKey, baseURL := s.resolveCredentials(prov)
 			providerExtra := s.resolveProviderExtra(prov)
-			chatModel, err := s.createModel(provType, model, apiKey, baseURL, providerExtra)
+			chatModel, err := s.deps.createModel(provType, model, apiKey, baseURL, providerExtra)
 			if err == nil {
 				return prov, model, chatModel, nil
 			}
@@ -746,7 +642,7 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 		model    string
 	}
 	var matches []match
-	for provName, pc := range provSnapshot {
+	for provName, pc := range s.deps.providers {
 		for _, m := range pc.Models {
 			if strings.EqualFold(m, pattern) {
 				matches = append(matches, match{provider: provName, model: m})
@@ -762,7 +658,7 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 		}
 		apiKey, baseURL := s.resolveCredentials(m.provider)
 		providerExtra := s.resolveProviderExtra(m.provider)
-		chatModel, err := s.createModel(provType, m.model, apiKey, baseURL, providerExtra)
+		chatModel, err := s.deps.createModel(provType, m.model, apiKey, baseURL, providerExtra)
 		return m.provider, m.model, chatModel, err
 	case 0:
 		provType, err := s.providerType(curProv)
@@ -771,7 +667,7 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 		}
 		apiKey, baseURL := s.resolveCredentials(curProv)
 		providerExtra := s.resolveProviderExtra(curProv)
-		chatModel, err := s.createModel(provType, pattern, apiKey, baseURL, providerExtra)
+		chatModel, err := s.deps.createModel(provType, pattern, apiKey, baseURL, providerExtra)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -791,11 +687,8 @@ func (s *Session) SetModel(prov, model string) error {
 		return err
 	}
 	apiKey, baseURL := s.resolveCredentials(prov)
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
 	providerExtra := s.resolveProviderExtra(prov)
-	chatModel, err := s.createModel(provType, model, apiKey, baseURL, providerExtra)
+	chatModel, err := s.deps.createModel(provType, model, apiKey, baseURL, providerExtra)
 	if err != nil {
 		return fmt.Errorf("create model %s/%s: %w", prov, model, err)
 	}
@@ -805,26 +698,19 @@ func (s *Session) SetModel(prov, model string) error {
 		return fmt.Errorf("switch model %s/%s: unsupported reasoning_effort %q", prov, model, currentThinking)
 	}
 
-	if store != nil {
-		if err := store.AppendModelChange(prov, model); err != nil {
-			return fmt.Errorf("persist model change: %w", err)
-		}
+	err = s.persist.withStore(func(store *storage.Store) error {
+		return store.AppendModelChange(prov, model)
+	})
+	if err != nil {
+		return fmt.Errorf("persist model change: %w", err)
 	}
-
-	s.agent.SetModel(chatModel)
 
 	// Sync small_model: provider config > fallback to current model.
 	smallModel := model
-	s.mu.Lock()
-	if pc, ok := s.providers[prov]; ok && pc.SmallModel != "" {
+	if pc, ok := s.deps.providers[prov]; ok && pc.SmallModel != "" {
 		smallModel = pc.SmallModel
 	}
-	s.provider = prov
-	s.modelName = model
-	s.chatModel = chatModel
-	s.settings.ReasoningEffort = resolvedThinking
-	s.settings.SmallModel = smallModel
-	s.mu.Unlock()
+	s.model.swap(prov, model, chatModel, resolvedThinking, smallModel)
 
 	s.emit(SessionEvent{
 		Type:      SEModelChanged,
@@ -832,7 +718,6 @@ func (s *Session) SetModel(prov, model string) error {
 		Provider:  prov,
 	})
 
-	s.agent.SetThinkingLevel(agentcore.ThinkingLevel(resolvedThinking))
 	s.updateContextFromRegistry(prov, model)
 
 	return nil
@@ -840,20 +725,14 @@ func (s *Session) SetModel(prov, model string) error {
 
 // providerType returns the protocol type for a provider key.
 func (s *Session) providerType(prov string) (string, error) {
-	s.mu.Lock()
-	pc, ok := s.providers[prov]
-	s.mu.Unlock()
-	if ok {
+	if pc, ok := s.deps.providers[prov]; ok {
 		return pc.ProviderType(prov)
 	}
 	return config.ResolveProviderType(prov, "")
 }
 
 func (s *Session) resolveProviderExtra(prov string) map[string]any {
-	s.mu.Lock()
-	pc, ok := s.providers[prov]
-	s.mu.Unlock()
-	if ok {
+	if pc, ok := s.deps.providers[prov]; ok {
 		return pc.ProviderExtra()
 	}
 	return nil
@@ -863,19 +742,19 @@ func (s *Session) resolveProviderExtra(prov string) map[string]any {
 // It tries provider-qualified lookup first (e.g. "anthropic/claude-sonnet-4-5"),
 // then falls back to bare modelID for custom providers not in the registry.
 func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
-	if s.registry == nil {
+	if s.deps.registry == nil {
 		return
 	}
 	// Try provider-qualified lookup using the protocol type.
 	provType, err := s.providerType(providerKey)
 	if err == nil {
-		entry, _, err := s.registry.Resolve(provType + "/" + modelID)
+		entry, _, err := s.deps.registry.Resolve(provType + "/" + modelID)
 		if err == nil && entry.ContextWindow > 0 {
 			s.applyContextWindow(entry.ContextWindow)
 			return
 		}
 	}
-	entry, _, err := s.registry.Resolve(modelID)
+	entry, _, err := s.deps.registry.Resolve(modelID)
 	if err != nil || entry.ContextWindow <= 0 {
 		return
 	}
@@ -885,21 +764,11 @@ func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
 func (s *Session) applyContextWindow(window int) {
 	// Re-apply user-configured compaction caps to the new model window so that
 	// mid-session model switches honor compact_window / compact_ratio.
-	if cap := s.settings.CompactWindow; cap > 0 && cap < window {
-		window = cap
-	}
-	reserve := 0
-	if r := s.settings.CompactRatio; r > 0 && r < 1 {
-		reserve = window - int(float64(window)*r)
-	}
+	applied, reserve := s.model.applyContextWindow(window)
 	// Agent.SetContextWindow propagates to the ContextEngine (it implements
 	// agentcore.ContextWindowSetter); only the reserve still needs a direct call.
-	s.agent.SetContextWindow(window)
-	s.mu.Lock()
-	s.settings.ContextWindow = window
-	cm := s.contextManager
-	s.mu.Unlock()
-	if engine, ok := cm.(*agentctx.ContextEngine); ok {
+	s.deps.agent.SetContextWindow(applied)
+	if engine, ok := s.deps.contextManager.(*agentctx.ContextEngine); ok {
 		engine.SetReserveTokens(reserve)
 	}
 }
@@ -915,20 +784,16 @@ func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
 	}
 	level = agentcore.ThinkingLevel(resolved)
 
-	s.agent.SetThinkingLevel(level)
+	s.model.setThinking(resolved)
 
-	s.mu.Lock()
-	store := s.store
-	s.settings.ReasoningEffort = string(level)
-	s.mu.Unlock()
-
-	if store != nil {
-		if err := store.AppendReasoningEffortChange(string(level)); err != nil {
-			s.emit(SessionEvent{
-				Type:  SEError,
-				Error: fmt.Errorf("persist reasoning effort: %w", err),
-			})
-		}
+	err := s.persist.withStore(func(store *storage.Store) error {
+		return store.AppendReasoningEffortChange(string(level))
+	})
+	if err != nil {
+		s.emit(SessionEvent{
+			Type:  SEError,
+			Error: fmt.Errorf("persist reasoning effort: %w", err),
+		})
 	}
 
 	s.emit(SessionEvent{
@@ -937,7 +802,7 @@ func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
 	})
 
 	lvl := string(level)
-	if err := config.PatchEffectiveSettings(s.cwd, config.Settings{
+	if err := config.PatchEffectiveSettings(s.currentCwd(), config.Settings{
 		ReasoningEffort: &lvl,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: persist reasoning effort setting: %v\n", err)
@@ -945,15 +810,13 @@ func (s *Session) SetThinkingLevel(level agentcore.ThinkingLevel) {
 }
 
 func (s *Session) ModelName() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.modelName
+	_, name, _ := s.model.current()
+	return name
 }
 
 func (s *Session) Provider() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.provider
+	prov, _, _ := s.model.current()
+	return prov
 }
 
 func (s *Session) APIKey() string {
@@ -967,27 +830,19 @@ func (s *Session) BaseURL() string {
 }
 
 func (s *Session) AvailableThinkingLevels() []string {
-	s.mu.Lock()
-	model := s.chatModel
-	reg := s.registry
-	modelName := s.modelName
-	s.mu.Unlock()
+	_, modelName, model := s.model.current()
 	if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
 		return levels
 	}
-	if reg != nil {
+	if reg := s.deps.registry; reg != nil {
 		return reg.AvailableThinkingLevels(modelName)
 	}
 	return []string{""}
 }
 
 func (s *Session) AvailableThinkingLevelsFor(prov, modelName string) []string {
-	s.mu.Lock()
-	currentProvider := s.provider
-	currentModel := s.modelName
-	currentChatModel := s.chatModel
-	reg := s.registry
-	s.mu.Unlock()
+	currentProvider, currentModel, currentChatModel := s.model.current()
+	reg := s.deps.registry
 
 	if strings.EqualFold(prov, currentProvider) && strings.EqualFold(modelName, currentModel) {
 		if levels := provider.ThinkingLevelsForModel(currentChatModel); len(levels) > 0 {
@@ -999,7 +854,7 @@ func (s *Session) AvailableThinkingLevelsFor(prov, modelName string) []string {
 	if err == nil {
 		apiKey, baseURL := s.resolveCredentials(prov)
 		providerExtra := s.resolveProviderExtra(prov)
-		model, err := s.createModel(provType, modelName, apiKey, baseURL, providerExtra)
+		model, err := s.deps.createModel(provType, modelName, apiKey, baseURL, providerExtra)
 		if err == nil {
 			if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
 				return levels
@@ -1014,18 +869,8 @@ func (s *Session) AvailableThinkingLevelsFor(prov, modelName string) []string {
 }
 
 func (s *Session) resolveThinkingLevel(level string) (string, bool) {
-	s.mu.Lock()
-	model := s.chatModel
-	reg := s.registry
-	modelName := s.modelName
-	s.mu.Unlock()
-	if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
-		return provider.ResolveThinkingLevel(model, level)
-	}
-	if reg != nil {
-		return provider.ClampThinkingLevel(level, reg.AvailableThinkingLevels(modelName))
-	}
-	return provider.ResolveThinkingLevel(nil, level)
+	_, modelName, model := s.model.current()
+	return resolveThinkingAgainst(model, modelName, s.deps.registry, level)
 }
 
 func resolveThinkingLevelForModelStrict(model agentcore.ChatModel, level string) (string, bool) {
@@ -1038,10 +883,7 @@ func resolveThinkingLevelForModelStrict(model agentcore.ChatModel, level string)
 // resolveCredentials returns provider credentials from settings only — no
 // environment fallback.
 func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
-	s.mu.Lock()
-	pc, ok := s.providers[prov]
-	s.mu.Unlock()
-	if ok {
+	if pc, ok := s.deps.providers[prov]; ok {
 		return pc.APIKey, pc.BaseURL
 	}
 	return "", ""
@@ -1050,31 +892,39 @@ func (s *Session) resolveCredentials(prov string) (apiKey, baseURL string) {
 // Reset closes the current session log and starts a fresh session in the same cwd.
 // The in-memory conversation and harness state are cleared; the previous file is flushed.
 func (s *Session) Reset() error {
-	s.mu.Lock()
-	oldStore := s.store
-	mgr := s.mgr
-	cwd := s.cwd
-	s.generation++ // bump early so stale goroutines bail out
-	s.mu.Unlock()
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
 
-	newStore, err := mgr.Create(cwd)
+	// Fallible I/O before the generation bump: a bump followed by an early
+	// return would discard pending continuations for a switch that never
+	// happened (SwitchSession orders its Open/BuildSnapshot the same way).
+	newStore, err := s.deps.mgr.Create(s.currentCwd())
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
 
-	s.agent.ClearMessages()
-	s.agent.ClearAllQueues()
-	s.agent.SetThinkingLevel("")
+	s.mu.Lock()
+	s.generation++ // bump early so stale goroutines bail out
+	s.mu.Unlock()
+
+	// Freeze the run lifecycle for the whole teardown: drains any run a
+	// continuation slipped in and rejects new launches (ErrRunsHeld) until
+	// the fresh session is fully installed.
+	release := s.deps.agent.HoldRuns()
+	defer release()
+
+	if err := s.deps.agent.SetMessages(nil); err != nil {
+		_ = newStore.Close()
+		return fmt.Errorf("clear conversation: %w", err)
+	}
+	s.deps.agent.ClearAllQueues()
+	s.model.setThinking("")
 	// Re-point the cache routing key: a fresh session is a new conversation
 	// and must not inherit the previous one's cache lineage.
-	s.agent.SetPromptCacheKey(newStore.Header().SessionID)
+	s.deps.agent.SetPromptCacheKey(newStore.Header().SessionID)
 
-	s.mu.Lock()
-	s.store = newStore
-	s.autoNamed = false
-	s.settings.ReasoningEffort = ""
-	s.resetHarnessStateLocked()
-	s.mu.Unlock()
+	oldStore := s.persist.swapStore(newStore, false)
+	s.resetHarnessState()
 	if oldStore != nil {
 		_ = oldStore.Close()
 	}
@@ -1087,15 +937,12 @@ func (s *Session) Reset() error {
 }
 
 func (s *Session) SwitchSession(id string) error {
-	s.mu.Lock()
-	oldStore := s.store
-	mgr := s.mgr
-	curProvider := s.provider
-	curModel := s.modelName
-	curChatModel := s.chatModel
-	s.mu.Unlock()
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
 
-	newStore, err := mgr.Open(id)
+	curProvider, curModel, curChatModel := s.model.current()
+
+	newStore, err := s.deps.mgr.Open(id)
 	if err != nil {
 		return fmt.Errorf("switch session %s: %w", id, err)
 	}
@@ -1129,9 +976,21 @@ func (s *Session) SwitchSession(id string) error {
 		if err != nil {
 			return err
 		}
-		restoredModel, err = s.createModel(targetType, targetModel, targetKey, targetBase, targetExtra)
+		restoredModel, err = s.deps.createModel(targetType, targetModel, targetKey, targetBase, targetExtra)
 		if err != nil {
 			return fmt.Errorf("restore model %s/%s: %w", targetProvider, targetModel, err)
+		}
+	}
+
+	// Pure validation, so it belongs with the fallible section above: failing
+	// after the teardown starts would leave the agent holding the target
+	// history while the store/model still point at the old session.
+	restoredThinking := ""
+	if snapshot.ReasoningEffort != "" {
+		var ok bool
+		restoredThinking, ok = resolveThinkingLevelForModelStrict(restoredModel, snapshot.ReasoningEffort)
+		if !ok {
+			return fmt.Errorf("restore reasoning_effort from session: unsupported reasoning_effort %q", snapshot.ReasoningEffort)
 		}
 	}
 
@@ -1140,44 +999,34 @@ func (s *Session) SwitchSession(id string) error {
 	s.generation++
 	s.mu.Unlock()
 
-	s.agent.ClearMessages()
-	s.agent.ClearAllQueues()
+	// Freeze the run lifecycle for the teardown, same as Reset.
+	release := s.deps.agent.HoldRuns()
+	defer release()
+
+	if err := s.deps.agent.SetMessages(nil); err != nil {
+		return fmt.Errorf("clear conversation: %w", err)
+	}
+	s.deps.agent.ClearAllQueues()
 	// Re-point the cache routing key to the target session so its requests
 	// rejoin that conversation's cache lineage (warm if recently active).
-	s.agent.SetPromptCacheKey(newStore.Header().SessionID)
+	s.deps.agent.SetPromptCacheKey(newStore.Header().SessionID)
 	if len(snapshot.Messages) > 0 {
-		if err := s.agent.SetMessages(snapshot.Messages); err != nil {
+		if err := s.deps.agent.SetMessages(snapshot.Messages); err != nil {
 			return fmt.Errorf("restore messages: %w", err)
 		}
-		agentcore.ReactivateDeferred(s.allTools, snapshot.Messages)
+		agentcore.ReactivateDeferred(s.prompt.allToolsSnapshot(), snapshot.Messages)
 	}
-	restoredThinking := ""
-	if snapshot.ReasoningEffort != "" {
-		var ok bool
-		restoredThinking, ok = resolveThinkingLevelForModelStrict(restoredModel, snapshot.ReasoningEffort)
-		if !ok {
-			return fmt.Errorf("restore reasoning_effort from session: unsupported reasoning_effort %q", snapshot.ReasoningEffort)
-		}
-		s.agent.SetThinkingLevel(agentcore.ThinkingLevel(restoredThinking))
-	} else {
-		s.agent.SetThinkingLevel("")
-	}
-	if restoredModel != nil {
-		s.agent.SetModel(restoredModel)
-	}
+	// swap keeps session fields and agent in step atomically; a stale
+	// chatModel here would hand the old session's model to ephemeralQuery,
+	// AvailableThinkingLevels, and the skill-override baseline capture.
+	s.model.swap(targetProvider, targetModel, restoredModel, restoredThinking, "")
 
-	s.mu.Lock()
-	s.store = newStore
-	s.provider = targetProvider
-	s.modelName = targetModel
-	s.autoNamed = newStore.Header().Name != ""
-	if snapshot.ReasoningEffort != "" {
-		s.settings.ReasoningEffort = restoredThinking
-	} else {
-		s.settings.ReasoningEffort = ""
-	}
-	s.resetHarnessStateLocked()
-	s.mu.Unlock()
+	oldStore := s.persist.swapStore(newStore, newStore.Header().Name != "")
+	s.resetHarnessState()
+	// Derive from the restored history — same heuristic bootstrap uses on
+	// resume (assemble_runtime.go): any restored messages imply the preamble
+	// is already in the conversation; re-injecting would duplicate it.
+	s.prompt.setPreambleInjected(len(snapshot.Messages) > 0)
 
 	if oldStore != nil {
 		_ = oldStore.Close()
@@ -1192,9 +1041,7 @@ func (s *Session) SwitchSession(id string) error {
 }
 
 func (s *Session) CurrentSnapshot() (storage.ContextSnapshot, error) {
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
+	store := s.persist.currentStore()
 	if store == nil {
 		return storage.ContextSnapshot{}, fmt.Errorf("session store is not available")
 	}
@@ -1202,9 +1049,7 @@ func (s *Session) CurrentSnapshot() (storage.ContextSnapshot, error) {
 }
 
 func (s *Session) AppendGoalState(entry storage.GoalStateEntry) error {
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
+	store := s.persist.currentStore()
 	if store == nil {
 		return fmt.Errorf("session store is not available")
 	}
@@ -1212,20 +1057,18 @@ func (s *Session) AppendGoalState(entry storage.GoalStateEntry) error {
 }
 
 func (s *Session) Settings() config.Resolved {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.settings
+	return s.model.currentSettings()
 }
 
 func (s *Session) ContextUsage() *agentcore.ContextUsage {
-	return s.agent.ContextUsage()
+	return s.deps.agent.ContextUsage()
 }
 
 func (s *Session) ContextSnapshot() (*agentcore.ContextSnapshot, bool) {
-	if s.contextManager == nil {
+	if s.deps.contextManager == nil {
 		return nil, false
 	}
-	snapshot := s.contextManager.Snapshot()
+	snapshot := s.deps.contextManager.Snapshot()
 	if snapshot == nil {
 		return nil, false
 	}
@@ -1233,15 +1076,9 @@ func (s *Session) ContextSnapshot() (*agentcore.ContextSnapshot, bool) {
 }
 
 func (s *Session) RecentToolCalls(limit int) []ToolCallSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if limit <= 0 || limit > len(s.recentToolCalls) {
-		limit = len(s.recentToolCalls)
-	}
-	start := len(s.recentToolCalls) - limit
-	snapshots := make([]ToolCallSnapshot, 0, limit)
-	for _, call := range s.recentToolCalls[start:] {
+	recent := s.turn.recentSnapshot(limit)
+	snapshots := make([]ToolCallSnapshot, 0, len(recent))
+	for _, call := range recent {
 		snapshots = append(snapshots, ToolCallSnapshot{
 			Tool:      call.Tool,
 			ArgsHash:  call.ArgsHash,
@@ -1253,41 +1090,23 @@ func (s *Session) RecentToolCalls(limit int) []ToolCallSnapshot {
 }
 
 func (s *Session) LastReminder() (ReminderSnapshot, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.lastReminder == nil {
-		return ReminderSnapshot{}, false
-	}
-	return *s.lastReminder, true
+	return s.turn.lastReminderSnapshot()
 }
 
 func (s *Session) LastCompaction() (CompactionSnapshot, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.lastCompaction == nil {
-		return CompactionSnapshot{}, false
-	}
-	return *s.lastCompaction, true
+	return s.metrics.lastCompactionSnapshot()
 }
 
 func (s *Session) LastRunSummary() (agentcore.RunSummary, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.lastRunSummary == nil {
-		return agentcore.RunSummary{}, false
-	}
-	return *s.lastRunSummary, true
+	return s.turn.runSummarySnapshot()
 }
 
 func (s *Session) TotalTokens() int {
-	return s.agent.TotalUsage().TotalTokens
+	return s.deps.agent.TotalUsage().TotalTokens
 }
 
 func (s *Session) Registry() *provider.ModelRegistry {
-	return s.registry
+	return s.deps.registry
 }
 
 // CacheStats reports session-cumulative prompt cache metrics. Input includes
@@ -1303,7 +1122,7 @@ type CacheStats struct {
 }
 
 func (s *Session) CacheStats() CacheStats {
-	usage := s.agent.TotalUsage()
+	usage := s.deps.agent.TotalUsage()
 	cs := CacheStats{
 		Input:       usage.Input,
 		ReadTokens:  usage.CacheRead,
@@ -1313,12 +1132,8 @@ func (s *Session) CacheStats() CacheStats {
 		cs.HitRate = float64(usage.CacheRead) / float64(usage.Input)
 	}
 
-	s.mu.Lock()
-	model := s.modelName
-	reg := s.registry
-	s.mu.Unlock()
-
-	if reg != nil {
+	_, model, _ := s.model.current()
+	if reg := s.deps.registry; reg != nil {
 		inRate, _, crRate, _ := reg.CostRates(model)
 		if inRate > crRate {
 			cs.SavedUSD = float64(usage.CacheRead) * (inRate - crRate) / 1e6
@@ -1328,7 +1143,7 @@ func (s *Session) CacheStats() CacheStats {
 }
 
 func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
-	usage := s.agent.TotalUsage()
+	usage := s.deps.agent.TotalUsage()
 
 	// Input already includes CacheRead per the litellm convention; subtract
 	// it so the cached portion is only billed at the cache-read rate, not
@@ -1341,12 +1156,8 @@ func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 	inputTokens = nonCachedInput + usage.CacheRead + usage.CacheWrite
 	outputTokens = usage.Output
 
-	s.mu.Lock()
-	model := s.modelName
-	reg := s.registry
-	s.mu.Unlock()
-
-	if reg != nil {
+	_, model, _ := s.model.current()
+	if reg := s.deps.registry; reg != nil {
 		inRate, outRate, crRate, cwRate := reg.CostRates(model)
 		cost = float64(nonCachedInput)*inRate/1e6 +
 			float64(outputTokens)*outRate/1e6 +
@@ -1358,11 +1169,11 @@ func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 
 // Messages returns the current agent message history.
 func (s *Session) Messages() []agentcore.AgentMessage {
-	return s.agent.Messages()
+	return s.deps.agent.Messages()
 }
 
 func (s *Session) LastAssistantText() string {
-	msgs := s.agent.Messages()
+	msgs := s.deps.agent.Messages()
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg, ok := msgs[i].(agentcore.Message)
 		if !ok || msg.Role != agentcore.RoleAssistant {
@@ -1376,9 +1187,7 @@ func (s *Session) LastAssistantText() string {
 }
 
 func (s *Session) SessionID() string {
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
+	store := s.persist.currentStore()
 	if store == nil {
 		return ""
 	}
@@ -1386,10 +1195,7 @@ func (s *Session) SessionID() string {
 }
 
 func (s *Session) CurrentSessionInfo() (storage.SessionInfo, error) {
-	s.mu.Lock()
-	store := s.store
-	s.mu.Unlock()
-
+	store := s.persist.currentStore()
 	if store == nil {
 		return storage.SessionInfo{}, fmt.Errorf("no active session")
 	}
@@ -1406,7 +1212,7 @@ func (s *Session) CurrentSessionInfo() (storage.SessionInfo, error) {
 
 func (s *Session) ListSessions() ([]storage.SessionInfo, error) {
 	s.mu.Lock()
-	mgr := s.mgr
+	mgr := s.deps.mgr
 	s.mu.Unlock()
 
 	if mgr == nil {
@@ -1417,24 +1223,20 @@ func (s *Session) ListSessions() ([]storage.SessionInfo, error) {
 
 func (s *Session) Close() {
 	s.AbortSilent()
-	s.agent.WaitForIdle()
-	if s.unsub != nil {
-		s.unsub()
+	s.deps.agent.WaitForIdle()
+	if s.deps.unsub != nil {
+		s.deps.unsub()
 	}
-	if err := s.persistence.flushPendingMessages(); err != nil {
+	if err := s.persist.flushPending(); err != nil {
 		s.emit(SessionEvent{
 			Type:  SEError,
 			Error: err,
 		})
 	}
-	s.mu.Lock()
-	store := s.store
-	snapshotter := s.snapshotter
-	s.mu.Unlock()
-	if snapshotter != nil {
-		snapshotter.Close()
+	if s.deps.snapshotter != nil {
+		s.deps.snapshotter.Close()
 	}
-	if store != nil {
+	if store := s.persist.currentStore(); store != nil {
 		store.Close()
 	}
 }
@@ -1487,19 +1289,20 @@ func wrapHookContext(text string) string {
 //
 // Both SideQuestion (/btw) and GenerateSuggestion share this path.
 func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
-	s.mu.Lock()
-	model := s.chatModel
+	// Cross-group snapshot (model vs store): a session switch between the two
+	// reads could pair the new model with the old store's cache key, costing
+	// one cache miss on an ephemeral call — accepted.
+	_, _, model := s.model.current()
 	sessionID := ""
-	if s.store != nil {
-		sessionID = s.store.Header().SessionID
+	if store := s.persist.currentStore(); store != nil {
+		sessionID = store.Header().SessionID
 	}
-	s.mu.Unlock()
 
 	if model == nil {
 		return nil, fmt.Errorf("no model configured")
 	}
 
-	raw, err := s.agent.BuildLLMMessages()
+	raw, err := s.deps.agent.BuildLLMMessages()
 	if err != nil {
 		return nil, fmt.Errorf("build llm messages: %w", err)
 	}
@@ -1540,7 +1343,7 @@ func (s *Session) ephemeralQuery(ctx context.Context, userText string, opts ...a
 	// field byte-identical preserves the prompt-cache prefix up to the
 	// system-block breakpoint. See the docstring for why we don't also set
 	// tool_choice: "none".
-	toolSpecs := s.agent.BuildLLMTools()
+	toolSpecs := s.deps.agent.BuildLLMTools()
 	// Same routing key as the main loop, for the same reason as the tools
 	// forwarding above: on key-routed providers (OpenAI prompt_cache_key)
 	// the side query only hits the main conversation's cache when it lands

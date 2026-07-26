@@ -65,7 +65,9 @@ func TestStripCodeFence(t *testing.T) {
 func TestSessionMemoryRoundtrip(t *testing.T) {
 	isolateUserConfigHome(t)
 
-	s := &Session{cwd: t.TempDir()}
+	s := &Session{}
+	dir := t.TempDir()
+	s.cwd.Store(&dir)
 	body := "# Session Memory\n\n## Current State\nPhase 4.1 in progress.\n"
 	if err := s.saveSessionMemory(body); err != nil {
 		t.Fatalf("save: %v", err)
@@ -88,7 +90,9 @@ func TestSessionMemoryRoundtrip(t *testing.T) {
 func TestLoadSessionMemoryMissing(t *testing.T) {
 	isolateUserConfigHome(t)
 
-	s := &Session{cwd: t.TempDir()}
+	s := &Session{}
+	dir := t.TempDir()
+	s.cwd.Store(&dir)
 	mem, err := s.loadSessionMemory()
 	if err != nil {
 		t.Fatalf("missing file should not error, got %v", err)
@@ -101,11 +105,13 @@ func TestLoadSessionMemoryMissing(t *testing.T) {
 func TestSessionMemorySeedFnTemplateYieldsEmpty(t *testing.T) {
 	isolateUserConfigHome(t)
 
-	s := &Session{cwd: t.TempDir()}
+	s := &Session{}
+	dir := t.TempDir()
+	s.cwd.Store(&dir)
 	if err := s.saveSessionMemory(sessionMemoryTemplate); err != nil {
 		t.Fatalf("save template: %v", err)
 	}
-	seed, err := SessionMemorySeedFn(s.cwd)()
+	seed, err := SessionMemorySeedFn(s.currentCwd())()
 	if err != nil {
 		t.Fatalf("seed fn err: %v", err)
 	}
@@ -129,12 +135,14 @@ func TestSessionMemorySeedFnMissingYieldsEmpty(t *testing.T) {
 func TestSessionMemorySeedFnReturnsBodyOnce(t *testing.T) {
 	isolateUserConfigHome(t)
 
-	s := &Session{cwd: t.TempDir()}
+	s := &Session{}
+	dir := t.TempDir()
+	s.cwd.Store(&dir)
 	body := "# Session Memory\n\n## Current State\nUser is wiring Phase 4.1-B.\n"
 	if err := s.saveSessionMemory(body); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	seed, err := SessionMemorySeedFn(s.cwd)()
+	seed, err := SessionMemorySeedFn(s.currentCwd())()
 	if err != nil {
 		t.Fatalf("seed fn err: %v", err)
 	}

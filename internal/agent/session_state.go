@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,30 +16,47 @@ type sessionPersistence struct {
 	session *Session
 }
 
-type sessionContextController struct {
-	session *Session
-}
-
 func newSessionPersistence(session *Session) *sessionPersistence {
 	return &sessionPersistence{session: session}
 }
 
-func newSessionContextController(session *Session) *sessionContextController {
-	return &sessionContextController{session: session}
-}
-
 func (s *Session) Subscribe(fn func(SessionEvent)) func() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.listeners = append(s.listeners, fn)
-	idx := len(s.listeners) - 1
-	return func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.listeners[idx] = nil
-	}
+	return s.events.subscribe(fn)
 }
 
+// handleAgentEvent runs on the event goroutine (G-event) — distinct from the
+// agent-loop goroutine (G-loop) that runs the MessageCommitter and the
+// ContextEngine hooks. On a chained continuation the next run's events arrive
+// on a NEW G-event that overlaps the tail of this one (agentcore clears
+// isRunning BEFORE dispatching EventAgentEnd), so "events are serial" only
+// holds within a single run.
+//
+// Ordering constraints — do not reorder without re-deriving each:
+//  1. runtime.handleEvent sees every event first: tool tracking must be
+//     recorded before any branch below delivers reminders derived from it.
+//  2. EventMessageStart marks lastAssistantStart; EventMessageEnd's
+//     persistLLMCall consumes it — the pair yields latency_ms.
+//  3. setRunSummary before the continuation branches — runPostStopValidation
+//     (via afterAgentEnd) reads it.
+//  4. flushPending before any continuation — a continuation's messages must
+//     not reach the store ahead of the lazy queue.
+//  5. endTelemetryRun before any continuation — the next run installs its
+//     own span; ending late would close the wrong one.
+//  6. finalizeTurnOutcome before the three continuation branches — the goal
+//     no-activity check pairs lastReminder with the turn just finished.
+//  7. clearSkillDelta after afterAgentEnd. Known quirk: a continuation
+//     launched by afterAgentEnd still runs with the skill delta applied;
+//     recorded here, semantics intentionally unchanged.
+//  8. The continuation branches return early and skip the trailing emit:
+//     frontends treat SEAgentEvent(EventAgentEnd) as "turn finished", and a
+//     continuation means it is not.
+//  9. emit takes no session lock (structural — see emit) and callbacks run
+//     outside all locks.
+//  10. Continuation launches need no session-side lock: a concurrent
+//     Reset/SwitchSession holds the agent's run lifecycle and they fail fast
+//     with ErrRunsHeld (handled silently). Never call Reset, SwitchSession,
+//     ClearConversation, or agent.HoldRuns synchronously from this
+//     goroutine — it is the one a hold waits on to drain.
 func (s *Session) handleAgentEvent(ev agentcore.Event) {
 	s.runtime.handleEvent(ev)
 
@@ -55,9 +71,7 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 
 	if ev.Type == agentcore.EventMessageStart {
 		if msg, ok := ev.Message.(agentcore.Message); ok && msg.Role == agentcore.RoleAssistant {
-			s.mu.Lock()
-			s.lastAssistantStart = time.Now()
-			s.mu.Unlock()
+			s.persist.markAssistantStart()
 		}
 	}
 
@@ -65,9 +79,7 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 		if msg, ok := ev.Message.(agentcore.Message); ok {
 			s.persistence.handleMessageEnd(msg)
 			if isRuntimeReminderMessage(msg) {
-				s.mu.Lock()
-				s.reminders.pendingContinue = false
-				s.mu.Unlock()
+				s.reminders.clearPendingContinue()
 			}
 			if msg.Role == agentcore.RoleAssistant {
 				s.recordAssistantTurnMessage(msg)
@@ -76,26 +88,21 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 	}
 
 	if ev.Type == agentcore.EventRetry && ev.RetryInfo != nil {
-		s.context.handleRetry(ev.RetryInfo)
+		s.handleRetryEvent(ev.RetryInfo)
 	}
 
 	if ev.Type == agentcore.EventAgentEnd {
 		s.endTelemetryRun(ev.Err)
 		if ev.Summary != nil {
-			s.mu.Lock()
-			summary := *ev.Summary
-			s.lastRunSummary = &summary
-			s.mu.Unlock()
+			s.turn.setRunSummary(*ev.Summary)
 		}
-		if err := s.persistence.flushPendingMessages(); err != nil {
+		if err := s.persist.flushPending(); err != nil {
 			s.emit(SessionEvent{
 				Type:  SEError,
 				Error: err,
 			})
 		}
-		if s.context.handleAgentEnd() {
-			return
-		}
+		s.handleRetryAgentEnd()
 		s.finalizeTurnOutcome()
 		if s.runtime.continuePendingReminder() {
 			return
@@ -104,12 +111,12 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 			return
 		}
 		s.runtime.afterAgentEnd()
-		if s.hookRunner != nil {
-			s.hookRunner.RunNotification(context.Background(), "agent response complete")
+		if s.deps.hookRunner != nil {
+			s.deps.hookRunner.RunNotification(context.Background(), "agent response complete")
 		}
 		s.clearSkillDelta()
-		if s.idleHook != nil {
-			s.idleHook()
+		if fn := s.hooks.getIdleHook(); fn != nil {
+			fn()
 		}
 	}
 
@@ -119,36 +126,26 @@ func (s *Session) handleAgentEvent(ev agentcore.Event) {
 	})
 }
 
+// emit never touches s.mu — metrics/cache/events all guard themselves, so it
+// is safe to call from any goroutine, with or without the session lock held.
 func (s *Session) emit(ev SessionEvent) {
 	switch ev.Type {
 	case SEError:
-		s.recordErrorDiagnostic(ev.Error)
+		s.metrics.recordError(ev.Error)
 	case SEAgentEvent:
 		if ev.AgentEvent != nil && ev.AgentEvent.Type == agentcore.EventError {
-			s.recordErrorDiagnostic(ev.AgentEvent.Err)
+			s.metrics.recordError(ev.AgentEvent.Err)
 		}
 	case SEAutoCompactionEnd:
 		if ev.CompactionChanged {
 			// A compaction rewrites the prompt prefix: the next turn's
 			// cache_read drop is expected, not a bug. Invalidate the cache
 			// baseline so detectCacheBreak does not flag it as a break.
-			s.mu.Lock()
-			s.cacheSnap.CacheReadTokens = 0
-			s.cacheSnap.Valid = false
-			s.mu.Unlock()
+			s.cache.invalidateBaseline()
 		}
 	}
 
-	s.mu.Lock()
-	listeners := make([]func(SessionEvent), len(s.listeners))
-	copy(listeners, s.listeners)
-	s.mu.Unlock()
-
-	for _, fn := range listeners {
-		if fn != nil {
-			fn(ev)
-		}
-	}
+	s.events.dispatch(ev)
 }
 
 func isUsageLimitError(err error) bool {
@@ -184,16 +181,16 @@ func (s *Session) ApplySkillDelta(name string, delta skill.Delta) error {
 		return err
 	}
 
-	if s.skillAllowsSetter != nil {
-		s.skillAllowsSetter(delta.AllowedTools)
+	if fn := s.hooks.getSkillAllows(); fn != nil {
+		fn(delta.AllowedTools)
 	}
 	s.applySkillPathHints(name, delta.Paths)
 	return nil
 }
 
 func (s *Session) clearSkillDelta() {
-	if s.skillAllowsSetter != nil {
-		s.skillAllowsSetter(nil)
+	if fn := s.hooks.getSkillAllows(); fn != nil {
+		fn(nil)
 	}
 	s.clearTemporarySkillOverrides()
 }
@@ -216,30 +213,15 @@ func (s *Session) recordInvokedSkill(name, promptText string, paths []string) {
 		Timestamp:  time.Now(),
 	}
 
-	s.mu.Lock()
-	if s.skillRuntime.invocationCount == nil {
-		s.skillRuntime.invocationCount = make(map[string]int)
+	// Log → usage tracker → reminder refresh, each taking the prompt lock in
+	// turn (never nested) — see promptState.recordInvoked.
+	if err := s.prompt.recordInvoked(snapshot, usageName); err != nil {
+		s.emit(SessionEvent{
+			Type:  SEError,
+			Error: fmt.Errorf("record skill usage: %w", err),
+		})
 	}
-	s.skillRuntime.invocationCount[usageName]++
-	skillList := append(s.skillRuntime.invoked, snapshot)
-	if len(skillList) > 4 {
-		skillList = append([]invokedSkillSnapshot(nil), skillList[len(skillList)-4:]...)
-	}
-	s.skillRuntime.invoked = skillList
-	s.mu.Unlock()
-
-	if s.skillUsage != nil {
-		if err := s.skillUsage.Record(usageName, time.Now()); err != nil {
-			s.emit(SessionEvent{
-				Type:  SEError,
-				Error: fmt.Errorf("record skill usage: %w", err),
-			})
-		}
-	}
-
-	if s.prompts != nil {
-		s.prompts.refreshSkillReminders()
-	}
+	s.prompt.refreshSkillReminders(s.currentCwd())
 }
 
 func invocationUsageScores(invocations map[string]int) map[string]float64 {
@@ -283,23 +265,19 @@ func (p *sessionPersistence) handleCommittedMessage(message agentcore.AgentMessa
 		return nil
 	}
 
-	p.session.mu.Lock()
-	lazy := p.session.lazyPersist
-	p.session.mu.Unlock()
+	lazy := p.session.deps.lazyPersist
 
 	if lazy && msg.Role == agentcore.RoleUser {
-		p.session.mu.Lock()
-		p.session.pendingUserMsg = append(p.session.pendingUserMsg, msg)
-		p.session.mu.Unlock()
+		p.session.persist.queuePending(msg)
 		return nil
 	}
 
 	if lazy && msg.Role == agentcore.RoleAssistant {
-		if err := p.flushPendingMessages(); err != nil {
+		if err := p.session.persist.flushPending(); err != nil {
 			return err
 		}
 	}
-	return p.persistMessage(msg)
+	return p.session.persist.append(msg)
 }
 
 func (p *sessionPersistence) handleMessageEnd(msg agentcore.Message) {
@@ -322,27 +300,14 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 		return
 	}
 
-	p.session.mu.Lock()
-	store := p.session.store
-	start := p.session.lastAssistantStart
-	p.session.lastAssistantStart = time.Time{}
-	provider := p.session.provider
-	model := p.session.modelName
-	thinking := p.session.settings.ReasoningEffort
-	prevSnap := p.session.cacheSnap
-	currSnap := cacheSnapshot{
-		FrozenSystemHash:  p.session.cacheSnap.FrozenSystemHash,
-		DynamicSystemHash: p.session.cacheSnap.DynamicSystemHash,
-		ToolsHash:         p.session.cacheSnap.ToolsHash,
-		CacheReadTokens:   u.CacheRead,
-		Valid:             true,
-	}
-	p.session.cacheSnap = currSnap
-	p.session.mu.Unlock()
+	start := p.session.persist.takeAssistantStart()
+	// Cross-group snapshot: the model may have switched between the LLM call
+	// and this event. Observability-only record — a stale attribution in the
+	// rare race is acceptable.
+	provider, model, _ := p.session.model.current()
+	thinking := p.session.model.currentSettings().ReasoningEffort
 
-	if store == nil {
-		return
-	}
+	prevSnap, currSnap := p.session.cache.observe(u.CacheRead)
 
 	var latencyMs int64
 	if !start.IsZero() {
@@ -361,7 +326,10 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 		ReasoningEffort:     thinking,
 		CacheBreak:          detectCacheBreak(prevSnap, currSnap),
 	}
-	if err := store.AppendLLMCall(entry); err != nil {
+	err := p.session.persist.withStore(func(store *storage.Store) error {
+		return store.AppendLLMCall(entry)
+	})
+	if err != nil {
 		p.session.emit(SessionEvent{
 			Type:  SEError,
 			Error: fmt.Errorf("persist llm_call: %w", err),
@@ -369,61 +337,18 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 	}
 }
 
-func (p *sessionPersistence) persistMessage(msg agentcore.Message) error {
-	p.session.mu.Lock()
-	store := p.session.store
-	p.session.mu.Unlock()
-	if store == nil {
-		return nil
-	}
-	if err := store.AppendMessage(msg); err != nil {
-		detail := err.Error()
-		for _, tc := range msg.ToolCalls() {
-			if !json.Valid(tc.Args) {
-				detail = fmt.Sprintf("%s [invalid args in %s(%s): %s]",
-					detail, tc.Name, tc.ID, truncateBytes(tc.Args, 200))
-			}
-		}
-		return fmt.Errorf("persist message: %s", detail)
-	}
-	return nil
-}
-
-func (p *sessionPersistence) flushPendingMessages() error {
-	for {
-		p.session.mu.Lock()
-		if len(p.session.pendingUserMsg) == 0 {
-			p.session.mu.Unlock()
-			return nil
-		}
-		msg := p.session.pendingUserMsg[0]
-		p.session.mu.Unlock()
-
-		if err := p.persistMessage(msg); err != nil {
-			return err
-		}
-		p.session.mu.Lock()
-		p.session.pendingUserMsg = p.session.pendingUserMsg[1:]
-		p.session.mu.Unlock()
-	}
-}
-
 func (p *sessionPersistence) tryAutoName() {
-	p.session.mu.Lock()
-	if p.session.autoNamed || p.session.store == nil {
-		p.session.mu.Unlock()
+	store := p.session.persist.claimAutoName()
+	if store == nil {
 		return
 	}
-	store := p.session.store
-	p.session.autoNamed = true
-	p.session.mu.Unlock()
 
 	if h := store.Header(); h.Name != "" {
 		return
 	}
 
 	var name string
-	for _, m := range p.session.agent.Messages() {
+	for _, m := range p.session.deps.agent.Messages() {
 		msg, ok := m.(agentcore.Message)
 		if !ok || msg.Role != agentcore.RoleUser {
 			continue
@@ -447,15 +372,13 @@ func (p *sessionPersistence) tryAutoName() {
 	}
 }
 
-func (c *sessionContextController) handleRetry(info *agentcore.RetryInfo) {
+func (s *Session) handleRetryEvent(info *agentcore.RetryInfo) {
 	if agentcore.IsContextOverflow(info.Err) {
 		return
 	}
 
-	c.session.mu.Lock()
-	c.session.retryAttempt = info.Attempt
-	c.session.mu.Unlock()
-	c.session.emit(SessionEvent{
+	s.run.setRetryAttempt(info.Attempt)
+	s.emit(SessionEvent{
 		Type:         SEAutoRetryStart,
 		RetryAttempt: info.Attempt,
 		RetryMax:     info.MaxRetries,
@@ -463,21 +386,16 @@ func (c *sessionContextController) handleRetry(info *agentcore.RetryInfo) {
 	})
 }
 
-func (c *sessionContextController) handleAgentEnd() bool {
-	c.session.mu.Lock()
-	retryAttempt := c.session.retryAttempt
-	c.session.retryAttempt = 0
-	c.session.mu.Unlock()
+func (s *Session) handleRetryAgentEnd() {
+	retryAttempt := s.run.takeRetryAttempt()
 
 	if retryAttempt > 0 {
-		c.session.emit(SessionEvent{
+		s.emit(SessionEvent{
 			Type:         SEAutoRetryEnd,
 			RetryAttempt: retryAttempt,
 			RetrySuccess: true,
 		})
 	}
-
-	return false
 }
 
 // lastTextBlock returns the text of the last ContentText block in msg.

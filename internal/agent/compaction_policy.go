@@ -46,21 +46,31 @@ func (s *Session) handleAutomaticRewrite(info agentctx.RewriteEvent) {
 		return
 	}
 	kind := compactionKindForStrategy(info.Strategy)
-	s.recordCompactionAttempt(kind)
+	s.metrics.recordCompactionAttempt(kind)
 	s.emit(SessionEvent{
 		Type:               SEAutoCompactionStart,
 		CompactionReason:   info.Reason,
 		CompactionKind:     kind,
 		CompactionStrategy: info.Strategy,
 	})
-	s.recordCompactionResult(kind, true, info.TokensBefore, info.TokensAfter)
+	s.metrics.recordCompactionResult(kind, true, info.TokensBefore, info.TokensAfter)
 	compactedCount, keptCount, splitTurn := 0, 0, false
 	if info.Info != nil {
 		compactedCount = info.Info.CompactedCount
 		keptCount = info.Info.KeptCount
 		splitTurn = info.Info.IsSplitTurn
 	}
-	s.recordCompactionSnapshot(kind, info.Strategy, info.Reason, true, info.TokensBefore, info.TokensAfter, compactedCount, keptCount, splitTurn)
+	s.metrics.recordCompactionSnapshot(CompactionSnapshot{
+		Kind:           kind,
+		Strategy:       info.Strategy,
+		Reason:         info.Reason,
+		Changed:        true,
+		TokensBefore:   info.TokensBefore,
+		TokensAfter:    info.TokensAfter,
+		CompactedCount: compactedCount,
+		KeptCount:      keptCount,
+		SplitTurn:      splitTurn,
+	})
 	s.emit(SessionEvent{
 		Type:               SEAutoCompactionEnd,
 		CompactionReason:   info.Reason,
@@ -101,11 +111,10 @@ func (s *Session) postCompactRecoveryMessages(_ context.Context, _ agentctx.Summ
 		out = append(out, *reminder)
 	}
 
-	// 2. Deferred tools + static reminders
-	s.mu.Lock()
-	preamble := s.deferredToolsPreamble
-	staticReminders := append([]string(nil), s.reminders.static...)
-	s.mu.Unlock()
+	// 2. Deferred tools + static reminders. preambleSnapshot (not takePreamble):
+	// compaction recovery re-injects without consuming the one-shot flag.
+	preamble := s.prompt.preambleSnapshot()
+	staticReminders := s.reminders.staticSnapshot()
 
 	if preamble != "" {
 		out = append(out, injectedUserMsg(preamble))

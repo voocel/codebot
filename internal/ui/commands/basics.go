@@ -25,9 +25,13 @@ func Clear(session *agent.Session, resetPlanState func()) Command {
 		Name: "clear", Usage: "/clear", Description: "Clear current context (memory only)",
 		Category: "session", NeedsIdle: true, Kind: KindBuiltin,
 	}, func(_ Invocation) tea.Cmd {
-		session.ClearConversation()
-		resetPlanState()
+		// Off the Update goroutine: ClearConversation's HoldRuns drain needs
+		// the tea loop free to pump the dying run's events (p.Send blocks
+		// until the loop receives). resetPlanState only touches self-guarded
+		// managers, safe off-loop.
 		return func() tea.Msg {
+			session.ClearConversation()
+			resetPlanState()
 			return tui.CommandResultMsg{
 				Text:  tui.SystemMsgStyle.Render("Current context cleared (session history is kept)."),
 				Clear: true,
@@ -149,11 +153,13 @@ func New(session *agent.Session, resetPlanState func()) Command {
 		Name: "new", Usage: "/new", Description: "Start new session",
 		Category: "session", NeedsIdle: true, Kind: KindBuiltin,
 	}, func(_ Invocation) tea.Cmd {
-		if err := session.Reset(); err != nil {
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Failed to create session: " + err.Error()))
-		}
-		resetPlanState()
+		// Off the Update goroutine — same deadlock geometry as /clear: Reset's
+		// HoldRuns drain must not block the loop that pumps p.Send.
 		return func() tea.Msg {
+			if err := session.Reset(); err != nil {
+				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Failed to create session: " + err.Error())}
+			}
+			resetPlanState()
 			return tui.CommandResultMsg{
 				Text:  tui.SystemMsgStyle.Render("New session started."),
 				Clear: true,

@@ -162,18 +162,22 @@ func TestDetectCacheBreakReportsUnknownWhenHashesMatch(t *testing.T) {
 func TestCompactionEventInvalidatesCacheBaseline(t *testing.T) {
 	t.Parallel()
 
-	s := &Session{cacheSnap: cacheSnapshot{Valid: true, CacheReadTokens: 50000, FrozenSystemHash: 1}}
+	// Seed the baseline the way a real turn does: a prompt rebuild sets the
+	// input hashes, then the finished turn reports its cache_read.
+	s := &Session{}
+	s.cache.updateInputHashes(1, 0, 0)
+	s.cache.observe(50000)
 
 	// An "unchanged" compaction must not reset the baseline — no rewrite happened.
 	s.emit(SessionEvent{Type: SEAutoCompactionEnd, CompactionChanged: false})
-	if !s.cacheSnap.Valid || s.cacheSnap.CacheReadTokens != 50000 {
-		t.Fatalf("unchanged compaction should preserve baseline, got %+v", s.cacheSnap)
+	if snap := s.cache.snapshot(); !snap.Valid || snap.CacheReadTokens != 50000 {
+		t.Fatalf("unchanged compaction should preserve baseline, got %+v", snap)
 	}
 
 	// A real compaction rewrites the prefix; the baseline must be dropped so
 	// the next turn's expected cache_read drop is not misreported.
 	s.emit(SessionEvent{Type: SEAutoCompactionEnd, CompactionChanged: true})
-	if s.cacheSnap.Valid || s.cacheSnap.CacheReadTokens != 0 {
-		t.Fatalf("changed compaction should invalidate baseline, got %+v", s.cacheSnap)
+	if snap := s.cache.snapshot(); snap.Valid || snap.CacheReadTokens != 0 {
+		t.Fatalf("changed compaction should invalidate baseline, got %+v", snap)
 	}
 }

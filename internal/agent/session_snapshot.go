@@ -34,10 +34,11 @@ type Snapshotter interface {
 // undoStatePath returns the sidecar file persisting this session's undo stack,
 // under the per-session dir alongside bg/ and tool-outputs/.
 //
-// Caller must hold s.mu. It reads s.store directly (Store.Header has its own
-// lock) instead of s.SessionID(), which locks s.mu and would self-deadlock.
+// The store comes from persist directly — s.SessionID() would read a torn
+// identity mid-swap; callers run after swapStore so currentStore is already
+// the new log.
 func (s *Session) undoStatePath() string {
-	return config.UndoStatePath(s.cwd, s.store.Header().SessionID)
+	return config.UndoStatePath(s.currentCwd(), s.persist.currentStore().Header().SessionID)
 }
 
 // snapshotTurnStart records a workspace checkpoint at the start of a turn.
@@ -45,10 +46,10 @@ func (s *Session) undoStatePath() string {
 // the tracker has its own lock. Failures are ignored so snapshotting never
 // blocks a turn.
 func (s *Session) snapshotTurnStart() {
-	if s.snapshotter == nil {
+	if s.deps.snapshotter == nil {
 		return
 	}
-	_, _ = s.snapshotter.Track()
+	_, _ = s.deps.snapshotter.Track()
 }
 
 // SnapshotEnabled reports whether workspace snapshots are active for this
@@ -56,34 +57,34 @@ func (s *Session) snapshotTurnStart() {
 // snapshot setting is off), in which case Undo/Redo/Diff are inert no-ops —
 // callers use this to explain the no-op instead of reporting "nothing to do".
 func (s *Session) SnapshotEnabled() bool {
-	return s.snapshotter != nil
+	return s.deps.snapshotter != nil
 }
 
 // Undo reverts workspace files to the start of the most recent turn that
 // changed files, leaving conversation history untouched. ok is false when
 // there is nothing to undo (no tracker, or no recorded changes).
 func (s *Session) Undo() (changed []string, ok bool, err error) {
-	if s.snapshotter == nil {
+	if s.deps.snapshotter == nil {
 		return nil, false, nil
 	}
-	return s.snapshotter.Undo()
+	return s.deps.snapshotter.Undo()
 }
 
 // Redo re-applies the most recently undone turn's file changes. ok is false
 // when there is nothing to redo (no tracker, no prior undo, or the redo branch
 // was invalidated by a new turn).
 func (s *Session) Redo() (changed []string, ok bool, err error) {
-	if s.snapshotter == nil {
+	if s.deps.snapshotter == nil {
 		return nil, false, nil
 	}
-	return s.snapshotter.Redo()
+	return s.deps.snapshotter.Redo()
 }
 
 // Diff returns a numstat preview of what Undo would roll back (the last turn's
 // file changes), or "" when there is nothing to undo.
 func (s *Session) Diff() (string, error) {
-	if s.snapshotter == nil {
+	if s.deps.snapshotter == nil {
 		return "", nil
 	}
-	return s.snapshotter.DiffTop()
+	return s.deps.snapshotter.DiffTop()
 }

@@ -41,8 +41,8 @@ type ContextSuggestion struct {
 // ContextBreakdown computes a per-category token breakdown of the current
 // conversation messages. It does NOT include system prompt or tool definitions.
 func (s *Session) ContextBreakdown() ContextBreakdown {
-	msgs := s.agent.Messages()
-	usage := s.agent.ContextUsage()
+	msgs := s.deps.agent.Messages()
+	usage := s.deps.agent.ContextUsage()
 	window := 0
 	if usage != nil {
 		window = usage.ContextWindow
@@ -53,7 +53,7 @@ func (s *Session) ContextBreakdown() ContextBreakdown {
 // ContextSuggestions generates actionable suggestions based on context usage
 // and the message breakdown.
 func (s *Session) ContextSuggestions() []ContextSuggestion {
-	usage := s.agent.ContextUsage()
+	usage := s.deps.agent.ContextUsage()
 	if usage == nil || usage.ContextWindow <= 0 {
 		return nil
 	}

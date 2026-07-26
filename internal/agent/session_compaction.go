@@ -23,20 +23,37 @@ type CompactionResult struct {
 }
 
 func (s *Session) Compact() (CompactionResult, error) {
-	return s.context.compactWithReason("manual")
+	return s.compactWithReason("manual")
 }
 
-func (c *sessionContextController) compactWithReason(reason string) (result CompactionResult, err error) {
+func (s *Session) compactWithReason(reason string) (result CompactionResult, err error) {
+	// Summarization can run for up to 90s off the tea loop; a /new or /resume
+	// completing in that window must not have this stale result installed over
+	// the fresh session — the generation is re-checked before commit.
+	s.mu.Lock()
+	gen := s.generation
+	s.mu.Unlock()
+
 	result = CompactionResult{Reason: reason}
-	c.session.recordCompactionAttempt(CompactionKindFull)
-	c.session.emit(SessionEvent{Type: SEAutoCompactionStart, CompactionReason: reason, CompactionKind: CompactionKindFull})
+	s.metrics.recordCompactionAttempt(CompactionKindFull)
+	s.emit(SessionEvent{Type: SEAutoCompactionStart, CompactionReason: reason, CompactionKind: CompactionKindFull})
 	defer func() {
 		if err != nil {
 			return
 		}
-		c.session.recordCompactionResult(CompactionKindFull, result.Changed, result.TokensBefore, result.TokensAfter)
-		c.session.recordCompactionSnapshot(CompactionKindFull, result.Strategy, reason, result.Changed, result.TokensBefore, result.TokensAfter, result.CompactedCount, result.KeptCount, result.SplitTurn)
-		c.session.emit(SessionEvent{
+		s.metrics.recordCompactionResult(CompactionKindFull, result.Changed, result.TokensBefore, result.TokensAfter)
+		s.metrics.recordCompactionSnapshot(CompactionSnapshot{
+			Kind:           CompactionKindFull,
+			Strategy:       result.Strategy,
+			Reason:         reason,
+			Changed:        result.Changed,
+			TokensBefore:   result.TokensBefore,
+			TokensAfter:    result.TokensAfter,
+			CompactedCount: result.CompactedCount,
+			KeptCount:      result.KeptCount,
+			SplitTurn:      result.SplitTurn,
+		})
+		s.emit(SessionEvent{
 			Type:               SEAutoCompactionEnd,
 			CompactionReason:   reason,
 			CompactionKind:     CompactionKindFull,
@@ -50,7 +67,7 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 		})
 	}()
 
-	msgs := c.session.agent.Messages()
+	msgs := s.deps.agent.Messages()
 	if len(msgs) == 0 {
 		return result, nil
 	}
@@ -58,10 +75,8 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 	tokensBefore := agentctx.EstimateTotal(msgs)
 	result.TokensBefore = tokensBefore
 
-	c.session.mu.Lock()
-	mgr := c.session.contextManager
-	store := c.session.store
-	c.session.mu.Unlock()
+	mgr := s.deps.contextManager
+	store := s.persist.currentStore()
 
 	if mgr == nil {
 		return result, fmt.Errorf("compact context: no context manager configured")
@@ -102,12 +117,21 @@ func (c *sessionContextController) compactWithReason(reason string) (result Comp
 			return result, err
 		}
 	}
-	if err := c.session.agent.SetMessages(commit.Messages); err != nil {
+	// Generation check and install in one s.mu critical section (legal
+	// nesting: s.mu → agent lock), so a switch cannot land in between.
+	s.mu.Lock()
+	if s.generation != gen {
+		s.mu.Unlock()
+		return result, fmt.Errorf("compact context: session switched during compaction")
+	}
+	err = s.deps.agent.SetMessages(commit.Messages)
+	s.mu.Unlock()
+	if err != nil {
 		return result, fmt.Errorf("set compacted messages: %w", err)
 	}
 	// Recalled memories were summarized away with the rest of the window —
 	// clear the dedup set and budget so they can resurface when relevant.
-	c.session.resetMemoryRecall()
+	s.resetMemoryRecall()
 	result.Changed = true
 	result.TokensAfter = tokensAfter
 	return result, nil
@@ -214,9 +238,7 @@ func (s *Session) injectInvokedSkillContext(msgs []agentcore.AgentMessage) []age
 }
 
 func (s *Session) invokedSkillReminderMessage() *agentcore.Message {
-	s.mu.Lock()
-	invoked := append([]invokedSkillSnapshot(nil), s.skillRuntime.invoked...)
-	s.mu.Unlock()
+	invoked := s.prompt.invokedSnapshot()
 	if len(invoked) == 0 {
 		return nil
 	}

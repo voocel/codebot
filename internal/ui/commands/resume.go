@@ -109,22 +109,25 @@ func (c *ResumeCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		if c.session.IsRunning() {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Agent is running; press Esc to abort first."))
 		}
-		if err := c.session.SwitchSession(selected.ID); err != nil {
-			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch session: " + err.Error()))
-		}
-		if c.resetPlan != nil {
-			c.resetPlan()
-		}
-		if c.afterSwitch != nil {
-			if err := c.afterSwitch(); err != nil {
-				return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to restore session state: " + err.Error()))
+		// The whole switch runs off the Update goroutine: SwitchSession's
+		// HoldRuns drain needs the tea loop free to pump the dying run's
+		// events (p.Send blocks until the loop receives). The IsRunning check
+		// above is only UX — a run sneaking in after it is drained by the
+		// hold, not raced.
+		return true, func() tea.Msg {
+			if err := c.session.SwitchSession(selected.ID); err != nil {
+				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Failed to switch session: " + err.Error())}
 			}
+			if c.resetPlan != nil {
+				c.resetPlan()
+			}
+			if c.afterSwitch != nil {
+				if err := c.afterSwitch(); err != nil {
+					return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Failed to restore session state: " + err.Error())}
+				}
+			}
+			return tui.RestoreMsg{Msgs: c.session.Messages()}
 		}
-
-		// Send RestoreMsg directly because p.Send deadlocks when called
-		// synchronously inside bubbletea's Update loop.
-		msgs := c.session.Messages()
-		return true, func() tea.Msg { return tui.RestoreMsg{Msgs: msgs} }
 
 	case "esc", "ctrl+c":
 		c.overlay.ClearOverlay()

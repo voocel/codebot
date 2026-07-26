@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"maps"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -86,101 +88,188 @@ type SessionConfig struct {
 	// InitialDynamic is the assembly-time dynamic block text (MCP tool list +
 	// overlays). Stored on the session so teammate spawn can read the current
 	// snapshot via DynamicSystemBlock() without re-computing. Updated when
-	// rebuildPrompt runs (overlay change / MCP refresh).
+	// the prompt rebuilds (overlay change / MCP refresh).
 	InitialDynamic string
 }
 
-// Session is the business-logic core that wraps Agent + session persistence.
-// It is independent of any UI framework and drives interactive, print, and RPC modes.
-type Session struct {
+// sessionDeps is what assembly binds once and never reassigns. Grouping them
+// makes "no lock needed" a property of the type rather than a rule every reader
+// has to re-derive. Anything mutable belongs on Session proper or in a
+// component (cwd, reassigned by /worktree, lives on Session as an atomic).
+type sessionDeps struct {
 	agent          *agentcore.Agent
 	contextManager agentcore.ContextManager
-	store          *storage.Store
 	mgr            *storage.Manager
 	registry       *provider.ModelRegistry
-	settings       config.Resolved
+	createModel    ModelFactory
+	lazyPersist    bool
 
-	provider  string
-	modelName string
+	telemetryTracer *telemetry.Tracer
+	hookRunner      *hooks.Runner
+	snapshotter     Snapshotter
+	taskStore       *storage.TaskStore
+	fileReadState   *agenttools.FileReadState
+
+	// providers is settings.Providers — the same map, never mutated after
+	// boot (only read for credential/type/small-model lookups), so it needs
+	// no lock and no copy.
 	providers map[string]config.ProviderConfig
-	cwd       string
+	// unsub detaches handleAgentEvent from the agent; set once in NewSession,
+	// called once in Close.
+	unsub func()
+}
 
-	createModel ModelFactory
+// sessionHooks are the callbacks bootstrap wiring injects after construction.
+// It guards itself: wiring is NOT one-shot — plugin hot reload re-runs
+// WireGoalTools from the UI goroutine while the agent goroutine reads
+// idleHook / skillAllowsSetter, so an "immutable after boot" assumption
+// does not hold. Callbacks are invoked outside the lock.
+type sessionHooks struct {
+	mu sync.Mutex
 
-	allTools          []agentcore.Tool
-	activeTools       []agentcore.Tool
-	contextFiles      config.ContextFiles
-	skills            []skill.Spec
-	skillCatalog      *skill.Catalog
-	skillUsage        *skill.UsageTracker
-	overlays          overlayStore
 	beforePrompt      func()
 	idleHook          func()
 	planModeSignal    func() PlanModeSignal
 	goalSignal        func() goal.Signal
 	goalUsageLimit    func(string) (goal.State, error)
-	hookRunner        *hooks.Runner
-	snapshotter       Snapshotter
-	taskStore         *storage.TaskStore
 	skillAllowsSetter func([]string)
-	skillRuntime      skillRuntimeState
-	fileReadState     *agenttools.FileReadState
-	memRecallSurfaced map[string]bool // memory files already recall-injected this context window
-	memRecallBytes    int             // recall bytes injected this context window (budgeted)
+}
 
-	frozenIdentity     string // block 1 — process-stable, never recomputed
-	frozenInstructions string // block 2 — process-stable, never recomputed
-	dynamicText        string // block 3 — refreshed by rebuildPrompt; read by teammate spawn
+func (h *sessionHooks) setBeforePrompt(fn func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.beforePrompt = fn
+}
 
-	deferredToolsPreamble string // <available-deferred-tools> for first user message
-	reminders             reminderState
-	preambleInjected      bool // true after first preamble injection
+func (h *sessionHooks) setIdleHook(fn func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.idleHook = fn
+}
 
-	listeners []func(SessionEvent)
-	unsub     func()
+func (h *sessionHooks) setPlanModeSignal(fn func() PlanModeSignal) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.planModeSignal = fn
+}
 
-	retryAttempt int
+func (h *sessionHooks) setGoalSignal(fn func() goal.Signal) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.goalSignal = fn
+}
 
-	chatModel       agentcore.ChatModel
-	telemetryTracer *telemetry.Tracer
-	activeRun       *telemetry.Run
+func (h *sessionHooks) setGoalUsageLimit(fn func(string) (goal.State, error)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.goalUsageLimit = fn
+}
 
-	lazyPersist        bool
-	pendingUserMsg     []agentcore.Message
-	autoNamed          bool
-	lastAssistantStart time.Time          // set at EventMessageStart (assistant), consumed at EventMessageEnd for latency_ms
-	cacheSnap          cacheSnapshot      // previous turn's system/tools fingerprint + cache_read, updated after every LLM call
-	sessionMemory      sessionMemoryState // background extraction bookkeeping — see session_memory.go
-	pendingToolCalls   map[string]pendingToolCall
-	recentToolCalls    []toolCallFingerprint
-	currentTurn        TurnOutcomeSnapshot
-	lastTurn           TurnOutcomeSnapshot
-	lastRunSummary     *agentcore.RunSummary
-	lastReminder       *ReminderSnapshot
-	lastCompaction     *CompactionSnapshot
-	recentErrors       []ErrorSnapshot
-	dirtySeq           uint64 // incremented each time a repo-mutating tool succeeds; hook goroutine captures this and only clears if unchanged
-	generation         uint64 // incremented on session switch; async goroutines check this to avoid cross-session callbacks
+func (h *sessionHooks) getBeforePrompt() func() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.beforePrompt
+}
+
+func (h *sessionHooks) getIdleHook() func() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.idleHook
+}
+
+func (h *sessionHooks) getPlanModeSignal() func() PlanModeSignal {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.planModeSignal
+}
+
+func (h *sessionHooks) getGoalSignal() func() goal.Signal {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.goalSignal
+}
+
+func (h *sessionHooks) getGoalUsageLimit() func(string) (goal.State, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.goalUsageLimit
+}
+
+func (h *sessionHooks) getSkillAllows() func([]string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.skillAllowsSetter
+}
+
+// Session is the business-logic core that wraps Agent + session persistence.
+// It is independent of any UI framework and drives interactive, print, and RPC modes.
+//
+// State is grouped into self-guarded components — each owns its fields, its
+// lock, and its reset; none of their methods reference Session (statically
+// checkable by grepping the *_state.go method bodies), so component locks are
+// leaves and no lock cycle can form. Nesting directions that do occur:
+//
+//	s.mu → run.mu                     (continueIfCurrentGeneration holds s.mu
+//	                                   through beginTelemetryRun / rollback)
+//	s.mu → agent lock                 (generation check + commit in one
+//	                                   critical section: run launch in
+//	                                   continueIfCurrentGeneration, SetMessages
+//	                                   in the compaction commit; acyclic
+//	                                   because the agent never calls back into
+//	                                   the Session under its own lock —
+//	                                   listener dispatch and the
+//	                                   MessageCommitter run outside it, per the
+//	                                   Subscribe lifecycle contract)
+//	prompt.mu / model.mu → agent lock (sink delivery — covered by the setters'
+//	                                   documented purity contract: pure
+//	                                   assignment, no events, no callbacks),
+//	                                   and prompt.mu → reminders.mu / cache.mu
+//	                                   (leaf delivery targets)
+//	flushMu → persist.mu              (lazy-persist drain)
+//
+// s.mu itself guards generation and backgroundWakeSuppressed. Session-identity
+// surgery (Reset / SwitchSession / ClearConversation) serializes with switchMu
+// and freezes the run lifecycle itself with agent.HoldRuns — continuation
+// launches then fail fast with ErrRunsHeld inside the kernel instead of
+// coordinating through a session-side lock. Accepted cross-group snapshot
+// windows are commented at their sites (persistLLMCall, ephemeralQuery, the
+// dirtySeq/generation CAS in runPostStopValidation).
+type Session struct {
+	deps  sessionDeps  // assembly-time, immutable — no lock
+	hooks sessionHooks // self-guarded — see type doc
+
+	// cwd is the live workspace root, rewritten by /worktree enter/exit
+	// (RetargetWorkspace) and read on every tool call via baseRunCtx —
+	// atomic so the hot path never contends on a lock.
+	cwd atomic.Pointer[string]
+
+	model   modelState   // model identity + settings + skill-override baseline; owns its own lock
+	persist persistState // session-log store + lazy-persist bookkeeping; owns its own lock
+	prompt  *promptState // tool surface + system-prompt inputs + skill invocation log; owns its own lock
+	run     runState     // active telemetry span + retry attempt; owns its own lock
+
+	reminders reminderState
+
+	events eventBus // SessionEvent fan-out; owns its own lock
+
+	cache         cacheMonitor       // previous turn's system/tools fingerprint + cache_read; owns its own lock
+	sessionMemory sessionMemoryState // background extraction bookkeeping — see session_memory.go
+	turn          turnState          // tool-call tracking + turn outcome + run summary; owns its own lock
+	generation    uint64             // incremented on session switch; async goroutines check this to avoid cross-session callbacks
 
 	backgroundWakeSuppressed bool // explicit cancellation keeps results queued without restarting the agent
 
-	prompts     *sessionPromptManager
 	persistence *sessionPersistence
-	context     *sessionContextController
 	runtime     *sessionRuntimePolicy
-	metrics     *runtimeMetrics
+	metrics     runtimeMetrics // diagnostic counters + error ring; owns its own lock
+
+	// switchMu serializes the HoldRuns holders (Reset / SwitchSession /
+	// ClearConversation) against each other. The run lifecycle itself is
+	// frozen by agent.HoldRuns — a count, not a mutex, so without this two
+	// holders' teardowns would interleave their surgery.
+	switchMu sync.Mutex
 
 	mu sync.Mutex
-}
-
-type skillRuntimeState struct {
-	active          bool
-	baseProvider    string
-	baseModel       string
-	baseChatModel   agentcore.ChatModel
-	baseThinking    string
-	invoked         []invokedSkillSnapshot
-	invocationCount map[string]int
 }
 
 type invokedSkillSnapshot struct {
@@ -190,7 +279,9 @@ type invokedSkillSnapshot struct {
 	Timestamp  time.Time
 }
 
-// reminderState bundles all reminder bookkeeping for a Session.
+// reminderState owns all reminder bookkeeping for a Session, together with the
+// lock guarding it. Callers go through the methods below — the fields are never
+// touched directly, so a new delivery path cannot forget to take the lock.
 //
 //   - static: persistent across turns (context-file derived), never cleared
 //   - runtime: one-shot queue consumed on the next user prompt
@@ -199,41 +290,179 @@ type invokedSkillSnapshot struct {
 //     delivery paths (Steer / Inject) — reset at turn start and agent end
 //   - pendingContinue: marks that a Steer'd reminder needs a Continue() call
 //     after the current run finishes
+//   - recallSurfaced / recallBytes: auto-memory recall accounting. Recall is
+//     reminder injection with a budget, and it resets on exactly the same
+//     events, so it lives here rather than as two loose Session fields.
+//
+// The zero value is usable; newReminderState only seeds the static set.
 type reminderState struct {
+	mu sync.Mutex
+
 	static          []string
 	runtime         []string
 	runtimeKeys     map[string]struct{}
 	steeredKeys     map[string]struct{}
 	autoResumeKeys  map[string]struct{}
 	pendingContinue bool
+
+	recallSurfaced map[string]bool
+	recallBytes    int
 }
 
 func newReminderState(static []string) reminderState {
-	return reminderState{
-		static:         static,
-		runtimeKeys:    make(map[string]struct{}),
-		steeredKeys:    make(map[string]struct{}),
-		autoResumeKeys: make(map[string]struct{}),
+	return reminderState{static: static}
+}
+
+func (r *reminderState) setStatic(static []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.static = static
+}
+
+func (r *reminderState) staticSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.static...)
+}
+
+// drainForPrompt reads and clears the one-shot queue in one critical section:
+// splitting them would drop a reminder queued between the two steps.
+func (r *reminderState) drainForPrompt() (runtime, static []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	runtime, r.runtime = r.runtime, nil
+	r.runtimeKeys = nil
+	return runtime, append([]string(nil), r.static...)
+}
+
+// queue reports false when the key was already queued this context window.
+func (r *reminderState) queue(key, reminder string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.runtimeKeys[key]; exists {
+		return false
 	}
+	if r.runtimeKeys == nil {
+		r.runtimeKeys = make(map[string]struct{})
+	}
+	r.runtimeKeys[key] = struct{}{}
+	r.runtime = append(r.runtime, reminder)
+	return true
 }
 
-// resetAll clears every transient field. 'static' is preserved.
-// Used by Session.resetHarnessStateLocked on session reset/switch.
+func (r *reminderState) hasQueued() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.runtime) > 0
+}
+
+// markSteered also flags that a Continue() is owed once the run finishes.
+// Reports false when the key was already steered this turn.
+func (r *reminderState) markSteered(key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.steeredKeys[key]; exists {
+		return false
+	}
+	if r.steeredKeys == nil {
+		r.steeredKeys = make(map[string]struct{})
+	}
+	r.steeredKeys[key] = struct{}{}
+	r.pendingContinue = true
+	return true
+}
+
+func (r *reminderState) autoResumed(key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, exists := r.autoResumeKeys[key]
+	return exists
+}
+
+func (r *reminderState) markAutoResumed(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.autoResumeKeys == nil {
+		r.autoResumeKeys = make(map[string]struct{})
+	}
+	r.autoResumeKeys[key] = struct{}{}
+}
+
+func (r *reminderState) takePendingContinue() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending := r.pendingContinue
+	r.pendingContinue = false
+	return pending
+}
+
+func (r *reminderState) clearPendingContinue() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingContinue = false
+}
+
+// resetAll preserves 'static'; everything else including recall accounting goes.
 func (r *reminderState) resetAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.runtime = nil
-	r.runtimeKeys = make(map[string]struct{})
-	r.steeredKeys = make(map[string]struct{})
-	r.autoResumeKeys = make(map[string]struct{})
+	r.runtimeKeys = nil
+	r.steeredKeys = nil
+	r.autoResumeKeys = nil
+	r.pendingContinue = false
+	r.recallSurfaced = nil
+	r.recallBytes = 0
+}
+
+// resetTurnDelivery runs at turn start. The runtime queue survives — queued
+// reminders fire on the next user prompt.
+func (r *reminderState) resetTurnDelivery() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.steeredKeys = nil
+	r.autoResumeKeys = nil
 	r.pendingContinue = false
 }
 
-// resetTurnDelivery clears per-turn delivery dedup state. The runtime queue
-// is preserved (queued reminders fire on the next user prompt).
-// Used by Session.beginTurn at the start of each turn.
-func (r *reminderState) resetTurnDelivery() {
-	r.steeredKeys = make(map[string]struct{})
-	r.autoResumeKeys = make(map[string]struct{})
-	r.pendingContinue = false
+// clearDeliveryDedup runs at turn end. Unlike resetTurnDelivery it keeps
+// pendingContinue: the Continue() owed by a Steer'd reminder is consumed after
+// the run ends, so clearing it here would swallow it.
+func (r *reminderState) clearDeliveryDedup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.steeredKeys = nil
+	r.autoResumeKeys = nil
+}
+
+func (r *reminderState) recallBudget() (exclude map[string]bool, budgetLeft int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	exclude = make(map[string]bool, len(r.recallSurfaced))
+	maps.Copy(exclude, r.recallSurfaced)
+	return exclude, memoryRecallSessionBytes - r.recallBytes
+}
+
+// chargeRecall reports false when the budget is spent and the caller must stop.
+func (r *reminderState) chargeRecall(path string, size int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.recallBytes >= memoryRecallSessionBytes {
+		return false
+	}
+	if r.recallSurfaced == nil {
+		r.recallSurfaced = make(map[string]bool)
+	}
+	r.recallSurfaced[path] = true
+	r.recallBytes += size
+	return true
+}
+
+func (r *reminderState) resetRecall() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recallSurfaced = nil
+	r.recallBytes = 0
 }
 
 // overlayStore holds named instructions overlays appended to the dynamic
@@ -279,53 +508,62 @@ func NewSession(cfg SessionConfig) *Session {
 	}
 
 	s := &Session{
-		agent:             cfg.Agent,
-		contextManager:    cfg.ContextManager,
-		store:             cfg.Store,
-		mgr:               cfg.Manager,
-		registry:          cfg.Registry,
-		settings:          cfg.Settings,
-		provider:          cfg.Settings.Provider,
-		modelName:         cfg.Settings.Model,
-		providers:         cfg.Settings.Providers,
-		cwd:               cfg.Cwd,
-		createModel:       modelFactory,
-		lazyPersist:       cfg.LazyPersist,
-		chatModel:         cfg.ChatModel,
-		telemetryTracer:   cfg.TelemetryTracer,
-		hookRunner:        cfg.HookRunner,
-		snapshotter:       cfg.Snapshotter,
-		taskStore:         cfg.TaskStore,
-		allTools:          cfg.Tools,
-		activeTools:       cfg.Tools,
-		contextFiles:      cfg.ContextFiles,
-		skills:            cfg.Skills,
-		skillCatalog:      cfg.SkillCatalog,
-		skillUsage:        cfg.SkillUsage,
-		skillAllowsSetter: cfg.SkillAllowsSetter,
-		fileReadState:     cfg.FileReadState,
+		deps: sessionDeps{
+			agent:           cfg.Agent,
+			contextManager:  cfg.ContextManager,
+			mgr:             cfg.Manager,
+			registry:        cfg.Registry,
+			createModel:     modelFactory,
+			lazyPersist:     cfg.LazyPersist,
+			telemetryTracer: cfg.TelemetryTracer,
+			hookRunner:      cfg.HookRunner,
+			snapshotter:     cfg.Snapshotter,
+			taskStore:       cfg.TaskStore,
+			fileReadState:   cfg.FileReadState,
+			providers:       cfg.Settings.Providers,
+		},
+		hooks: sessionHooks{skillAllowsSetter: cfg.SkillAllowsSetter},
+		model: modelState{
+			sink:      cfg.Agent,
+			provider:  cfg.Settings.Provider,
+			modelName: cfg.Settings.Model,
+			chatModel: cfg.ChatModel,
+			settings:  cfg.Settings,
+		},
 
-		frozenIdentity:     cfg.FrozenIdentity,
-		frozenInstructions: cfg.FrozenInstructions,
-		dynamicText:        cfg.InitialDynamic,
+		persist: persistState{store: cfg.Store},
 
+		reminders: newReminderState(cfg.Reminders),
+	}
+	cwd := cfg.Cwd
+	s.cwd.Store(&cwd)
+	// prompt needs pointers to sibling components (reminders/cache), so it is
+	// wired after the Session literal. Still single-threaded here.
+	s.prompt = &promptState{
+		sink:                  cfg.Agent,
+		reminders:             &s.reminders,
+		cache:                 &s.cache,
+		usage:                 cfg.SkillUsage,
+		frozenIdentity:        cfg.FrozenIdentity,
+		frozenInstructions:    cfg.FrozenInstructions,
+		allTools:              cfg.Tools,
+		activeTools:           cfg.Tools,
+		contextFiles:          cfg.ContextFiles,
+		skills:                cfg.Skills,
+		skillCatalog:          cfg.SkillCatalog,
+		dynamicText:           cfg.InitialDynamic,
 		deferredToolsPreamble: cfg.DeferredToolsPreamble,
-		reminders:             newReminderState(cfg.Reminders),
-		pendingToolCalls:      make(map[string]pendingToolCall),
 		preambleInjected:      cfg.PreambleInjected,
 	}
 	if cfg.InitialMCPOverlay != "" {
-		s.overlays.set("mcp", cfg.InitialMCPOverlay)
+		s.prompt.overlays.set("mcp", cfg.InitialMCPOverlay)
 	}
 
-	s.prompts = newSessionPromptManager(s)
 	s.persistence = newSessionPersistence(s)
-	s.context = newSessionContextController(s)
 	s.runtime = newSessionRuntimePolicy(s)
-	s.metrics = newRuntimeMetrics()
 
 	cfg.Agent.SetMessageCommitter(s.persistence.handleCommittedMessage)
-	s.unsub = cfg.Agent.Subscribe(s.handleAgentEvent)
+	s.deps.unsub = cfg.Agent.Subscribe(s.handleAgentEvent)
 	return s
 }
 
@@ -345,9 +583,7 @@ func NewSession(cfg SessionConfig) *Session {
 //     reconnect); a cache breakpoint here would be invalidated frequently and
 //     would charge cache-write cost for short-lived content.
 func (s *Session) DynamicSystemBlock() *agentcore.SystemBlock {
-	s.mu.Lock()
-	text := s.dynamicText
-	s.mu.Unlock()
+	text := s.prompt.dynamicSnapshot()
 	if text == "" {
 		return nil
 	}
@@ -355,52 +591,66 @@ func (s *Session) DynamicSystemBlock() *agentcore.SystemBlock {
 }
 
 func (s *Session) SetTaskNotifyFn(fn storage.TaskNotifyFn) {
-	if s.taskStore == nil {
+	if s.deps.taskStore == nil {
 		return
 	}
-	s.taskStore.SetNotifyFn(fn)
+	s.deps.taskStore.SetNotifyFn(fn)
 }
 
 func (s *Session) TaskSnapshot() storage.TaskSnapshot {
-	if s.taskStore == nil {
+	if s.deps.taskStore == nil {
 		return storage.TaskSnapshot{}
 	}
-	return s.taskStore.Snapshot()
+	return s.deps.taskStore.Snapshot()
 }
 
 func (s *Session) ResetTaskList() error {
-	if s.taskStore == nil {
+	if s.deps.taskStore == nil {
 		return nil
 	}
-	return s.taskStore.Reset()
+	return s.deps.taskStore.Reset()
 }
 
-func (s *Session) resetHarnessStateLocked() {
-	s.generation++
+// resetHarnessState is the switch-level reset contract: every stateful
+// component resets here (persist is handled by swapStore, which the callers
+// run first). Callers must have bumped generation BEFORE any teardown so
+// stale goroutines bail — this method deliberately does not bump it again.
+// Runs OUTSIDE s.mu: components self-lock, and snapshotter.Rebind does disk
+// I/O that must never sit inside the session lock.
+func (s *Session) resetHarnessState() {
+	s.mu.Lock()
 	s.backgroundWakeSuppressed = false
+	s.mu.Unlock()
 	s.reminders.resetAll()
-	s.pendingToolCalls = make(map[string]pendingToolCall)
-	s.recentToolCalls = nil
-	s.currentTurn = TurnOutcomeSnapshot{}
-	s.lastTurn = TurnOutcomeSnapshot{}
-	s.lastRunSummary = nil
-	s.lastReminder = nil
-	s.lastCompaction = nil
-	s.recentErrors = nil
-	s.dirtySeq = 0
-	s.metrics = newRuntimeMetrics()
-	s.skillRuntime = skillRuntimeState{}
-	s.memRecallSurfaced = nil
-	s.memRecallBytes = 0
+	s.turn.reset()
+	s.metrics.reset()
+	s.prompt.resetInvocations()
+	// Rearm the deferred-tools preamble: a fresh conversation needs it again.
+	// SwitchSession overrides this afterwards based on the restored history.
+	s.prompt.setPreambleInjected(false)
+	// Reset/SwitchSession install their target model explicitly; the captured
+	// baseline belongs to the old conversation and must not leak a restore.
+	s.model.clearOverride()
+	// The new conversation's first cache_read has no meaningful baseline to
+	// compare against — invalidate so detectCacheBreak skips one observation
+	// instead of reporting a phantom break.
+	s.cache.invalidateBaseline()
+	// retryAttempt is per-run; a leftover value would mislabel the next run's
+	// first retry event. activeRun is left alone: runs cannot span a switch
+	// (idle contract) and ending another owner's span here would double-End.
+	s.run.takeRetryAttempt()
+	// The extraction watermark belongs to the old history: keeping it would
+	// suppress memory extraction until the new session outgrows the old one.
+	s.sessionMemory.reset()
 	// Drop file-read stamps along with the rest of the harness state. After
 	// a reset the LLM has no read history; keeping stamps would let write/edit
 	// validate against reads the LLM no longer remembers.
-	if s.fileReadState != nil {
-		s.fileReadState.Reset()
+	if s.deps.fileReadState != nil {
+		s.deps.fileReadState.Reset()
 	}
 	// Repoint at the new session's persisted undo stack (empty for a fresh
 	// session); prior snapshots no longer map to this conversation.
-	if s.snapshotter != nil {
-		s.snapshotter.Rebind(s.undoStatePath())
+	if s.deps.snapshotter != nil {
+		s.deps.snapshotter.Rebind(s.undoStatePath())
 	}
 }

@@ -652,7 +652,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	})
 	t.Cleanup(s.Close)
 
-	oldPath := s.store.Path()
+	oldPath := s.persist.currentStore().Path()
 	oldProvider := s.Provider()
 	oldModel := s.ModelName()
 
@@ -663,7 +663,7 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "restore model") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := s.store.Path(); got != oldPath {
+	if got := s.persist.currentStore().Path(); got != oldPath {
 		t.Fatalf("store path changed after failed switch: got %s want %s", got, oldPath)
 	}
 	if got := s.Provider(); got != oldProvider {
@@ -1329,8 +1329,8 @@ func TestReplaceMCPToolsUpdatesAllToolsWithoutBreakingFilteredActiveTools(t *tes
 	if got := len(s.ToolsByName("mcp__docs__search")); got != 0 {
 		t.Fatalf("expected stale MCP tool removed from all tools, got %d", got)
 	}
-	if len(s.activeTools) != 1 || s.activeTools[0].Name() != "read" {
-		t.Fatalf("expected filtered active tools to remain unchanged, got %#v", s.activeTools)
+	if tools := s.prompt.activeToolsSnapshot(); len(tools) != 1 || tools[0].Name() != "read" {
+		t.Fatalf("expected filtered active tools to remain unchanged, got %#v", s.prompt.activeToolsSnapshot())
 	}
 }
 
@@ -2193,5 +2193,143 @@ func TestEphemeralQueryDropsThinkingOnlyAssistant(t *testing.T) {
 		if !hasText {
 			t.Fatalf("captured[%d] assistant has no non-empty text block: %#v", i, msg.Content)
 		}
+	}
+}
+
+func TestResetDuringActiveRunLeavesSessionUsable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mgr := storage.NewManager(dir)
+	store, err := mgr.Create(dir)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	model := newBlockingChatModel()
+	ag := agentcore.NewAgent(agentcore.WithModel(model))
+	s := NewSession(SessionConfig{Agent: ag, Store: store, Manager: mgr, Cwd: dir})
+	t.Cleanup(s.Close)
+
+	var mu sync.Mutex
+	var sessionErrs []error
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SEError {
+			mu.Lock()
+			sessionErrs = append(sessionErrs, ev.Error)
+			mu.Unlock()
+		}
+	})
+	defer unsub()
+
+	if err := s.Prompt("start"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	select {
+	case <-model.started:
+	case <-time.After(time.Second):
+		t.Fatal("model call did not start")
+	}
+
+	if err := s.Reset(); err != nil {
+		t.Fatalf("reset during active run: %v", err)
+	}
+	if s.IsRunning() {
+		t.Fatal("still running after reset")
+	}
+	if got := len(ag.Messages()); got != 0 {
+		t.Fatalf("history not cleared after reset: %d messages", got)
+	}
+
+	if err := s.Prompt("fresh start"); err != nil {
+		t.Fatalf("prompt after reset: %v", err)
+	}
+	waitFor(t, time.Second, func() bool { return !s.IsRunning() })
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sessionErrs) > 0 {
+		t.Fatalf("unexpected SEError during reset-while-running: %v", sessionErrs)
+	}
+}
+
+func TestContinuationDuringHoldIsSilentlyDropped(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "task"),
+		textMessage(agentcore.RoleAssistant, "partial answer."),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{Agent: ag, Cwd: t.TempDir()})
+	t.Cleanup(s.Close)
+
+	var mu sync.Mutex
+	var sessionErrs []error
+	unsub := s.Subscribe(func(ev SessionEvent) {
+		if ev.Type == SEError {
+			mu.Lock()
+			sessionErrs = append(sessionErrs, ev.Error)
+			mu.Unlock()
+		}
+	})
+	defer unsub()
+
+	release := ag.HoldRuns()
+	defer release()
+
+	s.EnqueueBackgroundResult(agentcore.UserMsg("background result"))
+	if s.IsRunning() {
+		t.Fatal("continuation started despite held run lifecycle")
+	}
+	if !ag.HasFollowUps() {
+		t.Fatal("background result must stay queued while held")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sessionErrs) > 0 {
+		t.Fatalf("held continuation must be silent, got %v", sessionErrs)
+	}
+}
+
+func TestAutoResumeReminderFallsBackToQueueWhileHeld(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	if err := ag.SetMessages([]agentcore.AgentMessage{
+		textMessage(agentcore.RoleUser, "task"),
+		textMessage(agentcore.RoleAssistant, "partial answer."),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	s := NewSession(SessionConfig{Agent: ag, Cwd: t.TempDir()})
+	t.Cleanup(s.Close)
+
+	release := ag.HoldRuns()
+	defer release()
+
+	const reminder = "<system-reminder>\nheld reminder\n</system-reminder>"
+	s.continueWithRuntimeReminder("held_key", ReminderRepeatToolCall, reminder)
+
+	if s.IsRunning() {
+		t.Fatal("auto-resume started despite held run lifecycle")
+	}
+	// Fast-fail must leave nothing in the agent's steering queue — a queued
+	// copy plus the next-prompt fallback would deliver the reminder twice.
+	if ag.HasQueuedMessages() {
+		t.Fatal("held inject leaked into the steering queue")
+	}
+	runtime, _ := s.reminders.drainForPrompt()
+	count := 0
+	for _, r := range runtime {
+		if r == reminder {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("reminder queued %d times, want exactly 1 (next-prompt fallback)", count)
 	}
 }

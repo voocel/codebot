@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sync"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -108,4 +109,52 @@ type SessionEvent struct {
 	CompactedCount     int
 	KeptCount          int
 	SplitTurn          bool
+}
+
+// eventBus fans SessionEvents out to subscribers in registration order
+// (acp/ui attach in a fixed sequence and rely on that ordering). Entries are
+// id-keyed: the unsubscribe closure captures the id, not a slice index, so
+// removals can compact the slice without invalidating other closures.
+// The zero value is ready to use.
+type eventBus struct {
+	mu     sync.RWMutex
+	nextID uint64
+	subs   []eventSub
+}
+
+type eventSub struct {
+	id uint64
+	fn func(SessionEvent)
+}
+
+func (b *eventBus) subscribe(fn func(SessionEvent)) func() {
+	b.mu.Lock()
+	id := b.nextID
+	b.nextID++
+	b.subs = append(b.subs, eventSub{id: id, fn: fn})
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		for i := range b.subs {
+			if b.subs[i].id == id {
+				b.subs = append(b.subs[:i], b.subs[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+// dispatch snapshots the subscriber list under RLock and invokes outside it,
+// so a callback may subscribe/unsubscribe without deadlocking.
+func (b *eventBus) dispatch(ev SessionEvent) {
+	b.mu.RLock()
+	fns := make([]func(SessionEvent), len(b.subs))
+	for i := range b.subs {
+		fns[i] = b.subs[i].fn
+	}
+	b.mu.RUnlock()
+	for _, fn := range fns {
+		fn(ev)
+	}
 }

@@ -77,46 +77,17 @@ func (p *sessionRuntimePolicy) trackToolStart(ev agentcore.Event) {
 	if ev.ToolID == "" || ev.Tool == "" {
 		return
 	}
-	p.session.mu.Lock()
-	if p.session.pendingToolCalls == nil {
-		p.session.pendingToolCalls = make(map[string]pendingToolCall)
-	}
-	p.session.pendingToolCalls[ev.ToolID] = pendingToolCall{
+	p.session.turn.trackStart(ev.ToolID, pendingToolCall{
 		Tool:     ev.Tool,
 		ArgsHash: hashToolArgs(ev.Args),
-	}
-	p.session.mu.Unlock()
+	})
 }
 
 func (p *sessionRuntimePolicy) trackToolEnd(ev agentcore.Event) {
 	if ev.Tool == "" {
 		return
 	}
-
-	p.session.mu.Lock()
-	call := pendingToolCall{Tool: ev.Tool}
-	if pending, ok := p.session.pendingToolCalls[ev.ToolID]; ok {
-		call = pending
-		delete(p.session.pendingToolCalls, ev.ToolID)
-	}
-
-	record := toolCallFingerprint{
-		Tool:      call.Tool,
-		ArgsHash:  call.ArgsHash,
-		Success:   !ev.IsError,
-		Timestamp: time.Now(),
-	}
-	p.session.recentToolCalls = append(p.session.recentToolCalls, record)
-	if len(p.session.recentToolCalls) > maxRecentToolCalls {
-		p.session.recentToolCalls = append([]toolCallFingerprint(nil), p.session.recentToolCalls[len(p.session.recentToolCalls)-maxRecentToolCalls:]...)
-	}
-	recent := append([]toolCallFingerprint(nil), p.session.recentToolCalls...)
-	p.session.recordTurnTool(record.Tool)
-	if record.Success && isRepoMutatingTool(record.Tool) {
-		p.session.dirtySeq++
-	}
-	p.session.mu.Unlock()
-
+	record, recent := p.session.turn.trackEnd(ev.ToolID, ev.Tool, !ev.IsError)
 	p.detectRepeatedCalls(record, recent)
 }
 
@@ -149,10 +120,10 @@ func (p *sessionRuntimePolicy) handleMessageEnd(msg agentcore.Message) {
 	}
 
 	s := p.session
-	if s.taskStore == nil {
+	if s.deps.taskStore == nil {
 		return
 	}
-	snap := s.taskStore.Snapshot()
+	snap := s.deps.taskStore.Snapshot()
 	if key, reminder, ok := taskManagementReminderBeforeStop(msg, snap); ok {
 		s.deliverRuntimeReminder(
 			key,
@@ -164,12 +135,12 @@ func (p *sessionRuntimePolicy) handleMessageEnd(msg agentcore.Message) {
 
 func (p *sessionRuntimePolicy) queueTaskManagementPromptReminder() {
 	s := p.session
-	if s.taskStore == nil || !hasToolNamed(s.activeTools, "task_update") {
+	if s.deps.taskStore == nil || !hasToolNamed(s.prompt.activeToolsSnapshot(), "task_update") {
 		return
 	}
 
-	snap := s.taskStore.Snapshot()
-	if key, reminder, ok := taskManagementReminderForNextPrompt(s.agent.Messages(), snap); ok {
+	snap := s.deps.taskStore.Snapshot()
+	if key, reminder, ok := taskManagementReminderForNextPrompt(s.deps.agent.Messages(), snap); ok {
 		s.queueRuntimeReminder(key, ReminderTaskManagement, reminder)
 	}
 }
@@ -179,7 +150,7 @@ func (p *sessionRuntimePolicy) queuePlanModePromptReminder() {
 	sig := s.currentPlanModeSignal()
 	switch {
 	case sig.Active:
-		if key, reminder, ok := planModeReminderForNextPrompt(s.agent.Messages(), sig.PlanFilePath); ok {
+		if key, reminder, ok := planModeReminderForNextPrompt(s.deps.agent.Messages(), sig.PlanFilePath); ok {
 			s.queueRuntimeReminder(key, ReminderPlanMode, reminder)
 		}
 	case sig.JustCancelled:
@@ -221,59 +192,55 @@ func hasToolNamed(tools []agentcore.Tool, name string) bool {
 
 func (s *Session) beginTurn() {
 	s.mu.Lock()
-	s.currentTurn = TurnOutcomeSnapshot{}
 	s.backgroundWakeSuppressed = false
-	s.reminders.resetTurnDelivery()
 	s.mu.Unlock()
+	s.turn.beginTurn()
+	s.reminders.resetTurnDelivery()
 	// Checkpoint the workspace before the turn touches files. Runs outside the
 	// lock (git I/O) and is best-effort — see snapshotTurnStart.
 	s.snapshotTurnStart()
 }
 
-func (s *Session) recordTurnTool(name string) {
-	if isReadOnlyExplorationTool(name) {
-		s.currentTurn.ReadOnlyToolCalls++
-	}
-	if isWriteLikeTool(name) {
-		s.currentTurn.WriteLikeToolCalls++
-	}
-	if isTaskMutationTool(name) {
-		s.currentTurn.TaskMutations++
-	}
-	if isCodeEditTool(name) {
-		s.currentTurn.CodeEditToolCalls++
-	}
-}
-
 func (s *Session) recordAssistantTurnMessage(_ agentcore.Message) {
-	s.mu.Lock()
-	s.currentTurn.AssistantResponded = true
-	s.mu.Unlock()
+	s.turn.markAssistantResponded()
 }
 
 func (s *Session) finalizeTurnOutcome() {
-	s.mu.Lock()
-	s.lastTurn = s.currentTurn
-	s.currentTurn = TurnOutcomeSnapshot{}
-	s.reminders.steeredKeys = make(map[string]struct{})
-	s.reminders.autoResumeKeys = make(map[string]struct{})
-	s.mu.Unlock()
+	s.turn.finalizeTurn()
+	// Dedup sets only — pendingContinue must survive; it is consumed by
+	// continuePendingReminder after the run ends.
+	s.reminders.clearDeliveryDedup()
 }
 
 func (p *sessionRuntimePolicy) continuePendingReminder() bool {
 	s := p.session
+	// Read the generation before consuming the flag. Should a session switch
+	// land between the two, this gen is the pre-switch one and
+	// continueIfCurrentGeneration bails; the opposite order would capture the
+	// new generation and resume the reminder into the wrong session.
 	s.mu.Lock()
-	pending := s.reminders.pendingContinue
-	s.reminders.pendingContinue = false
 	gen := s.generation
 	s.mu.Unlock()
-	if !pending {
+	if !s.reminders.takePendingContinue() {
 		return false
 	}
 
 	go func() {
 		if err := s.continueIfCurrentGeneration(gen); err != nil {
 			if errors.Is(err, errStaleSessionGeneration) {
+				return
+			}
+			// A concurrent Reset/SwitchSession rejects the launch outright
+			// (ErrRunsHeld) or, when it completed between our generation
+			// sample and the launch, leaves nothing to continue
+			// (ErrBadContinuation / ErrNoMessages) — the steered reminder
+			// died with the old session, which is not an error. A user prompt
+			// winning the race (ErrAlreadyRunning) is equally benign: its run
+			// consumes the steered reminder via the steering poll.
+			if errors.Is(err, agentcore.ErrRunsHeld) ||
+				errors.Is(err, agentcore.ErrAlreadyRunning) ||
+				errors.Is(err, agentcore.ErrBadContinuation) ||
+				errors.Is(err, agentcore.ErrNoMessages) {
 				return
 			}
 			s.clearSkillDelta()
@@ -287,15 +254,7 @@ func (p *sessionRuntimePolicy) continuePendingReminder() bool {
 }
 
 func (s *Session) LastTurnOutcome() TurnOutcomeSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return TurnOutcomeSnapshot{
-		AssistantResponded: s.lastTurn.AssistantResponded,
-		ReadOnlyToolCalls:  s.lastTurn.ReadOnlyToolCalls,
-		WriteLikeToolCalls: s.lastTurn.WriteLikeToolCalls,
-		TaskMutations:      s.lastTurn.TaskMutations,
-		CodeEditToolCalls:  s.lastTurn.CodeEditToolCalls,
-	}
+	return s.turn.lastTurnSnapshot()
 }
 
 func isTaskMutationTool(name string) bool {
@@ -355,10 +314,7 @@ func (p *sessionRuntimePolicy) continueGoalIfActive() bool {
 	if !sig.Active || sig.Key == "" || sig.Reminder == "" {
 		return false
 	}
-	s.mu.Lock()
-	queued := len(s.reminders.runtime) > 0
-	s.mu.Unlock()
-	if queued {
+	if s.reminders.hasQueued() {
 		return false
 	}
 	s.continueWithRuntimeReminder(sig.Key, ReminderGoal, sig.Reminder)
@@ -366,11 +322,7 @@ func (p *sessionRuntimePolicy) continueGoalIfActive() bool {
 }
 
 func (p *sessionRuntimePolicy) lastGoalContinuationHadNoActivity() bool {
-	s := p.session
-	s.mu.Lock()
-	lastReminder := s.lastReminder
-	outcome := s.lastTurn
-	s.mu.Unlock()
+	lastReminder, outcome := p.session.turn.lastReminderAndTurn()
 
 	if lastReminder == nil || lastReminder.Kind != ReminderGoal {
 		return false
@@ -399,12 +351,11 @@ func (p *sessionRuntimePolicy) continueGoalIfActiveForGeneration(gen uint64) boo
 // should not start lower-priority continuation work until the hook finishes.
 func (p *sessionRuntimePolicy) runPostStopValidation() bool {
 	s := p.session
-	if s.hookRunner == nil {
+	if s.deps.hookRunner == nil {
 		return false
 	}
+	summary, seq := s.turn.validationSnapshot()
 	s.mu.Lock()
-	summary := s.lastRunSummary
-	seq := s.dirtySeq
 	gen := s.generation
 	s.mu.Unlock()
 
@@ -419,23 +370,24 @@ func (p *sessionRuntimePolicy) runPostStopValidation() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		failOutput := s.hookRunner.RunPostStopValidation(ctx)
+		failOutput := s.deps.hookRunner.RunPostStopValidation(ctx)
 
+		// Cross-group window (generation on s.mu, dirtySeq on turn.mu): a
+		// switch landing between the two checks is harmless — reset() zeroes
+		// dirtySeq, and clearDirtyIfUnchanged only clears on an exact match
+		// with the pre-switch seq (which is never 0 here).
 		s.mu.Lock()
-		if s.generation != gen {
-			s.mu.Unlock()
+		stale := s.generation != gen
+		s.mu.Unlock()
+		if stale {
 			return // session switched; discard stale result
 		}
 		if failOutput == "" {
 			// Only clear dirty if no new mutations happened while the hook was running.
-			if s.dirtySeq == seq {
-				s.dirtySeq = 0
-			}
-			s.mu.Unlock()
+			s.turn.clearDirtyIfUnchanged(seq)
 			p.continueGoalIfActiveForGeneration(gen)
 			return
 		}
-		s.mu.Unlock()
 
 		s.continueWithRuntimeReminder(
 			"post_stop_validation",

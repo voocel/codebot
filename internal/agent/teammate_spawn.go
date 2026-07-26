@@ -49,7 +49,7 @@ func (ti *TeammateIsolation) declares(agentType string) bool {
 
 // teammateCwd returns the working directory a spawned teammate runs in: its own
 // worktree when isolated, otherwise the leader's current cwd — which rides in on
-// the spawn call's ctx (the leader injects it via Session.runCtx), so a teammate
+// the spawn call's ctx (the leader injects it via Session.baseRunCtx), so a teammate
 // spawned while the leader is inside a worktree shares that worktree. An empty
 // result makes the spawnCtx WithCwd a no-op, falling back to the tools'
 // constructed WorkDir.

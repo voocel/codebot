@@ -14,7 +14,7 @@ import (
 // Defined as an interface so tests can stand in a fake without spinning the
 // full agent machinery.
 type MessageInjector interface {
-	Inject(agentcore.AgentMessage) (agentcore.InjectResult, error)
+	Inject(context.Context, agentcore.AgentMessage) (agentcore.InjectResult, error)
 }
 
 // LeaderInboxPump bridges the leader's mailbox to the leader agent. Without
@@ -88,10 +88,12 @@ func (p *LeaderInboxPump) Run(ctx context.Context) {
 				continue
 			}
 			attachment := cbteam.FormatTeammateAttachment(m.From, text, m.Color, m.Summary)
-			// Inject only fails on nil message or an idle-resume Continue
-			// error. Both are recoverable: the steering queue retains the
-			// message and the next agent run picks it up.
-			_, _ = p.agent.Inject(agentcore.UserMsg(attachment))
+			// Inject only fails on a nil message or while a Reset/SwitchSession
+			// holds the run lifecycle (ErrRunsHeld, nothing queued). Dropping
+			// the drained message then matches the surgery's own semantics —
+			// its ClearAllQueues would wipe a queued copy anyway. Background
+			// ctx: a resumed run must outlive this pump's drain cycle.
+			_, _ = p.agent.Inject(context.Background(), agentcore.UserMsg(attachment))
 		}
 	}
 }

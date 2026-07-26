@@ -26,7 +26,7 @@ func newFakeInjector() *fakeInjector {
 	return &fakeInjector{wake: make(chan struct{})}
 }
 
-func (f *fakeInjector) Inject(m agentcore.AgentMessage) (agentcore.InjectResult, error) {
+func (f *fakeInjector) Inject(_ context.Context, m agentcore.AgentMessage) (agentcore.InjectResult, error) {
 	f.mu.Lock()
 	f.received = append(f.received, m)
 	f.mu.Unlock()
