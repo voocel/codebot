@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"sync"
@@ -6,7 +6,7 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// TeammateEventHub is a fan-out point for events produced by teammate agent
+// EventHub is a fan-out point for events produced by teammate agent
 // loops. agentcore.AgentLoop returns a single-consumer channel — the executor
 // drains it for produced-message collection — so anything else that wants to
 // observe a teammate's activity (UI transcript view, log sinks, future
@@ -27,9 +27,9 @@ import (
 //     snapshot before wiring the live channel. The ring outlives MarkStopped
 //     so an Observer can open a teammate's transcript after it has finished.
 //
-// Zero-value safety: a nil *TeammateEventHub is a valid no-op publisher —
-// callers (TeammateSpawner) can be wired before the hub exists in tests.
-type TeammateEventHub struct {
+// Zero-value safety: a nil *EventHub is a valid no-op publisher —
+// callers (Spawner) can be wired before the hub exists in tests.
+type EventHub struct {
 	mu       sync.RWMutex
 	subs     map[string]map[int]chan agentcore.Event // agentName → subId → chan
 	presSubs map[int]chan PresenceEvent
@@ -77,9 +77,9 @@ const subBufferSize = 64
 // always current.
 const historyCapacity = 512
 
-// NewTeammateEventHub returns an empty hub ready to use.
-func NewTeammateEventHub() *TeammateEventHub {
-	return &TeammateEventHub{
+// NewEventHub returns an empty hub ready to use.
+func NewEventHub() *EventHub {
+	return &EventHub{
 		subs:     make(map[string]map[int]chan agentcore.Event),
 		presSubs: make(map[int]chan PresenceEvent),
 		active:   make(map[string]bool),
@@ -105,7 +105,7 @@ func NewTeammateEventHub() *TeammateEventHub {
 // send on a closed chan and panic. The sends themselves are non-blocking
 // (drop-oldest), so holding the lock briefly is fine — the hot path is
 // O(subscribers) channel operations, not I/O.
-func (h *TeammateEventHub) Publish(agentName string, ev agentcore.Event) {
+func (h *EventHub) Publish(agentName string, ev agentcore.Event) {
 	if h == nil || agentName == "" {
 		return
 	}
@@ -138,7 +138,7 @@ func (h *TeammateEventHub) Publish(agentName string, ev agentcore.Event) {
 // history ring is preserved so an observer can still open this teammate's
 // transcript later. Safe to call multiple times — only the first call after
 // a Started transition broadcasts.
-func (h *TeammateEventHub) MarkStopped(agentName string) {
+func (h *EventHub) MarkStopped(agentName string) {
 	if h == nil || agentName == "" {
 		return
 	}
@@ -162,7 +162,7 @@ func (h *TeammateEventHub) MarkStopped(agentName string) {
 // The channel is buffered (subBufferSize); the publisher drops the oldest
 // queued event when full. cancel MUST be called when the listener is done —
 // it removes the channel from the routing table and closes it.
-func (h *TeammateEventHub) Subscribe(agentName string) ([]agentcore.Event, <-chan agentcore.Event, func()) {
+func (h *EventHub) Subscribe(agentName string) ([]agentcore.Event, <-chan agentcore.Event, func()) {
 	if h == nil {
 		ch := make(chan agentcore.Event)
 		close(ch)
@@ -205,7 +205,7 @@ func (h *TeammateEventHub) Subscribe(agentName string) ([]agentcore.Event, <-cha
 // The current active roster is replayed as Started events on the returned
 // channel before any future presence changes — late subscribers don't miss
 // teammates that joined earlier.
-func (h *TeammateEventHub) SubscribePresence() (<-chan PresenceEvent, func()) {
+func (h *EventHub) SubscribePresence() (<-chan PresenceEvent, func()) {
 	if h == nil {
 		ch := make(chan PresenceEvent)
 		close(ch)
@@ -239,7 +239,7 @@ func (h *TeammateEventHub) SubscribePresence() (<-chan PresenceEvent, func()) {
 // ActiveAgents returns the names that are currently publishing — i.e. have
 // published at least once and have not been MarkStopped'd. For the broader
 // roster (including teammates that already finished) use KnownAgents.
-func (h *TeammateEventHub) ActiveAgents() []string {
+func (h *EventHub) ActiveAgents() []string {
 	if h == nil {
 		return nil
 	}
@@ -258,7 +258,7 @@ func (h *TeammateEventHub) ActiveAgents() []string {
 // session, alongside its current active flag. Use this for "which teammates
 // can I open in the transcript modal?" — already-finished agents still have
 // a readable history.
-func (h *TeammateEventHub) KnownAgents() []AgentInfo {
+func (h *EventHub) KnownAgents() []AgentInfo {
 	if h == nil {
 		return nil
 	}
@@ -273,7 +273,7 @@ func (h *TeammateEventHub) KnownAgents() []AgentInfo {
 
 // IsActive reports whether agentName is currently publishing events. Returns
 // false for unknown names and for known-but-stopped teammates.
-func (h *TeammateEventHub) IsActive(agentName string) bool {
+func (h *EventHub) IsActive(agentName string) bool {
 	if h == nil || agentName == "" {
 		return false
 	}
@@ -285,7 +285,7 @@ func (h *TeammateEventHub) IsActive(agentName string) bool {
 // eventRing is a fixed-capacity circular buffer of events. push is O(1) and
 // overwrites the oldest slot when full; snapshot returns a freshly-allocated
 // slice in chronological order. Not safe for concurrent use — callers hold
-// TeammateEventHub.mu while touching it.
+// EventHub.mu while touching it.
 type eventRing struct {
 	buf  []agentcore.Event
 	head int  // next write position

@@ -6,15 +6,15 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/agent"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 // modalTestModel returns a Model wired with a fresh hub, no driver, and a
 // reasonable viewport size — enough for the modal subsystem to exercise its
 // open/close/cycle paths.
-func modalTestModel(t *testing.T) (*Model, *agent.TeammateEventHub) {
+func modalTestModel(t *testing.T) (*Model, *cbteam.EventHub) {
 	t.Helper()
-	hub := agent.NewTeammateEventHub()
+	hub := cbteam.NewEventHub()
 	m := New(nil, "test-model", Config{TeammateEvents: hub})
 	m.Ready = true
 	m.Width = 100

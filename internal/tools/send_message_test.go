@@ -239,7 +239,7 @@ func TestSendMessage_ClosedTeammateMailbox(t *testing.T) {
 }
 
 // fakeWaker records Wake calls and returns a scripted outcome, standing in for
-// internal/agent.TeammateWaker so send_message routing can be tested without a
+// internal/team.Waker so send_message routing can be tested without a
 // real spawn path.
 type fakeWaker struct {
 	woke   bool

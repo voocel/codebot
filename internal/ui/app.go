@@ -22,6 +22,7 @@ import (
 	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
+	cbteam "github.com/voocel/codebot/internal/team"
 	"github.com/voocel/codebot/internal/tools"
 	"github.com/voocel/codebot/internal/ui/commands"
 	"github.com/voocel/codebot/internal/ui/imageinput"
@@ -68,7 +69,7 @@ type App struct {
 	// TeammateEvents is the per-session fan-out hub for teammate AgentLoop
 	// events. The TUI's teammate-transcript modal subscribes here. May be
 	// nil in headless / non-TUI flows; nil is a valid no-op publisher.
-	TeammateEvents *agent.TeammateEventHub
+	TeammateEvents *cbteam.EventHub
 
 	// Worktree sandbox callbacks, wired from the runtime by wireWorktree for the
 	// interactive TUI. Nil in other frontends, where /worktree is unavailable.

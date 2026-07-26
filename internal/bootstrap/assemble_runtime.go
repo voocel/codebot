@@ -29,7 +29,7 @@ import (
 func assembleRuntime(input *resolvedInput, services *bootServices, assembly *sessionAssembly) (*Runtime, error) {
 	taskRT := task.NewRuntime()
 	teamReg := team.NewRegistry()
-	teammateEvents := agent.NewTeammateEventHub()
+	teammateEvents := cbteam.NewEventHub()
 	sessionID := input.sessionStore.Header().SessionID
 	// Pre-create a default team so the leader can spawn teammates immediately
 	// (subagent { name: ... }) without a separate team_create step. The team
@@ -119,7 +119,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			IdleClaim:         buildIdleClaim(services.taskStore),
 			IdleClaimInterval: 2 * time.Second,
 		})
-		spawner := agent.TeammateSpawner(
+		spawner := cbteam.Spawner(
 			teamReg,
 			taskRT,
 			extraTools,
@@ -128,8 +128,8 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			dynamicProvider,
 			protocol,
 			assembly.hookRunner,
-			&agent.TeammatePersist{Roster: services.rosterStore, Transcripts: services.transcripts},
-			&agent.TeammateIsolation{
+			&cbteam.Persist{Roster: services.rosterStore, Transcripts: services.transcripts},
+			&cbteam.Isolation{
 				RepoRoot: input.cwd,
 				Of:       assembly.subagents.isolation,
 			},
@@ -140,7 +140,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		// teammate spawner feeds, so the live-preview modal lists and streams
 		// them too. Teammates publish via the spawner's onEvent; sub-agents via
 		// this observer — one hub, two producers.
-		assembly.subagents.runner.SetEventObserver(agent.SubagentHubObserver(teammateEvents))
+		assembly.subagents.runner.SetEventObserver(cbteam.SubagentHubObserver(teammateEvents))
 
 		// Lazy teammate resume: boot does NO team work. Instead of eagerly
 		// re-spawning prior teammates, each wakes on demand the first time the
@@ -149,7 +149,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		// / roster upsert. A woken teammate joins the active (default) team; the
 		// prior team's display name is not restored.
 		if services.rosterStore != nil {
-			waker := agent.NewTeammateWaker(spawner, assembly.subagents.runner.AgentConfig, teamReg, services.rosterStore, services.transcripts)
+			waker := cbteam.NewWaker(spawner, assembly.subagents.runner.AgentConfig, teamReg, services.rosterStore, services.transcripts)
 			for _, t := range teamTools {
 				if sm, ok := t.(*localtools.SendMessageTool); ok {
 					sm.SetWaker(waker)
@@ -159,7 +159,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	}
 
 	pumpCtx, stopPump := context.WithCancel(context.Background())
-	go agent.NewLeaderInboxPump(teamReg, agentCore, 0).Run(pumpCtx)
+	go cbteam.NewLeaderInboxPump(teamReg, agentCore, 0).Run(pumpCtx)
 
 	modelName := config.FormatModelID(assembly.settings.Provider, assembly.settings.Model)
 	if session != nil && session.ModelName() != "" {

@@ -9,8 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/storage"
+	cbteam "github.com/voocel/codebot/internal/team"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
@@ -43,7 +43,7 @@ type Config struct {
 	// TeammateEvents is the optional fan-out hub for teammate AgentLoop
 	// events. When non-nil the Ctrl+T modal subscribes to it to render a
 	// teammate's live transcript. nil disables the modal entirely.
-	TeammateEvents *agent.TeammateEventHub
+	TeammateEvents *cbteam.EventHub
 
 	// FleetAgentStat returns how long the agent backing a fleet-list row (keyed
 	// by hub display name) has been running, when a live backing task is found.

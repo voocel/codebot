@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/task"
-	"github.com/voocel/agentcore/team"
+	coreteam "github.com/voocel/agentcore/team"
 	agenttools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
@@ -23,15 +23,15 @@ import (
 // into a private git worktree.
 const WorktreeIsolation = "worktree"
 
-// TeammateIsolation configures optional per-teammate git-worktree sandboxing.
-// A nil *TeammateIsolation disables it entirely — every teammate shares the
+// Isolation configures optional per-teammate git-worktree sandboxing.
+// A nil *Isolation disables it entirely — every teammate shares the
 // leader's cwd, the pre-Phase-2 behaviour. When set, a teammate whose agent
 // type maps to "worktree" in Of runs in its own checkout so its writes cannot
 // clobber a peer editing the same files. The checkout is bound at spawn by a
 // cwd override on the teammate's context (see teammateCwd), not by rebuilding
 // its tools — the same tool instances resolve paths against whatever cwd the
 // running context carries.
-type TeammateIsolation struct {
+type Isolation struct {
 	// RepoRoot is the git repository the sandboxes branch from (the leader cwd).
 	RepoRoot string
 	// Of maps agent type (subagent.Config.Name) to its isolation mode; an
@@ -43,7 +43,7 @@ type TeammateIsolation struct {
 // deliberately does NOT check that the repo is a git repository: a declared
 // isolation that can't be honoured must fail loudly (see the spawner), never
 // silently fall back to the shared cwd where the teammate could clobber peers.
-func (ti *TeammateIsolation) declares(agentType string) bool {
+func (ti *Isolation) declares(agentType string) bool {
 	return ti != nil && ti.Of[agentType] == WorktreeIsolation
 }
 
@@ -112,7 +112,7 @@ func teammateBaseBlocks(shared []agentcore.SystemBlock, wt *teammateWorktree) []
 //     committed into the branch, git keeps the branch (branchKept) and only the
 //     checkout is dropped; the leader is told the commits survived there.
 //   - Clean tree, nothing committed → fully removed, silently.
-func (wt *teammateWorktree) cleanup(reg *team.Registry, agentName string) {
+func (wt *teammateWorktree) cleanup(reg *coreteam.Registry, agentName string) {
 	changed, err := worktree.HasChanges(wt.dir)
 	if err == nil && !changed {
 		branchKept, rerr := worktree.Remove(wt.repoRoot, wt.dir, wt.branch, false)
@@ -136,21 +136,21 @@ func (wt *teammateWorktree) cleanup(reg *team.Registry, agentName string) {
 }
 
 // notifyLeader best-effort delivers a message to the team lead's mailbox.
-func (wt *teammateWorktree) notifyLeader(reg *team.Registry, agentName, text string) {
+func (wt *teammateWorktree) notifyLeader(reg *coreteam.Registry, agentName, text string) {
 	if reg == nil {
 		return
 	}
-	if mb := reg.Mailbox(team.TeamLeadName); mb != nil {
-		_ = mb.Send(team.Message{From: agentName, Text: text})
+	if mb := reg.Mailbox(coreteam.TeamLeadName); mb != nil {
+		_ = mb.Send(coreteam.Message{From: agentName, Text: text})
 	}
 }
 
-// TeammatePersist bundles the durable stores a spawned teammate writes to so
+// Persist bundles the durable stores a spawned teammate writes to so
 // the session can recover its team after a restart: the roster (who is on the
 // team + how to re-spawn them) and the per-teammate conversation transcript.
-// A nil *TeammatePersist — or nil fields within — disables that slice of
+// A nil *Persist — or nil fields within — disables that slice of
 // persistence, so tests and ephemeral sessions can omit it entirely.
-type TeammatePersist struct {
+type Persist struct {
 	Roster      *storage.RosterStore
 	Transcripts *storage.TranscriptStore
 }
@@ -161,7 +161,7 @@ type TeammatePersist struct {
 // teammates, which is far below this number.
 const maxAgentNameSuffixAttempts = 1000
 
-// TeammateSpawner returns the subagent.TeamSpawner closure that turns a
+// Spawner returns the subagent.TeamSpawner closure that turns a
 // `subagent { team_name: ... }` tool call into a long-lived teammate.
 // Bound to the runtime's team registry + task runtime so every spawn
 // shares the same coordination surface (send_message / leader inbox pump).
@@ -188,7 +188,7 @@ const maxAgentNameSuffixAttempts = 1000
 //     teammate in the leader's shared cwd; when set, a teammate whose agent type
 //     opts into "worktree" runs in its own checkout (bound via a cwd override on
 //     the spawn context).
-func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *TeammateEventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol team.ProtocolHooks, hookRunner *hooks.Runner, persist *TeammatePersist, isolation *TeammateIsolation) subagent.TeamSpawner {
+func Spawner(reg *coreteam.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *EventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol coreteam.ProtocolHooks, hookRunner *hooks.Runner, persist *Persist, isolation *Isolation) subagent.TeamSpawner {
 	// worktreeMu serialises sandbox creation: the leader can fire parallel
 	// subagent spawns (agentcore runs tools concurrently), and concurrent
 	// `git worktree add` on one repo contend on the index lock — a loser would
@@ -275,7 +275,7 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 		// One teammate, one cache lineage: suffix the unique teammate name so
 		// same-type teammates don't share a routing bucket, while a resumed
 		// teammate (same name) keeps its warm cache.
-		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, commitMessage, teammateBaseBlocks(baseBlocks, wt), dynamicBlock, promptCacheKey(req.Config.PromptCacheKey, agentName))
+		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, commitMessage, teammateBaseBlocks(baseBlocks, wt), dynamicBlock, PromptCacheKey(req.Config.PromptCacheKey, agentName))
 
 		depth := task.DepthFromContext(ctx) + 1
 		if depth > task.MaxAgentDepth {
@@ -309,7 +309,7 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 			}
 		}
 
-		res, err := team.Spawn(spawnCtx, team.SpawnConfig{
+		res, err := coreteam.Spawn(spawnCtx, coreteam.SpawnConfig{
 			AgentName:     agentName,
 			InitialPrompt: req.InitialPrompt,
 			History:       req.History,
@@ -355,11 +355,11 @@ func TeammateSpawner(reg *team.Registry, rt *task.Runtime, extraTools []agentcor
 // slot. Comparison is case-insensitive so the model can't accidentally split
 // a logical "Tester" + "tester" into two routing targets.
 //
-// There is a benign TOCTOU window between this check and team.Spawn's own
+// There is a benign TOCTOU window between this check and coreteam.Spawn's own
 // RegisterAgent: a concurrent spawn could grab the chosen name first. Spawn
 // itself will then return ErrAgentExists and the caller sees the original
 // error path — this helper only optimises the common single-leader case.
-func uniqueAgentName(reg *team.Registry, base string) string {
+func uniqueAgentName(reg *coreteam.Registry, base string) string {
 	if reg == nil || base == "" {
 		return base
 	}
@@ -376,7 +376,7 @@ func uniqueAgentName(reg *team.Registry, base string) string {
 			return candidate
 		}
 	}
-	// Fall through to base; team.Spawn will surface ErrAgentExists cleanly.
+	// Fall through to base; coreteam.Spawn will surface ErrAgentExists cleanly.
 	return base
 }
 
@@ -425,7 +425,7 @@ func mergeTeammateTools(base, extras []agentcore.Tool) []agentcore.Tool {
 // Identity (AgentName / TeamName / Color) is NOT plumbed through here —
 // agentcore/team.Runner wraps every Execute call with WithIdentity, so
 // tools that vary by caller read it from coreteam.IdentityFromContext.
-func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event), commitMessage func(agentcore.AgentMessage) error, baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock, promptCacheKey string) team.TurnExecutor {
+func buildTeammateExecutor(cfg subagent.Config, tools []agentcore.Tool, model agentcore.ChatModel, onEvent func(agentcore.Event), commitMessage func(agentcore.AgentMessage) error, baseBlocks []agentcore.SystemBlock, dynamicBlock *agentcore.SystemBlock, promptCacheKey string) coreteam.TurnExecutor {
 	var ctxMgr agentcore.ContextManager
 	switch {
 	case cfg.ContextManagerFactory != nil:
@@ -565,4 +565,15 @@ func toolInfosFromTools(tools []agentcore.Tool) []config.ToolInfo {
 		out = append(out, config.ToolInfo{Name: t.Name(), Description: t.Description()})
 	}
 	return out
+}
+
+// PromptCacheKey derives a spawned agent's cache routing base from the
+// session identity. One conversation, one key: agentcore appends "#<seq>" per
+// spawn, so runs of the same definition don't pile into a single routing
+// bucket. Shared by teammate spawns and subagent definitions (agent_build).
+func PromptCacheKey(sessionID, agentName string) string {
+	if sessionID == "" {
+		return ""
+	}
+	return sessionID + "-" + agentName
 }

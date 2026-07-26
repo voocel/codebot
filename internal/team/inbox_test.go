@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"context"
@@ -8,8 +8,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/team"
-	cbteam "github.com/voocel/codebot/internal/team"
+	coreteam "github.com/voocel/agentcore/team"
 )
 
 // fakeInjector records every message handed to Inject so the test can assert
@@ -60,7 +59,7 @@ func (f *fakeInjector) waitForCount(t *testing.T, n int, within time.Duration) [
 
 // startPump spins up a LeaderInboxPump on its own goroutine with a tight
 // wait interval so pre-team backoff loops don't dominate test latency.
-func startPump(t *testing.T, reg *team.Registry, inj *fakeInjector) (context.CancelFunc, <-chan struct{}) {
+func startPump(t *testing.T, reg *coreteam.Registry, inj *fakeInjector) (context.CancelFunc, <-chan struct{}) {
 	t.Helper()
 	pump := NewLeaderInboxPump(reg, inj, 5*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,7 +72,7 @@ func startPump(t *testing.T, reg *team.Registry, inj *fakeInjector) (context.Can
 }
 
 func TestLeaderInboxPump_InjectsPeerMessages(t *testing.T) {
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	if err := reg.CreateTeam("alpha", "", "sess-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
@@ -85,11 +84,11 @@ func TestLeaderInboxPump_InjectsPeerMessages(t *testing.T) {
 		<-done
 	}()
 
-	mb := reg.Mailbox(team.TeamLeadName)
+	mb := reg.Mailbox(coreteam.TeamLeadName)
 	if mb == nil {
 		t.Fatal("leader mailbox missing after CreateTeam")
 	}
-	if err := mb.Send(team.Message{From: "researcher", Text: "found a clue", Color: "blue"}); err != nil {
+	if err := mb.Send(coreteam.Message{From: "researcher", Text: "found a clue", Color: "blue"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -104,7 +103,7 @@ func TestLeaderInboxPump_InjectsPeerMessages(t *testing.T) {
 }
 
 func TestLeaderInboxPump_SurfacesIdleWithText(t *testing.T) {
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	if err := reg.CreateTeam("alpha", "", "sess-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
@@ -116,9 +115,9 @@ func TestLeaderInboxPump_SurfacesIdleWithText(t *testing.T) {
 		<-done
 	}()
 
-	mb := reg.Mailbox(team.TeamLeadName)
+	mb := reg.Mailbox(coreteam.TeamLeadName)
 	idle := `{"type":"idle_notification","from":"researcher","text":"I found the bug at line 42."}`
-	if err := mb.Send(team.Message{From: "researcher", Text: idle}); err != nil {
+	if err := mb.Send(coreteam.Message{From: "researcher", Text: idle}); err != nil {
 		t.Fatalf("Send idle: %v", err)
 	}
 
@@ -133,7 +132,7 @@ func TestLeaderInboxPump_SurfacesIdleWithText(t *testing.T) {
 }
 
 func TestLeaderInboxPump_FallsBackForIdleWithoutText(t *testing.T) {
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	if err := reg.CreateTeam("alpha", "", "sess-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
@@ -145,9 +144,9 @@ func TestLeaderInboxPump_FallsBackForIdleWithoutText(t *testing.T) {
 		<-done
 	}()
 
-	mb := reg.Mailbox(team.TeamLeadName)
+	mb := reg.Mailbox(coreteam.TeamLeadName)
 	idle := `{"type":"idle_notification","from":"researcher"}`
-	if err := mb.Send(team.Message{From: "researcher", Text: idle}); err != nil {
+	if err := mb.Send(coreteam.Message{From: "researcher", Text: idle}); err != nil {
 		t.Fatalf("Send idle: %v", err)
 	}
 
@@ -163,7 +162,7 @@ func TestLeaderInboxPump_FallsBackForIdleWithoutText(t *testing.T) {
 // here keeps protocol JSON out of the model's view if the protocol ever grows
 // a teammate→leader shutdown path before the typed handler arrives.
 func TestLeaderInboxPump_DropsShutdownRequest(t *testing.T) {
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	if err := reg.CreateTeam("alpha", "", "sess-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
@@ -175,13 +174,13 @@ func TestLeaderInboxPump_DropsShutdownRequest(t *testing.T) {
 		<-done
 	}()
 
-	mb := reg.Mailbox(team.TeamLeadName)
-	if err := mb.Send(team.Message{From: "researcher", Text: cbteam.EncodeShutdownRequest("done")}); err != nil {
+	mb := reg.Mailbox(coreteam.TeamLeadName)
+	if err := mb.Send(coreteam.Message{From: "researcher", Text: EncodeShutdownRequest("done")}); err != nil {
 		t.Fatalf("Send shutdown: %v", err)
 	}
 	// Send a plain follow-up so we can observe that only the second arrives;
 	// without this the test could pass trivially by the shutdown never landing.
-	if err := mb.Send(team.Message{From: "researcher", Text: "back online"}); err != nil {
+	if err := mb.Send(coreteam.Message{From: "researcher", Text: "back online"}); err != nil {
 		t.Fatalf("Send follow-up: %v", err)
 	}
 
@@ -195,7 +194,7 @@ func TestLeaderInboxPump_DropsShutdownRequest(t *testing.T) {
 }
 
 func TestLeaderInboxPump_WaitsForTeamCreation(t *testing.T) {
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	inj := newFakeInjector()
 	cancel, done := startPump(t, reg, inj)
 	defer func() {
@@ -213,7 +212,7 @@ func TestLeaderInboxPump_WaitsForTeamCreation(t *testing.T) {
 	if err := reg.CreateTeam("alpha", "", "sess-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	if err := reg.Mailbox(team.TeamLeadName).Send(team.Message{From: "x", Text: "hi"}); err != nil {
+	if err := reg.Mailbox(coreteam.TeamLeadName).Send(coreteam.Message{From: "x", Text: "hi"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -221,7 +220,7 @@ func TestLeaderInboxPump_WaitsForTeamCreation(t *testing.T) {
 }
 
 func TestLeaderInboxPump_SurvivesTeamDeletion(t *testing.T) {
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	if err := reg.CreateTeam("alpha", "", "sess-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
@@ -248,7 +247,7 @@ func TestLeaderInboxPump_SurvivesTeamDeletion(t *testing.T) {
 }
 
 func TestLeaderInboxPump_ExitsOnContextCancel(t *testing.T) {
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	inj := newFakeInjector()
 	cancel, done := startPump(t, reg, inj)
 
@@ -261,7 +260,7 @@ func TestLeaderInboxPump_ExitsOnContextCancel(t *testing.T) {
 }
 
 func TestLeaderInboxPump_DefaultsWaitInterval(t *testing.T) {
-	p := NewLeaderInboxPump(team.NewRegistry(), newFakeInjector(), 0)
+	p := NewLeaderInboxPump(coreteam.NewRegistry(), newFakeInjector(), 0)
 	if p.waitInterval != defaultPumpWaitInterval {
 		t.Errorf("zero waitInterval should pick default %v, got %v", defaultPumpWaitInterval, p.waitInterval)
 	}

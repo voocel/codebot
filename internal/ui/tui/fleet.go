@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/codebot/internal/agent"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 // Fleet list — a live roster of observable agents (long-lived teammates and
@@ -36,7 +36,7 @@ const maxFleetVisible = 6
 
 // fleetAgents returns the hub's known agents sorted active-first, then by name.
 // nil when no hub is wired or nothing has published yet.
-func (m *Model) fleetAgents() []agent.AgentInfo {
+func (m *Model) fleetAgents() []cbteam.AgentInfo {
 	if m.config.TeammateEvents == nil {
 		return nil
 	}

@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/agent"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 func down() tea.KeyMsg  { return tea.KeyMsg{Type: tea.KeyDown} }
@@ -188,7 +188,7 @@ func TestFleet_TypingJumpsBackToInput(t *testing.T) {
 }
 
 func TestFleet_XStopsSelectedAgent(t *testing.T) {
-	hub := agent.NewTeammateEventHub()
+	hub := cbteam.NewEventHub()
 	var stopped string
 	m := New(nil, "test-model", Config{
 		TeammateEvents: hub,
@@ -211,7 +211,7 @@ func TestFleet_XStopsSelectedAgent(t *testing.T) {
 }
 
 func TestFleet_CtrlFStopsAll(t *testing.T) {
-	hub := agent.NewTeammateEventHub()
+	hub := cbteam.NewEventHub()
 	called := false
 	m := New(nil, "test-model", Config{
 		TeammateEvents: hub,
@@ -229,7 +229,7 @@ func TestFleet_CtrlFStopsAll(t *testing.T) {
 }
 
 func TestFleet_RenderShowsElapsedForActive(t *testing.T) {
-	hub := agent.NewTeammateEventHub()
+	hub := cbteam.NewEventHub()
 	m := New(nil, "test-model", Config{
 		TeammateEvents: hub,
 		FleetAgentStat: func(string) (time.Duration, bool) { return 63 * time.Second, true },

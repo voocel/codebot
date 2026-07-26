@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/agent"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 // Transcript modal — full-screen popup that lets the user observe a
@@ -63,7 +63,7 @@ func (m *Model) transcriptModalOpenable() bool {
 // knownAgentNames returns the sorted list of all teammates the hub has ever
 // seen (active + stopped). Sorting keeps Ctrl+O and Tab/Shift+Tab order
 // deterministic across redraws.
-func knownAgentNames(hub *agent.TeammateEventHub) []string {
+func knownAgentNames(hub *cbteam.EventHub) []string {
 	if hub == nil {
 		return nil
 	}
@@ -80,7 +80,7 @@ func knownAgentNames(hub *agent.TeammateEventHub) []string {
 // Active teammates appear plain; stopped teammates get an "(ended)" suffix
 // so the user can tell at a glance whether they're watching live output or
 // a frozen replay.
-func modalTitleFor(hub *agent.TeammateEventHub, agentName string) string {
+func modalTitleFor(hub *cbteam.EventHub, agentName string) string {
 	if hub != nil && !hub.IsActive(agentName) {
 		return fmt.Sprintf("teammate: %s (ended)", agentName)
 	}

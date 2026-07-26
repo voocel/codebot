@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"slices"
@@ -23,7 +23,7 @@ func end(agentType, instanceID string) (subagent.RunMeta, agentcore.Event) {
 // Two concurrent runs of the same agent type must land on distinct hub names so
 // the preview modal can show each separately.
 func TestSubagentHubObserver_ParallelSameTypeDisambiguates(t *testing.T) {
-	hub := NewTeammateEventHub()
+	hub := NewEventHub()
 	obs := SubagentHubObserver(hub)
 
 	obs(start("explore", "a"))
@@ -39,7 +39,7 @@ func TestSubagentHubObserver_ParallelSameTypeDisambiguates(t *testing.T) {
 
 // A name freed by EventAgentEnd is reusable by a later run.
 func TestSubagentHubObserver_ReleasesNameOnEnd(t *testing.T) {
-	hub := NewTeammateEventHub()
+	hub := NewEventHub()
 	obs := SubagentHubObserver(hub)
 
 	obs(start("explore", "a"))
@@ -61,7 +61,7 @@ func TestSubagentHubObserver_ReleasesNameOnEnd(t *testing.T) {
 
 // A sub-agent must not collide with a same-named teammate already in the hub.
 func TestSubagentHubObserver_AvoidsTeammateName(t *testing.T) {
-	hub := NewTeammateEventHub()
+	hub := NewEventHub()
 	// Simulate an active teammate named "explore" (teammate path publishes
 	// directly under its name).
 	hub.Publish("explore", agentcore.Event{Type: agentcore.EventAgentStart})
@@ -80,7 +80,7 @@ func TestSubagentHubObserver_AvoidsTeammateName(t *testing.T) {
 // Foreground modes already stream inline; they must not reach the hub.
 func TestSubagentHubObserver_SkipsForegroundModes(t *testing.T) {
 	for _, mode := range []string{"single", "parallel", "chain"} {
-		hub := NewTeammateEventHub()
+		hub := NewEventHub()
 		obs := SubagentHubObserver(hub)
 		obs(subagent.RunMeta{Agent: "explore", InstanceID: "a", Mode: mode},
 			agentcore.Event{Type: agentcore.EventAgentStart})

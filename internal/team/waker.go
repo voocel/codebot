@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"context"
@@ -7,11 +7,11 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/subagent"
-	"github.com/voocel/agentcore/team"
+	coreteam "github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/storage"
 )
 
-// TeammateWaker re-spawns a dormant teammate on demand, seeded with its
+// Waker re-spawns a dormant teammate on demand, seeded with its
 // persisted transcript, the first time the leader messages it. Teammate
 // recovery is LAZY and message-driven: a stopped teammate is revived only when
 // a message targets it, never eagerly mass-restored at session startup.
@@ -26,10 +26,10 @@ import (
 //
 // Live control-flow state (in-flight tool calls, pending approvals) is not
 // restored; the teammate resumes from its last completed turn.
-type TeammateWaker struct {
+type Waker struct {
 	spawner     subagent.TeamSpawner
 	configOf    func(agentType string) (subagent.Config, bool)
-	registry    *team.Registry
+	registry    *coreteam.Registry
 	roster      *storage.RosterStore
 	transcripts *storage.TranscriptStore
 
@@ -39,15 +39,15 @@ type TeammateWaker struct {
 	mu sync.Mutex
 }
 
-// NewTeammateWaker assembles a waker from the same spawn closure teammates are
+// NewWaker assembles a waker from the same spawn closure teammates are
 // created through (so a woken teammate flows through identical tool injection,
 // transcript recording and roster upsert) plus the durable stores. configOf
 // rebuilds a teammate's subagent.Config from its agent type; registry is used
 // to make wake idempotent under concurrency. A nil spawner, configOf or roster
 // makes Wake a permanent no-op so the caller falls back to its normal
 // not-found handling.
-func NewTeammateWaker(spawner subagent.TeamSpawner, configOf func(agentType string) (subagent.Config, bool), registry *team.Registry, roster *storage.RosterStore, transcripts *storage.TranscriptStore) *TeammateWaker {
-	return &TeammateWaker{spawner: spawner, configOf: configOf, registry: registry, roster: roster, transcripts: transcripts}
+func NewWaker(spawner subagent.TeamSpawner, configOf func(agentType string) (subagent.Config, bool), registry *coreteam.Registry, roster *storage.RosterStore, transcripts *storage.TranscriptStore) *Waker {
+	return &Waker{spawner: spawner, configOf: configOf, registry: registry, roster: roster, transcripts: transcripts}
 }
 
 // Wake re-spawns the dormant teammate named `name`, seeding it with its
@@ -64,7 +64,7 @@ func NewTeammateWaker(spawner subagent.TeamSpawner, configOf func(agentType stri
 // Wake is idempotent under concurrency: a session-wide lock plus a liveness
 // re-check ensures two parallel messages to the same dormant name revive it
 // once, not as clones.
-func (w *TeammateWaker) Wake(ctx context.Context, name, prompt string) (bool, error) {
+func (w *Waker) Wake(ctx context.Context, name, prompt string) (bool, error) {
 	if w == nil || w.spawner == nil || w.configOf == nil || w.roster == nil {
 		return false, nil
 	}
@@ -77,7 +77,7 @@ func (w *TeammateWaker) Wake(ctx context.Context, name, prompt string) (bool, er
 	defer w.mu.Unlock()
 	// Re-check under the wake lock: a concurrent wake (the leader can emit
 	// parallel send_message calls in one turn) may have revived it already.
-	// team.Spawn registers the name synchronously, so by the time the prior
+	// coreteam.Spawn registers the name synchronously, so by the time the prior
 	// wake released this lock the name is live. Report not-spawned and let the
 	// caller deliver to the now-live mailbox rather than spawning a clone.
 	if w.registry != nil {
@@ -116,7 +116,7 @@ func (w *TeammateWaker) Wake(ctx context.Context, name, prompt string) (bool, er
 }
 
 // member returns the persisted roster entry for name, if any.
-func (w *TeammateWaker) member(name string) (storage.RosterMember, bool) {
+func (w *Waker) member(name string) (storage.RosterMember, bool) {
 	for _, m := range w.roster.Snapshot().Members {
 		if m.Name == name {
 			return m, true

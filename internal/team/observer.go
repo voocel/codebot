@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"fmt"
@@ -23,7 +23,7 @@ import (
 // run's EventAgentEnd (guaranteed on every termination path) so names recycle.
 //
 // Returns nil when hub is nil so callers can wire unconditionally.
-func SubagentHubObserver(hub *TeammateEventHub) func(meta subagent.RunMeta, ev agentcore.Event) {
+func SubagentHubObserver(hub *EventHub) func(meta subagent.RunMeta, ev agentcore.Event) {
 	if hub == nil {
 		return nil
 	}
@@ -66,7 +66,7 @@ func SubagentHubObserver(hub *TeammateEventHub) func(meta subagent.RunMeta, ev a
 // observer mutex so concurrent first-events serialise and can't pick the same
 // name. taken reflects sub-agent names this observer manages; hub.ActiveAgents
 // covers teammates + already-publishing sub-agents.
-func uniqueHubName(hub *TeammateEventHub, base string, assigned map[string]string) string {
+func uniqueHubName(hub *EventHub, base string, assigned map[string]string) string {
 	if base == "" {
 		base = "subagent"
 	}

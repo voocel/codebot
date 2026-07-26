@@ -14,7 +14,7 @@ import (
 // TranscriptStore persists each teammate's conversation as an append-only
 // JSONL file at <dir>/<agentName>.jsonl — one marshaled agentcore.Message per
 // line, in conversation order. It is the durable counterpart to the in-memory
-// TeammateEventHub: the hub is lossy (drop-oldest, for live UI), whereas this
+// team.EventHub: the hub is lossy (drop-oldest, for live UI), whereas this
 // captures every turn losslessly so a restarted session can rebuild a
 // teammate's full context.
 //

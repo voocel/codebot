@@ -24,7 +24,7 @@ var errStaleSessionGeneration = errors.New("stale session generation")
 // idle resume). It carries the session cwd as a LIVE source (WithCwdFunc), so a
 // worktree switch mid-turn (RetargetWorkspace) is seen by the next tool call —
 // same-turn edits land in the new workspace, without rebuilding any tools.
-// Teammates capture a fixed cwd at spawn (see teammateCwd), so the live source
+// Teammates capture a fixed cwd at spawn (see internal/team spawn), so the live source
 // never bleeds across them.
 func (s *Session) baseRunCtx() context.Context {
 	return tools.WithCwdFunc(context.Background(), s.currentCwd)

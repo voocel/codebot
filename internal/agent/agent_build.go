@@ -8,6 +8,8 @@ import (
 	agentctx "github.com/voocel/agentcore/context"
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/tools"
+
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 // BuildDeps carries the runtime context BuildConfig needs to materialise an
@@ -101,19 +103,9 @@ func (d *AgentDefinition) BuildConfig(deps BuildDeps, ctxFactory func(agentcore.
 		// providers) plus a per-spawn routing key (OpenAI-style providers).
 		// The adapter drops whichever mechanism a provider doesn't support.
 		CacheLastMessage: "ephemeral",
-		PromptCacheKey:   promptCacheKey(deps.SessionID, d.Name),
+		PromptCacheKey:   cbteam.PromptCacheKey(deps.SessionID, d.Name),
 	}
 	return cfg, nil
-}
-
-// promptCacheKey derives a sub-agent's cache routing base from the session
-// identity. One conversation, one key: agentcore appends "#<seq>" per spawn,
-// so runs of the same definition don't pile into a single routing bucket.
-func promptCacheKey(sessionID, agentName string) string {
-	if sessionID == "" {
-		return ""
-	}
-	return sessionID + "-" + agentName
 }
 
 // resolveModel maps AgentDefinition.Model to a ChatModel.

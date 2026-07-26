@@ -12,6 +12,7 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 // subAgentDeps holds everything needed to build the sub-agent runtime.
@@ -78,7 +79,7 @@ func buildSubAgents(deps subAgentDeps) subAgents {
 
 	isolationOf := make(map[string]string)
 	for _, def := range defs {
-		if def.Isolation == agent.WorktreeIsolation {
+		if def.Isolation == cbteam.WorktreeIsolation {
 			isolationOf[def.Name] = def.Isolation
 		}
 	}

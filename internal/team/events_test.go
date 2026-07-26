@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"sync"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestEventHub_NilReceiverIsNoop(t *testing.T) {
-	var h *TeammateEventHub
+	var h *EventHub
 	// Each of these would panic if the nil-check were missing.
 	h.Publish("x", agentcore.Event{Type: agentcore.EventAgentStart})
 	h.MarkStopped("x")
@@ -32,7 +32,7 @@ func TestEventHub_NilReceiverIsNoop(t *testing.T) {
 }
 
 func TestEventHub_DeliversToSubscribers(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	_, ch, cancel := h.Subscribe("researcher")
 	defer cancel()
 
@@ -57,7 +57,7 @@ func TestEventHub_DeliversToSubscribers(t *testing.T) {
 }
 
 func TestEventHub_RoutesByAgentName(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	_, chA, cancelA := h.Subscribe("alice")
 	defer cancelA()
 	_, chB, cancelB := h.Subscribe("bob")
@@ -77,7 +77,7 @@ func TestEventHub_RoutesByAgentName(t *testing.T) {
 }
 
 func TestEventHub_UnsubscribeStopsDelivery(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	_, ch, cancel := h.Subscribe("researcher")
 
 	h.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
@@ -109,7 +109,7 @@ func TestEventHub_UnsubscribeStopsDelivery(t *testing.T) {
 // Slow consumers must not stall the publisher. We fill the buffer, publish
 // many more events, and assert Publish returns quickly each time.
 func TestEventHub_NonBlockingOnSlowConsumer(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	_, _, cancel := h.Subscribe("researcher") // never read from it
 	defer cancel()
 
@@ -127,7 +127,7 @@ func TestEventHub_NonBlockingOnSlowConsumer(t *testing.T) {
 }
 
 func TestEventHub_PresenceBroadcastsFirstPublish(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	pch, cancel := h.SubscribePresence()
 	defer cancel()
 
@@ -151,7 +151,7 @@ func TestEventHub_PresenceBroadcastsFirstPublish(t *testing.T) {
 }
 
 func TestEventHub_PresenceReplaysCurrentRoster(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
 	h.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
 
@@ -166,7 +166,7 @@ func TestEventHub_PresenceReplaysCurrentRoster(t *testing.T) {
 }
 
 func TestEventHub_MarkStoppedBroadcasts(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	pch, cancel := h.SubscribePresence()
 	defer cancel()
 
@@ -194,7 +194,7 @@ func TestEventHub_MarkStoppedBroadcasts(t *testing.T) {
 // detector (`go test -race`) catches the rest; this test just exercises the
 // scheduling.
 func TestEventHub_Concurrent(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	var wg sync.WaitGroup
 
 	// 4 subscribers consuming in tight loops.
@@ -220,7 +220,7 @@ func TestEventHub_Concurrent(t *testing.T) {
 }
 
 func TestEventHub_ActiveAgentsReflectsState(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	if got := h.ActiveAgents(); len(got) != 0 {
 		t.Errorf("initial ActiveAgents = %v, want empty", got)
 	}
@@ -238,7 +238,7 @@ func TestEventHub_ActiveAgentsReflectsState(t *testing.T) {
 }
 
 func TestEventHub_LateSubscriberReplaysHistory(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	// Publish a few events BEFORE any subscriber attaches — these must be
 	// replayed when Subscribe is called.
 	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
@@ -272,7 +272,7 @@ func TestEventHub_LateSubscriberReplaysHistory(t *testing.T) {
 }
 
 func TestEventHub_HistorySurvivesMarkStopped(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
 	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentEnd})
 	h.MarkStopped("alice")
@@ -292,7 +292,7 @@ func TestEventHub_HistorySurvivesMarkStopped(t *testing.T) {
 }
 
 func TestEventHub_HistoryRingTruncatesOldest(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	// Publish capacity+10 events; the ring should retain only the last
 	// `historyCapacity` of them in chronological order.
 	const overshoot = 10
@@ -307,7 +307,7 @@ func TestEventHub_HistoryRingTruncatesOldest(t *testing.T) {
 }
 
 func TestEventHub_KnownAgentsIncludesStopped(t *testing.T) {
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	h.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
 	h.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
 	h.MarkStopped("alice")
@@ -342,7 +342,7 @@ func TestEventHub_KnownAgentsIncludesStopped(t *testing.T) {
 func TestEventHub_PresenceRebroadcastsAfterRestart(t *testing.T) {
 	// A teammate that publishes, gets MarkStopped'd, then publishes again
 	// should emit Started a second time so an auto-attach UI re-focuses.
-	h := NewTeammateEventHub()
+	h := NewEventHub()
 	pch, cancel := h.SubscribePresence()
 	defer cancel()
 

@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"context"
@@ -6,8 +6,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/team"
-	cbteam "github.com/voocel/codebot/internal/team"
+	coreteam "github.com/voocel/agentcore/team"
 )
 
 // MessageInjector is the slice of *agentcore.Agent the pump actually uses.
@@ -33,7 +32,7 @@ type MessageInjector interface {
 //
 // Lifecycle: spawned at boot, exits when ctx is cancelled (Runtime.Close).
 type LeaderInboxPump struct {
-	reg          *team.Registry
+	reg          *coreteam.Registry
 	agent        MessageInjector
 	waitInterval time.Duration
 }
@@ -44,7 +43,7 @@ const defaultPumpWaitInterval = 200 * time.Millisecond
 
 // NewLeaderInboxPump constructs a pump for the given registry + leader agent.
 // A zero waitInterval picks the default. Both reg and ag must be non-nil.
-func NewLeaderInboxPump(reg *team.Registry, ag MessageInjector, waitInterval time.Duration) *LeaderInboxPump {
+func NewLeaderInboxPump(reg *coreteam.Registry, ag MessageInjector, waitInterval time.Duration) *LeaderInboxPump {
 	if waitInterval <= 0 {
 		waitInterval = defaultPumpWaitInterval
 	}
@@ -64,7 +63,7 @@ func (p *LeaderInboxPump) Run(ctx context.Context) {
 			return
 		}
 
-		mb := p.reg.Mailbox(team.TeamLeadName)
+		mb := p.reg.Mailbox(coreteam.TeamLeadName)
 		if mb == nil {
 			if !p.sleep(ctx) {
 				return
@@ -87,7 +86,7 @@ func (p *LeaderInboxPump) Run(ctx context.Context) {
 			if !ok {
 				continue
 			}
-			attachment := cbteam.FormatTeammateAttachment(m.From, text, m.Color, m.Summary)
+			attachment := FormatTeammateAttachment(m.From, text, m.Color, m.Summary)
 			// Inject only fails on a nil message or while a Reset/SwitchSession
 			// holds the run lifecycle (ErrRunsHeld, nothing queued). Dropping
 			// the drained message then matches the surgery's own semantics —
@@ -114,14 +113,14 @@ func (p *LeaderInboxPump) Run(ctx context.Context) {
 //   - anything else: pass through verbatim (plain peer text).
 //
 // Returns ok=false when the message must be silently consumed.
-func pumpDecodeBody(m team.Message) (string, bool) {
-	if cbteam.IsIdleNotification(m.Text) {
-		if text := cbteam.IdleNotificationText(m.Text); text != "" {
+func pumpDecodeBody(m coreteam.Message) (string, bool) {
+	if IsIdleNotification(m.Text) {
+		if text := IdleNotificationText(m.Text); text != "" {
 			return text, true
 		}
-		return cbteam.FallbackIdleStatus(m.From), true
+		return FallbackIdleStatus(m.From), true
 	}
-	if cbteam.IsShutdownRequest(m.Text) {
+	if IsShutdownRequest(m.Text) {
 		return "", false
 	}
 	return m.Text, true

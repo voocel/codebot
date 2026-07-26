@@ -33,7 +33,7 @@ type SendMessageTool struct {
 // TeammateWaker re-spawns a dormant teammate from its persisted transcript and
 // delivers a message as its opening turn. send_message consults it when a
 // target name has no live teammate behind it — the lazy, message-driven resume
-// path. Implemented by internal/agent.TeammateWaker; a nil waker disables wake,
+// path. Implemented by internal/team.Waker; a nil waker disables wake,
 // so a stopped teammate simply reports as not found.
 type TeammateWaker interface {
 	Wake(ctx context.Context, name, prompt string) (bool, error)

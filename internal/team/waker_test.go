@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/task"
-	"github.com/voocel/agentcore/team"
+	coreteam "github.com/voocel/agentcore/team"
 	"github.com/voocel/codebot/internal/storage"
 )
 
@@ -51,7 +51,7 @@ func anyTypeConfig(agentType string) (subagent.Config, bool) {
 	return subagent.Config{Name: agentType}, true
 }
 
-func TestTeammateWaker_WakesWithTranscriptAndRealPrompt(t *testing.T) {
+func TestWaker_WakesWithTranscriptAndRealPrompt(t *testing.T) {
 	ts := storage.NewTranscriptStore(filepath.Join(t.TempDir(), "transcripts"))
 	if err := ts.Append("researcher", []agentcore.AgentMessage{
 		agentcore.UserMsg("investigate the bug"),
@@ -65,7 +65,7 @@ func TestTeammateWaker_WakesWithTranscriptAndRealPrompt(t *testing.T) {
 	})
 
 	var got []subagent.TeamSpawnRequest
-	w := NewTeammateWaker(recordingSpawner(&got), anyTypeConfig, nil, roster, ts)
+	w := NewWaker(recordingSpawner(&got), anyTypeConfig, nil, roster, ts)
 
 	woke, err := w.Wake(context.Background(), "researcher", "keep digging on the crash")
 	if err != nil {
@@ -97,9 +97,9 @@ func TestTeammateWaker_WakesWithTranscriptAndRealPrompt(t *testing.T) {
 	}
 }
 
-func TestTeammateWaker_UnknownNameIsNoOp(t *testing.T) {
+func TestWaker_UnknownNameIsNoOp(t *testing.T) {
 	var got []subagent.TeamSpawnRequest
-	w := NewTeammateWaker(recordingSpawner(&got), anyTypeConfig, nil, rosterWith("alpha"), nil)
+	w := NewWaker(recordingSpawner(&got), anyTypeConfig, nil, rosterWith("alpha"), nil)
 
 	woke, err := w.Wake(context.Background(), "ghost", "hello?")
 	if err != nil {
@@ -113,13 +113,13 @@ func TestTeammateWaker_UnknownNameIsNoOp(t *testing.T) {
 	}
 }
 
-func TestTeammateWaker_UnknownAgentTypeErrors(t *testing.T) {
+func TestWaker_UnknownAgentTypeErrors(t *testing.T) {
 	roster := rosterWith("alpha", storage.RosterMember{Name: "ghost", AgentType: "deleted-type"})
 	var got []subagent.TeamSpawnRequest
 	configOf := func(agentType string) (subagent.Config, bool) {
 		return subagent.Config{Name: agentType}, agentType == "known"
 	}
-	w := NewTeammateWaker(recordingSpawner(&got), configOf, nil, roster, nil)
+	w := NewWaker(recordingSpawner(&got), configOf, nil, roster, nil)
 
 	woke, err := w.Wake(context.Background(), "ghost", "come back")
 	if err == nil {
@@ -133,8 +133,8 @@ func TestTeammateWaker_UnknownAgentTypeErrors(t *testing.T) {
 	}
 }
 
-func TestTeammateWaker_NilDepsAreNoOp(t *testing.T) {
-	var w *TeammateWaker // nil receiver
+func TestWaker_NilDepsAreNoOp(t *testing.T) {
+	var w *Waker // nil receiver
 	if woke, err := w.Wake(context.Background(), "x", "y"); woke || err != nil {
 		t.Errorf("nil waker = (%v, %v), want (false, nil)", woke, err)
 	}
@@ -144,8 +144,8 @@ func TestTeammateWaker_NilDepsAreNoOp(t *testing.T) {
 // re-spawned — that would clone the teammate. Wake reports not-spawned so the
 // caller delivers to the existing mailbox instead. This is the deterministic
 // stand-in for the concurrent double-wake the lock + re-check guards against.
-func TestTeammateWaker_LiveNameNotRespawned(t *testing.T) {
-	reg := team.NewRegistry()
+func TestWaker_LiveNameNotRespawned(t *testing.T) {
+	reg := coreteam.NewRegistry()
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestTeammateWaker_LiveNameNotRespawned(t *testing.T) {
 	roster := rosterWith("alpha", storage.RosterMember{Name: "researcher", AgentType: "general-purpose"})
 
 	var got []subagent.TeamSpawnRequest
-	w := NewTeammateWaker(recordingSpawner(&got), anyTypeConfig, reg, roster, nil)
+	w := NewWaker(recordingSpawner(&got), anyTypeConfig, reg, roster, nil)
 
 	woke, err := w.Wake(context.Background(), "researcher", "second message")
 	if err != nil {
@@ -169,12 +169,12 @@ func TestTeammateWaker_LiveNameNotRespawned(t *testing.T) {
 	}
 }
 
-// End-to-end seam: a real spawn (via TeammateSpawner) must write the roster +
+// End-to-end seam: a real spawn (via Spawner) must write the roster +
 // transcript to disk, and a fresh "restart" (new registry, reloaded stores)
 // must wake the teammate ON DEMAND — seeded with that persisted transcript and
 // the triggering message as its opening turn. This is the P3↔wake contract the
 // isolated tests don't cover together.
-func TestTeammateSpawner_PersistThenWakeSeam(t *testing.T) {
+func TestSpawner_PersistThenWakeSeam(t *testing.T) {
 	dir := t.TempDir()
 	rosterStore := storage.NewRosterStore()
 	if err := rosterStore.SetDir(dir); err != nil {
@@ -182,14 +182,14 @@ func TestTeammateSpawner_PersistThenWakeSeam(t *testing.T) {
 	}
 	transcripts := storage.NewTranscriptStore(filepath.Join(dir, "transcripts"))
 
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
 	if err := reg.CreateTeam("alpha", "the team", "leader-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
 	cfg := subagent.Config{Name: "researcher", Model: newScriptModel("found it at line 42")}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil,
-		&TeammatePersist{Roster: rosterStore, Transcripts: transcripts}, nil)
+	spawner := Spawner(reg, rt, nil, nil, nil, nil, coreteam.ProtocolHooks{}, nil,
+		&Persist{Roster: rosterStore, Transcripts: transcripts}, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -233,7 +233,7 @@ func TestTeammateSpawner_PersistThenWakeSeam(t *testing.T) {
 	transcripts2 := storage.NewTranscriptStore(filepath.Join(dir, "transcripts"))
 
 	var got []subagent.TeamSpawnRequest
-	w := NewTeammateWaker(recordingSpawner(&got), anyTypeConfig, nil, rosterStore2, transcripts2)
+	w := NewWaker(recordingSpawner(&got), anyTypeConfig, nil, rosterStore2, transcripts2)
 	woke, err := w.Wake(context.Background(), "alice", "resume now — what's the status?")
 	if err != nil {
 		t.Fatalf("Wake: %v", err)

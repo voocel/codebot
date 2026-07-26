@@ -1,4 +1,4 @@
-package agent
+package team
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/task"
-	"github.com/voocel/agentcore/team"
+	coreteam "github.com/voocel/agentcore/team"
 	agenttools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/worktree"
@@ -440,8 +440,8 @@ func TestBuildTeammateExecutor_ReusesContextManagerAcrossTurns(t *testing.T) {
 	}
 }
 
-func TestTeammateSpawner_HappyPath(t *testing.T) {
-	reg := team.NewRegistry()
+func TestSpawner_HappyPath(t *testing.T) {
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
 	if err := reg.CreateTeam("alpha", "", "leader-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
@@ -455,7 +455,7 @@ func TestTeammateSpawner_HappyPath(t *testing.T) {
 		SystemPrompt: "you are a researcher",
 		Tools:        []agentcore.Tool{&fakeNamedTool{n: "read"}},
 	}
-	spawner := TeammateSpawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
+	spawner := Spawner(reg, rt, []agentcore.Tool{&fakeNamedTool{n: "send_message"}}, nil, nil, nil, coreteam.ProtocolHooks{}, nil, nil, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -501,10 +501,10 @@ func TestTeammateSpawner_HappyPath(t *testing.T) {
 // End-to-end: a hub wired to the spawner must receive the teammate's
 // AgentLoop events. We don't assert exact event order (that's agentcore's
 // contract, not ours) — just that something flows through.
-func TestTeammateSpawner_PublishesToHub(t *testing.T) {
-	reg := team.NewRegistry()
+func TestSpawner_PublishesToHub(t *testing.T) {
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
-	hub := NewTeammateEventHub()
+	hub := NewEventHub()
 	if err := reg.CreateTeam("alpha", "", "leader-1"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 		Model:        newScriptModel("done"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, hub, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
+	spawner := Spawner(reg, rt, nil, hub, nil, nil, coreteam.ProtocolHooks{}, nil, nil, nil)
 
 	res, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -551,7 +551,7 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 	if mb == nil {
 		t.Fatal("mailbox missing for alice")
 	}
-	if err := mb.Send(team.Message{From: team.TeamLeadName, Text: "ping"}); err != nil {
+	if err := mb.Send(coreteam.Message{From: coreteam.TeamLeadName, Text: "ping"}); err != nil {
 		t.Fatalf("mailbox send: %v", err)
 	}
 
@@ -568,10 +568,10 @@ func TestTeammateSpawner_PublishesToHub(t *testing.T) {
 	})
 }
 
-func TestTeammateSpawner_RejectsWhenNoTeam(t *testing.T) {
-	reg := team.NewRegistry()
+func TestSpawner_RejectsWhenNoTeam(t *testing.T) {
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
+	spawner := Spawner(reg, rt, nil, nil, nil, nil, coreteam.ProtocolHooks{}, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -584,13 +584,13 @@ func TestTeammateSpawner_RejectsWhenNoTeam(t *testing.T) {
 	}
 }
 
-func TestTeammateSpawner_RejectsWrongTeamName(t *testing.T) {
-	reg := team.NewRegistry()
+func TestSpawner_RejectsWrongTeamName(t *testing.T) {
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
+	spawner := Spawner(reg, rt, nil, nil, nil, nil, coreteam.ProtocolHooks{}, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher", Model: newScriptModel()},
@@ -603,13 +603,13 @@ func TestTeammateSpawner_RejectsWrongTeamName(t *testing.T) {
 	}
 }
 
-func TestTeammateSpawner_RejectsMissingModel(t *testing.T) {
-	reg := team.NewRegistry()
+func TestSpawner_RejectsMissingModel(t *testing.T) {
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
+	spawner := Spawner(reg, rt, nil, nil, nil, nil, coreteam.ProtocolHooks{}, nil, nil, nil)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        subagent.Config{Name: "researcher"}, // no Model
@@ -622,13 +622,13 @@ func TestTeammateSpawner_RejectsMissingModel(t *testing.T) {
 	}
 }
 
-func TestTeammateSpawner_DepthGuard(t *testing.T) {
-	reg := team.NewRegistry()
+func TestSpawner_DepthGuard(t *testing.T) {
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
+	spawner := Spawner(reg, rt, nil, nil, nil, nil, coreteam.ProtocolHooks{}, nil, nil, nil)
 
 	// Caller already sits at MaxAgentDepth → spawn would push past it.
 	ctx := task.WithDepth(context.Background(), task.MaxAgentDepth)
@@ -683,7 +683,7 @@ func TestUniqueAgentName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reg := team.NewRegistry()
+			reg := coreteam.NewRegistry()
 			if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 				t.Fatalf("CreateTeam: %v", err)
 			}
@@ -707,8 +707,8 @@ func TestUniqueAgentName_NilRegistry(t *testing.T) {
 
 // End-to-end: spawning the same logical name twice must auto-suffix
 // instead of bubbling ErrAgentExists up to the model.
-func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
-	reg := team.NewRegistry()
+func TestSpawner_AutoSuffixesDuplicateName(t *testing.T) {
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
@@ -719,7 +719,7 @@ func TestTeammateSpawner_AutoSuffixesDuplicateName(t *testing.T) {
 		Model:        newScriptModel("first", "second", "third", "fourth"),
 		SystemPrompt: "you are a researcher",
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, nil)
+	spawner := Spawner(reg, rt, nil, nil, nil, nil, coreteam.ProtocolHooks{}, nil, nil, nil)
 
 	first, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config:        cfg,
@@ -776,25 +776,25 @@ func TestTeammateCwd(t *testing.T) {
 	}
 }
 
-// TestTeammateSpawner_WorktreeIsolation verifies opt-in worktree sandboxing at
+// TestSpawner_WorktreeIsolation verifies opt-in worktree sandboxing at
 // the spawner level: a teammate whose agent type maps to "worktree" gets a
 // private checkout created under .codebot/worktrees; a type that did not opt in
 // gets no checkout (it shares the leader cwd via the spawn ctx). The teammate
 // stays alive (no InitialPrompt) until DeleteTeam, so the checkout is observable
 // before cleanup runs.
-func TestTeammateSpawner_WorktreeIsolation(t *testing.T) {
+func TestSpawner_WorktreeIsolation(t *testing.T) {
 	repo := initGitRepo(t)
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
 
-	iso := &TeammateIsolation{
+	iso := &Isolation{
 		RepoRoot: repo,
 		Of:       map[string]string{"coder": "worktree"},
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, iso)
+	spawner := Spawner(reg, rt, nil, nil, nil, nil, coreteam.ProtocolHooks{}, nil, nil, iso)
 
 	// Opted-in type: a private checkout is created under .codebot/worktrees.
 	coder, err := spawner(context.Background(), subagent.TeamSpawnRequest{
@@ -831,23 +831,23 @@ func TestTeammateSpawner_WorktreeIsolation(t *testing.T) {
 	})
 }
 
-// TestTeammateSpawner_IsolationFailsClosed verifies that a teammate which
+// TestSpawner_IsolationFailsClosed verifies that a teammate which
 // declares worktree isolation in a non-git directory fails the spawn rather than
 // silently running in the shared cwd (where it could clobber peers — the very
 // thing isolation exists to prevent).
-func TestTeammateSpawner_IsolationFailsClosed(t *testing.T) {
+func TestSpawner_IsolationFailsClosed(t *testing.T) {
 	nonGit := t.TempDir() // a fresh temp dir is not a git repository
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	rt := task.NewRuntime()
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
 
-	iso := &TeammateIsolation{
+	iso := &Isolation{
 		RepoRoot: nonGit,
 		Of:       map[string]string{"coder": "worktree"},
 	}
-	spawner := TeammateSpawner(reg, rt, nil, nil, nil, nil, team.ProtocolHooks{}, nil, nil, iso)
+	spawner := Spawner(reg, rt, nil, nil, nil, nil, coreteam.ProtocolHooks{}, nil, nil, iso)
 
 	_, err := spawner(context.Background(), subagent.TeamSpawnRequest{
 		Config: subagent.Config{Name: "coder", Model: newScriptModel("done")},
@@ -878,7 +878,7 @@ func TestTeammateWorktreeCleanup(t *testing.T) {
 	}
 
 	// Dirty sandbox → kept, leader notified.
-	reg := team.NewRegistry()
+	reg := coreteam.NewRegistry()
 	if err := reg.CreateTeam("alpha", "", "leader"); err != nil {
 		t.Fatalf("CreateTeam: %v", err)
 	}
@@ -893,7 +893,7 @@ func TestTeammateWorktreeCleanup(t *testing.T) {
 	if infos, _ := worktree.List(repo); len(infos) != 1 {
 		t.Errorf("dirty sandbox should be preserved, got %d worktrees", len(infos))
 	}
-	if mb := reg.Mailbox(team.TeamLeadName); mb == nil || mb.Len() != 1 {
+	if mb := reg.Mailbox(coreteam.TeamLeadName); mb == nil || mb.Len() != 1 {
 		got := -1
 		if mb != nil {
 			got = mb.Len()
@@ -972,4 +972,17 @@ func toolNames(in []agentcore.Tool) []string {
 		out[i] = t.Name()
 	}
 	return out
+}
+
+// waitFor polls fn until it reports true or the timeout expires.
+func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not satisfied before timeout")
 }

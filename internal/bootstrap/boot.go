@@ -19,6 +19,7 @@ import (
 	"github.com/voocel/codebot/internal/plugin"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
+	cbteam "github.com/voocel/codebot/internal/team"
 	localtools "github.com/voocel/codebot/internal/tools"
 )
 
@@ -49,7 +50,7 @@ type Runtime struct {
 	ApprovalEngine *approval.Engine
 	TaskRuntime    *task.Runtime
 	TeamRegistry   *team.Registry
-	TeammateEvents *agent.TeammateEventHub
+	TeammateEvents *cbteam.EventHub
 
 	Settings      config.Resolved
 	ModelName     string // display form: "provider/model" or session-restored name

@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/voocel/codebot/internal/config"
+	cbteam "github.com/voocel/codebot/internal/team"
 )
 
 // AgentSource is the provenance of an AgentDefinition. It maps to a trust
@@ -86,7 +87,7 @@ type AgentDefinition struct {
 	// Isolation selects the teammate's filesystem sandbox. Empty or "shared"
 	// (the default) runs the teammate in the leader's cwd, sharing the working
 	// tree. "worktree" gives it a private git worktree so its writes cannot
-	// clobber a peer editing the same files — see TeammateIsolation. Honoured
+	// clobber a peer editing the same files — see team.Isolation. Honoured
 	// only for teammate spawns in a git repo; a no-op elsewhere.
 	Isolation string
 
@@ -117,7 +118,7 @@ func (d *AgentDefinition) Validate() error {
 		return fmt.Errorf("agent %q has empty entry in disallowedTools list", d.Name)
 	}
 	switch d.Isolation {
-	case "", "shared", WorktreeIsolation:
+	case "", "shared", cbteam.WorktreeIsolation:
 	default:
 		return fmt.Errorf("agent %q has invalid isolation %q (want \"\", \"shared\", or \"worktree\")", d.Name, d.Isolation)
 	}
