@@ -32,7 +32,9 @@ func (e *Engine) AsToolGate() agentcore.ToolGate {
 			return nil, nil
 		}
 		gd := &agentcore.GateDecision{Allowed: decision.Allowed()}
-		if !gd.Allowed {
+		if gd.Allowed {
+			gd.UpdatedArgs = decision.UpdatedArgs
+		} else {
 			gd.Reason = decision.Reason
 		}
 		return gd, nil

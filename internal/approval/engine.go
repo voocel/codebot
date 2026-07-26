@@ -18,6 +18,7 @@ type Engine struct {
 	cwd                 string
 	onAudit             func(AuditEntry)
 	approver            ApproverFunc
+	interact            InteractFunc
 	rules               *RuleSet
 	store               *permission.Store
 	sessionAllow        map[string]storedEntry
@@ -25,10 +26,19 @@ type Engine struct {
 	tool                decisionEngine
 }
 
+// InteractFunc collects a user interaction for a tool call at gate time and
+// returns the call's arguments with the outcome backfilled (ask_user answer
+// injection). A nil updated value with a nil error means no interaction took
+// place — the call proceeds with its original arguments and the tool's own
+// degraded path explains why. The engine stays format-agnostic: parsing the
+// questions and building the backfill both live with the UI / tool side.
+type InteractFunc func(ctx context.Context, args json.RawMessage) (updated json.RawMessage, err error)
+
 // planModeAllowedTools lists Internal-capability tools that may run while
 // codebot is in plan mode. exit_plan_mode is intentionally NOT here — it
 // goes through Engine.Decide's plan-exit interception so the user sees the
-// plan content in the standard ask card before the tool runs.
+// plan content in the standard ask card before the tool runs. ask_user IS
+// here: its dialog runs only after this regular pipeline allows the call.
 var planModeAllowedTools = []string{
 	"ask_user",    // structured clarification — needed mid-planning
 	"tool_search", // schema discovery for deferred tools — pure inspection
@@ -79,10 +89,55 @@ func (e *Engine) SetPlanContentProvider(fn func() (string, error)) {
 	e.mu.Unlock()
 }
 
-// Decide routes a tool permission request. exit_plan_mode in plan mode is
-// intercepted here and surfaced through the standard approver path with the
-// plan content as preview — ask-style: the tool declares it needs approval
-// and the engine handles the prompt.
+// SetInteract installs the UI callback that runs ask_user dialogs. Headless
+// runs leave it nil; the tool then executes without a backfilled response and
+// degrades to its "make your best judgment" text.
+func (e *Engine) SetInteract(fn InteractFunc) {
+	e.mu.Lock()
+	e.interact = fn
+	e.mu.Unlock()
+}
+
+// runAskUserDialog collects the user's answers for an already-allowed
+// ask_user call and backfills them into the decision via UpdatedArgs. It
+// never denies: a cancelled dialog still yields a (cancelled) response, and
+// an interaction failure runs the tool unmodified so its degraded text keeps
+// the model moving. Context cancellation aborts the call like every other
+// gate path. The regular pipeline already audited the allow; only dialog
+// failures add an audit line here.
+func (e *Engine) runAskUserDialog(ctx context.Context, req permission.Request, decision *permission.Decision) (*permission.Decision, error) {
+	e.mu.RLock()
+	interact := e.interact
+	e.mu.RUnlock()
+	// No UI wired. Real headless runs never register ask_user (bootstrap
+	// hides it in non-TTY mode), so this is a test/degraded path: the tool's
+	// missing response produces its "no interactive terminal" text.
+	if interact == nil {
+		return decision, nil
+	}
+
+	updated, err := interact(ctx, req.Args)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		info := toolInfo{tool: "ask_user", capability: permission.CapabilityInternal, summary: "Ask the user structured questions"}
+		e.audit(info, e.Mode(), e.PlanMode(), "allow", true, "interaction failed: "+err.Error())
+		return decision, nil
+	}
+	if updated == nil {
+		return decision, nil
+	}
+	d := *decision
+	d.UpdatedArgs = updated
+	d.Prompted = true
+	return &d, nil
+}
+
+// Decide routes a tool permission request. Two tools are intercepted before
+// the agentcore engine runs: exit_plan_mode in plan mode is surfaced through
+// the standard approver path with the plan content as preview, and ask_user
+// runs its question dialog here with the answers returned via UpdatedArgs.
 // Dangerous paths (credential files, shell rc, .git/hooks, IDE/agent loader
 // configs, ...) bypass mode auto-pass and stored approvals; the approver is
 // invoked with Allow Once / Deny only so a single Allow Always cannot turn
@@ -102,6 +157,18 @@ func (e *Engine) Decide(ctx context.Context, req permission.Request) (*permissio
 	}
 	if req.ToolName == "exit_plan_mode" && e.PlanMode() {
 		return e.decidePlanExit(ctx, req)
+	}
+	// ask_user runs its question dialog at gate time, but only AFTER the
+	// regular pipeline allowed the call — deny rules, plan-mode policy, and
+	// mode semantics all apply before the user is interrupted. The answers
+	// ride back to the kernel via Decision.UpdatedArgs so the tool executes
+	// with the user's response already in its arguments.
+	if req.ToolName == "ask_user" {
+		decision, err := e.tool.Decide(ctx, req)
+		if err != nil || decision == nil || !decision.Allowed() {
+			return decision, err
+		}
+		return e.runAskUserDialog(ctx, req, decision)
 	}
 	// In plan mode the agentcore engine will deny writes outright; routing
 	// the force-ask here would just create a wasted prompt the user couldn't

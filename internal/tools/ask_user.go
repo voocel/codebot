@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/voocel/agentcore/permission"
@@ -20,15 +19,10 @@ import (
 // raw text the user typed into "Type your own answer" — never echoed in the
 // answer list, surfaced separately so the model sees it as user-authored.
 type AskUserResponse struct {
-	Answers   map[string][]string // question text → selected labels (or user-typed text)
-	Notes     map[string]string   // question text → custom text the user typed
-	Cancelled bool                // true if the user dismissed the dialog before submitting
+	Answers   map[string][]string `json:"answers,omitempty"`   // question text → selected labels (or user-typed text)
+	Notes     map[string]string   `json:"notes,omitempty"`     // question text → custom text the user typed
+	Cancelled bool                `json:"cancelled,omitempty"` // true if the user dismissed the dialog before submitting
 }
-
-// AskUserHandler blocks until the user submits or dismisses the dialog.
-// On dismiss, returns a Response with Cancelled=true (not an error) so partial
-// answers can still reach the model.
-type AskUserHandler func(ctx context.Context, questions []Question) (*AskUserResponse, error)
 
 // Question is a single multi-choice question.
 type Question struct {
@@ -49,20 +43,12 @@ type Option struct {
 }
 
 // AskUserTool lets the model ask the user structured multi-choice questions.
-type AskUserTool struct {
-	mu      sync.RWMutex
-	handler AskUserHandler
-}
+// The dialog itself runs at permission-gate time: the approval engine
+// intercepts the call, the UI collects answers, and the response is backfilled
+// into the tool args (InjectAskUserResponse) before Execute runs.
+type AskUserTool struct{}
 
-// NewAskUser creates an AskUserTool with no handler. Call SetHandler before use.
 func NewAskUser() *AskUserTool { return &AskUserTool{} }
-
-// SetHandler installs the UI callback. Calling with nil disables the tool.
-func (t *AskUserTool) SetHandler(h AskUserHandler) {
-	t.mu.Lock()
-	t.handler = h
-	t.mu.Unlock()
-}
 
 func (t *AskUserTool) Name() string  { return "ask_user" }
 func (t *AskUserTool) Label() string { return "Ask User" }
@@ -100,10 +86,11 @@ func (t *AskUserTool) Schema() map[string]any {
 }
 
 type askUserArgs struct {
-	Questions []Question `json:"questions"`
+	Questions []Question       `json:"questions"`
+	Response  *AskUserResponse `json:"response,omitempty"` // backfilled by the gate, never sent by the model
 }
 
-func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *AskUserTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a askUserArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w: %w", diag.ErrToolInput, err)
@@ -113,20 +100,67 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (json.R
 		return json.Marshal(fmt.Sprintf("Validation error: %s", err))
 	}
 
-	t.mu.RLock()
-	h := t.handler
-	t.mu.RUnlock()
-
-	if h == nil {
+	if a.Response == nil {
 		return json.Marshal("ask_user is unavailable in this run (no interactive terminal). Make your best judgment and proceed.")
 	}
 
-	resp, err := h(ctx, a.Questions)
-	if err != nil {
-		return json.Marshal(fmt.Sprintf("User interaction failed: %s. Make your best judgment and proceed.", err))
-	}
+	return json.Marshal(formatAnswers(a.Questions, a.Response))
+}
 
-	return json.Marshal(formatAnswers(a.Questions, resp))
+// ParseAskUserQuestions extracts and validates the questions of an ask_user
+// call. UI wiring calls it before opening the dialog; an error means the input
+// is malformed and the call should run without a backfill so Execute reports
+// the validation problem to the model.
+func ParseAskUserQuestions(args json.RawMessage) ([]Question, error) {
+	var a askUserArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, err
+	}
+	if err := validateQuestions(a.Questions); err != nil {
+		return nil, err
+	}
+	return a.Questions, nil
+}
+
+// InjectAskUserResponse returns the args with the user's response backfilled,
+// preserving every other model-authored field. The result becomes the call's
+// final arguments via GateDecision.UpdatedArgs. Overwriting (not merging)
+// the response field also discards any model-forged response.
+func InjectAskUserResponse(args json.RawMessage, resp *AskUserResponse) (json.RawMessage, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(args, &payload); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		payload = make(map[string]json.RawMessage, 1)
+	}
+	payload["response"] = encoded
+	return json.Marshal(payload)
+}
+
+// SanitizeAskUserArgs strips a model-authored "response" field. Only the
+// gate wiring may attach a response (InjectAskUserResponse); a forged one
+// would read as fabricated user consent in the transcript — cron's confirm
+// flow, for one, treats ask_user answers as a real yes. The wiring returns
+// sanitized args on every path that skips the dialog.
+func SanitizeAskUserArgs(args json.RawMessage) json.RawMessage {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(args, &payload); err != nil {
+		return args
+	}
+	if _, ok := payload["response"]; !ok {
+		return args
+	}
+	delete(payload, "response")
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return args
+	}
+	return out
 }
 
 func validateQuestions(questions []Question) error {

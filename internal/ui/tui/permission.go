@@ -36,8 +36,12 @@ type PermissionMsg struct {
 	RespCh       chan<- PermitChoice
 }
 
-// PermissionDismissMsg tells the TUI to close the permission prompt.
-type PermissionDismissMsg struct{}
+// PermissionDismissMsg tells the TUI to close a pending permission prompt.
+// RespCh identifies which card to drop — the gate side sends this when its
+// context is cancelled while the prompt is still queued or on screen.
+type PermissionDismissMsg struct {
+	RespCh chan<- PermitChoice
+}
 
 type permissionState struct {
 	tool, command, reason string
@@ -107,6 +111,34 @@ func initPermission(msg PermissionMsg) *permissionState {
 		respCh:       msg.RespCh,
 		options:      opts,
 	}
+}
+
+// dialogCard implementation.
+
+func (s *permissionState) key() any       { return s.respCh }
+func (s *permissionState) finished() bool { return s.done }
+
+// abort answers Deny on behalf of the user. The response channel is buffered,
+// so this never blocks even when the gate side already gave up on the answer.
+func (s *permissionState) abort() {
+	if s.done {
+		return
+	}
+	s.done = true
+	s.respCh <- PermitChoiceDeny
+}
+
+func (s *permissionState) render(m *Model) string { return renderPermission(s, m.Markdown) }
+
+// hidesContextBar: permission cards are compact; the context bar stays.
+func (s *permissionState) hidesContextBar() bool { return false }
+
+func (s *permissionState) handleKey(_ *Model, msg tea.KeyMsg) (bool, tea.Cmd) {
+	if msg.String() == "ctrl+c" || msg.String() == "esc" {
+		s.abort()
+		return true, nil
+	}
+	return handlePermissionKey(s, msg)
 }
 
 func handlePermissionKey(s *permissionState, msg tea.KeyMsg) (bool, tea.Cmd) {

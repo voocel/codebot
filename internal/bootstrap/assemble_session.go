@@ -29,7 +29,6 @@ type sessionAssembly struct {
 	deferredToolsPreamble string
 	reminders             []string
 	contextFiles          config.ContextFiles
-	hookMiddleware        agentcore.ToolMiddleware
 	telemetryTracer       *telemetry.Tracer
 	hookRunner            *hooks.Runner
 	subagents             subAgents
@@ -69,7 +68,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 	wireSkillAllows(tools, services.approvalEngine)
 
 	parts := buildSystemParts(input.cwd, tools, ctxFiles, services.skills, skillUsageScores(services.skillUsage), services.mcpManager)
-	hookMiddleware, hookRunner := buildHookSupport(input, services, settings, chatModel)
+	hookRunner := buildHookRunner(input, services, settings, chatModel)
 
 	return &sessionAssembly{
 		settings:              settings,
@@ -83,7 +82,6 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		deferredToolsPreamble: parts.deferredMsg,
 		reminders:             parts.reminders,
 		contextFiles:          ctxFiles,
-		hookMiddleware:        hookMiddleware,
 		telemetryTracer:       input.telemetryTracer,
 		hookRunner:            hookRunner,
 		subagents:             subagents,
@@ -203,15 +201,11 @@ func wireSkillAllows(tools []agentcore.Tool, approvalEngine *approval.Engine) {
 	}
 }
 
-func buildHookSupport(input *resolvedInput, services *bootServices, settings config.Resolved, chatModel agentcore.ChatModel) (agentcore.ToolMiddleware, *hooks.Runner) {
+func buildHookRunner(input *resolvedInput, services *bootServices, settings config.Resolved, chatModel agentcore.ChatModel) *hooks.Runner {
 	if len(settings.Hooks) == 0 {
-		return nil, nil
+		return nil
 	}
-	hookRunner := hooks.New(settings.Hooks, input.sessionStore.Header().SessionID, services.approvalEngine, chatModel)
-	if hookRunner == nil {
-		return nil, nil
-	}
-	return hookRunner.Middleware(), hookRunner
+	return hooks.New(settings.Hooks, input.sessionStore.Header().SessionID, services.approvalEngine, chatModel)
 }
 
 // coreToolNames are tools that remain always visible to the LLM.

@@ -10,10 +10,16 @@ import (
 	"github.com/voocel/codebot/internal/tools"
 )
 
-// AskUserMsg is sent by the AskUser handler to show questions in the TUI.
+// AskUserMsg is sent by the ask_user gate wiring to show questions in the TUI.
 type AskUserMsg struct {
 	Questions []tools.Question
 	RespCh    chan<- *tools.AskUserResponse
+}
+
+// AskUserDismissMsg tells the TUI to close a pending ask_user dialog whose
+// gate-side context was cancelled. RespCh identifies the card to drop.
+type AskUserDismissMsg struct {
+	RespCh chan<- *tools.AskUserResponse
 }
 
 // askUserState tracks the interactive multi-question UI.
@@ -101,6 +107,47 @@ func initAskUser(msg AskUserMsg, width, height int) *askUserState {
 		s.perQ[i].picked = make(map[int]bool)
 	}
 	return s
+}
+
+// dialogCard implementation.
+
+func (s *askUserState) key() any       { return s.respCh }
+func (s *askUserState) finished() bool { return s.done }
+
+// abort drops the response channel without an answer: the gate side sees a
+// closed channel and reports a cancelled interaction to the model.
+func (s *askUserState) abort() {
+	if s.done {
+		return
+	}
+	s.done = true
+	close(s.respCh)
+}
+
+// render syncs the dialog to the live terminal size, which also covers
+// resizes that happen while the card is queued behind another dialog.
+func (s *askUserState) render(m *Model) string {
+	s.width, s.height = m.Width, m.Height
+	return renderAskUser(s)
+}
+
+// hidesContextBar: the questionnaire owns the whole bottom region.
+func (s *askUserState) hidesContextBar() bool { return true }
+
+// handleKey routes keys into the questionnaire. Ctrl+C aborts the entire
+// turn: drop the channel (the gate reports a cancelled interaction → the
+// model sees a degraded result) and stop the agent. Esc, by contrast, sends
+// a Cancelled response with any partial answers so the model can continue
+// with what it learned. The two gestures are deliberately distinct.
+func (s *askUserState) handleKey(m *Model, msg tea.KeyMsg) (bool, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		s.abort()
+		if m.Running && m.Driver != nil {
+			m.Driver.Abort()
+		}
+		return true, nil
+	}
+	return handleAskUserKey(s, msg)
 }
 
 // isSingle is true when only one non-multi question is asked: we skip the

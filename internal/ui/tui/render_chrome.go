@@ -24,7 +24,7 @@ import (
 // state — the task tree stays visible between turns so users can track
 // progress at idle without losing the momentum view.
 func (m *Model) RenderStatusBar() string {
-	if m.Permission != nil || m.AskUser != nil {
+	if m.Dialogs.active() != nil {
 		return ""
 	}
 

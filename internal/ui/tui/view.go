@@ -96,11 +96,8 @@ func (m *Model) View() string {
 		}
 		appendInputArea()
 		parts = append(parts, overlay)
-	} else if m.AskUser != nil {
-		parts = append(parts, renderAskUser(m.AskUser))
-	} else if m.Permission != nil {
-		parts = append(parts, renderPermission(m.Permission, m.Markdown))
-		parts = append(parts, m.RenderStatusBar())
+	} else if card := m.Dialogs.active(); card != nil {
+		parts = append(parts, card.render(m))
 	} else {
 		if statusBar := m.RenderStatusBar(); statusBar != "" {
 			parts = append(parts, statusBar, "")
@@ -118,7 +115,12 @@ func (m *Model) View() string {
 
 	// While focused in the fleet list, the list owns the bottom region — the
 	// context bar steps aside (it returns when focus goes back to the input).
-	if !m.compActive && overlay == "" && m.AskUser == nil && !m.FleetFocus {
+	// Full-screen dialogs (ask_user) also displace it; compact cards keep it.
+	dialogHidesBar := false
+	if card := m.Dialogs.active(); card != nil {
+		dialogHidesBar = card.hidesContextBar()
+	}
+	if !m.compActive && overlay == "" && !dialogHidesBar && !m.FleetFocus {
 		parts = append(parts, m.RenderContextBar())
 		parts = append(parts, "")
 	}

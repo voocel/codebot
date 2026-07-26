@@ -323,6 +323,13 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 }
 
 func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine agentcore.ContextManager, tools []agentcore.Tool, sessionID string) (*agentcore.Agent, error) {
+	// PreToolUse hooks wrap the permission gate (hooks first, permission
+	// decides on the final args — see hooks.WrapGate); PostToolUse stays in
+	// the middleware below, which needs around-execution semantics.
+	gate := services.approvalEngine.AsToolGate()
+	if assembly.hookRunner != nil {
+		gate = assembly.hookRunner.WrapGate(gate)
+	}
 	opts := []agentcore.AgentOption{
 		agentcore.WithModel(assembly.chatModel),
 		agentcore.WithSystemBlocks(assembly.systemBlocks),
@@ -332,7 +339,7 @@ func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine
 		agentcore.WithMaxToolErrors(3),
 		agentcore.WithMaxToolConcurrency(4),
 		agentcore.WithContextManager(contextEngine),
-		agentcore.WithToolGate(services.approvalEngine.AsToolGate()),
+		agentcore.WithToolGate(gate),
 		// Place the single message-level cache write breakpoint on the freshest
 		// non-system turn (user input, tool_result, or assistant). System
 		// blocks 1/2 already carry their own cache_control; this breakpoint
@@ -352,8 +359,8 @@ func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine
 			middlewares = append(middlewares, mw)
 		}
 	}
-	if assembly.hookMiddleware != nil {
-		middlewares = append(middlewares, assembly.hookMiddleware)
+	if assembly.hookRunner != nil {
+		middlewares = append(middlewares, assembly.hookRunner.Middleware())
 	}
 	if len(middlewares) > 0 {
 		opts = append(opts, agentcore.WithMiddlewares(middlewares...))

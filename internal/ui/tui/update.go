@@ -89,10 +89,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Pasting--
 		return m, m.Emit(indentBlock(msg.Text, 2))
 	case AskUserMsg:
-		m.AskUser = initAskUser(msg, m.Width, m.Height)
+		m.Dialogs.push(initAskUser(msg, m.Width, m.Height))
+		return m, nil
+	case AskUserDismissMsg:
+		m.Dialogs.dismiss(msg.RespCh)
 		return m, nil
 	case PermissionMsg:
-		m.Permission = initPermission(msg)
+		m.Dialogs.push(initPermission(msg))
 		if msg.Tool == planExitToolName {
 			// Push the full plan into scrollback so it stays visible
 			// regardless of length; the approval card itself only shows
@@ -102,7 +105,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case PermissionDismissMsg:
-		m.Permission = nil
+		m.Dialogs.dismiss(msg.RespCh)
 		return m, nil
 	case TaskListUpdateMsg:
 		return m, m.applyTaskSnapshot(msg.Snapshot)
@@ -339,45 +342,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
-	if m.AskUser != nil {
-		// Ctrl+C aborts the entire turn: drop the channel (handler returns
-		// canceled error → model sees a degraded prompt) and stop the agent.
-		// Esc, by contrast, sends a Cancelled response with any partial
-		// answers so the model can continue with what it learned. The two
-		// gestures are deliberately distinct.
-		if msg.String() == "ctrl+c" {
-			close(m.AskUser.respCh)
-			m.AskUser = nil
-			if m.Running && m.Driver != nil {
-				m.Driver.Abort()
-			}
-			return m, nil, true
-		}
-		handled, cmd := handleAskUserKey(m.AskUser, msg)
-		if handled {
-			if m.AskUser.done {
-				m.AskUser = nil
-			}
-			return m, cmd, true
-		}
-	}
-
-	if m.Permission == nil {
+	card := m.Dialogs.active()
+	if card == nil {
 		return m, nil, false
 	}
-	if msg.String() == "ctrl+c" || msg.String() == "esc" {
-		m.Permission.respCh <- PermitChoiceDeny
-		m.Permission = nil
-		return m, nil, true
-	}
-	handled, cmd := handlePermissionKey(m.Permission, msg)
-	if handled {
-		if m.Permission.done {
-			m.Permission = nil
-		}
-		return m, cmd, true
-	}
-	return m, nil, false
+	handled, cmd := card.handleKey(m, msg)
+	m.Dialogs.prune()
+	return m, cmd, handled
 }
 
 func (m *Model) handleOverlayKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
@@ -671,10 +642,6 @@ func (m *Model) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		m.Markdown.SetWidth(max(m.Width-6, 20))
 	}
 	m.adjustInputHeight()
-	if m.AskUser != nil {
-		m.AskUser.width = m.Width
-		m.AskUser.height = m.Height
-	}
 	m.transcriptOnResize()
 
 	needsReplay := prevWidth != 0 && (prevWidth != m.Width || m.Height < prevHeight)

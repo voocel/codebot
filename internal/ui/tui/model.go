@@ -149,8 +149,7 @@ type State struct {
 
 	Markdown *markdown.Renderer
 
-	AskUser    *askUserState    // non-nil when ask-user UI is active
-	Permission *permissionState // non-nil when permission prompt is active
+	Dialogs dialogQueue // modal "waiting on user" cards: permission / plan / ask_user
 
 	Tasks *storage.TaskSnapshot // non-nil when task items exist; displayed above input
 

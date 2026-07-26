@@ -176,10 +176,11 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		m.Streaming.Reset()
 		m.Thinking.Reset()
 		m.SuppressNextAssistantText = ""
-		if m.AskUser != nil {
-			close(m.AskUser.respCh)
-			m.AskUser = nil
-		}
+		// Any dialog still open after the run died has nobody listening for
+		// its answer — release the blocked gate goroutines and clear the
+		// queue. abort() is idempotent, so racing with a targeted dismiss
+		// message is harmless.
+		m.Dialogs.abortAll()
 
 	case agentcore.EventTurnStart:
 		m.TurnCount++

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 )
@@ -247,6 +248,66 @@ func TestPreToolUse_UpdatedInput(t *testing.T) {
 	}
 }
 
+func TestWrapGate(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.HooksConfig{
+		"PreToolUse": {
+			{Type: "command", Command: `echo '{"updated_input":{"path":"/safe"}}'`, Matcher: "write"},
+			{Type: "command", Command: `echo '{"block":true,"reason":"nope"}'`, Matcher: "bash", Blocking: boolPtr(true)},
+		},
+	}
+	r := New(cfg, "test", nil, nil)
+
+	t.Run("hook rewrite reaches next gate and kernel", func(t *testing.T) {
+		var seen json.RawMessage
+		gate := r.WrapGate(func(_ context.Context, req agentcore.GateRequest) (*agentcore.GateDecision, error) {
+			seen = req.Call.Args
+			return &agentcore.GateDecision{Allowed: true}, nil
+		})
+		dec, err := gate(context.Background(), agentcore.GateRequest{
+			Call: agentcore.ToolCall{Name: "write", Args: json.RawMessage(`{"path":"/raw"}`)},
+		})
+		if err != nil || dec == nil || !dec.Allowed {
+			t.Fatalf("expected allow, got %+v err=%v", dec, err)
+		}
+		if string(seen) != `{"path":"/safe"}` {
+			t.Fatalf("permission gate should see hook-updated args, got %s", seen)
+		}
+		if string(dec.UpdatedArgs) != `{"path":"/safe"}` {
+			t.Fatalf("kernel should receive the rewrite, got %s", dec.UpdatedArgs)
+		}
+	})
+
+	t.Run("blocking hook denies without reaching next gate", func(t *testing.T) {
+		gate := r.WrapGate(func(_ context.Context, _ agentcore.GateRequest) (*agentcore.GateDecision, error) {
+			t.Fatal("next gate must not run after a blocking hook")
+			return nil, nil
+		})
+		dec, err := gate(context.Background(), agentcore.GateRequest{
+			Call: agentcore.ToolCall{Name: "bash", Args: json.RawMessage(`{}`)},
+		})
+		if err != nil || dec == nil || dec.Allowed {
+			t.Fatalf("expected deny, got %+v err=%v", dec, err)
+		}
+	})
+
+	t.Run("next gate rewrite wins over hook rewrite", func(t *testing.T) {
+		gate := r.WrapGate(func(_ context.Context, _ agentcore.GateRequest) (*agentcore.GateDecision, error) {
+			return &agentcore.GateDecision{Allowed: true, UpdatedArgs: json.RawMessage(`{"path":"/final"}`)}, nil
+		})
+		dec, err := gate(context.Background(), agentcore.GateRequest{
+			Call: agentcore.ToolCall{Name: "write", Args: json.RawMessage(`{"path":"/raw"}`)},
+		})
+		if err != nil || dec == nil {
+			t.Fatalf("unexpected: %+v err=%v", dec, err)
+		}
+		if string(dec.UpdatedArgs) != `{"path":"/final"}` {
+			t.Fatalf("permission gate rewrite must win, got %s", dec.UpdatedArgs)
+		}
+	})
+}
+
 func TestPreToolUse_ExitCode2Blocks(t *testing.T) {
 	t.Parallel()
 
@@ -325,5 +386,29 @@ func TestRunSubagentStop_FireAndForget(t *testing.T) {
 	}
 	if payload.Event != SubagentStop || payload.Agent != "researcher" {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestWrapGateNilDecisionKeepsRewrite(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.HooksConfig{
+		"PreToolUse": {
+			{Type: "command", Command: `echo '{"updated_input":{"path":"/safe"}}'`, Matcher: "write"},
+		},
+	}
+	r := New(cfg, "test", nil, nil)
+
+	gate := r.WrapGate(func(_ context.Context, _ agentcore.GateRequest) (*agentcore.GateDecision, error) {
+		return nil, nil // no opinion
+	})
+	dec, err := gate(context.Background(), agentcore.GateRequest{
+		Call: agentcore.ToolCall{Name: "write", Args: json.RawMessage(`{"path":"/raw"}`)},
+	})
+	if err != nil || dec == nil || !dec.Allowed {
+		t.Fatalf("expected synthesized allow, got %+v err=%v", dec, err)
+	}
+	if string(dec.UpdatedArgs) != `{"path":"/safe"}` {
+		t.Fatalf("hook rewrite must survive a nil next decision, got %s", dec.UpdatedArgs)
 	}
 }

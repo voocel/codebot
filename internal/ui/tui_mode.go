@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -106,23 +107,33 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		}()
 	}
 
-	// Wire AskUserQuestion tool to TUI (find from session's registered tools).
-	if found := sess.ToolsByName("ask_user"); len(found) > 0 {
-		if askTool, ok := found[0].(*tools.AskUserTool); ok {
-			askTool.SetHandler(func(ctx context.Context, questions []tools.Question) (*tools.AskUserResponse, error) {
-				respCh := make(chan *tools.AskUserResponse, 1)
-				p.Send(tui.AskUserMsg{Questions: questions, RespCh: respCh})
-				select {
-				case resp, ok := <-respCh:
-					if !ok || resp == nil {
-						return nil, context.Canceled
-					}
-					return resp, nil
-				case <-ctx.Done():
-					return nil, ctx.Err()
+	// Wire ask_user dialogs to the TUI. The approval engine intercepts the
+	// call at gate time; the answers are backfilled into the tool args via
+	// UpdatedArgs (see Engine.decideAskUser / tools.InjectAskUserResponse).
+	if approvalEngine != nil {
+		approvalEngine.SetInteract(func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+			questions, err := tools.ParseAskUserQuestions(args)
+			if err != nil {
+				// Malformed input: skip the dialog and let Execute report
+				// the validation error. Sanitized so a model-forged
+				// response can't pose as a real answer.
+				return tools.SanitizeAskUserArgs(args), nil
+			}
+			respCh := make(chan *tools.AskUserResponse, 1)
+			p.Send(tui.AskUserMsg{Questions: questions, RespCh: respCh})
+			select {
+			case resp, ok := <-respCh:
+				if !ok || resp == nil {
+					// Dialog torn down without an answer (turn abort):
+					// degrade to the tool's no-response text.
+					return tools.SanitizeAskUserArgs(args), nil
 				}
-			})
-		}
+				return tools.InjectAskUserResponse(args, resp)
+			case <-ctx.Done():
+				p.Send(tui.AskUserDismissMsg{RespCh: respCh})
+				return nil, ctx.Err()
+			}
+		})
 	}
 
 	// Wire Task tools to TUI — notify on every task mutation.
@@ -165,7 +176,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 					return approval.ChoiceDeny, nil
 				}
 			case <-ctx.Done():
-				p.Send(tui.PermissionDismissMsg{})
+				p.Send(tui.PermissionDismissMsg{RespCh: respCh})
 				return approval.ChoiceDeny, ctx.Err()
 			}
 		})

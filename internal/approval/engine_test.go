@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -141,5 +142,90 @@ func TestApproveCommandRespectsPlanMode(t *testing.T) {
 		Category: CommandCategorySession,
 	}); err == nil {
 		t.Fatal("session command should be denied in plan mode")
+	}
+}
+
+func TestDecideAskUser(t *testing.T) {
+	newEngine := func(t *testing.T) *Engine {
+		t.Helper()
+		engine, err := NewEngine(t.TempDir(), ModeBalanced, nil, nil)
+		if err != nil {
+			t.Fatalf("NewEngine: %v", err)
+		}
+		return engine
+	}
+	req := permission.Request{ToolName: "ask_user", Args: []byte(`{"questions":[]}`)}
+
+	t.Run("no interact handler allows unchanged", func(t *testing.T) {
+		engine := newEngine(t)
+		decision, err := engine.Decide(context.Background(), req)
+		if err != nil || decision == nil || !decision.Allowed() {
+			t.Fatalf("expected allow, got %+v err=%v", decision, err)
+		}
+		if decision.UpdatedArgs != nil {
+			t.Fatalf("headless path must not backfill, got %s", decision.UpdatedArgs)
+		}
+	})
+
+	t.Run("interact backfills UpdatedArgs", func(t *testing.T) {
+		engine := newEngine(t)
+		engine.SetInteract(func(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+			return []byte(`{"questions":[],"response":{"cancelled":true}}`), nil
+		})
+		decision, err := engine.Decide(context.Background(), req)
+		if err != nil || decision == nil || !decision.Allowed() {
+			t.Fatalf("expected allow, got %+v err=%v", decision, err)
+		}
+		if string(decision.UpdatedArgs) != `{"questions":[],"response":{"cancelled":true}}` {
+			t.Fatalf("expected backfilled args, got %s", decision.UpdatedArgs)
+		}
+		if !decision.Prompted {
+			t.Fatal("interaction should mark the decision as prompted")
+		}
+	})
+
+	t.Run("interact failure degrades to plain allow", func(t *testing.T) {
+		engine := newEngine(t)
+		engine.SetInteract(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+			return nil, context.Canceled
+		})
+		decision, err := engine.Decide(context.Background(), req)
+		if err != nil || decision == nil || !decision.Allowed() {
+			t.Fatalf("expected allow, got %+v err=%v", decision, err)
+		}
+		if decision.UpdatedArgs != nil {
+			t.Fatalf("failed interaction must not backfill, got %s", decision.UpdatedArgs)
+		}
+	})
+
+	t.Run("context cancellation aborts the call", func(t *testing.T) {
+		engine := newEngine(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		engine.SetInteract(func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+			cancel()
+			return nil, ctx.Err()
+		})
+		if _, err := engine.Decide(ctx, req); err == nil {
+			t.Fatal("expected context error to propagate")
+		}
+	})
+}
+
+func TestDecideAskUserHonorsDenyRules(t *testing.T) {
+	rules, err := ParseRuleSet(nil, []string{"ask_user"})
+	if err != nil {
+		t.Fatalf("ParseRuleSet: %v", err)
+	}
+	engine, err := NewEngine(t.TempDir(), ModeBalanced, rules, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.SetInteract(func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		t.Fatal("dialog must not run for a rule-denied call")
+		return nil, nil
+	})
+	decision, err := engine.Decide(context.Background(), permission.Request{ToolName: "ask_user", Args: []byte(`{"questions":[]}`)})
+	if err != nil || decision == nil || decision.Allowed() {
+		t.Fatalf("expected deny, got %+v err=%v", decision, err)
 	}
 }
