@@ -1,13 +1,18 @@
 package mcp
 
 import (
+	"context"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/voocel/agentcore/permission"
 	sdkmcp "github.com/voocel/mcp-sdk-go/protocol"
+	sdkserver "github.com/voocel/mcp-sdk-go/server"
+	sdkhttp "github.com/voocel/mcp-sdk-go/transport/streamhttp"
 )
 
 func TestExpandEnv(t *testing.T) {
@@ -88,7 +93,7 @@ func TestMCPToolAdapter(t *testing.T) {
 			Name: "my-tool", Description: "A test tool",
 			InputSchema: map[string]any{"type": "object"},
 		}
-		tool := NewMCPTool(c, mt)
+		tool := NewMCPTool(c, &mt)
 
 		if tool.Name() != "mcp__srv__my-tool" {
 			t.Errorf("Name() = %q", tool.Name())
@@ -110,7 +115,7 @@ func TestMCPToolAdapter(t *testing.T) {
 			Name: "x", Title: "Display Name", Description: "d",
 			InputSchema: map[string]any{"type": "object"},
 		}
-		tool := NewMCPTool(c, mt)
+		tool := NewMCPTool(c, &mt)
 		if tool.Label() != "Display Name" {
 			t.Errorf("Label() = %q", tool.Label())
 		}
@@ -119,7 +124,7 @@ func TestMCPToolAdapter(t *testing.T) {
 	t.Run("nil_schema_fallback", func(t *testing.T) {
 		t.Parallel()
 		mt := sdkmcp.Tool{Name: "x", Description: "d"}
-		tool := NewMCPTool(c, mt)
+		tool := NewMCPTool(c, &mt)
 		if tool.Schema()["type"] != "object" {
 			t.Errorf("Schema() = %v", tool.Schema())
 		}
@@ -130,9 +135,9 @@ func TestMCPToolAdapter(t *testing.T) {
 		mt := sdkmcp.Tool{
 			Name:        "lookup",
 			Description: "Read data from remote source",
-			Annotations: &sdkmcp.ToolAnnotation{ReadOnlyHint: true},
+			Annotations: &sdkmcp.ToolAnnotations{ReadOnlyHint: boolPtr(true)},
 		}
-		tool := NewMCPTool(c, mt)
+		tool := NewMCPTool(c, &mt)
 		meta := tool.PermissionMetadata()
 		if meta.Capability != permission.CapabilityRead {
 			t.Fatalf("capability = %q, want %q", meta.Capability, permission.CapabilityRead)
@@ -145,12 +150,71 @@ func TestMCPToolAdapter(t *testing.T) {
 			Name:        "web-search",
 			Description: "Search the web",
 		}
-		tool := NewMCPTool(c, mt)
+		tool := NewMCPTool(c, &mt)
 		meta := tool.PermissionMetadata()
 		if meta.Capability != permission.CapabilityNetwork {
 			t.Fatalf("capability = %q, want %q", meta.Capability, permission.CapabilityNetwork)
 		}
 	})
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func TestClientUsesStatelessSDK(t *testing.T) {
+	backend := sdkserver.New(&sdkserver.Options{
+		Impl:         sdkmcp.Implementation{Name: "test-server", Version: "1.0.0"},
+		Instructions: "test instructions",
+		PageSize:     1,
+	})
+	handler := func(context.Context, *sdkserver.CallRequest) (sdkmcp.ToolResponse, error) {
+		return sdkmcp.NewToolResultText("ok"), nil
+	}
+	backend.AddTool(&sdkmcp.Tool{Name: "alpha"}, handler)
+	backend.AddTool(&sdkmcp.Tool{Name: "beta"}, handler)
+
+	httpServer := httptest.NewServer(sdkhttp.NewHandler(backend, nil))
+	defer httpServer.Close()
+
+	changed := make(chan struct{}, 1)
+	connectCtx, cancelConnect := context.WithCancel(t.Context())
+	client, err := Connect(connectCtx, "test", ServerConfig{Type: "http", URL: httpServer.URL}, func() {
+		changed <- struct{}{}
+	})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	// The caller's context bounds connection setup, not the owned client
+	// lifetime. This mirrors runtime reload, whose setup context is short-lived.
+	cancelConnect()
+
+	if got := client.Instructions(); got != "test instructions" {
+		t.Fatalf("instructions = %q", got)
+	}
+	tools, err := client.ListTools(t.Context())
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("tool count = %d, want 2", len(tools))
+	}
+	if got := []string{tools[0].Name, tools[1].Name}; !slices.Equal(got, []string{"alpha", "beta"}) {
+		t.Fatalf("tools = %v", got)
+	}
+	result, err := client.CallTool(t.Context(), "alpha", nil)
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if got := extractText(result); got != "ok" {
+		t.Fatalf("tool result = %q", got)
+	}
+
+	backend.AddTool(&sdkmcp.Tool{Name: "gamma"}, handler)
+	select {
+	case <-changed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for tools/list_changed")
+	}
 }
 
 func TestManagerDirtyFlag(t *testing.T) {

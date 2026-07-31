@@ -13,8 +13,8 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/voocel/agentcore v1.8.0
 	github.com/voocel/litellm v1.8.8
-	github.com/voocel/litellm/otel v0.0.0-20260720144441-6fa5681ee888
-	github.com/voocel/mcp-sdk-go v1.2.7
+	github.com/voocel/litellm/otel v0.0.0-20260731121717-538a6d8cceb8
+	github.com/voocel/mcp-sdk-go v1.3.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0

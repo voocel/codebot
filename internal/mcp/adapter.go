@@ -13,12 +13,12 @@ import (
 // MCPTool adapts an MCP server tool to the agentcore.Tool interface.
 type MCPTool struct {
 	client   *Client
-	tool     protocol.Tool
+	tool     *protocol.Tool
 	fullName string // mcp__<server>__<tool>
 }
 
 // NewMCPTool creates an adapter from an MCP tool definition.
-func NewMCPTool(client *Client, tool protocol.Tool) *MCPTool {
+func NewMCPTool(client *Client, tool *protocol.Tool) *MCPTool {
 	return &MCPTool{
 		client:   client,
 		tool:     tool,
@@ -93,11 +93,11 @@ func extractText(result *protocol.CallToolResult) string {
 func (t *MCPTool) capability() permission.Capability {
 	if ann := t.tool.Annotations; ann != nil {
 		switch {
-		case ann.DestructiveHint:
+		case hintEnabled(ann.DestructiveHint):
 			return permission.CapabilityWrite
-		case ann.OpenWorldHint:
+		case hintEnabled(ann.OpenWorldHint):
 			return permission.CapabilityNetwork
-		case ann.ReadOnlyHint:
+		case hintEnabled(ann.ReadOnlyHint):
 			return permission.CapabilityRead
 		}
 	}
@@ -116,6 +116,10 @@ func (t *MCPTool) capability() permission.Capability {
 	default:
 		return permission.CapabilityUnknown
 	}
+}
+
+func hintEnabled(hint *bool) bool {
+	return hint != nil && *hint
 }
 
 func (t *MCPTool) reason() string {
