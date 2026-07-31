@@ -129,9 +129,10 @@ func (s *Session) compactWithReason(reason string) (result CompactionResult, err
 	if err != nil {
 		return result, fmt.Errorf("set compacted messages: %w", err)
 	}
-	// Recalled memories were summarized away with the rest of the window —
-	// clear the dedup set and budget so they can resurface when relevant.
-	s.resetMemoryRecall()
+	// Recalled memories and the date correction were summarized away with the
+	// rest of the window; let them resurface. Compaction keeps the tail, so
+	// this stays narrower than resetContextWindowState.
+	s.reminders.resetSummarized()
 	result.Changed = true
 	result.TokensAfter = tokensAfter
 	return result, nil

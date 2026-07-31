@@ -191,6 +191,17 @@ func (c *Catalog) setSpecs(specs []Spec) {
 	}
 }
 
+// Retarget points the catalog at a new workspace root. Only the activation
+// check (Spec.Paths, resolved against cwd) depends on it — the specs themselves
+// come from plugin contributions and configured directories, so no reload is
+// needed. Called on a worktree enter/exit: leaving the boot cwd here would keep
+// deciding which skills apply from the workspace the session has left.
+func (c *Catalog) Retarget(cwd string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cwd = cwd
+}
+
 func (c *Catalog) List() []Spec {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

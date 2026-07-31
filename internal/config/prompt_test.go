@@ -7,14 +7,30 @@ import (
 	"github.com/voocel/codebot/internal/skill"
 )
 
-func TestBuildSystemBlockTexts(t *testing.T) {
+// buildBlocksForTest joins the frozen and dynamic halves the way the agent
+// delivers them, so assertions can talk about "instructions" as one string.
+func buildBlocksForTest(cwd string, ctx ContextFiles, tools []ToolInfo) (identity, instructions string) {
+	local, mcp := SplitToolsByOrigin(tools)
+	id, frozen := BuildFrozenSystemParts(cwd, ctx, local, nil)
+	dyn := BuildDynamicSystemPart(mcp, nil)
+	switch {
+	case dyn == "":
+		return id, frozen
+	case frozen == "":
+		return id, dyn
+	default:
+		return id, frozen + "\n\n" + dyn
+	}
+}
+
+func TestBuildBlocksListsTools(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolInfo{
 		{Name: "read", Description: "Read files"},
 		{Name: "bash", Description: "Run commands"},
 	}
-	identity, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, tools)
+	identity, instructions := buildBlocksForTest("/tmp/ws", ContextFiles{}, tools)
 
 	if !strings.Contains(identity, "/tmp/ws") {
 		t.Error("identity should contain working directory")
@@ -30,10 +46,10 @@ func TestBuildSystemBlockTexts(t *testing.T) {
 	}
 }
 
-func TestBuildSystemBlockTextsNoTools(t *testing.T) {
+func TestBuildBlocksNoTools(t *testing.T) {
 	t.Parallel()
 
-	identity, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, nil)
+	identity, instructions := buildBlocksForTest("/tmp/ws", ContextFiles{}, nil)
 
 	if !strings.Contains(identity, "/tmp/ws") {
 		t.Error("identity should contain working directory")
@@ -43,13 +59,13 @@ func TestBuildSystemBlockTextsNoTools(t *testing.T) {
 	}
 }
 
-func TestBuildSystemBlockTextsIncludesDoingTasksGuardrails(t *testing.T) {
+func TestBuildBlocksIncludesDoingTasksGuardrails(t *testing.T) {
 	t.Parallel()
 
 	// After the universal-base / role-block split these guardrails live in
 	// the agent-agnostic identity block (so teammates inherit them too), not
 	// the leader-only instructions block.
-	identity, _ := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}})
+	identity, _ := buildBlocksForTest("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}})
 
 	for _, marker := range []string{
 		"## Doing tasks",
@@ -70,7 +86,7 @@ func TestBuildSystemBlockTextsIncludesDoingTasksGuardrails(t *testing.T) {
 	}
 }
 
-func TestBuildSystemBlockTextsAddsTaskManagementSection(t *testing.T) {
+func TestBuildBlocksAddsTaskManagementSection(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolInfo{
@@ -79,7 +95,7 @@ func TestBuildSystemBlockTextsAddsTaskManagementSection(t *testing.T) {
 		{Name: "task_list", Description: "List tasks"},
 	}
 
-	_, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, tools)
+	_, instructions := buildBlocksForTest("/tmp/ws", ContextFiles{}, tools)
 	if !strings.Contains(instructions, "## Task Management") {
 		t.Fatalf("expected task management section, got %q", instructions)
 	}
@@ -94,7 +110,7 @@ func TestBuildSystemBlockTextsAddsTaskManagementSection(t *testing.T) {
 // are present — partial sets (e.g. just team_create without send_message)
 // would describe a workflow the LLM cannot actually execute, and that's
 // worse than no documentation.
-func TestBuildSystemBlockTextsAddsTeamSectionOnlyWithFullToolset(t *testing.T) {
+func TestBuildBlocksAddsTeamSectionOnlyWithFullToolset(t *testing.T) {
 	t.Parallel()
 
 	full := []ToolInfo{
@@ -103,7 +119,7 @@ func TestBuildSystemBlockTextsAddsTeamSectionOnlyWithFullToolset(t *testing.T) {
 		{Name: "send_message"},
 		{Name: "subagent"},
 	}
-	_, withFull := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, full)
+	_, withFull := buildBlocksForTest("/tmp/ws", ContextFiles{}, full)
 	if !strings.Contains(withFull, "## Team coordination") {
 		t.Fatal("expected team coordination section when all four tools present")
 	}
@@ -129,26 +145,26 @@ func TestBuildSystemBlockTextsAddsTeamSectionOnlyWithFullToolset(t *testing.T) {
 		{Name: "subagent"},
 		// no team_dismiss
 	}
-	_, withoutDismiss := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, partial)
+	_, withoutDismiss := buildBlocksForTest("/tmp/ws", ContextFiles{}, partial)
 	if strings.Contains(withoutDismiss, "## Team coordination") {
 		t.Error("team coordination section should NOT appear when team_dismiss is absent")
 	}
 }
 
-func TestBuildSystemBlockTextsOmitsTeamSectionWithoutTeamTools(t *testing.T) {
+func TestBuildBlocksOmitsTeamSectionWithoutTeamTools(t *testing.T) {
 	t.Parallel()
 
-	_, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}})
+	_, instructions := buildBlocksForTest("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}})
 	if strings.Contains(instructions, "## Team coordination") {
 		t.Error("team coordination section leaked into prompt without team tools")
 	}
 }
 
-func TestBuildSystemBlockTextsSystemOverride(t *testing.T) {
+func TestBuildBlocksSystemOverride(t *testing.T) {
 	t.Parallel()
 
 	ctx := ContextFiles{SystemOverride: "custom system prompt"}
-	identity, instructions := BuildSystemBlockTexts("/tmp/ws", ctx, []ToolInfo{{Name: "read"}})
+	identity, instructions := buildBlocksForTest("/tmp/ws", ctx, []ToolInfo{{Name: "read"}})
 
 	if identity != "" {
 		t.Error("identity should be empty when SystemOverride is set")
@@ -158,38 +174,70 @@ func TestBuildSystemBlockTextsSystemOverride(t *testing.T) {
 	}
 }
 
-func TestBuildReminders(t *testing.T) {
+// Workspace context belongs in the cached block 2, never in a per-turn
+// reminder — that is the whole point of the layout. See tasks/todo.md.
+func TestFrozenBlockCarriesWorkspaceContext(t *testing.T) {
 	t.Parallel()
 
 	skills := []skill.Spec{
 		{Name: "commit", Description: "Git commit", FilePath: "/skills/commit.md"},
 	}
-	ctx := ContextFiles{Agents: "project context here"}
-
-	reminders := BuildReminders(ctx, skills)
-
-	if len(reminders) < 2 {
-		t.Fatalf("expected at least 2 reminders, got %d", len(reminders))
+	ctx := ContextFiles{
+		Agents:       "project context here",
+		Memory:       "remembered fact",
+		MemoryDir:    "/tmp/mem",
+		SystemAppend: "appended rule",
 	}
 
-	hasSkill := false
-	hasContext := false
-	for _, r := range reminders {
-		if strings.Contains(r, "## Skills") {
-			hasSkill = true
-		}
-		if strings.Contains(r, "project context here") {
-			hasContext = true
-		}
-		if !strings.Contains(r, "<system-reminder>") {
-			t.Errorf("reminder missing <system-reminder> wrapper: %s", r[:50])
+	_, frozen := BuildFrozenSystemParts("/tmp/ws", ctx, []ToolInfo{{Name: "read"}}, skills)
+
+	for _, want := range []string{
+		"## Skills", "commit",
+		"## Project Context", "project context here",
+		"## Memory", "remembered fact",
+		"appended rule",
+	} {
+		if !strings.Contains(frozen, want) {
+			t.Errorf("frozen block missing %q", want)
 		}
 	}
-	if !hasSkill {
-		t.Error("reminders should contain skills")
+	if strings.Contains(frozen, "<system-reminder>") {
+		t.Error("frozen block must not wrap content as a per-turn reminder")
 	}
-	if !hasContext {
-		t.Error("reminders should contain project context")
+}
+
+// The cached prefix is only worth anything if identical inputs render
+// identical bytes. Skill usage scores decay with wall time, so this guards the
+// one input most likely to leak time into the block.
+func TestFrozenBlockIsByteStableAcrossRebuilds(t *testing.T) {
+	t.Parallel()
+
+	skills := []skill.Spec{
+		{Name: "zeta", Description: "Z", Source: "project", FilePath: "/s/z.md"},
+		{Name: "alpha", Description: "A", Source: "bundled", FilePath: "/s/a.md"},
+		{Name: "mid", Description: "M", Source: "user", FilePath: "/s/m.md"},
+	}
+	ctx := ContextFiles{Agents: "ctx", MemoryDir: "/tmp/mem"}
+	tools := []ToolInfo{{Name: "read"}}
+
+	_, first := BuildFrozenSystemParts("/tmp/ws", ctx, tools, skills)
+
+	// Same catalog, different relevance ranking (what OrderForPrompt yields
+	// as usage decays) must not move a single byte.
+	reranked := []skill.Spec{skills[1], skills[2], skills[0]}
+	_, second := BuildFrozenSystemParts("/tmp/ws", ctx, tools, reranked)
+
+	if first != second {
+		t.Fatalf("frozen block is not byte-stable under skill reranking:\n--- first ---\n%s\n--- second ---\n%s", first, second)
+	}
+}
+
+func TestFrozenBlockOmitsMemorySectionWithoutMemoryDir(t *testing.T) {
+	t.Parallel()
+
+	_, frozen := BuildFrozenSystemParts("/tmp/ws", ContextFiles{}, []ToolInfo{{Name: "read"}}, nil)
+	if strings.Contains(frozen, "## Memory") {
+		t.Error("no memory dir configured — section must be omitted entirely")
 	}
 }
 
@@ -219,7 +267,7 @@ func TestBuildFrozenSystemPartsDoesNotIncludeMCP(t *testing.T) {
 	// passing pure local tools do not accidentally see an MCP entry.
 	_, frozen := BuildFrozenSystemParts("/tmp/ws", ContextFiles{}, []ToolInfo{
 		{Name: "read", Description: "Read"},
-	})
+	}, nil)
 	if strings.Contains(frozen, "mcp__") {
 		t.Fatalf("frozen instructions should not mention mcp tools when none are supplied: %q", frozen)
 	}
@@ -261,13 +309,12 @@ func TestBuildDynamicSystemPartStableForSameInputs(t *testing.T) {
 	}
 }
 
-func TestBuildSystemBlockTextsRoutesMCPThroughDynamic(t *testing.T) {
+func TestBuildBlocksRoutesMCPThroughDynamic(t *testing.T) {
 	t.Parallel()
 
-	// Backwards-compat wrapper: MCP tools handed in via the legacy single-
-	// argument API must end up in the dynamic ## MCP Tools section, not the
-	// frozen ## Tools section.
-	_, instructions := BuildSystemBlockTexts("/tmp/ws", ContextFiles{}, []ToolInfo{
+	// MCP tools must land in the dynamic ## MCP Tools section, never the
+	// frozen ## Tools section — they appear and vanish at runtime.
+	_, instructions := buildBlocksForTest("/tmp/ws", ContextFiles{}, []ToolInfo{
 		{Name: "read", Description: "Read"},
 		{Name: "mcp__docs__search", Description: "Search docs"},
 	})
@@ -342,7 +389,7 @@ func TestBuildLeaderAndTeammateShareUniversalBase(t *testing.T) {
 	// universal base under the hood.
 	leaderBase, _ := BuildFrozenSystemParts(cwd, ContextFiles{}, []ToolInfo{
 		{Name: "read"}, {Name: "task_create"}, {Name: "subagent"},
-	})
+	}, nil)
 	// Teammate path: spawner reuses BuildUniversalBase directly (no tools
 	// argument — base is intentionally tool-agnostic).
 	teammateBase := BuildUniversalBase(cwd)
@@ -357,7 +404,7 @@ func TestBuildLeaderRoleBlock_ToolGating(t *testing.T) {
 	t.Parallel()
 
 	// No conditional tools → identity + (no Task/Team sections).
-	bare := BuildLeaderRoleBlock(ContextFiles{}, []ToolInfo{{Name: "read"}})
+	bare := BuildLeaderRoleBlock(ContextFiles{}, []ToolInfo{{Name: "read"}}, nil)
 	if strings.Contains(bare, "## Task Management") {
 		t.Error("Task Management leaked without task_* tools")
 	}
@@ -371,7 +418,7 @@ func TestBuildLeaderRoleBlock_ToolGating(t *testing.T) {
 	// Full task-management toolset → section appears.
 	withTasks := BuildLeaderRoleBlock(ContextFiles{}, []ToolInfo{
 		{Name: "task_create"}, {Name: "task_update"}, {Name: "task_list"},
-	})
+	}, nil)
 	if !strings.Contains(withTasks, "## Task Management") {
 		t.Error("Task Management should render with full task toolset")
 	}
@@ -379,7 +426,7 @@ func TestBuildLeaderRoleBlock_ToolGating(t *testing.T) {
 	// Full team toolset → section appears.
 	withTeam := BuildLeaderRoleBlock(ContextFiles{}, []ToolInfo{
 		{Name: "team_dismiss"}, {Name: "send_message"}, {Name: "subagent"},
-	})
+	}, nil)
 	if !strings.Contains(withTeam, "## Team coordination") {
 		t.Error("Team coordination should render with full team toolset")
 	}
@@ -444,16 +491,13 @@ func TestBuildTeammateRoleBlock_AppendsCustomPrompt(t *testing.T) {
 	}
 }
 
-func TestBuildRemindersEmpty(t *testing.T) {
+// The date rides in block 1 rather than a per-turn reminder. A session that
+// outlives midnight gets a one-shot correction from the runtime policy.
+func TestUniversalBaseCarriesDate(t *testing.T) {
 	t.Parallel()
 
-	// Date is always surfaced as a reminder for cache-stable system prompts;
-	// an otherwise-empty context should yield exactly the date reminder.
-	reminders := BuildReminders(ContextFiles{}, nil)
-	if len(reminders) != 1 {
-		t.Fatalf("expected 1 reminder (date only), got %d", len(reminders))
-	}
-	if !strings.Contains(reminders[0], "Today's date is") {
-		t.Errorf("expected date reminder, got %q", reminders[0])
+	base := BuildUniversalBase("/tmp/ws")
+	if !strings.Contains(base, "Today's date: ") {
+		t.Errorf("universal base should carry the date, got:\n%s", base)
 	}
 }

@@ -2,29 +2,30 @@ package agent
 
 import "github.com/voocel/codebot/internal/config"
 
-// RetargetWorkspace moves the session's filesystem surface to cwd: it updates
-// the session cwd and repoints the snapshotter at the new workspace. The
-// cwd-bound tools (read/write/edit/bash/glob/grep/ls) are NOT rebuilt — they
-// resolve paths against the cwd override the session threads onto every
-// agent-loop context (see Session.baseRunCtx), so one set of tool instances serves
-// both the main repo and a worktree sandbox. Every other tool is unaffected.
+// RetargetWorkspace moves the session to cwd: session cwd, snapshotter, and
+// the two workspace-derived system blocks. The single primitive behind
+// worktree enter AND exit.
 //
-// This is the single primitive behind worktree enter AND exit — the caller
-// passes the target cwd either way. Must be called at a turn boundary (session
-// idle): it mutates s.cwd, which baseRunCtx reads when the next run starts.
+// The cwd-bound tools (read/write/edit/bash/glob/grep/ls) are NOT rebuilt —
+// they resolve paths against the cwd override the session threads onto every
+// agent-loop context (see baseRunCtx), so one set of instances serves both the
+// main repo and a worktree sandbox. That is also why this must be called at a
+// turn boundary: baseRunCtx reads s.cwd when the next run starts.
 func (s *Session) RetargetWorkspace(cwd string) {
 	s.cwd.Store(&cwd)
-	sid := s.persist.currentStore().Header().SessionID
 
 	if s.deps.snapshotter != nil {
+		sid := s.persist.currentStore().Header().SessionID
 		s.deps.snapshotter.RebindWorkspace(config.SnapshotDir(cwd), cwd, config.UndoStatePath(cwd, sid))
 	}
+
+	files, skills := s.loadWorkspaceContext(cwd)
+	s.prompt.installRetarget(cwd, files, skills)
 }
 
 // currentCwd is the race-safe read for goroutines that outlive a turn (memory
-// extraction, settings persistence) and for every tool call via baseRunCtx.
-// RetargetWorkspace rewrites cwd on worktree enter/exit, and WaitForIdle does
-// not wait for those goroutines.
+// extraction, settings persistence) — WaitForIdle does not wait for those, and
+// RetargetWorkspace rewrites cwd underneath them.
 func (s *Session) currentCwd() string {
 	return *s.cwd.Load()
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentcoretools "github.com/voocel/agentcore/tools"
+	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/diag"
@@ -27,7 +28,7 @@ type sessionAssembly struct {
 	initialMCPOverlay     string // seed for session.overlays["mcp"]
 	initialDynamic        string // seed for session.dynamicText (teammate spawn snapshot)
 	deferredToolsPreamble string
-	reminders             []string
+	localTools            []config.ToolInfo // block 2 input, needed to rebuild it on reload
 	contextFiles          config.ContextFiles
 	telemetryTracer       *telemetry.Tracer
 	hookRunner            *hooks.Runner
@@ -80,7 +81,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		initialMCPOverlay:     parts.initialMCPOverlay,
 		initialDynamic:        parts.initialDynamic,
 		deferredToolsPreamble: parts.deferredMsg,
-		reminders:             parts.reminders,
+		localTools:            parts.localTools,
 		contextFiles:          ctxFiles,
 		telemetryTracer:       input.telemetryTracer,
 		hookRunner:            hookRunner,
@@ -343,7 +344,7 @@ type systemParts struct {
 	initialMCPOverlay  string
 	initialDynamic     string
 	deferredMsg        string
-	reminders          []string
+	localTools         []config.ToolInfo
 }
 
 // buildSystemParts assembles the initial system blocks plus the inputs
@@ -383,7 +384,8 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 		}
 	}
 
-	identity, frozenInstructions := config.BuildFrozenSystemParts(cwd, ctxFiles, localInfos)
+	identity, frozenInstructions := config.BuildFrozenSystemParts(
+		cwd, ctxFiles, localInfos, skill.OrderForPrompt(skills, cwd, usage))
 
 	var mcpOverlay string
 	var overlayTexts []string
@@ -395,16 +397,7 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 	}
 	dynamic := config.BuildDynamicSystemPart(mcpInfos, overlayTexts)
 
-	blocks := []agentcore.SystemBlock{
-		{Text: identity, CacheControl: "ephemeral"},
-		{Text: frozenInstructions, CacheControl: "ephemeral"},
-	}
-	if dynamic != "" {
-		blocks = append(blocks, agentcore.SystemBlock{Text: dynamic})
-	}
-	if ctxFiles.GitSnapshot != "" {
-		blocks = append(blocks, agentcore.SystemBlock{Text: ctxFiles.GitSnapshot})
-	}
+	blocks := agent.BuildSystemBlocks(identity, frozenInstructions, ctxFiles.GitSnapshot, dynamic)
 
 	var deferredMsg string
 	if len(deferredNames) > 0 {
@@ -418,6 +411,6 @@ func buildSystemParts(cwd string, tools []agentcore.Tool, ctxFiles config.Contex
 		initialMCPOverlay:  mcpOverlay,
 		initialDynamic:     dynamic,
 		deferredMsg:        deferredMsg,
-		reminders:          config.BuildReminders(ctxFiles, skill.OrderForPrompt(skills, cwd, usage)),
+		localTools:         localInfos,
 	}
 }

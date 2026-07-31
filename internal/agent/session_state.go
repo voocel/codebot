@@ -213,15 +213,17 @@ func (s *Session) recordInvokedSkill(name, promptText string, paths []string) {
 		Timestamp:  time.Now(),
 	}
 
-	// Log → usage tracker → reminder refresh, each taking the prompt lock in
-	// turn (never nested) — see promptState.recordInvoked.
+	// Log → usage tracker, each taking the prompt lock in turn (never nested)
+	// — see promptState.recordInvoked. No prompt rebuild follows: usage only
+	// ranks skills for RenderListing's budget selection, and the rendered
+	// order is deliberately usage-independent so block 2 stays byte-stable.
+	// The new score lands on the next explicit reload.
 	if err := s.prompt.recordInvoked(snapshot, usageName); err != nil {
 		s.emit(SessionEvent{
 			Type:  SEError,
 			Error: fmt.Errorf("record skill usage: %w", err),
 		})
 	}
-	s.prompt.refreshSkillReminders(s.currentCwd())
 }
 
 func invocationUsageScores(invocations map[string]int) map[string]float64 {

@@ -18,6 +18,7 @@ const (
 	ReminderPlanMode           RuntimeReminderKind = "plan_mode"
 	ReminderGoal               RuntimeReminderKind = "goal"
 	ReminderHookContext        RuntimeReminderKind = "hook_context"
+	ReminderDateChange         RuntimeReminderKind = "date_change"
 )
 
 type CompactionKind string

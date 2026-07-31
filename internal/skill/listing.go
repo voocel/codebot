@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,12 +24,30 @@ func DefaultListingOptions() ListingOptions {
 	}
 }
 
+// OrderForPrompt ranks skills by relevance (applicable → usage → source →
+// name). The ranking decides which skills SURVIVE RenderListing's char budget,
+// not the order they appear in — see RenderListing.
 func OrderForPrompt(skills []Spec, cwd string, usage map[string]float64) []Spec {
 	ordered := append([]Spec(nil), skills...)
 	sortSkillsForPrompt(ordered, cwd, usage)
 	return ordered
 }
 
+const listingHeader = "The following skills are available for use with the Skill tool:\n\n"
+
+// RenderListing renders the skill listing that goes into the cached system
+// block. Two-phase on purpose:
+//
+//  1. walk `skills` in the caller's order (OrderForPrompt's usage ranking) and
+//     keep entries until the char budget runs out — the most relevant skills
+//     win the budget;
+//  2. sort the survivors by a time-independent key and render.
+//
+// Phase 2 is what makes the output byte-stable. Usage scores decay with wall
+// time, so rendering in ranking order would reshuffle the block on every
+// rebuild and invalidate the prompt cache prefix for no semantic gain. The
+// output only changes when the surviving SET changes, which needs the catalog
+// to exceed the budget AND a ranking swap across the cutoff.
 func RenderListing(skills []Spec, opts ListingOptions) string {
 	if len(skills) == 0 {
 		return ""
@@ -45,42 +62,68 @@ func RenderListing(skills []Spec, opts ListingOptions) string {
 		opts.MaxWhenChars = DefaultListingOptions().MaxWhenChars
 	}
 
-	var sb strings.Builder
-	sb.WriteString("The following skills are available for use with the Skill tool:\n\n")
+	type entry struct {
+		spec Spec
+		text string
+	}
+
+	// Phase 1 — budget selection in relevance order.
+	var selected []entry
+	used := len(listingHeader)
 	for _, spec := range skills {
 		if spec.DisableModelInvocation {
 			continue
 		}
-		line := fmt.Sprintf("- %s", spec.Name)
+		line := "- " + spec.Name
 		if spec.ArgumentHint != "" {
 			line += " " + spec.ArgumentHint
 		}
-		desc := strings.TrimSpace(spec.Description)
-		if desc != "" {
+		if desc := strings.TrimSpace(spec.Description); desc != "" {
 			line += ": " + desc
 		}
-		line = truncate(line, opts.MaxLineChars)
-		if sb.Len()+len(line)+2 > opts.CharBudget {
+		text := truncate(line, opts.MaxLineChars) + "\n"
+		if used+len(text)+1 > opts.CharBudget {
 			break
 		}
-		sb.WriteString(line)
-		sb.WriteString("\n")
+		used += len(text)
 		if opts.IncludeWhenToUse {
-			when := strings.TrimSpace(spec.WhenToUse)
-			if when != "" {
-				whenLine := "  when: " + truncate(when, opts.MaxWhenChars)
-				if sb.Len()+len(whenLine)+1 <= opts.CharBudget {
-					sb.WriteString(whenLine)
-					sb.WriteString("\n")
+			if when := strings.TrimSpace(spec.WhenToUse); when != "" {
+				whenLine := "  when: " + truncate(when, opts.MaxWhenChars) + "\n"
+				if used+len(whenLine) <= opts.CharBudget {
+					text += whenLine
+					used += len(whenLine)
 				}
 			}
 		}
+		selected = append(selected, entry{spec: spec, text: text})
 	}
-	if sb.Len() == len("The following skills are available for use with the Skill tool:\n\n") {
+	if len(selected) == 0 {
 		return ""
+	}
+
+	// Phase 2 — stable presentation order, independent of usage/time.
+	sort.SliceStable(selected, func(i, j int) bool {
+		return lessStable(selected[i].spec, selected[j].spec)
+	})
+
+	var sb strings.Builder
+	sb.Grow(used + 128)
+	sb.WriteString(listingHeader)
+	for _, item := range selected {
+		sb.WriteString(item.text)
 	}
 	sb.WriteString("\nIMPORTANT: Only use Skill for skills listed above - do not guess or use built-in CLI commands.")
 	return sb.String()
+}
+
+// lessStable orders skills by source priority then name — no wall-clock or
+// usage input, so equal inputs always produce equal bytes.
+func lessStable(a, b Spec) bool {
+	aSource, bSource := sourcePriority(a.Source), sourcePriority(b.Source)
+	if aSource != bSource {
+		return aSource < bSource
+	}
+	return a.Name < b.Name
 }
 
 func sortSkillsForPrompt(skills []Spec, cwd string, usage map[string]float64) {

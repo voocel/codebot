@@ -98,11 +98,43 @@ func (s *Session) Prompt(text string) error {
 	s.runtime.beforeUserPrompt([]agentcore.ContentBlock{agentcore.TextBlock(text)})
 
 	var msgs []agentcore.AgentMessage
-	if preamble, ok := s.prompt.takePreamble(); ok {
+	if preamble, ok := s.pendingPreamble(); ok {
 		msgs = append(msgs, injectedUserMsg(preamble))
 	}
 	msgs = append(msgs, s.buildUserMessage(agentcore.TextBlock(text)))
 	return s.startPromptMessages(msgs...)
+}
+
+// deferredToolsTag is the marker pendingPreamble looks for. It has to be a
+// literal the preamble text starts with — see promptState.rebuildLocked.
+const deferredToolsTag = "<available-deferred-tools>"
+
+// pendingPreamble returns the deferred-tools preamble when the conversation
+// does not already carry it.
+//
+// Derived from the transcript, not a flag: a flag needs re-arming on every
+// path that replaces the context window (/clear, Reset, SwitchSession,
+// compaction). Reading history cannot drift — whatever wiped the preamble
+// wiped the evidence too.
+func (s *Session) pendingPreamble() (string, bool) {
+	preamble := s.prompt.preambleSnapshot()
+	if preamble == "" {
+		return "", false
+	}
+	for _, am := range s.deps.agent.Messages() {
+		msg, ok := am.(agentcore.Message)
+		// Only injected user messages can carry it; skipping the rest keeps
+		// this off the large tool-result payloads.
+		if !ok || msg.Role != agentcore.RoleUser || msg.Metadata["injected"] != true {
+			continue
+		}
+		for _, b := range msg.Content {
+			if b.Type == agentcore.ContentText && strings.Contains(b.Text, deferredToolsTag) {
+				return "", false
+			}
+		}
+	}
+	return preamble, true
 }
 
 func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
@@ -113,19 +145,22 @@ func (s *Session) PromptWithBlocks(blocks []agentcore.ContentBlock) error {
 	s.runtime.beforeUserPrompt(blocks)
 
 	var msgs []agentcore.AgentMessage
-	if preamble, ok := s.prompt.takePreamble(); ok {
+	if preamble, ok := s.pendingPreamble(); ok {
 		msgs = append(msgs, injectedUserMsg(preamble))
 	}
 	msgs = append(msgs, s.buildUserMessage(blocks...))
 	return s.startPromptMessages(msgs...)
 }
 
-// buildUserMessage creates a user message with reminders prepended as text blocks.
+// buildUserMessage creates a user message with reminders prepended as text
+// blocks. Everything reaching this path is turn-scoped by construction:
+// workspace context that does not change mid-session lives in system block 2
+// instead, so nothing here accumulates one copy per turn.
 func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentcore.Message {
 	recallReminders := s.memoryRecallReminders(userBlocks)
-	runtimeReminders, staticReminders := s.reminders.drainForPrompt()
+	runtimeReminders := s.reminders.drainForPrompt()
 
-	if len(runtimeReminders) == 0 && len(staticReminders) == 0 && len(recallReminders) == 0 {
+	if len(runtimeReminders) == 0 && len(recallReminders) == 0 {
 		return agentcore.Message{
 			Role:      agentcore.RoleUser,
 			Content:   userBlocks,
@@ -133,11 +168,8 @@ func (s *Session) buildUserMessage(userBlocks ...agentcore.ContentBlock) agentco
 		}
 	}
 
-	blocks := make([]agentcore.ContentBlock, 0, len(runtimeReminders)+len(staticReminders)+len(recallReminders)+len(userBlocks))
+	blocks := make([]agentcore.ContentBlock, 0, len(runtimeReminders)+len(recallReminders)+len(userBlocks))
 	for _, r := range runtimeReminders {
-		blocks = append(blocks, agentcore.TextBlock(r))
-	}
-	for _, r := range staticReminders {
 		blocks = append(blocks, agentcore.TextBlock(r))
 	}
 	// Recalled memories sit closest to the user text — the freshest, most
@@ -189,12 +221,6 @@ func (s *Session) memoryRecallReminders(userBlocks []agentcore.ContentBlock) []s
 		out = append(out, config.FormatMemoryRecallReminder(r))
 	}
 	return out
-}
-
-// resetMemoryRecall clears the recall dedup set and budget — call whenever
-// the context window is rebuilt and previously injected memories are gone.
-func (s *Session) resetMemoryRecall() {
-	s.reminders.resetRecall()
 }
 
 func (s *Session) queueRuntimeReminder(key string, kind RuntimeReminderKind, reminder string) {
@@ -546,15 +572,9 @@ func (s *Session) ClearConversation() {
 		return
 	}
 	s.deps.agent.ClearAllQueues()
-	// Conversation gone → LLM lost its read history. Drop file-read stamps
-	// so the next write/edit forces a fresh read.
-	if s.deps.fileReadState != nil {
-		s.deps.fileReadState.Reset()
-	}
-	s.resetMemoryRecall()
-	// The deferred-tools preamble was wiped with the history — rearm it so
-	// the next prompt re-injects the deferred tool list.
-	s.prompt.setPreambleInjected(false)
+	// Same history-derived state Reset/SwitchSession drop; the session
+	// identity (store, model, undo stack) is deliberately left alone.
+	s.resetContextWindowState()
 }
 
 func (s *Session) applyTemporarySkillModel(model string) error {
@@ -1023,10 +1043,6 @@ func (s *Session) SwitchSession(id string) error {
 
 	oldStore := s.persist.swapStore(newStore, newStore.Header().Name != "")
 	s.resetHarnessState()
-	// Derive from the restored history — same heuristic bootstrap uses on
-	// resume (assemble_runtime.go): any restored messages imply the preamble
-	// is already in the conversation; re-injecting would duplicate it.
-	s.prompt.setPreambleInjected(len(snapshot.Messages) > 0)
 
 	if oldStore != nil {
 		_ = oldStore.Close()
@@ -1261,11 +1277,14 @@ func injectedUserMsg(text string) agentcore.Message {
 	return msg
 }
 
-// wrapHookContext wraps UserPromptSubmit hook output as a system reminder so
-// the model treats it as injected context rather than user-authored text.
-func wrapHookContext(text string) string {
+// wrapReminder wraps text as a system reminder so the model treats it as
+// injected context rather than user-authored text.
+func wrapReminder(text string) string {
 	return "<system-reminder>\n" + text + "\n</system-reminder>"
 }
+
+// wrapHookContext wraps UserPromptSubmit hook output as a system reminder.
+func wrapHookContext(text string) string { return wrapReminder(text) }
 
 // ephemeralQuery sends a one-shot query to the current model using the full
 // conversation context. Tool-related blocks are stripped from messages

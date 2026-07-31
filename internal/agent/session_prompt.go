@@ -11,25 +11,25 @@ func (s *Session) ToolsByName(names ...string) []agentcore.Tool {
 }
 
 func (s *Session) SetTools(tools ...agentcore.Tool) {
-	s.prompt.setTools(s.currentCwd(), tools...)
+	s.prompt.setTools(tools...)
 }
 
 func (s *Session) RestoreAllTools(extra ...agentcore.Tool) {
-	s.prompt.restoreAllTools(s.currentCwd(), extra...)
+	s.prompt.restoreAllTools(extra...)
 }
 
 func (s *Session) ReplaceMCPTools(tools []agentcore.Tool) {
-	s.prompt.replaceMCPTools(s.currentCwd(), tools)
+	s.prompt.replaceMCPTools(tools)
 }
 
 func (s *Session) SetMCPInstructions(text string) {
-	s.prompt.setOverlay(s.currentCwd(), "mcp", text)
+	s.prompt.setOverlay("mcp", text)
 }
 
 // OverlayPrompt registers or removes a named instructions overlay.
 // Pass empty text to remove. Overlays are rendered sorted by key.
 func (s *Session) OverlayPrompt(key, text string) {
-	s.prompt.setOverlay(s.currentCwd(), key, text)
+	s.prompt.setOverlay(key, text)
 }
 
 func (s *Session) Skills() []skill.Spec {
@@ -50,18 +50,30 @@ func (s *Session) SetSkillCatalog(catalog *skill.Catalog) {
 // them in. The I/O runs before the prompt lock (load-then-swap).
 func (s *Session) Reload() {
 	cwd := s.currentCwd()
+	files, skills := s.loadWorkspaceContext(cwd)
+	s.prompt.installReload(cwd, files, skills)
+}
+
+// loadWorkspaceContext reads everything the prompt derives from the workspace
+// root. Kept outside the prompt lock so a slow filesystem never stalls
+// delivery — both callers swap the result in afterwards.
+func (s *Session) loadWorkspaceContext(cwd string) (config.ContextFiles, []skill.Spec) {
 	files := config.LoadContextFiles(cwd)
 	// Re-read memory from disk (LLM may have updated it during this session).
 	files.Memory, files.MemoryDir = config.LoadMemory(cwd)
 
 	var skills []skill.Spec
 	if catalog := s.prompt.catalogSnapshot(); catalog != nil {
+		// Retarget before List: the catalog decides which skills apply by
+		// resolving Spec.Paths against its own cwd, which a worktree switch
+		// moves. On a plain reload this is a no-op.
+		catalog.Retarget(cwd)
 		catalog.Reload()
 		skills = catalog.List()
 	} else {
 		skills = skill.NewCatalog(cwd, nil).List()
 	}
-	s.prompt.installReload(cwd, files, skills)
+	return files, skills
 }
 
 func replaceMCPToolsInSlice(base []agentcore.Tool, mcpTools []agentcore.Tool) []agentcore.Tool {

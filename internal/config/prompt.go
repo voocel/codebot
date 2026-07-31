@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voocel/codebot/internal/skill"
@@ -187,11 +188,23 @@ const teammateMailboxInstructions = `## Mailbox & Coordination
 // Anthropic's server-side cache holds these bytes; a fresh teammate's first
 // request hits the same key and reads from cache instead of paying full
 // input-token cost.
+// SessionDate is the calendar date baked into system block 1, frozen at first
+// use. Freezing is what keeps BuildUniversalBase a pure function of its inputs:
+// the leader renders block 1 at boot and a worktree teammate re-renders it at
+// spawn (see team.teammateBaseBlocks), and the two must produce identical bytes
+// or they cannot share the cached prefix. A live time.Now() here would silently
+// split that cache for every teammate spawned after midnight.
+//
+// The cost is a stale date in a process that outlives a day; the agent corrects
+// it with a one-shot reminder instead (see agent.queueDateChangeReminder).
+var SessionDate = sync.OnceValue(func() string { return time.Now().Format("2006-01-02") })
+
 func BuildUniversalBase(cwd string) string {
 	var b strings.Builder
 	b.WriteString(universalIdentityPreamble)
 	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "## Environment\n- Working directory: %s\n- OS: %s/%s\n\n", cwd, runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&b, "## Environment\n- Working directory: %s\n- OS: %s/%s\n- Today's date: %s\n\n",
+		cwd, runtime.GOOS, runtime.GOARCH, SessionDate())
 	b.WriteString(parallelExecutionInstructions)
 	b.WriteString("\n\n")
 	b.WriteString(doingTasksInstructions)
@@ -207,15 +220,24 @@ func BuildUniversalBase(cwd string) string {
 // BuildLeaderRoleBlock returns the leader-specific portion of the system
 // prompt: leader identity, the leader's own tool inventory, the optional
 // Task Management section (gated on task_* tools being present), the optional
-// Team coordination section (gated on team_*+send_message+subagent), and the
-// optional auto-memory hints.
+// Team coordination section (gated on team_*+send_message+subagent), the
+// optional auto-memory hints, and the project-scoped context (skill listing,
+// AGENTS.md, MEMORY.md, APPEND_SYSTEM.md).
+//
+// That last group used to ride along with every user message as
+// <system-reminder> fragments, which put one copy per turn into history. It
+// lives here instead because none of it changes mid-session — only an explicit
+// Session.Reload (/memory edit, plugin reload) can move it, and that is rare
+// enough to be worth one cache write. See tasks/todo.md for the admission rule.
 //
 // localTools should be the leader's session-stable tool set (caller already
 // filtered out MCP via SplitToolsByOrigin). The list is rendered verbatim so
-// pass it in the order callers want the model to see.
+// pass it in the order callers want the model to see. skills should already be
+// ranked by skill.OrderForPrompt; RenderListing re-sorts them into a
+// time-independent order so this block stays byte-stable.
 //
 // Goes in the second SystemBlock with cache_control="ephemeral".
-func BuildLeaderRoleBlock(ctx ContextFiles, localTools []ToolInfo) string {
+func BuildLeaderRoleBlock(ctx ContextFiles, localTools []ToolInfo, skills []skill.Spec) string {
 	hasTaskCreate, hasTaskUpdate, hasTaskList := false, false, false
 	hasTeamDismiss, hasSendMessage, hasSubAgent := false, false, false
 	for _, t := range localTools {
@@ -249,7 +271,41 @@ func BuildLeaderRoleBlock(ctx ContextFiles, localTools []ToolInfo) string {
 	if mem := BuildAutoMemoryInstructions(ctx.MemoryDir); mem != "" {
 		parts = append(parts, mem)
 	}
+	parts = append(parts, buildProjectContext(ctx, skills)...)
 	return strings.Join(parts, "\n\n")
+}
+
+// buildProjectContext renders the workspace-scoped sections of block 2:
+// skill catalog, AGENTS.md, MEMORY.md, and APPEND_SYSTEM.md. Order is fixed so
+// the block's bytes depend only on content, never on call order.
+func buildProjectContext(ctx ContextFiles, skills []skill.Spec) []string {
+	var parts []string
+	if listing := skill.RenderListing(skills, skill.DefaultListingOptions()); listing != "" {
+		parts = append(parts, "## Skills\n"+listing)
+	}
+	if ctx.Agents != "" {
+		parts = append(parts, "## Project Context\n"+ctx.Agents)
+	}
+	if ctx.MemoryDir != "" {
+		parts = append(parts, buildMemorySection(ctx))
+	}
+	if ctx.SystemAppend != "" {
+		parts = append(parts, ctx.SystemAppend)
+	}
+	return parts
+}
+
+func buildMemorySection(ctx ContextFiles) string {
+	body := ctx.Memory
+	if body == "" {
+		// The auto-memory instructions promise MEMORY.md is always in
+		// context. Without this placeholder the model sees the promise and
+		// tries to Read the file, which is ENOENT before anything is saved.
+		body = "Your MEMORY.md is currently empty. When you save new memories, they will appear here."
+	}
+	return "## Memory\nContents of " + filepath.Join(ctx.MemoryDir, "MEMORY.md") +
+		" (auto-memory, persists across conversations):\n\n" + body +
+		"\n\nMemories reflect what was true when they were written. Before relying on one, verify that the files, functions, or flags it mentions still exist — a memory saying X exists is not the same as X existing now."
 }
 
 // BuildTeammateRoleBlock returns the teammate-specific portion of the system
@@ -324,26 +380,38 @@ A default team is already active in this session and you are auto-registered as 
 - When a teammate finishes its current turn, you receive its last reply as a <teammate-message teammate_id="…"> attachment in your prompt stream. Treat it like any other input and decide whether to follow up or move on.
 - For a stuck teammate, use task_stop on its task ID (hard cancel); for an orderly retirement, use team_dismiss (graceful, no abrupt cut).`
 
-// BuildFrozenSystemParts returns the static portions of the system prompt
-// that are fixed for the lifetime of the process: the universal base
-// (agent-agnostic, returned as identity for backwards compatibility) and the
-// leader role block (returned as frozenInstructions).
+// BuildFrozenSystemParts returns the two cached system blocks: block 1 is the
+// agent-agnostic identity, block 2 the leader role block. Both stay fixed for
+// the session unless the workspace root moves or a reload swaps context files
+// in; MCP tools, plan_mode overlays, and anything else runtime-mutable belong
+// in BuildDynamicSystemPart, which is deliberately outside the cache prefix.
 //
-// Inputs MUST be process-stable. MCP tools, plan_mode overlays, and any
-// runtime-mutable content belong in BuildDynamicSystemPart.
-//
-// When ctx.SystemOverride is set, identity is empty and frozenInstructions
-// is the override verbatim.
-//
-// Existing callers (session_prompt.go) keep the same two-block cache layout:
-// block 0 = identity = universal base, block 1 = frozenInstructions = leader
-// role block. Cache footprint and shape are unchanged from the pre-refactor
-// behavior; only the content split between the two blocks moved.
-func BuildFrozenSystemParts(cwd string, ctx ContextFiles, localTools []ToolInfo) (identity, frozenInstructions string) {
+// The teammate path composes block 1 from the same builder, so the leader and
+// its teammates share a byte-identical cache prefix.
+func BuildFrozenSystemParts(cwd string, ctx ContextFiles, localTools []ToolInfo, skills []skill.Spec) (identity, frozenInstructions string) {
+	return BuildIdentity(cwd, ctx), BuildLeaderInstructions(ctx, localTools, skills)
+}
+
+// BuildIdentity returns system block 1 on its own, for callers that must
+// recompute it without block 2 — a worktree enter/exit moves the working
+// directory this block states. A SystemOverride replaces the whole prompt, so
+// there is no identity block to build.
+func BuildIdentity(cwd string, ctx ContextFiles) string {
 	if ctx.SystemOverride != "" {
-		return "", ctx.SystemOverride
+		return ""
 	}
-	return BuildUniversalBase(cwd), BuildLeaderRoleBlock(ctx, localTools)
+	return BuildUniversalBase(cwd)
+}
+
+// BuildLeaderInstructions returns system block 2 on its own: the SYSTEM.md
+// override verbatim when present, otherwise the composed leader role block.
+// Sessions call this to rebuild block 2 after a reload without touching
+// block 1.
+func BuildLeaderInstructions(ctx ContextFiles, localTools []ToolInfo, skills []skill.Spec) string {
+	if ctx.SystemOverride != "" {
+		return ctx.SystemOverride
+	}
+	return BuildLeaderRoleBlock(ctx, localTools, skills)
 }
 
 // BuildDynamicSystemPart assembles the runtime-mutable portion of the system
@@ -373,58 +441,4 @@ func BuildDynamicSystemPart(mcpTools []ToolInfo, overlays []string) string {
 		parts = append(parts, o)
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-// BuildSystemBlockTexts is a backward-compatible wrapper. It splits tools by
-// origin internally and concatenates frozen + dynamic into a single
-// instructions string for callers that haven't migrated to the two-block
-// layout yet.
-//
-// New code should call BuildFrozenSystemParts + BuildDynamicSystemPart
-// directly so the static prefix can be cached independently.
-func BuildSystemBlockTexts(cwd string, ctx ContextFiles, tools []ToolInfo) (identity, instructions string) {
-	local, mcp := SplitToolsByOrigin(tools)
-	id, frozen := BuildFrozenSystemParts(cwd, ctx, local)
-	dyn := BuildDynamicSystemPart(mcp, nil)
-	if dyn == "" {
-		return id, frozen
-	}
-	if frozen == "" {
-		return id, dyn
-	}
-	return id, frozen + "\n\n" + dyn
-}
-
-// BuildReminders extracts skills and context files into <system-reminder>
-// wrapped text fragments for injection into user messages.
-// Returns nil when there are no reminders to inject.
-//
-// Today's date is surfaced here (not in the system prompt) so that the
-// system prefix stays identical across days and prompt cache can hit.
-func BuildReminders(ctx ContextFiles, skills []skill.Spec) []string {
-	reminders := []string{
-		"<system-reminder>\nToday's date is " + time.Now().Format("2006-01-02") + ".\n</system-reminder>",
-	}
-	if skillBlock := skill.RenderListing(skills, skill.DefaultListingOptions()); skillBlock != "" {
-		reminders = append(reminders, "<system-reminder>\n## Skills\n"+skillBlock+"\n</system-reminder>")
-	}
-	if ctx.Agents != "" {
-		reminders = append(reminders, "<system-reminder>\n## Project Context\n"+ctx.Agents+"\n</system-reminder>")
-	}
-	if ctx.SystemAppend != "" {
-		reminders = append(reminders, "<system-reminder>\n"+ctx.SystemAppend+"\n</system-reminder>")
-	}
-	if ctx.MemoryDir != "" {
-		memPath := filepath.Join(ctx.MemoryDir, "MEMORY.md")
-		body := ctx.Memory
-		if body == "" {
-			// The system prompt promises MEMORY.md is always loaded into
-			// context. Without this placeholder the model sees the promise
-			// and tries to Read the file itself, which surfaces ENOENT on
-			// first session before any memory has been written.
-			body = "Your MEMORY.md is currently empty. When you save new memories, they will appear here."
-		}
-		reminders = append(reminders, "<system-reminder>\nContents of "+memPath+" (auto-memory, persists across conversations):\n\n"+body+"\n\nMemories reflect what was true when they were written. Before relying on one, verify that the files, functions, or flags it mentions still exist — a memory saying X exists is not the same as X existing now.\n</system-reminder>")
-	}
-	return reminders
 }

@@ -83,23 +83,11 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	// stateless from the registry's POV and avoids accidentally sharing a
 	// captured ctx across teammates.
 	//
-	// baseBlocks reuses the leader's already-computed universal-base text
-	// (assembly.frozenIdentity = BuildUniversalBase output). Sharing the
-	// exact same bytes is the precondition for cross-agent prompt cache
-	// reuse — Anthropic keys its cache on the byte string, so a teammate's
-	// first request hits the same entry the leader's turns wrote.
-	// SystemOverride sessions leave frozenIdentity empty; in that case we
-	// pass nil so teammates degrade to their role block as the only system
-	// content rather than carrying an empty cache-controlled block.
+	// baseProvider/dynamicProvider hand teammates the leader CURRENT blocks.
+	// Byte-identical bytes are the precondition for cross-agent cache reuse, so
+	// both are read per spawn rather than captured here.
 	if assembly.subagents.tool != nil {
-		var baseBlocks []agentcore.SystemBlock
-		if assembly.frozenIdentity != "" {
-			baseBlocks = []agentcore.SystemBlock{
-				{Text: assembly.frozenIdentity, CacheControl: "ephemeral"},
-			}
-		}
-		// Lazy snapshot: each spawn freezes the leader's CURRENT MCP / overlay
-		// state into the teammate; later leader-side changes do not propagate.
+		baseProvider := session.IdentitySystemBlock
 		dynamicProvider := session.DynamicSystemBlock
 
 		// Force-inject coordination tools so teammates can collaborate on the
@@ -124,7 +112,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 			taskRT,
 			extraTools,
 			teammateEvents,
-			baseBlocks,
+			baseProvider,
 			dynamicProvider,
 			protocol,
 			assembly.hookRunner,
@@ -425,8 +413,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		InitialMCPOverlay:     assembly.initialMCPOverlay,
 		InitialDynamic:        assembly.initialDynamic,
 		DeferredToolsPreamble: assembly.deferredToolsPreamble,
-		Reminders:             assembly.reminders,
-		PreambleInjected:      len(input.sessionSnapshot.Messages) > 0,
+		LocalTools:            assembly.localTools,
 		SkillAllowsSetter:     services.approvalEngine.SetSkillAllows,
 		FileReadState:         assembly.fileReadState,
 		TelemetryTracer:       input.telemetryTracer,

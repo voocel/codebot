@@ -181,3 +181,111 @@ func TestCompactionEventInvalidatesCacheBaseline(t *testing.T) {
 		t.Fatalf("changed compaction should invalidate baseline, got %+v", snap)
 	}
 }
+
+// --- system block layout ----------------------------------------------------
+
+func TestBuildSystemBlocksPutsStaticContentInsideThePrefix(t *testing.T) {
+	t.Parallel()
+
+	blocks := BuildSystemBlocks("identity", "instructions", "git snapshot", "dynamic")
+	if len(blocks) != 4 {
+		t.Fatalf("got %d blocks, want 4: %+v", len(blocks), blocks)
+	}
+
+	// The git snapshot is collected once at startup and never recomputed, so it
+	// must sit ahead of the volatile dynamic block or it can never be cached.
+	texts := make([]string, len(blocks))
+	for i, b := range blocks {
+		texts[i] = b.Text
+	}
+	want := []string{"identity", "instructions", "git snapshot", "dynamic"}
+	for i := range want {
+		if texts[i] != want[i] {
+			t.Fatalf("block order = %v, want %v", texts, want)
+		}
+	}
+
+	cut := cachedPrefixLen(blocks)
+	if cut != 3 {
+		t.Fatalf("cached prefix covers %d blocks, want 3 (everything but dynamic)", cut)
+	}
+	if blocks[3].CacheControl != "" {
+		t.Fatal("dynamic block must not carry a breakpoint — it is invalidated too often to be worth 1.25x")
+	}
+}
+
+func TestBuildSystemBlocksKeepsIdentityBreakpointForReloads(t *testing.T) {
+	t.Parallel()
+
+	before := BuildSystemBlocks("identity", "instructions v1", "git", "")
+	after := BuildSystemBlocks("identity", "instructions v2", "git", "")
+
+	// A reload rewrites block 2, which invalidates everything from there on.
+	// The separate breakpoint on identity is what survives it.
+	if before[0].CacheControl == "" || after[0].CacheControl == "" {
+		t.Fatal("identity lost its own breakpoint; a reload would now rewrite the whole prefix")
+	}
+	if hashFrozenBlocks(before) == hashFrozenBlocks(after) {
+		t.Fatal("changed instructions must move the frozen fingerprint")
+	}
+}
+
+func TestBuildSystemBlocksSkipsEmptyParts(t *testing.T) {
+	t.Parallel()
+
+	// SYSTEM.md override: no identity block at all.
+	override := BuildSystemBlocks("", "override body", "", "")
+	if len(override) != 1 || override[0].Text != "override body" {
+		t.Fatalf("override layout = %+v, want a single block", override)
+	}
+	if override[0].CacheControl == "" {
+		t.Fatal("the only static block must still carry the breakpoint")
+	}
+
+	// Not a git repo: the breakpoint falls back onto instructions.
+	noGit := BuildSystemBlocks("identity", "instructions", "", "dynamic")
+	if cachedPrefixLen(noGit) != 2 {
+		t.Fatalf("cached prefix covers %d blocks, want 2", cachedPrefixLen(noGit))
+	}
+
+	// Dynamic-only: no static content to anchor a breakpoint, but the block
+	// still has to reach the model.
+	dynOnly := BuildSystemBlocks("", "", "", "dynamic")
+	if len(dynOnly) != 1 || dynOnly[0].Text != "dynamic" {
+		t.Fatalf("dynamic-only layout = %+v, want the dynamic block alone", dynOnly)
+	}
+	if dynOnly[0].CacheControl != "" {
+		t.Fatal("dynamic must never acquire a breakpoint, even as the only block")
+	}
+
+	if BuildSystemBlocks("", "", "", "") != nil {
+		t.Fatal("no content must produce no blocks")
+	}
+}
+
+// The prefix runs through the LAST marker, so an unmarked block between two
+// marked ones is cached — grouping by "carries a marker" would misfile it and
+// make detectCacheBreak blame the dynamic tail for a frozen-prefix change.
+func TestCachedPrefixIncludesUnmarkedMiddleBlock(t *testing.T) {
+	t.Parallel()
+
+	blocks := []agentcore.SystemBlock{
+		{Text: "identity", CacheControl: "ephemeral"},
+		{Text: "instructions"},
+		{Text: "git", CacheControl: "ephemeral"},
+		{Text: "dynamic"},
+	}
+	changed := []agentcore.SystemBlock{
+		{Text: "identity", CacheControl: "ephemeral"},
+		{Text: "instructions CHANGED"},
+		{Text: "git", CacheControl: "ephemeral"},
+		{Text: "dynamic"},
+	}
+
+	if hashFrozenBlocks(blocks) == hashFrozenBlocks(changed) {
+		t.Fatal("unmarked middle block must count toward the frozen fingerprint")
+	}
+	if hashDynamicBlock(blocks) != hashDynamicBlock(changed) {
+		t.Fatal("unmarked middle block must NOT count toward the dynamic fingerprint")
+	}
+}

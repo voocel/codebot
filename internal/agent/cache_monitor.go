@@ -13,12 +13,12 @@ import (
 // cache-break on the following turn. It does NOT store the request itself —
 // only cheap fingerprints of the inputs and the observed cache_read figure.
 //
-// System blocks are hashed in two halves matching the layout in
-// promptState.rebuildLocked: the cached static prefix (block 1 +
-// block 2) and the uncached dynamic tail (block 3 if present). Hashing them
-// separately lets detectCacheBreak attribute a drop to the right segment —
-// a static-prefix change is alarming (it means something supposedly frozen
-// moved), a dynamic-block change is routine (plan toggle, MCP refresh).
+// System blocks are hashed in two halves split at the last cache_control
+// marker (see BuildSystemBlocks for the layout): the cached prefix and the
+// uncached tail. Hashing them separately lets detectCacheBreak attribute a
+// drop to the right segment — a prefix change is alarming (something
+// supposedly frozen moved), a tail change is routine (plan toggle, MCP
+// refresh).
 type cacheSnapshot struct {
 	FrozenSystemHash  uint64
 	DynamicSystemHash uint64
@@ -88,31 +88,36 @@ const breakDropFraction = 0.05
 // at small context sizes.
 const breakDropAbsolute = 2000
 
-// hashFrozenBlocks fingerprints the cache-controlled static prefix (the
-// blocks carrying CacheControl != ""). Together these are what the server
-// caches; any change here invalidates the prefix on the next turn.
-func hashFrozenBlocks(blocks []agentcore.SystemBlock) uint64 {
-	h := fnv.New64a()
-	for _, b := range blocks {
-		if b.CacheControl == "" {
-			continue
+// cachedPrefixLen returns how many leading blocks the server caches: the
+// prefix runs through the LAST marker, so an unmarked block between two marked
+// ones is cached too. Grouping by "carries a marker" would misfile it as
+// dynamic and make detectCacheBreak blame the wrong side.
+func cachedPrefixLen(blocks []agentcore.SystemBlock) int {
+	cut := 0
+	for i, b := range blocks {
+		if b.CacheControl != "" {
+			cut = i + 1
 		}
-		h.Write([]byte{0})
-		h.Write([]byte(b.Text))
 	}
-	return h.Sum64()
+	return cut
 }
 
-// hashDynamicBlock fingerprints the tail blocks that are NOT cache-controlled
-// (MCP tool directory, overlays, git snapshot). Changes here don't reduce
-// cache hits on the static prefix but explain visible byte differences in
-// the request and any extra write-cost on subsequent breakpoints downstream.
+// hashFrozenBlocks fingerprints the cached prefix. Any change here invalidates
+// it on the next turn.
+func hashFrozenBlocks(blocks []agentcore.SystemBlock) uint64 {
+	return hashBlockTexts(blocks[:cachedPrefixLen(blocks)])
+}
+
+// hashDynamicBlock fingerprints the tail past the last breakpoint (MCP tool
+// directory, overlays). Changes here don't reduce cache hits on the prefix but
+// explain visible byte differences in the request.
 func hashDynamicBlock(blocks []agentcore.SystemBlock) uint64 {
+	return hashBlockTexts(blocks[cachedPrefixLen(blocks):])
+}
+
+func hashBlockTexts(blocks []agentcore.SystemBlock) uint64 {
 	h := fnv.New64a()
 	for _, b := range blocks {
-		if b.CacheControl != "" {
-			continue
-		}
 		h.Write([]byte{0})
 		h.Write([]byte(b.Text))
 	}
@@ -189,7 +194,7 @@ func detectCacheBreak(prev, curr cacheSnapshot) *storage.CacheBreakInfo {
 	case dynamicChanged:
 		info.Note = "dynamic system block changed (plan mode / MCP overlay)"
 	case info.ToolsChanged:
-		info.Note = "tool set changed between turns"
+		info.Note = "tool set changed between turns (tools precede system in the cache prefix, so this cascades)"
 	default:
 		info.Note = "no input change detected (TTL expiry, provider-side miss, or cache_control not honored by provider)"
 	}

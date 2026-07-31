@@ -911,14 +911,15 @@ func TestTeammateBaseBlocks(t *testing.T) {
 	shared := []agentcore.SystemBlock{{Text: config.BuildUniversalBase(mainCwd), CacheControl: "ephemeral"}}
 
 	// Shared teammate (wt == nil): leader's base verbatim.
-	if got := teammateBaseBlocks(shared, nil); len(got) != 1 || got[0].Text != shared[0].Text {
+	provider := func() []agentcore.SystemBlock { return shared }
+	if got := teammateBaseBlocks(provider, nil); len(got) != 1 || got[0].Text != shared[0].Text {
 		t.Errorf("shared teammate should inherit leader base verbatim, got %+v", got)
 	}
 
 	// Isolated teammate: base rebuilt for the worktree cwd, main cwd gone.
 	wtCwd := "/tmp/sandbox-abc/.codebot/worktrees/wt-coder"
 	wt := &teammateWorktree{dir: wtCwd}
-	got := teammateBaseBlocks(shared, wt)
+	got := teammateBaseBlocks(provider, wt)
 	if len(got) != 1 {
 		t.Fatalf("isolated base = %d blocks, want 1", len(got))
 	}
@@ -933,8 +934,19 @@ func TestTeammateBaseBlocks(t *testing.T) {
 	}
 
 	// SystemOverride session (empty shared base): passed through even when isolated.
-	if got := teammateBaseBlocks(nil, wt); got != nil {
+	if got := teammateBaseBlocks(func() []agentcore.SystemBlock { return nil }, wt); got != nil {
 		t.Errorf("empty base must pass through untouched, got %+v", got)
+	}
+	if got := teammateBaseBlocks(nil, wt); got != nil {
+		t.Errorf("nil provider must yield no base, got %+v", got)
+	}
+
+	// The provider is read per spawn, not captured: a leader that entered a
+	// worktree rewrote block 1, and a shared teammate follows the leader cwd.
+	moved := []agentcore.SystemBlock{{Text: config.BuildUniversalBase("/main/repo-xyz/.codebot/worktrees/wt-1"), CacheControl: "ephemeral"}}
+	shared = moved
+	if got := teammateBaseBlocks(provider, nil); len(got) != 1 || got[0].Text != moved[0].Text {
+		t.Errorf("shared teammate must see the leader CURRENT base after a retarget, got %+v", got)
 	}
 }
 

@@ -242,3 +242,34 @@ func writeSkillFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+// A worktree enter/exit moves the workspace root, and Spec.Paths is resolved
+// against it — keeping the boot cwd would keep deciding which skills apply
+// from the workspace the session has left.
+func TestCatalogRetargetMovesActivationRoot(t *testing.T) {
+	t.Parallel()
+
+	withMarker, withoutMarker := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(withMarker, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	gated := Spec{Name: "go-only", Description: "gated on go.mod", Paths: []string{"go.mod"}}
+	c := NewCatalog(withoutMarker, []Spec{gated})
+
+	if len(c.List()) != 0 {
+		t.Fatalf("skill must be inactive without its marker file, got %+v", c.List())
+	}
+	if _, ok := c.Get("go-only"); ok {
+		t.Fatal("Get must respect the same activation check as List")
+	}
+
+	c.Retarget(withMarker)
+
+	if got := c.List(); len(got) != 1 || got[0].Name != "go-only" {
+		t.Fatalf("skill must activate after retargeting to the workspace holding its marker, got %+v", got)
+	}
+	if _, ok := c.Get("go-only"); !ok {
+		t.Fatal("Get must activate after retarget too")
+	}
+}

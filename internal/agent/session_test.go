@@ -1334,25 +1334,108 @@ func TestReplaceMCPToolsUpdatesAllToolsWithoutBreakingFilteredActiveTools(t *tes
 	}
 }
 
-func TestBuildUserMessagePrependsRuntimeRemindersBeforeStaticReminders(t *testing.T) {
+func TestBuildUserMessagePrependsRuntimeRemindersBeforeUserText(t *testing.T) {
 	t.Parallel()
 
 	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
 	s := NewSession(SessionConfig{
-		Agent:     ag,
-		Settings:  config.Resolved{MaxTurns: 30},
-		Cwd:       t.TempDir(),
-		Reminders: []string{"<system-reminder>\nstatic reminder\n</system-reminder>"},
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
 	})
 	t.Cleanup(s.Close)
 
 	s.queueRuntimeReminder("loop", ReminderRepeatToolCall, "<system-reminder>\nruntime reminder\n</system-reminder>")
 	msg := s.buildUserMessage(agentcore.TextBlock("user input"))
-	if len(msg.Content) != 3 {
-		t.Fatalf("expected 3 content blocks, got %d", len(msg.Content))
+	if len(msg.Content) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(msg.Content))
 	}
-	if !strings.Contains(msg.Content[0].Text, "runtime reminder") || !strings.Contains(msg.Content[1].Text, "static reminder") {
-		t.Fatalf("unexpected content ordering: %#v", msg.Content)
+	if !strings.Contains(msg.Content[0].Text, "runtime reminder") {
+		t.Fatalf("runtime reminder should come first: %#v", msg.Content)
+	}
+	if msg.Content[1].Text != "user input" {
+		t.Fatalf("user text must be the last block: %#v", msg.Content)
+	}
+}
+
+// The reason system block 2 exists: nothing that is stable for the session may
+// ride along with user messages, or the history grows one copy per turn.
+// Before this layout, five turns put five copies of AGENTS.md / MEMORY.md /
+// the skill listing into the request.
+func TestUserMessagesDoNotAccumulateWorkspaceContext(t *testing.T) {
+	t.Parallel()
+
+	ag := agentcore.NewAgent(agentcore.WithModel(&stubChatModel{}))
+	s := NewSession(SessionConfig{
+		Agent:    ag,
+		Settings: config.Resolved{MaxTurns: 30},
+		Cwd:      t.TempDir(),
+		ContextFiles: config.ContextFiles{
+			Agents:    "AGENTS-MARKER",
+			Memory:    "MEMORY-MARKER",
+			MemoryDir: t.TempDir(),
+		},
+		Skills: []skill.Spec{{Name: "probe", Description: "SKILL-MARKER", FilePath: "/s/p.md"}},
+	})
+	t.Cleanup(s.Close)
+
+	const turns = 5
+	for range turns {
+		if err := s.Prompt("hello"); err != nil {
+			t.Fatal(err)
+		}
+		s.WaitForIdle()
+	}
+
+	for _, marker := range []string{"AGENTS-MARKER", "MEMORY-MARKER", "SKILL-MARKER"} {
+		if n := countInMessages(s.deps.agent.Messages(), marker); n != 0 {
+			t.Errorf("%s appears %d times in message history; it belongs in system block 2 only", marker, n)
+		}
+	}
+}
+
+func countInMessages(msgs []agentcore.AgentMessage, marker string) int {
+	n := 0
+	for _, am := range msgs {
+		msg, ok := am.(agentcore.Message)
+		if !ok {
+			continue
+		}
+		for _, b := range msg.Content {
+			if b.Type == agentcore.ContentText {
+				n += strings.Count(b.Text, marker)
+			}
+		}
+	}
+	return n
+}
+
+// The date lives in system block 1, so a same-day session must never spend a
+// reminder on it; only a rollover gets one, and only once.
+func TestDateChangeReminderFiresOnlyOnRollover(t *testing.T) {
+	t.Parallel()
+
+	// Baseline = the date system block 1 was rendered with.
+	r := reminderState{lastDate: "2026-07-31"}
+	if r.takeDateChange("2026-07-31") {
+		t.Fatal("same date must not fire")
+	}
+	if !r.takeDateChange("2026-08-01") {
+		t.Fatal("rollover must fire")
+	}
+	if r.takeDateChange("2026-08-01") {
+		t.Fatal("rollover must fire exactly once")
+	}
+}
+
+// BuildUniversalBase must stay a pure function of its inputs: the leader
+// renders block 1 at boot, a worktree teammate re-renders it at spawn, and a
+// live clock in there would split their shared cache prefix after midnight.
+func TestUniversalBaseIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	if config.BuildUniversalBase("/tmp/ws") != config.BuildUniversalBase("/tmp/ws") {
+		t.Fatal("universal base is not deterministic — leader and teammate will not share a cache prefix")
 	}
 }
 
@@ -2322,7 +2405,7 @@ func TestAutoResumeReminderFallsBackToQueueWhileHeld(t *testing.T) {
 	if ag.HasQueuedMessages() {
 		t.Fatal("held inject leaked into the steering queue")
 	}
-	runtime, _ := s.reminders.drainForPrompt()
+	runtime := s.reminders.drainForPrompt()
 	count := 0
 	for _, r := range runtime {
 		if r == reminder {
@@ -2331,5 +2414,224 @@ func TestAutoResumeReminderFallsBackToQueueWhileHeld(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("reminder queued %d times, want exactly 1 (next-prompt fallback)", count)
+	}
+}
+
+// --- workspace retarget & self-healing preamble -----------------------------
+
+func newPromptTestSession(t *testing.T, cwd string) *Session {
+	t.Helper()
+	s := NewSession(SessionConfig{
+		Agent:                 agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+		Settings:              config.Resolved{MaxTurns: 10},
+		Cwd:                   cwd,
+		FrozenIdentity:        config.BuildUniversalBase(cwd),
+		DeferredToolsPreamble: "<available-deferred-tools>\nWebSearch\n</available-deferred-tools>",
+	})
+	t.Cleanup(s.Close)
+	return s
+}
+
+func TestRetargetWorkspaceRebuildsIdentityBlock(t *testing.T) {
+	t.Parallel()
+
+	origin, moved := t.TempDir(), t.TempDir()
+	s := newPromptTestSession(t, origin)
+
+	if got := s.prompt.frozenIdentity; !strings.Contains(got, origin) {
+		t.Fatalf("block 1 does not name the starting cwd %q:\n%s", origin, got)
+	}
+
+	s.RetargetWorkspace(moved)
+
+	identity := s.prompt.frozenIdentity
+	if !strings.Contains(identity, moved) {
+		t.Fatalf("block 1 still does not name the new cwd %q:\n%s", moved, identity)
+	}
+	if strings.Contains(identity, origin) {
+		t.Fatalf("block 1 kept the stale cwd %q:\n%s", origin, identity)
+	}
+	if s.currentCwd() != moved {
+		t.Fatalf("session cwd = %q, want %q", s.currentCwd(), moved)
+	}
+}
+
+func TestRetargetWorkspaceRebuildsInstructionsFromNewRoot(t *testing.T) {
+	t.Parallel()
+
+	origin, moved := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(moved, "AGENTS.md"), []byte("worktree-only-marker"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+
+	s := newPromptTestSession(t, origin)
+	if strings.Contains(s.prompt.frozenInstructions, "worktree-only-marker") {
+		t.Fatal("block 2 already carries the target workspace's AGENTS.md before retarget")
+	}
+
+	s.RetargetWorkspace(moved)
+
+	if !strings.Contains(s.prompt.frozenInstructions, "worktree-only-marker") {
+		t.Fatalf("block 2 missing the new workspace's AGENTS.md:\n%s", s.prompt.frozenInstructions)
+	}
+}
+
+func TestRetargetWorkspaceHonorsSystemOverride(t *testing.T) {
+	t.Parallel()
+
+	origin, moved := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(moved, "SYSTEM.md"), []byte("override body"), 0o644); err != nil {
+		t.Fatalf("write SYSTEM.md: %v", err)
+	}
+
+	s := newPromptTestSession(t, origin)
+	s.RetargetWorkspace(moved)
+
+	// An override replaces the whole prompt: block 1 must go away, not be
+	// rebuilt alongside it.
+	if s.prompt.frozenIdentity != "" {
+		t.Fatalf("block 1 survived a SYSTEM.md override:\n%s", s.prompt.frozenIdentity)
+	}
+	if s.prompt.frozenInstructions != "override body" {
+		t.Fatalf("block 2 = %q, want the override verbatim", s.prompt.frozenInstructions)
+	}
+}
+
+func TestPendingPreambleIsSuppressedOnceDelivered(t *testing.T) {
+	t.Parallel()
+
+	s := newPromptTestSession(t, t.TempDir())
+
+	preamble, ok := s.pendingPreamble()
+	if !ok {
+		t.Fatal("preamble not pending on an empty conversation")
+	}
+	if err := s.deps.agent.SetMessages([]agentcore.AgentMessage{injectedUserMsg(preamble)}); err != nil {
+		t.Fatalf("seed transcript: %v", err)
+	}
+	if _, ok := s.pendingPreamble(); ok {
+		t.Fatal("preamble re-injected while the transcript still carries it")
+	}
+}
+
+// The point of deriving delivery from the transcript: every path that wipes
+// the context window re-arms the preamble without a flag to remember.
+func TestPendingPreambleSelfHealsAfterWipe(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		wipe func(*Session)
+	}{
+		{"ClearConversation", func(s *Session) { s.ClearConversation() }},
+		{"compaction drops it", func(s *Session) {
+			if err := s.deps.agent.SetMessages([]agentcore.AgentMessage{
+				agentcore.UserMsg("summary of the earlier conversation"),
+			}); err != nil {
+				t.Fatalf("replace transcript: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newPromptTestSession(t, t.TempDir())
+
+			preamble, _ := s.pendingPreamble()
+			if err := s.deps.agent.SetMessages([]agentcore.AgentMessage{injectedUserMsg(preamble)}); err != nil {
+				t.Fatalf("seed transcript: %v", err)
+			}
+			tc.wipe(s)
+
+			if _, ok := s.pendingPreamble(); !ok {
+				t.Fatal("preamble stayed suppressed after the context window was replaced")
+			}
+		})
+	}
+}
+
+func TestClearConversationDropsContextWindowState(t *testing.T) {
+	t.Parallel()
+
+	s := newPromptTestSession(t, t.TempDir())
+	s.queueRuntimeReminder("k", ReminderHookContext, "queued")
+	s.reminders.mu.Lock()
+	s.reminders.recallSurfaced = map[string]bool{"mem": true}
+	s.reminders.recallBytes = 512
+	s.reminders.mu.Unlock()
+
+	s.ClearConversation()
+
+	s.reminders.mu.Lock()
+	defer s.reminders.mu.Unlock()
+	if len(s.reminders.runtime) != 0 {
+		t.Fatalf("runtime reminders survived /clear: %v", s.reminders.runtime)
+	}
+	if len(s.reminders.recallSurfaced) != 0 || s.reminders.recallBytes != 0 {
+		t.Fatalf("recall dedup state survived /clear: %v / %d bytes",
+			s.reminders.recallSurfaced, s.reminders.recallBytes)
+	}
+}
+
+// --- codex review follow-ups ------------------------------------------------
+
+func TestIdentityBlockFollowsWorkspaceRetarget(t *testing.T) {
+	t.Parallel()
+
+	origin, moved := t.TempDir(), t.TempDir()
+	s := newPromptTestSession(t, origin)
+
+	// This is what the teammate spawner reads, per spawn. A shared teammate
+	// runs in the leader's cwd, so a stale block would misname its workspace
+	// AND split the prefix the two are supposed to share.
+	before := s.IdentitySystemBlock()
+	if len(before) != 1 || !strings.Contains(before[0].Text, origin) {
+		t.Fatalf("identity block does not state the starting cwd: %+v", before)
+	}
+	if before[0].CacheControl != "ephemeral" {
+		t.Fatalf("identity block CacheControl = %q, want ephemeral", before[0].CacheControl)
+	}
+
+	s.RetargetWorkspace(moved)
+
+	after := s.IdentitySystemBlock()
+	if len(after) != 1 || !strings.Contains(after[0].Text, moved) {
+		t.Fatalf("identity block did not follow the retarget: %+v", after)
+	}
+	if strings.Contains(after[0].Text, origin) {
+		t.Fatal("identity block still leaks the pre-retarget cwd")
+	}
+}
+
+// A context wipe destroys the rollover correction but leaves the stale date in
+// block 1, so the correction has to be re-sent rather than stay marked as
+// delivered.
+func TestDateCorrectionSurvivesContextWipe(t *testing.T) {
+	t.Parallel()
+
+	tomorrow := "2999-01-02"
+	for _, tc := range []struct {
+		name string
+		wipe func(*reminderState)
+	}{
+		{"resetAll", func(r *reminderState) { r.resetAll() }},
+		{"compaction", func(r *reminderState) { r.resetSummarized() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := &reminderState{lastDate: config.SessionDate()}
+
+			if !r.takeDateChange(tomorrow) {
+				t.Fatal("rollover must fire once")
+			}
+			if r.takeDateChange(tomorrow) {
+				t.Fatal("rollover must not fire twice within one context window")
+			}
+
+			tc.wipe(r)
+
+			if !r.takeDateChange(tomorrow) {
+				t.Fatal("rollover must fire again: the wipe dropped the correction but block 1 is still stale")
+			}
+		})
 	}
 }

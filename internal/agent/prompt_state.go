@@ -26,19 +26,30 @@ type promptSink interface {
 // A-deliver), leaving the agent's tools/system permanently out of step with
 // the state here.
 //
-// Lock order: mu → {agent lock, reminders.mu, cache.mu, catalog/tracker
+// Lock order: mu → {agent lock, cache.mu, catalog/tracker
 // locks} — all leaves that never call back into this package. Methods never
 // reference Session; the one mutable cross-group input (cwd) is passed in.
 type promptState struct {
 	mu sync.Mutex
 
-	sink      promptSink
-	reminders *reminderState      // static-reminder delivery target
-	cache     *cacheMonitor       // prompt-fingerprint delivery target
-	usage     *skill.UsageTracker // immutable dep; nil → fall back to invocation counts
+	sink  promptSink
+	cache *cacheMonitor       // prompt-fingerprint delivery target
+	usage *skill.UsageTracker // immutable dep; nil → fall back to invocation counts
 
-	frozenIdentity     string // system block 1 — process-stable, never recomputed
-	frozenInstructions string // system block 2 — process-stable, never recomputed
+	// frozenIdentity is system block 1. Stable for the whole session except on
+	// a worktree enter/exit, which moves the working directory it states.
+	frozenIdentity string
+
+	// frozenInstructions is system block 2. It carries the leader role, the
+	// session-stable tool inventory, and the project context (skills,
+	// AGENTS.md, MEMORY.md). Recomputed ONLY by rebuildFrozenLocked, i.e. on
+	// an explicit reload or catalog swap — never on the plan-mode/MCP paths,
+	// which would churn the cached prefix for nothing.
+	frozenInstructions string
+	// localToolInfos is the session-stable local tool set as the frozen block
+	// renders it. Held so a reload can rebuild block 2 without re-deriving it
+	// from activeTools, which plan mode filters.
+	localToolInfos []config.ToolInfo
 
 	allTools     []agentcore.Tool
 	activeTools  []agentcore.Tool
@@ -49,7 +60,6 @@ type promptState struct {
 	dynamicText  string // block 3 — refreshed by rebuildLocked; read by teammate spawn
 
 	deferredToolsPreamble string // <available-deferred-tools> for first user message
-	preambleInjected      bool   // true after first preamble injection
 
 	invoked         []invokedSkillSnapshot
 	invocationCount map[string]int
@@ -71,15 +81,15 @@ func (p *promptState) toolsByName(names ...string) []agentcore.Tool {
 	return result
 }
 
-func (p *promptState) setTools(cwd string, tools ...agentcore.Tool) {
+func (p *promptState) setTools(tools ...agentcore.Tool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.activeTools = tools
 	p.sink.SetTools(tools...)
-	p.rebuildLocked(cwd)
+	p.rebuildLocked()
 }
 
-func (p *promptState) restoreAllTools(cwd string, extra ...agentcore.Tool) {
+func (p *promptState) restoreAllTools(extra ...agentcore.Tool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(extra) == 0 {
@@ -99,10 +109,10 @@ func (p *promptState) restoreAllTools(cwd string, extra ...agentcore.Tool) {
 		p.activeTools = combined
 	}
 	p.sink.SetTools(p.activeTools...)
-	p.rebuildLocked(cwd)
+	p.rebuildLocked()
 }
 
-func (p *promptState) replaceMCPTools(cwd string, tools []agentcore.Tool) {
+func (p *promptState) replaceMCPTools(tools []agentcore.Tool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	wasAllTools := sameToolSet(p.activeTools, p.allTools)
@@ -120,14 +130,14 @@ func (p *promptState) replaceMCPTools(cwd string, tools []agentcore.Tool) {
 	}
 
 	p.sink.SetTools(p.activeTools...)
-	p.rebuildLocked(cwd)
+	p.rebuildLocked()
 }
 
-func (p *promptState) setOverlay(cwd, key, text string) {
+func (p *promptState) setOverlay(key, text string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.overlays.set(key, text)
-	p.rebuildLocked(cwd)
+	p.rebuildLocked()
 }
 
 func (p *promptState) setCatalog(cwd string, catalog *skill.Catalog) {
@@ -139,7 +149,8 @@ func (p *promptState) setCatalog(cwd string, catalog *skill.Catalog) {
 	} else {
 		p.skills = nil
 	}
-	p.rebuildLocked(cwd)
+	p.rebuildFrozenLocked(cwd)
+	p.rebuildLocked()
 }
 
 // installReload swaps in freshly loaded context files and skills — the disk
@@ -148,17 +159,72 @@ func (p *promptState) setCatalog(cwd string, catalog *skill.Catalog) {
 func (p *promptState) installReload(cwd string, files config.ContextFiles, skills []skill.Spec) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.installLocked(cwd, files, skills)
+}
+
+// installRetarget is installReload plus block 1, which states the workspace
+// root a worktree enter/exit just moved. Costs a cache write; changing
+// directories is supposed to.
+func (p *promptState) installRetarget(cwd string, files config.ContextFiles, skills []skill.Spec) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.frozenIdentity = config.BuildIdentity(cwd, files)
+	p.installLocked(cwd, files, skills)
+}
+
+func (p *promptState) installLocked(cwd string, files config.ContextFiles, skills []skill.Spec) {
 	files.GitSnapshot = p.contextFiles.GitSnapshot
 	p.contextFiles = files
 	p.skills = skills
-	p.rebuildLocked(cwd)
+	p.rebuildFrozenLocked(cwd)
+	p.rebuildLocked()
 }
 
-func (p *promptState) rebuildLocked(cwd string) {
+// rebuildFrozenLocked recomputes system block 2. Callers must follow it with
+// rebuildLocked to deliver.
+//
+// Separate from rebuildLocked on purpose: block 2 moves only on an explicit
+// reload, while rebuildLocked runs on every plan-mode toggle and MCP refresh.
+// Merging them would make those frequent paths pay for a skill-catalog glob
+// and risk byte drift in the cached prefix.
+func (p *promptState) rebuildFrozenLocked(cwd string) {
 	if p.skillCatalog != nil {
 		p.skills = p.skillCatalog.List()
 	}
+	ordered := skill.OrderForPrompt(p.skills, cwd, p.usageScoresLocked())
+	p.frozenInstructions = config.BuildLeaderInstructions(p.contextFiles, p.localToolInfos, ordered)
+}
 
+// BuildSystemBlocks orders the system prompt from most stable to least. The
+// cache is a strict prefix, so position decides whether a block can be cached
+// at all — gitSnapshot never changes but would be uncacheable parked after the
+// volatile dynamic block.
+//
+// Breakpoints go on the FIRST and LAST static block, not every one: the prefix
+// runs through the final marker, so the middle rides along for free, while the
+// one on identity survives a reload that rewrites instructions.
+func BuildSystemBlocks(identity, instructions, gitSnapshot, dynamic string) []agentcore.SystemBlock {
+	blocks := make([]agentcore.SystemBlock, 0, 4)
+	for _, text := range []string{identity, instructions, gitSnapshot} {
+		if text != "" {
+			blocks = append(blocks, agentcore.SystemBlock{Text: text})
+		}
+	}
+	if n := len(blocks); n > 0 {
+		blocks[0].CacheControl = "ephemeral"
+		blocks[n-1].CacheControl = "ephemeral"
+	}
+	// After the breakpoints, so it can never acquire one.
+	if dynamic != "" {
+		blocks = append(blocks, agentcore.SystemBlock{Text: dynamic})
+	}
+	if len(blocks) == 0 {
+		return nil
+	}
+	return blocks
+}
+
+func (p *promptState) rebuildLocked() {
 	// Find DeferFilter (if tool_search is active) to exclude deferred tools from prompt.
 	var filter agentcore.DeferFilter
 	for _, t := range p.activeTools {
@@ -188,34 +254,17 @@ func (p *promptState) rebuildLocked(cwd string) {
 	// dynamicText doubles as the teammate-spawn snapshot (DynamicSystemBlock).
 	p.dynamicText = config.BuildDynamicSystemPart(mcpInfos, p.overlays.texts())
 
-	// Three-block layout for cache stability:
-	//   block 1 (identity):     ephemeral, frozen for the process
-	//   block 2 (instructions): ephemeral, frozen for the process
-	//   block 3 (dynamic):      no cache_control — changes on plan-toggle /
-	//                           MCP refresh; a breakpoint here would charge
-	//                           1.25x for writes that get invalidated soon.
-	blocks := []agentcore.SystemBlock{
-		{Text: p.frozenIdentity, CacheControl: "ephemeral"},
-		{Text: p.frozenInstructions, CacheControl: "ephemeral"},
-	}
-	if p.dynamicText != "" {
-		blocks = append(blocks, agentcore.SystemBlock{Text: p.dynamicText})
-	}
-	if p.contextFiles.GitSnapshot != "" {
-		blocks = append(blocks, agentcore.SystemBlock{Text: p.contextFiles.GitSnapshot})
-	}
+	blocks := BuildSystemBlocks(p.frozenIdentity, p.frozenInstructions,
+		p.contextFiles.GitSnapshot, p.dynamicText)
 	p.sink.SetSystemBlocks(blocks)
 
-	// The preamble is delivered as the first user message — see takePreamble.
+	// The preamble is delivered as the first user message — see
+	// Session.pendingPreamble, which decides delivery from the transcript.
 	if len(deferredNames) > 0 {
 		p.deferredToolsPreamble = "<available-deferred-tools>\n" + strings.Join(deferredNames, "\n") + "\n</available-deferred-tools>"
 	} else {
 		p.deferredToolsPreamble = ""
 	}
-
-	// Static reminders ride along with every user prompt.
-	orderedSkills := skill.OrderForPrompt(p.skills, cwd, p.usageScoresLocked())
-	p.reminders.setStatic(config.BuildReminders(p.contextFiles, orderedSkills))
 
 	// Refresh cache-break fingerprints. Frozen and dynamic hash separately so
 	// detectCacheBreak can pinpoint which block churned. The monitor guards
@@ -227,34 +276,14 @@ func (p *promptState) rebuildLocked(cwd string) {
 	)
 }
 
-func (p *promptState) refreshSkillReminders(cwd string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.skillCatalog != nil {
-		p.skills = p.skillCatalog.List()
-	}
-	orderedSkills := skill.OrderForPrompt(p.skills, cwd, p.usageScoresLocked())
-	p.reminders.setStatic(config.BuildReminders(p.contextFiles, orderedSkills))
-}
-
+// usageScoresLocked ranks skills for RenderListing's budget selection. The
+// scores decay with wall time, which is why they must never reach the rendered
+// ORDER — see skill.RenderListing.
 func (p *promptState) usageScoresLocked() map[string]float64 {
 	if p.usage != nil {
 		return p.usage.Scores(time.Now())
 	}
 	return invocationUsageScores(p.invocationCount)
-}
-
-// takePreamble consumes the one-shot deferred-tools preamble (Prompt path).
-// preambleSnapshot below is the read-only sibling for compaction recovery,
-// which must re-inject without consuming.
-func (p *promptState) takePreamble() (string, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.preambleInjected || p.deferredToolsPreamble == "" {
-		return "", false
-	}
-	p.preambleInjected = true
-	return p.deferredToolsPreamble, true
 }
 
 func (p *promptState) preambleSnapshot() string {
@@ -263,19 +292,11 @@ func (p *promptState) preambleSnapshot() string {
 	return p.deferredToolsPreamble
 }
 
-// setPreambleInjected rearms (false) or suppresses (true) preamble injection —
-// reset/clear rearm it; a session switch derives it from whether the restored
-// history already carries the preamble.
-func (p *promptState) setPreambleInjected(injected bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.preambleInjected = injected
-}
-
-// recordInvoked appends to the invocation log; the usage tracker write (own
-// lock, disk-backed) runs after the lock is released, and the caller then
-// refreshes skill reminders — sequential locks, never nested, so this path
-// cannot self-deadlock the way a rebuild-inside-record would.
+// recordInvoked appends to the invocation log. The usage tracker write (own
+// lock, disk-backed) runs after this lock is released — sequential, never
+// nested, so this path cannot self-deadlock the way a rebuild-inside-record
+// would. No prompt rebuild follows: usage only decides which skills survive
+// the listing budget, never their rendered order.
 func (p *promptState) recordInvoked(snapshot invokedSkillSnapshot, usageName string) error {
 	p.mu.Lock()
 	if p.invocationCount == nil {
@@ -335,6 +356,12 @@ func (p *promptState) catalogSnapshot() *skill.Catalog {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.skillCatalog
+}
+
+func (p *promptState) identitySnapshot() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.frozenIdentity
 }
 
 func (p *promptState) dynamicSnapshot() string {

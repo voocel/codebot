@@ -85,16 +85,22 @@ func newTeammateWorktree(repoRoot, agentName string) (*teammateWorktree, error) 
 	return &teammateWorktree{repoRoot: repoRoot, dir: dir, branch: branch}, nil
 }
 
-// teammateBaseBlocks returns the system base a teammate is built with. A shared
-// teammate (wt == nil) inherits the leader's base verbatim, preserving the
-// cross-agent cache prefix. An isolated teammate gets the universal base rebuilt
-// for its worktree cwd: the shared base states the leader's cwd, but the
-// sandboxed teammate's tools resolve against the worktree and run with no
-// approval gate, so a stale path would invite absolute-path writes that escape
-// into the main tree. The shared slice is never mutated, so peers keep their
-// cache prefix. An empty shared base (SystemOverride sessions) is passed through
-// untouched — that authored prompt must not be displaced.
-func teammateBaseBlocks(shared []agentcore.SystemBlock, wt *teammateWorktree) []agentcore.SystemBlock {
+// teammateBaseBlocks returns the system base a teammate is built with.
+//
+// baseProvider is read per spawn, never captured at boot: a shared teammate
+// follows the leader cwd (see teammateCwd), which a worktree enter rewrites
+// along with block 1.
+//
+// An isolated teammate instead rebuilds the base for its own worktree — its
+// tools resolve against the sandbox and run with no approval gate, so a stale
+// path would invite absolute-path writes escaping into the main tree. An empty
+// shared base (SystemOverride) passes through: that authored prompt must not
+// be displaced.
+func teammateBaseBlocks(baseProvider func() []agentcore.SystemBlock, wt *teammateWorktree) []agentcore.SystemBlock {
+	var shared []agentcore.SystemBlock
+	if baseProvider != nil {
+		shared = baseProvider()
+	}
 	if wt == nil || len(shared) == 0 {
 		return shared
 	}
@@ -188,7 +194,7 @@ const maxAgentNameSuffixAttempts = 1000
 //     teammate in the leader's shared cwd; when set, a teammate whose agent type
 //     opts into "worktree" runs in its own checkout (bound via a cwd override on
 //     the spawn context).
-func Spawner(reg *coreteam.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *EventHub, baseBlocks []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol coreteam.ProtocolHooks, hookRunner *hooks.Runner, persist *Persist, isolation *Isolation) subagent.TeamSpawner {
+func Spawner(reg *coreteam.Registry, rt *task.Runtime, extraTools []agentcore.Tool, hub *EventHub, baseProvider func() []agentcore.SystemBlock, dynamicProvider func() *agentcore.SystemBlock, protocol coreteam.ProtocolHooks, hookRunner *hooks.Runner, persist *Persist, isolation *Isolation) subagent.TeamSpawner {
 	// worktreeMu serialises sandbox creation: the leader can fire parallel
 	// subagent spawns (agentcore runs tools concurrently), and concurrent
 	// `git worktree add` on one repo contend on the index lock — a loser would
@@ -275,7 +281,7 @@ func Spawner(reg *coreteam.Registry, rt *task.Runtime, extraTools []agentcore.To
 		// One teammate, one cache lineage: suffix the unique teammate name so
 		// same-type teammates don't share a routing bucket, while a resumed
 		// teammate (same name) keeps its warm cache.
-		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, commitMessage, teammateBaseBlocks(baseBlocks, wt), dynamicBlock, PromptCacheKey(req.Config.PromptCacheKey, agentName))
+		executor := buildTeammateExecutor(req.Config, tools, model, onEvent, commitMessage, teammateBaseBlocks(baseProvider, wt), dynamicBlock, PromptCacheKey(req.Config.PromptCacheKey, agentName))
 
 		depth := task.DepthFromContext(ctx) + 1
 		if depth > task.MaxAgentDepth {

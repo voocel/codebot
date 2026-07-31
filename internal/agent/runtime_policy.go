@@ -49,8 +49,25 @@ func newSessionRuntimePolicy(session *Session) *sessionRuntimePolicy {
 
 func (p *sessionRuntimePolicy) beforeUserPrompt(blocks []agentcore.ContentBlock) {
 	_ = blocks
+	p.queueDateChangeReminder()
 	p.queueTaskManagementPromptReminder()
 	p.queuePlanModePromptReminder()
+}
+
+// queueDateChangeReminder corrects system block 1 after a session outlives
+// midnight. The date is baked into that block so it costs nothing per turn;
+// this is the one-line patch for the rare rollover, mirroring how plan-mode
+// reminders refresh a contract that lives elsewhere.
+func (p *sessionRuntimePolicy) queueDateChangeReminder() {
+	today := time.Now().Format("2006-01-02")
+	if !p.session.reminders.takeDateChange(today) {
+		return
+	}
+	p.session.queueRuntimeReminder(
+		"date_change:"+today,
+		ReminderDateChange,
+		wrapReminder("The date has changed since this session started. Today's date is now "+today+". The date in your environment block is stale; use this one."),
+	)
 }
 
 func (p *sessionRuntimePolicy) handleEvent(ev agentcore.Event) {

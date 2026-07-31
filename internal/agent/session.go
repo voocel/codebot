@@ -50,8 +50,9 @@ type SessionConfig struct {
 	// Tools is the full set of tools registered with the agent.
 	// Used by ToolsByName / RestoreAllTools for plan mode filtering.
 	Tools []agentcore.Tool
-	// ContextFiles holds loaded context files for dynamic system prompt rebuilding.
-	// When tools change the prompt is regenerated from these inputs.
+	// ContextFiles holds the workspace context rendered into system block 2.
+	// Session.Reload re-reads it from disk and rebuilds that block; nothing
+	// else in the session mutates it.
 	ContextFiles config.ContextFiles
 	// Skills holds loaded skills for system prompt injection and /skill: commands.
 	Skills []skill.Spec
@@ -61,10 +62,6 @@ type SessionConfig struct {
 	SkillUsage *skill.UsageTracker
 	// DeferredToolsPreamble is injected as the first user message (once).
 	DeferredToolsPreamble string
-	// Reminders are <system-reminder> fragments prepended to each user message.
-	Reminders []string
-	// PreambleInjected indicates the preamble was already in conversation history (resume).
-	PreambleInjected bool
 	// SkillAllowsSetter updates temporary tool allows for the active skill.
 	SkillAllowsSetter func([]string)
 
@@ -74,12 +71,16 @@ type SessionConfig struct {
 	// no longer has in its conversation history.
 	FileReadState *agenttools.FileReadState
 
-	// FrozenIdentity / FrozenInstructions are the process-stable parts of the
-	// system prompt (block 1 + block 2). Computed once at assembly time and
-	// reused on every rebuild — never recomputed during the session.
-	// See config.BuildFrozenSystemParts.
+	// FrozenIdentity is system block 1's assembly-time value; a worktree
+	// retarget recomputes it for the new root. FrozenInstructions is block 2's;
+	// a Reload or retarget recomputes it from ContextFiles + Skills +
+	// LocalTools. See config.BuildFrozenSystemParts.
 	FrozenIdentity     string
 	FrozenInstructions string
+	// LocalTools is the session-stable local tool inventory as rendered into
+	// block 2. Held so a reload can rebuild that block without re-deriving it
+	// from the live tool set, which plan mode filters.
+	LocalTools []config.ToolInfo
 	// InitialMCPOverlay seeds the mcp overlay when the assembly already knows
 	// the MCP instructions (e.g. MCP managers that connect synchronously).
 	// Written directly into the overlay store without triggering a rebuild.
@@ -223,8 +224,8 @@ func (h *sessionHooks) getSkillAllows() func([]string) {
 //	prompt.mu / model.mu → agent lock (sink delivery — covered by the setters'
 //	                                   documented purity contract: pure
 //	                                   assignment, no events, no callbacks),
-//	                                   and prompt.mu → reminders.mu / cache.mu
-//	                                   (leaf delivery targets)
+//	                                   and prompt.mu → cache.mu (leaf delivery
+//	                                   target)
 //	flushMu → persist.mu              (lazy-persist drain)
 //
 // s.mu itself guards generation and backgroundWakeSuppressed. Session-identity
@@ -283,9 +284,10 @@ type invokedSkillSnapshot struct {
 // lock guarding it. Callers go through the methods below — the fields are never
 // touched directly, so a new delivery path cannot forget to take the lock.
 //
-//   - static: persistent across turns (context-file derived), never cleared
 //   - runtime: one-shot queue consumed on the next user prompt
 //   - runtimeKeys: dedup for the queue
+//   - lastDate: the calendar date baked into system block 1. Only a session
+//     that outlives midnight needs a correction, and then exactly one.
 //   - steeredKeys / autoResumeKeys: per-turn dedup for the two in-flight
 //     delivery paths (Steer / Inject) — reset at turn start and agent end
 //   - pendingContinue: marks that a Steer'd reminder needs a Continue() call
@@ -294,45 +296,45 @@ type invokedSkillSnapshot struct {
 //     reminder injection with a budget, and it resets on exactly the same
 //     events, so it lives here rather than as two loose Session fields.
 //
-// The zero value is usable; newReminderState only seeds the static set.
+// The zero value is usable.
 type reminderState struct {
 	mu sync.Mutex
 
-	static          []string
 	runtime         []string
 	runtimeKeys     map[string]struct{}
 	steeredKeys     map[string]struct{}
 	autoResumeKeys  map[string]struct{}
 	pendingContinue bool
+	lastDate        string
 
 	recallSurfaced map[string]bool
 	recallBytes    int
 }
 
-func newReminderState(static []string) reminderState {
-	return reminderState{static: static}
-}
-
-func (r *reminderState) setStatic(static []string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.static = static
-}
-
-func (r *reminderState) staticSnapshot() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.static...)
-}
-
 // drainForPrompt reads and clears the one-shot queue in one critical section:
 // splitting them would drop a reminder queued between the two steps.
-func (r *reminderState) drainForPrompt() (runtime, static []string) {
+func (r *reminderState) drainForPrompt() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	runtime, r.runtime = r.runtime, nil
+	runtime := r.runtime
+	r.runtime = nil
 	r.runtimeKeys = nil
-	return runtime, append([]string(nil), r.static...)
+	return runtime
+}
+
+// takeDateChange reports whether today differs from the date currently stated
+// in system block 1, and records the new value so the correction is sent once.
+// The baseline is seeded from config.SessionDate at construction rather than
+// from the first prompt: a process started at 23:59 whose first prompt lands at
+// 00:01 must still correct itself.
+func (r *reminderState) takeDateChange(today string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastDate == today {
+		return false
+	}
+	r.lastDate = today
+	return true
 }
 
 // queue reports false when the key was already queued this context window.
@@ -402,7 +404,11 @@ func (r *reminderState) clearPendingContinue() {
 	r.pendingContinue = false
 }
 
-// resetAll preserves 'static'; everything else including recall accounting goes.
+// resetAll drops every queue and dedup set, including recall accounting.
+//
+// lastDate rewinds to what block 1 states: it tracks the date the model
+// currently believes, and a wipe destroys the rollover correction while
+// leaving block 1 stale — so the correction must be re-sent.
 func (r *reminderState) resetAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -413,6 +419,7 @@ func (r *reminderState) resetAll() {
 	r.pendingContinue = false
 	r.recallSurfaced = nil
 	r.recallBytes = 0
+	r.lastDate = config.SessionDate()
 }
 
 // resetTurnDelivery runs at turn start. The runtime queue survives — queued
@@ -458,11 +465,15 @@ func (r *reminderState) chargeRecall(path string, size int) bool {
 	return true
 }
 
-func (r *reminderState) resetRecall() {
+// resetSummarized drops what a compaction summarized away: recalled memories
+// and the date correction. Narrower than resetAll on purpose — compaction
+// keeps the tail, so the per-turn delivery sets there must survive.
+func (r *reminderState) resetSummarized() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.recallSurfaced = nil
 	r.recallBytes = 0
+	r.lastDate = config.SessionDate()
 }
 
 // overlayStore holds named instructions overlays appended to the dynamic
@@ -533,7 +544,8 @@ func NewSession(cfg SessionConfig) *Session {
 
 		persist: persistState{store: cfg.Store},
 
-		reminders: newReminderState(cfg.Reminders),
+		// Baseline is what system block 1 actually says, not "now".
+		reminders: reminderState{lastDate: config.SessionDate()},
 	}
 	cwd := cfg.Cwd
 	s.cwd.Store(&cwd)
@@ -541,11 +553,11 @@ func NewSession(cfg SessionConfig) *Session {
 	// wired after the Session literal. Still single-threaded here.
 	s.prompt = &promptState{
 		sink:                  cfg.Agent,
-		reminders:             &s.reminders,
 		cache:                 &s.cache,
 		usage:                 cfg.SkillUsage,
 		frozenIdentity:        cfg.FrozenIdentity,
 		frozenInstructions:    cfg.FrozenInstructions,
+		localToolInfos:        cfg.LocalTools,
 		allTools:              cfg.Tools,
 		activeTools:           cfg.Tools,
 		contextFiles:          cfg.ContextFiles,
@@ -553,7 +565,6 @@ func NewSession(cfg SessionConfig) *Session {
 		skillCatalog:          cfg.SkillCatalog,
 		dynamicText:           cfg.InitialDynamic,
 		deferredToolsPreamble: cfg.DeferredToolsPreamble,
-		preambleInjected:      cfg.PreambleInjected,
 	}
 	if cfg.InitialMCPOverlay != "" {
 		s.prompt.overlays.set("mcp", cfg.InitialMCPOverlay)
@@ -582,6 +593,17 @@ func NewSession(cfg SessionConfig) *Session {
 //  2. The dynamic block can churn mid-session (plan-mode toggle, MCP
 //     reconnect); a cache breakpoint here would be invalidated frequently and
 //     would charge cache-write cost for short-lived content.
+//
+// IdentitySystemBlock returns the leader current block 1 for a teammate to
+// build on. Call it per spawn — a worktree retarget rewrites this block.
+func (s *Session) IdentitySystemBlock() []agentcore.SystemBlock {
+	text := s.prompt.identitySnapshot()
+	if text == "" {
+		return nil
+	}
+	return []agentcore.SystemBlock{{Text: text, CacheControl: "ephemeral"}}
+}
+
 func (s *Session) DynamicSystemBlock() *agentcore.SystemBlock {
 	text := s.prompt.dynamicSnapshot()
 	if text == "" {
@@ -611,43 +633,58 @@ func (s *Session) ResetTaskList() error {
 	return s.deps.taskStore.Reset()
 }
 
-// resetHarnessState is the switch-level reset contract: every stateful
-// component resets here (persist is handled by swapStore, which the callers
-// run first). Callers must have bumped generation BEFORE any teardown so
-// stale goroutines bail — this method deliberately does not bump it again.
-// Runs OUTSIDE s.mu: components self-lock, and snapshotter.Rebind does disk
-// I/O that must never sit inside the session lock.
-func (s *Session) resetHarnessState() {
-	s.mu.Lock()
-	s.backgroundWakeSuppressed = false
-	s.mu.Unlock()
+// resetContextWindowState drops everything whose validity is derived from the
+// current conversation. Any path that replaces the message history must call
+// exactly this — /clear, Reset, SwitchSession — so a new piece of
+// history-derived state is added in one place instead of three.
+//
+// State that is derived from the TRANSCRIPT rather than held in a field does
+// not belong here: it heals itself when the history changes (see
+// Session.pendingPreamble). Prefer that shape; this list is for state that
+// genuinely cannot be recomputed.
+//
+// Runs OUTSIDE s.mu — every component self-locks.
+func (s *Session) resetContextWindowState() {
+	// Runtime reminder queue + auto-memory recall accounting: both describe
+	// what the vanished history already carried.
 	s.reminders.resetAll()
-	s.turn.reset()
-	s.metrics.reset()
-	s.prompt.resetInvocations()
-	// Rearm the deferred-tools preamble: a fresh conversation needs it again.
-	// SwitchSession overrides this afterwards based on the restored history.
-	s.prompt.setPreambleInjected(false)
-	// Reset/SwitchSession install their target model explicitly; the captured
-	// baseline belongs to the old conversation and must not leak a restore.
-	s.model.clearOverride()
-	// The new conversation's first cache_read has no meaningful baseline to
-	// compare against — invalidate so detectCacheBreak skips one observation
-	// instead of reporting a phantom break.
-	s.cache.invalidateBaseline()
-	// retryAttempt is per-run; a leftover value would mislabel the next run's
-	// first retry event. activeRun is left alone: runs cannot span a switch
-	// (idle contract) and ending another owner's span here would double-End.
-	s.run.takeRetryAttempt()
 	// The extraction watermark belongs to the old history: keeping it would
-	// suppress memory extraction until the new session outgrows the old one.
+	// suppress memory extraction until the new history outgrows the old one.
 	s.sessionMemory.reset()
-	// Drop file-read stamps along with the rest of the harness state. After
-	// a reset the LLM has no read history; keeping stamps would let write/edit
+	// The first cache_read after a history swap has no meaningful baseline —
+	// invalidate so detectCacheBreak skips one observation instead of
+	// reporting a phantom break.
+	s.cache.invalidateBaseline()
+	// Without a read history, keeping file-read stamps would let write/edit
 	// validate against reads the LLM no longer remembers.
 	if s.deps.fileReadState != nil {
 		s.deps.fileReadState.Reset()
 	}
+}
+
+// resetHarnessState is the switch-level reset contract: the context-window
+// state above PLUS everything tied to session identity (persist is handled by
+// swapStore, which the callers run first). Callers must have bumped generation
+// BEFORE any teardown so stale goroutines bail — this method deliberately does
+// not bump it again. Runs OUTSIDE s.mu: components self-lock, and
+// snapshotter.Rebind does disk I/O that must never sit inside the session lock.
+func (s *Session) resetHarnessState() {
+	s.mu.Lock()
+	s.backgroundWakeSuppressed = false
+	s.mu.Unlock()
+
+	s.resetContextWindowState()
+
+	s.turn.reset()
+	s.metrics.reset()
+	s.prompt.resetInvocations()
+	// Reset/SwitchSession install their target model explicitly; the captured
+	// baseline belongs to the old conversation and must not leak a restore.
+	s.model.clearOverride()
+	// retryAttempt is per-run; a leftover value would mislabel the next run's
+	// first retry event. activeRun is left alone: runs cannot span a switch
+	// (idle contract) and ending another owner's span here would double-End.
+	s.run.takeRetryAttempt()
 	// Repoint at the new session's persisted undo stack (empty for a fresh
 	// session); prior snapshots no longer map to this conversation.
 	if s.deps.snapshotter != nil {

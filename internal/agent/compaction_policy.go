@@ -103,28 +103,22 @@ const (
 	postCompactBytesPerToken   = 4
 )
 
+// postCompactRecoveryMessages re-injects the context a summary rewrite drops.
+// Only two things qualify: the invoked-skill log and the deferred-tools
+// preamble, both of which live in the message stream. Workspace context
+// (AGENTS.md, MEMORY.md, skills) needs no recovery — it sits in system block 2,
+// which compaction never touches.
 func (s *Session) postCompactRecoveryMessages(_ context.Context, _ agentctx.SummaryInfo, _ []agentcore.AgentMessage) ([]agentcore.AgentMessage, error) {
 	var out []agentcore.AgentMessage
 
-	// 1. Skill reminder
 	if reminder := s.invokedSkillReminderMessage(); reminder != nil {
 		out = append(out, *reminder)
 	}
 
-	// 2. Deferred tools + static reminders. preambleSnapshot (not takePreamble):
-	// compaction recovery re-injects without consuming the one-shot flag.
-	preamble := s.prompt.preambleSnapshot()
-	staticReminders := s.reminders.staticSnapshot()
-
-	if preamble != "" {
+	// preambleSnapshot (not takePreamble): recovery re-injects without
+	// consuming the one-shot flag.
+	if preamble := s.prompt.preambleSnapshot(); preamble != "" {
 		out = append(out, injectedUserMsg(preamble))
-	}
-	for _, text := range staticReminders {
-		text = strings.TrimSpace(text)
-		if text == "" {
-			continue
-		}
-		out = append(out, injectedUserMsg(text))
 	}
 
 	return out, nil
@@ -211,7 +205,7 @@ func readRecentFiles(info agentctx.SummaryInfo, kept []agentcore.AgentMessage) [
 func shouldExcludeFromRestore(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 
-	// Memory/config files — re-injected via static reminders
+	// Instruction files — already in system block 2.
 	switch base {
 	case "claude.md", "agents.md", "agentctx.md":
 		return true
@@ -220,8 +214,10 @@ func shouldExcludeFromRestore(path string) bool {
 	if strings.HasSuffix(base, ".plan.md") {
 		return true
 	}
-	// Memory directory files
-	if strings.Contains(path, "/memory/") || strings.Contains(path, "/.claude/") || strings.Contains(path, "/.codebot/") {
+	// Memory / config directories. ToSlash first: on Windows these arrive as
+	// backslash paths and the substring checks would never fire.
+	slashed := filepath.ToSlash(path)
+	if strings.Contains(slashed, "/memory/") || strings.Contains(slashed, "/.claude/") || strings.Contains(slashed, "/.codebot/") {
 		return true
 	}
 	return false
