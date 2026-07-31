@@ -97,7 +97,8 @@ func (s *Session) compactWithReason(reason string) (result CompactionResult, err
 	result.CompactedCount = commit.CompactedCount
 	result.KeptCount = commit.KeptCount
 	result.SplitTurn = commit.SplitTurn
-	commit.Messages = injectCommittedFileRestores(commit.Messages)
+	// File restores and the skill/preamble log are already in commit.Messages:
+	// FullSummaryStrategy ran postCompactRecoveryMessages inside ForceApply.
 	tokensAfter := agentctx.EstimateTotal(commit.Messages)
 	if commit.Usage != nil {
 		cp := *commit.Usage
@@ -136,29 +137,6 @@ func (s *Session) compactWithReason(reason string) (result CompactionResult, err
 	result.Changed = true
 	result.TokensAfter = tokensAfter
 	return result, nil
-}
-
-func injectCommittedFileRestores(msgs []agentcore.AgentMessage) []agentcore.AgentMessage {
-	if len(msgs) == 0 {
-		return msgs
-	}
-	summary, ok := msgs[0].(agentctx.ContextSummary)
-	if !ok {
-		return msgs
-	}
-	info := agentctx.SummaryInfo{
-		ReadFiles:     append([]string(nil), summary.ReadFiles...),
-		ModifiedFiles: append([]string(nil), summary.ModifiedFiles...),
-	}
-	restore := readRecentFiles(info, msgs[1:])
-	if len(restore) == 0 {
-		return msgs
-	}
-	out := make([]agentcore.AgentMessage, 0, len(msgs)+len(restore))
-	out = append(out, msgs[0])
-	out = append(out, restore...)
-	out = append(out, msgs[1:]...)
-	return out
 }
 
 func persistCompaction(store appendCompactionStore, msgs []agentcore.AgentMessage) error {

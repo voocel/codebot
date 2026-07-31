@@ -58,7 +58,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	if r := assembly.settings.CompactRatio; r > 0 && r < 1 {
 		reserveTokens = assembly.settings.ContextWindow - int(float64(assembly.settings.ContextWindow)*r)
 	}
-	contextEngine, summaryCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens, input.cwd)
+	contextEngine, summaryCompact, toolCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens, input.cwd)
 
 	agentCore, err := buildAgent(assembly, services, contextEngine, tools, sessionID)
 	if err != nil {
@@ -69,7 +69,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 		return nil, err
 	}
 
-	session := buildSession(input, services, assembly, contextEngine, agentCore, tools)
+	session := buildSession(input, services, assembly, contextEngine, toolCompact, agentCore, tools)
 	// Bind the telemetry session-id provider now the session exists: every LLM
 	// generation span (leader and teammates, same session) gets tagged so the
 	// backend groups the run. Reads live, so a mid-run SwitchSession follows.
@@ -281,10 +281,18 @@ func buildAssignmentNotifier(reg *team.Registry) localtools.AssignmentNotifier {
 	}
 }
 
-func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int, cwd string) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy) {
+// buildContextEngine assembles the four-stage strategy chain, cheapest first.
+//
+// CommitOnProject is left off, so a threshold-triggered run produces a view for
+// that one request and nothing more: the agent's own history — and the session
+// file — keep the full tool output. These stages shrink what gets SENT, not
+// what is stored. Only the idle path (see idleMicrocompact) and an explicit
+// /compact write their result back.
+func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int, cwd string) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy, *agentctx.ToolResultMicrocompactStrategy) {
 	toolCompact := agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
-		Classifier: agent.CodebotToolClassifier,
-		KeepRecent: 5,
+		Classifier:       agent.CodebotToolClassifier,
+		KeepRecent:       5,
+		ClearedMessageFn: agent.ClearedToolResultMessage,
 	})
 	trimCompact := agentctx.NewLightTrim(agentctx.LightTrimConfig{})
 	// SessionMemory-backed compaction runs ahead of the LLM summary path so
@@ -307,7 +315,7 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 			summaryCompact,
 		},
 	})
-	return engine, summaryCompact
+	return engine, summaryCompact, toolCompact
 }
 
 func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine agentcore.ContextManager, tools []agentcore.Tool, sessionID string) (*agentcore.Agent, error) {
@@ -389,10 +397,11 @@ func resolveThinkingForModel(model agentcore.ChatModel, level string) (string, e
 	return resolved, nil
 }
 
-func buildSession(input *resolvedInput, services *bootServices, assembly *sessionAssembly, contextEngine agentcore.ContextManager, ag *agentcore.Agent, tools []agentcore.Tool) *agent.Session {
+func buildSession(input *resolvedInput, services *bootServices, assembly *sessionAssembly, contextEngine agentcore.ContextManager, toolCompact *agentctx.ToolResultMicrocompactStrategy, ag *agentcore.Agent, tools []agentcore.Tool) *agent.Session {
 	return agent.NewSession(agent.SessionConfig{
 		Agent:                 ag,
 		ContextManager:        contextEngine,
+		ToolMicrocompact:      toolCompact,
 		Store:                 input.sessionStore,
 		Manager:               input.sessionManager,
 		Registry:              input.registry,
@@ -444,6 +453,11 @@ func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, service
 
 	assembly.subagents.tool.SetTaskRuntime(taskRT)
 	assembly.subagents.tool.SetNotifyFn(session.EnqueueBackgroundResult)
+
+	// Resolved per save so it follows /new and /resume; see SetOutputDir.
+	localtools.SetOutputDir(tools, func() string {
+		return filepath.Join(config.SessionsDir(input.cwd), session.SessionID(), localtools.ToolOutputsSubdir)
+	})
 
 	sessionID := input.sessionStore.Header().SessionID
 	bgDir := filepath.Join(config.SessionsDir(input.cwd), sessionID, "bg")

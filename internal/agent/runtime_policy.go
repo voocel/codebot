@@ -49,6 +49,9 @@ func newSessionRuntimePolicy(session *Session) *sessionRuntimePolicy {
 
 func (p *sessionRuntimePolicy) beforeUserPrompt(blocks []agentcore.ContentBlock) {
 	_ = blocks
+	// Before the reminders: this may rewrite history, and doing it first keeps
+	// the turn's queued reminders out of the rewrite.
+	p.session.idleCompact.run(p.session, time.Now())
 	p.queueDateChangeReminder()
 	p.queueTaskManagementPromptReminder()
 	p.queuePlanModePromptReminder()

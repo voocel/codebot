@@ -209,8 +209,9 @@ func newSubAgentContextManager(model agentcore.ChatModel, window int) agentcore.
 		ContextWindow: window,
 		Strategies: []agentctx.Strategy{
 			agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
-				Classifier: agent.CodebotToolClassifier,
-				KeepRecent: 3,
+				Classifier:       agent.CodebotToolClassifier,
+				KeepRecent:       3,
+				ClearedMessageFn: agent.ClearedToolResultMessage,
 			}),
 			agentctx.NewLightTrim(agentctx.LightTrimConfig{}),
 			agentctx.NewFullSummary(agentctx.FullSummaryConfig{

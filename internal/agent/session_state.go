@@ -138,10 +138,10 @@ func (s *Session) emit(ev SessionEvent) {
 		}
 	case SEAutoCompactionEnd:
 		if ev.CompactionChanged {
-			// A compaction rewrites the prompt prefix: the next turn's
-			// cache_read drop is expected, not a bug. Invalidate the cache
-			// baseline so detectCacheBreak does not flag it as a break.
-			s.cache.invalidateBaseline()
+			// A compaction rewrites the prompt prefix, so the next turn's
+			// cache_read drop is our own doing. The conversation continues,
+			// so arm the attribution rather than dropping the baseline.
+			s.cache.expectDrop()
 		}
 	}
 
@@ -309,7 +309,7 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 	provider, model, _ := p.session.model.current()
 	thinking := p.session.model.currentSettings().ReasoningEffort
 
-	prevSnap, currSnap := p.session.cache.observe(u.CacheRead)
+	prevSnap, currSnap := p.session.cache.observe(u.CacheRead, time.Now())
 
 	var latencyMs int64
 	if !start.IsZero() {

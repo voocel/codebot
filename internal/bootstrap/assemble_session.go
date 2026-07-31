@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/voocel/agentcore"
@@ -162,8 +161,8 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 	}
 	builtTools = append(builtTools, cronTools...)
 
-	toolOutputDir := filepath.Join(config.SessionsDir(input.cwd), input.sessionStore.Header().SessionID, "tool-outputs")
-	localtools.SetOutputDir(toolOutputDir)
+	// Pointed at a session in wireSessionRuntime — the session does not exist
+	// yet here, and its directory moves on /new and /resume.
 	builtTools = localtools.WrapWithOutputLimit(builtTools)
 
 	subagents := buildSubAgents(subAgentDeps{

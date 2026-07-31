@@ -10,6 +10,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentctx "github.com/voocel/agentcore/context"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 var compactableTools = map[string]bool{
@@ -27,6 +28,26 @@ func CodebotToolClassifier(name string) bool {
 		return false
 	}
 	return compactableTools[name]
+}
+
+// ClearedToolResultMessage keeps the persisted-output path alive when
+// microcompact drops a tool result. Oversized output is already on disk by the
+// time it gets here (see tools.OutputLimitedTool), so the path is the model's
+// route back to it — clearing the whole block strands the file and leaves
+// re-running the command as the only way to recover.
+//
+// Results small enough to never have been persisted return "", falling back to
+// the plain cleared message.
+func ClearedToolResultMessage(_ string, original agentcore.Message) string {
+	for _, b := range original.Content {
+		if b.Type != agentcore.ContentText {
+			continue
+		}
+		if path := localtools.PersistedOutputPath(b.Text); path != "" {
+			return agentctx.DefaultClearedToolResult + "\n" + localtools.PersistedPathLabel + path
+		}
+	}
+	return ""
 }
 
 func (s *Session) PostSummaryRecoveryHook() agentctx.PostSummaryHook {
@@ -103,13 +124,19 @@ const (
 	postCompactBytesPerToken   = 4
 )
 
-// postCompactRecoveryMessages re-injects the context a summary rewrite drops.
-// Only two things qualify: the invoked-skill log and the deferred-tools
-// preamble, both of which live in the message stream. Workspace context
-// (AGENTS.md, MEMORY.md, skills) needs no recovery — it sits in system block 2,
-// which compaction never touches.
-func (s *Session) postCompactRecoveryMessages(_ context.Context, _ agentctx.SummaryInfo, _ []agentcore.AgentMessage) ([]agentcore.AgentMessage, error) {
-	var out []agentcore.AgentMessage
+// postCompactRecoveryMessages re-injects everything a summary rewrite drops
+// but the model still needs: the files it was working on, the invoked-skill
+// log, and the deferred-tools preamble. Workspace context (AGENTS.md,
+// MEMORY.md, skills) needs no recovery — it sits in system block 2, which
+// compaction never touches.
+//
+// This is the ONLY recovery path. It hangs off FullSummaryStrategy's hook,
+// which fires from both Apply (automatic, under token pressure) and ForceApply
+// (explicit /compact) — recovering from one but not the other would leave the
+// common case worse off.
+func (s *Session) postCompactRecoveryMessages(_ context.Context, info agentctx.SummaryInfo, kept []agentcore.AgentMessage) ([]agentcore.AgentMessage, error) {
+	// Files first: bulk content ahead of the short reminders.
+	out := readRecentFiles(info, kept)
 
 	if reminder := s.invokedSkillReminderMessage(); reminder != nil {
 		out = append(out, *reminder)

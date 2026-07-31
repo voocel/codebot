@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/storage"
@@ -25,6 +26,9 @@ type cacheSnapshot struct {
 	ToolsHash         uint64
 	CacheReadTokens   int
 	Valid             bool // false before the first turn
+	// ExpectedDrop marks a turn we rewrote the prompt ahead of, so the drop it
+	// observes is our own doing.
+	ExpectedDrop bool
 }
 
 // cacheMonitor guards the running snapshot. The three mutators below are the
@@ -32,23 +36,40 @@ type cacheSnapshot struct {
 // hashes belong to the prompt-rebuild path, CacheReadTokens / Valid to the
 // turn-completion path. Zero value is usable (Valid == false means no baseline).
 type cacheMonitor struct {
-	mu   sync.Mutex
+	mu sync.Mutex
+	// snap is the last observed turn — the baseline the next one compares
+	// against. Its hashes are the ones that turn was actually sent with.
 	snap cacheSnapshot
+	// pending holds the hashes of the request being built. Kept apart from
+	// snap because a rebuild lands between two turns: folding it into snap
+	// would overwrite the baseline's hashes with the incoming ones and every
+	// comparison would find them equal.
+	pending struct{ frozen, dynamic, tools uint64 }
+	// lastTurn stamps the last completed turn — i.e. when the server last
+	// wrote the prefix. Read by idleFor to decide whether it has expired.
+	lastTurn time.Time
+	// expectDropNext is armed when we rewrite the prompt and disarmed by the
+	// next observe, so exactly one turn is attributed to that rewrite.
+	expectDropNext bool
 }
 
-// updateInputHashes leaves CacheReadTokens / Valid alone: a rebuild mid-session
-// must keep the previously observed cache_read so the next turn can still
-// detect a drop against it.
+// updateInputHashes records what the next request will be built from. It stays
+// out of the baseline so the turn after it can be compared against what the
+// previous turn actually sent.
 func (c *cacheMonitor) updateInputHashes(frozen, dynamic, tools uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.snap.FrozenSystemHash = frozen
-	c.snap.DynamicSystemHash = dynamic
-	c.snap.ToolsHash = tools
+	c.pending.frozen = frozen
+	c.pending.dynamic = dynamic
+	c.pending.tools = tools
 }
 
-// invalidateBaseline is called after a compaction rewrites the prompt prefix:
-// the cache_read drop that follows is expected, not a break.
+// invalidateBaseline drops the baseline entirely, for when the history it
+// described is gone (/clear, /new, /resume). The next turn has nothing
+// meaningful to compare against, so it is skipped outright.
+//
+// Prefer expectDrop for a rewrite inside a continuing conversation: this one
+// blinds the following turn completely.
 func (c *cacheMonitor) invalidateBaseline() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -56,22 +77,51 @@ func (c *cacheMonitor) invalidateBaseline() {
 	c.snap.Valid = false
 }
 
+// expectDrop arms the next observation as self-inflicted: we just rewrote the
+// prompt, so the cache_read it reports will be down through no fault of the
+// provider.
+//
+// Unlike invalidateBaseline it keeps the baseline rolling, which matters
+// because compaction can fire on consecutive turns under sustained token
+// pressure — dropping the baseline each time would leave break detection off
+// for the rest of the session, exactly when it is most worth having.
+func (c *cacheMonitor) expectDrop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.expectDropNext = true
+}
+
 // observe reads the old baseline and stores the new one in one critical
 // section: split them and two turns completing close together can each compare
-// against the other's half-written baseline.
-func (c *cacheMonitor) observe(cacheRead int) (prev, curr cacheSnapshot) {
+// against the other's half-written baseline. now stamps the entry so idleFor
+// can tell whether the server-side cache has since expired.
+func (c *cacheMonitor) observe(cacheRead int, now time.Time) (prev, curr cacheSnapshot) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	prev = c.snap
 	curr = cacheSnapshot{
-		FrozenSystemHash:  c.snap.FrozenSystemHash,
-		DynamicSystemHash: c.snap.DynamicSystemHash,
-		ToolsHash:         c.snap.ToolsHash,
+		FrozenSystemHash:  c.pending.frozen,
+		DynamicSystemHash: c.pending.dynamic,
+		ToolsHash:         c.pending.tools,
 		CacheReadTokens:   cacheRead,
 		Valid:             true,
+		ExpectedDrop:      c.expectDropNext,
 	}
+	c.expectDropNext = false
 	c.snap = curr
+	c.lastTurn = now
 	return prev, curr
+}
+
+// idleFor reports how long the conversation has been idle, and false when no
+// turn has completed yet (nothing is cached, so nothing can have expired).
+func (c *cacheMonitor) idleFor(now time.Time) (time.Duration, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastTurn.IsZero() {
+		return 0, false
+	}
+	return now.Sub(c.lastTurn), true
 }
 
 func (c *cacheMonitor) snapshot() cacheSnapshot {
@@ -170,6 +220,21 @@ func detectCacheBreak(prev, curr cacheSnapshot) *storage.CacheBreakInfo {
 	frac := float64(dropAbs) / float64(prev.CacheReadTokens)
 	if frac < breakDropFraction {
 		return nil
+	}
+
+	// A rewrite we performed ourselves explains the drop on its own; reading
+	// the hashes past this point would blame whatever else happened to move.
+	// Recorded rather than suppressed — this entry is the only trace a
+	// projected rewrite leaves, since those never reach the store.
+	if curr.ExpectedDrop {
+		return &storage.CacheBreakInfo{
+			PrevCacheReadTokens: prev.CacheReadTokens,
+			CurrCacheReadTokens: curr.CacheReadTokens,
+			DropAbsolute:        dropAbs,
+			DropFraction:        frac,
+			Expected:            true,
+			Note:                "prompt rewritten by compaction (expected drop, not a break)",
+		}
 	}
 
 	frozenChanged := prev.FrozenSystemHash != curr.FrozenSystemHash

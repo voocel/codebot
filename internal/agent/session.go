@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	agentctx "github.com/voocel/agentcore/context"
 	agenttools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/goal"
@@ -62,6 +63,10 @@ type SessionConfig struct {
 	SkillUsage *skill.UsageTracker
 	// DeferredToolsPreamble is injected as the first user message (once).
 	DeferredToolsPreamble string
+	// ToolMicrocompact powers the idle cleanup that runs when the prompt cache
+	// has expired. Nil disables it. Same strategy instance the ContextEngine
+	// uses under token pressure — only the trigger differs.
+	ToolMicrocompact *agentctx.ToolResultMicrocompactStrategy
 	// SkillAllowsSetter updates temporary tool allows for the active skill.
 	SkillAllowsSetter func([]string)
 
@@ -254,6 +259,7 @@ type Session struct {
 	events eventBus // SessionEvent fan-out; owns its own lock
 
 	cache         cacheMonitor       // previous turn's system/tools fingerprint + cache_read; owns its own lock
+	idleCompact   *idleMicrocompact  // free tool-result cleanup once the cache prefix has expired; nil disables
 	sessionMemory sessionMemoryState // background extraction bookkeeping — see session_memory.go
 	turn          turnState          // tool-call tracking + turn outcome + run summary; owns its own lock
 	generation    uint64             // incremented on session switch; async goroutines check this to avoid cross-session callbacks
@@ -545,7 +551,8 @@ func NewSession(cfg SessionConfig) *Session {
 		persist: persistState{store: cfg.Store},
 
 		// Baseline is what system block 1 actually says, not "now".
-		reminders: reminderState{lastDate: config.SessionDate()},
+		reminders:   reminderState{lastDate: config.SessionDate()},
+		idleCompact: newIdleMicrocompact(cfg.ToolMicrocompact),
 	}
 	cwd := cfg.Cwd
 	s.cwd.Store(&cwd)

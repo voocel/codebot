@@ -113,11 +113,16 @@ type CacheBreakInfo struct {
 	// SystemChanged is true when either the frozen prefix or the dynamic
 	// tail of the system blocks changed. Kept for backwards compatibility
 	// with existing JSONL — prefer the finer-grained fields below.
-	SystemChanged  bool   `json:"system_changed,omitempty"`
-	FrozenChanged  bool   `json:"frozen_system_changed,omitempty"`
-	DynamicChanged bool   `json:"dynamic_system_changed,omitempty"`
-	ToolsChanged   bool   `json:"tools_changed,omitempty"`
-	Note           string `json:"note,omitempty"`
+	SystemChanged  bool `json:"system_changed,omitempty"`
+	FrozenChanged  bool `json:"frozen_system_changed,omitempty"`
+	DynamicChanged bool `json:"dynamic_system_changed,omitempty"`
+	ToolsChanged   bool `json:"tools_changed,omitempty"`
+	// Expected marks a drop we caused ourselves by rewriting the prompt —
+	// compaction clearing tool results, say. Recorded rather than dropped: it
+	// is the only place the cost of a rewrite shows up, and without it the
+	// drop reads as an unexplained provider-side miss.
+	Expected bool   `json:"expected,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
 
 // SessionInfo is a summary of a session for listing.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -15,20 +16,25 @@ const (
 	// DefaultOutputLimit is the maximum tool output size before truncation (30KB).
 	DefaultOutputLimit = 30 * 1024
 	outputCleanupAge   = 7 * 24 * time.Hour
+
+	// ToolOutputsSubdir names the per-session directory holding output too
+	// large to keep in the transcript. Lives here rather than in config
+	// because this package is what writes into it.
+	ToolOutputsSubdir = "tool-outputs"
+
+	// PersistedPathLabel introduces the file a truncated result was saved to.
+	// The line is the model's only route back to the full output, so it has to
+	// survive microcompact clearing it — see PersistedOutputPath.
+	PersistedPathLabel = "Full output saved to: "
+	persistedOpenTag   = "<persisted-output>"
+	persistedCloseTag  = "</persisted-output>"
+	saveFailedPath     = "(save failed)"
 )
 
-// outputBaseDir is the directory for storing truncated tool output.
-// Set by SetOutputDir; falls back to os.TempDir()/codebot-outputs.
-var outputBaseDir string
-
-// SetOutputDir sets the directory used for large tool output files.
-// Should be called once during bootstrap, before any tools execute.
-func SetOutputDir(dir string) { outputBaseDir = dir }
-
-func outputDir() string {
-	if outputBaseDir != "" {
-		return outputBaseDir
-	}
+// fallbackOutputDir catches tools that were never pointed at a session — tests
+// and any wiring path that forgot SetOutputDir. Writing somewhere harmless
+// beats failing the tool call.
+func fallbackOutputDir() string {
 	return filepath.Join(os.TempDir(), "codebot-outputs")
 }
 
@@ -48,6 +54,7 @@ var limitableTools = map[string]struct{}{
 type OutputLimitedTool struct {
 	inner agentcore.Tool
 	limit int
+	dirFn func() string
 }
 
 // WrapWithOutputLimit wraps tools in the limitable set with output truncation.
@@ -62,6 +69,29 @@ func WrapWithOutputLimit(tools []agentcore.Tool) []agentcore.Tool {
 		}
 	}
 	return out
+}
+
+// SetOutputDir points the wrapped tools at their session's output directory.
+//
+// dirFn is called per save, not once: /new and /resume move the session
+// directory underneath a running process. A path captured at wiring time keeps
+// writing into the session the process started in, so cleaning that session
+// later breaks paths the live one already handed the model.
+func SetOutputDir(tools []agentcore.Tool, dirFn func() string) {
+	for _, t := range tools {
+		if lt, ok := t.(*OutputLimitedTool); ok {
+			lt.dirFn = dirFn
+		}
+	}
+}
+
+func (t *OutputLimitedTool) outputDir() string {
+	if t.dirFn != nil {
+		if dir := t.dirFn(); dir != "" {
+			return dir
+		}
+	}
+	return fallbackOutputDir()
 }
 
 // Unwrap returns the underlying tool, allowing type assertions through the wrapper.
@@ -114,14 +144,14 @@ func (t *OutputLimitedTool) truncateAndSave(result json.RawMessage) json.RawMess
 }
 
 func (t *OutputLimitedTool) saveToFile(text string) string {
-	dir := outputDir()
+	dir := t.outputDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "(save failed)"
+		return saveFailedPath
 	}
 	filename := fmt.Sprintf("%s-%d.txt", t.inner.Name(), time.Now().UnixMilli())
 	path := filepath.Join(dir, filename)
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
-		return "(save failed)"
+		return saveFailedPath
 	}
 	return path
 }
@@ -153,24 +183,84 @@ func truncatedOutputSummary(text, path string) string {
 
 	if tail != "" {
 		return fmt.Sprintf(
-			"<persisted-output>\nOutput too large (%d chars). Full output saved to: %s\n\n%s\n\n[%d characters omitted]\n\n%s\n</persisted-output>",
-			total, path, head, omitted, tail,
+			"%s\nOutput too large (%d chars). %s%s\n\n%s\n\n[%d characters omitted]\n\n%s\n%s",
+			persistedOpenTag, total, PersistedPathLabel, path, head, omitted, tail, persistedCloseTag,
 		)
 	}
 	return fmt.Sprintf(
-		"<persisted-output>\nOutput too large (%d chars). Full output saved to: %s\n\n%s\n\n[%d characters omitted]\n</persisted-output>",
-		total, path, head, omitted,
+		"%s\nOutput too large (%d chars). %s%s\n\n%s\n\n[%d characters omitted]\n%s",
+		persistedOpenTag, total, PersistedPathLabel, path, head, omitted, persistedCloseTag,
 	)
 }
 
-// CleanOldOutputs removes tool output files older than 7 days.
-func CleanOldOutputs() {
-	dir := outputDir()
-	entries, err := os.ReadDir(dir)
+// PersistedOutputPath returns the file a truncated tool result was saved to, or
+// "" when there is none to point at.
+//
+// Tool output reaches the transcript as the tool's own JSON, so the path lands
+// escaped — on Windows every separator is doubled. Decoding first is what makes
+// the path usable rather than a mangled string.
+//
+// It also accepts its own shortened output, which is plain text by then. That
+// is what keeps microcompact idempotent across passes.
+func PersistedOutputPath(text string) string {
+	decoded := decodeToolOutput(text)
+	i := strings.Index(decoded, PersistedPathLabel)
+	if i < 0 {
+		return ""
+	}
+	path := decoded[i+len(PersistedPathLabel):]
+	if end := strings.IndexAny(path, "\r\n"); end >= 0 {
+		path = path[:end]
+	}
+	path = strings.TrimSpace(path)
+	if path == saveFailedPath {
+		return ""
+	}
+	return path
+}
+
+// decodeToolOutput unwraps the JSON a tool returned. Structured results carry
+// the text under "output" (bash and friends); the rest are bare JSON strings.
+// Anything else is already plain text and passes through.
+func decodeToolOutput(text string) string {
+	var s string
+	if json.Unmarshal([]byte(text), &s) == nil {
+		return s
+	}
+	var obj map[string]any
+	if json.Unmarshal([]byte(text), &obj) == nil {
+		if out, ok := obj["output"].(string); ok {
+			return out
+		}
+	}
+	return text
+}
+
+// CleanOldOutputs removes tool output files older than 7 days from every
+// session under sessionsRoot.
+//
+// It sweeps all sessions rather than the live one because outputs are stored
+// per session: the running session's own directory was created minutes ago and
+// can never hold anything old enough to collect.
+func CleanOldOutputs(sessionsRoot string) {
+	sessions, err := os.ReadDir(sessionsRoot)
 	if err != nil {
 		return
 	}
 	cutoff := time.Now().Add(-outputCleanupAge)
+	for _, s := range sessions {
+		if !s.IsDir() {
+			continue
+		}
+		cleanOutputDir(filepath.Join(sessionsRoot, s.Name(), ToolOutputsSubdir), cutoff)
+	}
+}
+
+func cleanOutputDir(dir string, cutoff time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
 	for _, e := range entries {
 		if e.IsDir() {
 			continue

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"testing"
+	"time"
 
 	"github.com/voocel/agentcore"
 )
@@ -159,26 +160,124 @@ func TestDetectCacheBreakReportsUnknownWhenHashesMatch(t *testing.T) {
 	}
 }
 
-func TestCompactionEventInvalidatesCacheBaseline(t *testing.T) {
+func TestCompactionEventAttributesTheNextDrop(t *testing.T) {
 	t.Parallel()
 
 	// Seed the baseline the way a real turn does: a prompt rebuild sets the
 	// input hashes, then the finished turn reports its cache_read.
 	s := &Session{}
 	s.cache.updateInputHashes(1, 0, 0)
-	s.cache.observe(50000)
+	s.cache.observe(50000, time.Now())
 
-	// An "unchanged" compaction must not reset the baseline — no rewrite happened.
+	// An "unchanged" compaction must not arm anything — no rewrite happened.
 	s.emit(SessionEvent{Type: SEAutoCompactionEnd, CompactionChanged: false})
-	if snap := s.cache.snapshot(); !snap.Valid || snap.CacheReadTokens != 50000 {
-		t.Fatalf("unchanged compaction should preserve baseline, got %+v", snap)
+	prev, curr := s.cache.observe(50000, time.Now())
+	if curr.ExpectedDrop {
+		t.Fatal("unchanged compaction armed an attribution it did not earn")
+	}
+	if !prev.Valid || prev.CacheReadTokens != 50000 {
+		t.Fatalf("baseline lost, got %+v", prev)
 	}
 
-	// A real compaction rewrites the prefix; the baseline must be dropped so
-	// the next turn's expected cache_read drop is not misreported.
+	// A real compaction rewrites the prefix. The baseline must keep rolling —
+	// only the attribution of the next drop changes.
 	s.emit(SessionEvent{Type: SEAutoCompactionEnd, CompactionChanged: true})
-	if snap := s.cache.snapshot(); snap.Valid || snap.CacheReadTokens != 0 {
-		t.Fatalf("changed compaction should invalidate baseline, got %+v", snap)
+	prev, curr = s.cache.observe(10000, time.Now())
+	if !curr.ExpectedDrop {
+		t.Fatal("compaction did not arm the drop attribution")
+	}
+	if !prev.Valid || prev.CacheReadTokens != 50000 {
+		t.Fatalf("baseline was dropped instead of kept, got %+v", prev)
+	}
+
+	info := detectCacheBreak(prev, curr)
+	if info == nil || !info.Expected {
+		t.Fatalf("drop not recorded as expected: %+v", info)
+	}
+
+	// One turn only: the following drop is unexplained and must be flagged.
+	prev, curr = s.cache.observe(1000, time.Now())
+	if curr.ExpectedDrop {
+		t.Fatal("attribution leaked into a second turn")
+	}
+	if info := detectCacheBreak(prev, curr); info == nil || info.Expected {
+		t.Fatalf("second drop should be a real break, got %+v", info)
+	}
+}
+
+// The hash comparison only means anything if the baseline keeps the hashes the
+// previous turn was sent with. A rebuild lands between turns, so folding it
+// into the baseline makes prev and curr always agree and every break falls
+// through to the "no input change" catch-all. Driving the real monitor is what
+// catches that — building two snapshots by hand tests the pure function and
+// skips the bug entirely.
+func TestMonitorComparesAgainstThePreviousTurnsHashes(t *testing.T) {
+	t.Parallel()
+
+	var c cacheMonitor
+	c.updateInputHashes(1, 7, 2)
+	c.observe(50000, time.Now())
+
+	// Next turn rebuilds the prompt with a changed frozen prefix.
+	c.updateInputHashes(9, 7, 2)
+	prev, curr := c.observe(1000, time.Now())
+
+	info := detectCacheBreak(prev, curr)
+	if info == nil {
+		t.Fatal("no break reported for a changed frozen prefix")
+	}
+	if !info.FrozenChanged {
+		t.Fatalf("frozen change not attributed, got %+v", info)
+	}
+	if info.DynamicChanged || info.ToolsChanged {
+		t.Fatalf("only the frozen prefix moved, got %+v", info)
+	}
+}
+
+// A rebuild that changes nothing must not manufacture a difference.
+func TestMonitorReportsNoInputChangeWhenNothingMoved(t *testing.T) {
+	t.Parallel()
+
+	var c cacheMonitor
+	c.updateInputHashes(1, 7, 2)
+	c.observe(50000, time.Now())
+
+	c.updateInputHashes(1, 7, 2)
+	prev, curr := c.observe(1000, time.Now())
+
+	info := detectCacheBreak(prev, curr)
+	if info == nil {
+		t.Fatal("a large unexplained drop should still be reported")
+	}
+	if info.FrozenChanged || info.DynamicChanged || info.ToolsChanged {
+		t.Fatalf("invented an input change, got %+v", info)
+	}
+}
+
+// Sustained token pressure fires compaction on consecutive turns. Dropping the
+// baseline each time would leave detection off for the rest of the session —
+// the case this whole mechanism exists to avoid.
+func TestRepeatedCompactionKeepsBreakDetectionAlive(t *testing.T) {
+	t.Parallel()
+
+	s := &Session{}
+	s.cache.updateInputHashes(1, 0, 0)
+	s.cache.observe(50000, time.Now())
+
+	for range 5 {
+		s.emit(SessionEvent{Type: SEAutoCompactionEnd, CompactionChanged: true})
+		s.cache.observe(50000, time.Now())
+	}
+
+	// A genuine break right after that run must still surface.
+	s.cache.updateInputHashes(999, 0, 0)
+	prev, curr := s.cache.observe(1000, time.Now())
+	info := detectCacheBreak(prev, curr)
+	if info == nil {
+		t.Fatal("break detection went dead after repeated compactions")
+	}
+	if info.Expected || !info.FrozenChanged {
+		t.Fatalf("misattributed the break: %+v", info)
 	}
 }
 

@@ -158,7 +158,7 @@ func Boot(opts Options) (*Runtime, error) {
 	}
 
 	closeStoreOnError = false
-	go localtools.CleanOldOutputs()
+	go localtools.CleanOldOutputs(config.SessionsDir(input.cwd))
 	go rt.CleanWorktreeOrphans()
 	return rt, nil
 }
