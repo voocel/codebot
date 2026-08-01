@@ -82,7 +82,7 @@ func (m *Model) View() string {
 		parts = append(parts, "", line)
 	}
 
-	if status := m.renderRetryStatus(); status != "" {
+	if status := m.renderStatusLine(); status != "" {
 		parts = append(parts, "", MutedStyle.Render(status))
 	}
 
@@ -128,19 +128,18 @@ func (m *Model) View() string {
 	return strings.Join(parts, "\n")
 }
 
-// renderRetryStatus formats the live retry line with an integer-second countdown.
-// Returns empty when no retry is in progress.
-func (m *Model) renderRetryStatus() string {
-	if m.RetryPrefix == "" {
+// renderStatusLine formats the current live status.
+func (m *Model) renderStatusLine() string {
+	if m.StatusPrefix == "" {
 		return ""
 	}
-	if m.RetryDeadline.IsZero() {
-		return m.RetryPrefix + "..."
+	if m.StatusDeadline.IsZero() {
+		return m.StatusPrefix + "..."
 	}
-	remain := time.Until(m.RetryDeadline)
+	remain := time.Until(m.StatusDeadline)
 	if remain <= 0 {
-		return m.RetryPrefix + "..."
+		return m.StatusPrefix + "..."
 	}
 	secs := int((remain + time.Second - 1) / time.Second)
-	return fmt.Sprintf("%s in %ds...", m.RetryPrefix, secs)
+	return fmt.Sprintf("%s in %ds...", m.StatusPrefix, secs)
 }

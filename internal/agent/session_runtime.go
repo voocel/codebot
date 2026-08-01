@@ -770,7 +770,7 @@ func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
 	if err == nil {
 		entry, _, err := s.deps.registry.Resolve(provType + "/" + modelID)
 		if err == nil && entry.ContextWindow > 0 {
-			s.applyContextWindow(entry.ContextWindow)
+			s.applyContextWindow(entry.ContextWindow, entry.MaxTokens)
 			return
 		}
 	}
@@ -778,13 +778,13 @@ func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
 	if err != nil || entry.ContextWindow <= 0 {
 		return
 	}
-	s.applyContextWindow(entry.ContextWindow)
+	s.applyContextWindow(entry.ContextWindow, entry.MaxTokens)
 }
 
-func (s *Session) applyContextWindow(window int) {
+func (s *Session) applyContextWindow(window, maxOutput int) {
 	// Re-apply user-configured compaction caps to the new model window so that
 	// mid-session model switches honor compact_window / compact_ratio.
-	applied, reserve := s.model.applyContextWindow(window)
+	applied, reserve := s.model.applyContextWindow(window, maxOutput)
 	// Agent.SetContextWindow propagates to the ContextEngine (it implements
 	// agentcore.ContextWindowSetter); only the reserve still needs a direct call.
 	s.deps.agent.SetContextWindow(applied)

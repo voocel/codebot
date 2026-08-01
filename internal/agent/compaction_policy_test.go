@@ -231,3 +231,32 @@ func TestPostCompactRecoveryExcludesSelfManagedFiles(t *testing.T) {
 		t.Fatalf("restored self-managed files %v, want none", paths)
 	}
 }
+
+// Only potentially blocking strategies need progress feedback.
+func TestCompactionBlocksOnlyForModelBackedStages(t *testing.T) {
+	t.Parallel()
+
+	for strategy, want := range map[string]bool{
+		"full_summary":             true,
+		"tool_result_microcompact": false,
+		"light_trim":               false,
+		"some_future_stage":        true,
+	} {
+		if got := CompactionBlocks(strategy); got != want {
+			t.Errorf("CompactionBlocks(%q) = %v, want %v", strategy, got, want)
+		}
+	}
+}
+
+// A model switch must update both the window and output reserve.
+func TestModelSwitchResizesTheReserve(t *testing.T) {
+	t.Parallel()
+
+	m := &modelState{settings: config.Resolved{ContextWindow: 200_000, MaxOutputTokens: 8_192}}
+	if _, reserve := m.applyContextWindow(200_000, 8_192); reserve != 8_192 {
+		t.Fatalf("reserve = %d, want the small model's ceiling", reserve)
+	}
+	if _, reserve := m.applyContextWindow(200_000, 64_000); reserve != 20_000 {
+		t.Fatalf("reserve = %d after switching to a large-output model, want the cap", reserve)
+	}
+}

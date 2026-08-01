@@ -100,6 +100,19 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 		go p.Send(msg)
 	}
 
+	// Show progress while a blocking compaction strategy runs.
+	sess.SetRewriteProgress(func(strategy string) func() {
+		if !agent.CompactionBlocks(strategy) {
+			return nil
+		}
+		prefix := "Compacting context"
+		if label := commands.PrettyCompactionStrategy(strategy); label != "" {
+			prefix += " via " + label
+		}
+		p.Send(tui.StatusMsg{Prefix: prefix})
+		return func() { p.Send(tui.StatusMsg{}) }
+	})
+
 	// A dream runs while the user is away, so without a line in the transcript
 	// it is invisible — /tasks is not somewhere anyone looks.
 	if rt.Dreamer != nil {
@@ -223,14 +236,14 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 			return
 		}
 		if prefix, delay, ok := formatRetryEvent(ev); ok {
-			p.Send(tui.RetryStatusMsg{
+			p.Send(tui.StatusMsg{
 				Prefix:   prefix,
 				Deadline: time.Now().Add(delay),
 			})
 			return
 		}
 		if ev.Type == agent.SEAutoRetryEnd {
-			p.Send(tui.RetryStatusMsg{})
+			p.Send(tui.StatusMsg{})
 			return
 		}
 		if ev.Type == agent.SERuntimeReminder && ev.Reminder != "" {
@@ -244,7 +257,7 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 			return
 		}
 		if ev.Type == agent.SEError && ev.Error != nil {
-			p.Send(tui.RetryStatusMsg{})
+			p.Send(tui.StatusMsg{})
 			sendAsync(tui.CommandResultMsg{
 				Text: tui.ErrorStyle.Render("Session error: " + ev.Error.Error()),
 			})
@@ -271,9 +284,7 @@ func newInputHistory(sess *agent.Session, cwd string) *storage.History {
 	)
 }
 
-// formatRetryEvent extracts the static prefix and remaining delay from a
-// retry-start event. Returned values feed RetryStatusMsg; the TUI renders
-// the live countdown from Deadline = now + delay.
+// formatRetryEvent extracts retry status from a start event.
 func formatRetryEvent(ev agent.SessionEvent) (prefix string, delay time.Duration, ok bool) {
 	if ev.Type != agent.SEAutoRetryStart {
 		return "", 0, false
@@ -293,14 +304,8 @@ func formatAutoCompactionEvent(ev agent.SessionEvent) (text string, muted bool, 
 		strategySuffix = " via " + label
 	}
 
+	// Progress stays in the live status; only outcomes enter the transcript.
 	switch ev.Type {
-	case agent.SEAutoCompactionStart:
-		switch ev.CompactionReason {
-		case "overflow":
-			return "Context overflow detected; compacting automatically" + strategySuffix + "...", true, true
-		default:
-			return "Auto-compacting context" + strategySuffix + "...", true, true
-		}
 	case agent.SEAutoCompactionEnd:
 		if ev.CompactionChanged && ev.TokensBefore > 0 && ev.TokensAfter > 0 {
 			action := "compacted"

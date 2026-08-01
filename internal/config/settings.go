@@ -151,6 +151,7 @@ type Resolved struct {
 	Providers  map[string]ProviderConfig // per-provider credentials
 
 	ContextWindow   int     // effective window after applying CompactWindow cap
+	MaxOutputTokens int     // model's output ceiling from the registry; 0 = unknown
 	CompactWindow   int     // user-configured cap on effective window; 0 = disabled
 	CompactRatio    float64 // usage ratio that triggers compaction; 0 = engine default
 	ReasoningEffort string
@@ -206,6 +207,21 @@ func FormatModelID(provider, model string) string {
 		return model
 	}
 	return provider + "/" + model
+}
+
+// maxCompactReserveTokens caps model-derived output headroom.
+const maxCompactReserveTokens = 20000
+
+// CompactReserveTokens returns reply headroom; zero selects the engine default.
+func (r Resolved) CompactReserveTokens() int {
+	if r.CompactRatio > 0 && r.CompactRatio < 1 {
+		return r.ContextWindow - int(float64(r.ContextWindow)*r.CompactRatio)
+	}
+	if r.MaxOutputTokens <= 0 || r.ContextWindow <= 0 {
+		return 0
+	}
+	// Preserve at least half the window for prompt content.
+	return min(min(maxCompactReserveTokens, r.MaxOutputTokens), r.ContextWindow/2)
 }
 
 // Resolve converts Settings to Resolved using defaults for unset fields.

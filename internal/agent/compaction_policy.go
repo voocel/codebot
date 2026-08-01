@@ -62,18 +62,19 @@ func (s *Session) HandleOverflowRewrite(info agentctx.RewriteEvent) {
 	s.handleAutomaticRewrite(info)
 }
 
+// SetRewriteProgress reports strategy execution to the frontend.
+func (s *Session) SetRewriteProgress(fn func(strategy string) func()) {
+	if engine, ok := s.deps.contextManager.(*agentctx.ContextEngine); ok {
+		engine.SetStrategyHook(fn)
+	}
+}
+
 func (s *Session) handleAutomaticRewrite(info agentctx.RewriteEvent) {
 	if !info.Changed {
 		return
 	}
 	kind := compactionKindForStrategy(info.Strategy)
 	s.metrics.recordCompactionAttempt(kind)
-	s.emit(SessionEvent{
-		Type:               SEAutoCompactionStart,
-		CompactionReason:   info.Reason,
-		CompactionKind:     kind,
-		CompactionStrategy: info.Strategy,
-	})
 	s.metrics.recordCompactionResult(kind, true, info.TokensBefore, info.TokensAfter)
 	compactedCount, keptCount, splitTurn := 0, 0, false
 	if info.Info != nil {
@@ -115,6 +116,11 @@ func (s *Session) handleAutomaticRewrite(info agentctx.RewriteEvent) {
 		}
 		s.reminders.resetSummarized()
 	}
+}
+
+// CompactionBlocks reports whether a strategy may block on a model call.
+func CompactionBlocks(strategy string) bool {
+	return compactionKindForStrategy(strategy) == CompactionKindFull
 }
 
 func compactionKindForStrategy(name string) CompactionKind {

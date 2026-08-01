@@ -54,11 +54,11 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	tools = append(tools, taskTools...)
 	tools = append(tools, teamTools...)
 
-	reserveTokens := 0 // 0 = engine default (fixed buffer)
-	if r := assembly.settings.CompactRatio; r > 0 && r < 1 {
-		reserveTokens = assembly.settings.ContextWindow - int(float64(assembly.settings.ContextWindow)*r)
-	}
-	contextEngine, summaryCompact, toolCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens)
+	contextEngine, summaryCompact, toolCompact := buildContextEngine(
+		assembly.chatModel,
+		assembly.settings.ContextWindow,
+		assembly.settings.CompactReserveTokens(),
+	)
 
 	agentCore, err := buildAgent(assembly, services, contextEngine, tools, sessionID)
 	if err != nil {
@@ -282,26 +282,7 @@ func buildAssignmentNotifier(reg *team.Registry) localtools.AssignmentNotifier {
 	}
 }
 
-// buildContextEngine assembles the two-stage strategy chain, cheapest first:
-// clear old tool results, then summarize.
-//
-// A third stage seeded from a project-scoped living document used to sit in
-// between. It always won — its file appears around 10k tokens while compaction
-// fires near the window — so FullSummary and the recovery hook hanging off it
-// never ran, and the document described the project rather than the messages
-// being dropped. Summarizing costs a blocking call; being accurate is worth it.
-//
-// CommitOnProject is on because Project runs per LLM call — including every
-// continuation inside a tool loop — and caches nothing. Left off, each of those
-// calls re-summarized the same history from scratch: one blocking model call
-// per request for a result that was thrown away. The session keeps the full
-// tool output regardless; these stages only ever rewrite the runtime baseline.
-//
-// It also costs nothing in cache terms. Below the threshold apply() returns
-// before any strategy runs, so the switch is inert (idle microcompact's
-// cold-cache timing lives entirely down here). Above it, microcompact's
-// protection window is a rolling one — each new tool result pushes an older one
-// out to be cleared — so the projected prefix already churns every turn.
+// buildContextEngine clears old tool results before falling back to a committed summary.
 func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy, *agentctx.ToolResultMicrocompactStrategy) {
 	toolCompact := agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
 		Classifier:       agent.CodebotToolClassifier,
@@ -312,9 +293,9 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 		Model: chatModel,
 	})
 	engine := agentctx.NewEngine(agentctx.EngineConfig{
-		ContextWindow:   contextWindow,
-		ReserveTokens:   reserveTokens,
-		CommitOnProject: true,
+		ContextWindow:    contextWindow,
+		ReserveTokens:    reserveTokens,
+		CommitStrategies: []string{summaryCompact.Name()},
 		Strategies: []agentctx.Strategy{
 			toolCompact,
 			summaryCompact,

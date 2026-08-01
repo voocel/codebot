@@ -147,13 +147,13 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case agentcore.EventAgentStart:
 		m.Running = true
-		m.clearRetryStatus()
+		m.clearStatusLine()
 		m.RunStats = runStats{StartedAt: time.Now()}
 		m.clearSuggestion()
 
 	case agentcore.EventAgentEnd:
 		m.Running = false
-		m.clearRetryStatus()
+		m.clearStatusLine()
 		m.RunStats.Duration = time.Since(m.RunStats.StartedAt)
 		m.RunStats.DisplayInput = m.RunStats.Input
 		m.RunStats.DisplayOutput = m.RunStats.Output
@@ -464,7 +464,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case agentcore.EventError:
-		m.clearRetryStatus()
+		m.clearStatusLine()
 		// Context cancellation is a normal operation (user Esc, plan submission stop).
 		if ev.Err != nil && errors.Is(ev.Err, context.Canceled) {
 			break
@@ -489,11 +489,10 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// clearRetryStatus removes the retry countdown from the live area.
-// Stops the next tick from doing anything (View() short-circuits on empty Prefix).
-func (m *Model) clearRetryStatus() {
-	m.RetryPrefix = ""
-	m.RetryDeadline = time.Time{}
+// clearStatusLine clears the live status and its countdown.
+func (m *Model) clearStatusLine() {
+	m.StatusPrefix = ""
+	m.StatusDeadline = time.Time{}
 }
 
 // flushSubagentStreaming writes accumulated thinking/delta to the output buffer as single lines.

@@ -77,15 +77,14 @@ type SuggestionMsg struct {
 	Text string
 }
 
-// RetryStatusMsg updates the single in-place retry status shown in the live area.
-// Empty Prefix clears the current retry status; Deadline drives the live countdown.
-type RetryStatusMsg struct {
+// StatusMsg updates the live status. Empty Prefix clears it.
+type StatusMsg struct {
 	Prefix   string
 	Deadline time.Time
 }
 
-// retryTickMsg drives the per-second countdown re-render.
-type retryTickMsg struct{}
+// statusTickMsg refreshes the status countdown.
+type statusTickMsg struct{}
 
 // RecentCompletedTTL is how long a freshly-completed task stays pinned at
 // the top of the truncated task tree before sinking to the bottom group.

@@ -191,20 +191,16 @@ func (m *modelState) clearOverride() {
 	m.mu.Unlock()
 }
 
-// applyContextWindow clamps the window by the user's compaction caps and
-// stores it; the caller pushes the returned values into the agent/engine
-// outside the lock (those setters may take engine locks of their own).
-func (m *modelState) applyContextWindow(window int) (applied, reserve int) {
+// applyContextWindow stores capped model limits for propagation outside the lock.
+func (m *modelState) applyContextWindow(window, maxOutput int) (applied, reserve int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if cap := m.settings.CompactWindow; cap > 0 && cap < window {
 		window = cap
 	}
-	if r := m.settings.CompactRatio; r > 0 && r < 1 {
-		reserve = window - int(float64(window)*r)
-	}
 	m.settings.ContextWindow = window
-	return window, reserve
+	m.settings.MaxOutputTokens = maxOutput
+	return window, m.settings.CompactReserveTokens()
 }
 
 // resolveThinkingAgainst resolves level against a live model, falling back to

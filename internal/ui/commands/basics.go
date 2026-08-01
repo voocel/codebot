@@ -63,10 +63,8 @@ func Compact(session *agent.Session) Command {
 				)),
 			}
 		}
-		return tea.Sequence(
-			tui.SendCommandResult(tui.MutedStyle.Render("Compacting context...")),
-			run,
-		)
+		// The live status already reports compaction progress.
+		return run
 	})
 }
 

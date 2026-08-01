@@ -121,6 +121,7 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	settings := input.settings
 	if entry, _, err := input.registry.Resolve(activeModel); err == nil && entry.ContextWindow > 0 {
 		settings.ContextWindow = entry.ContextWindow
+		settings.MaxOutputTokens = entry.MaxTokens
 	} else if settings.ContextWindow <= 0 {
 		settings.ContextWindow = 128000
 	}

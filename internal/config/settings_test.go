@@ -118,3 +118,27 @@ func TestValidateResolvedRejectsProviderAPIOnNonOpenAIProvider(t *testing.T) {
 		t.Fatalf("expected diag.ErrConfig in chain, got %v", err)
 	}
 }
+
+// Model-derived reserves remain bounded and allow explicit overrides.
+func TestCompactReserveTracksModelOutputCeiling(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		r    Resolved
+		want int
+	}{
+		{"small ceiling reserves only what it needs", Resolved{ContextWindow: 200_000, MaxOutputTokens: 8_192}, 8_192},
+		{"large ceiling hits the cap", Resolved{ContextWindow: 1_000_000, MaxOutputTokens: 128_000}, 20_000},
+		{"capped window clamps the reserve", Resolved{ContextWindow: 20_000, MaxOutputTokens: 64_000}, 10_000},
+		{"unknown ceiling defers to the engine", Resolved{ContextWindow: 128_000}, 0},
+		{"explicit ratio wins", Resolved{ContextWindow: 100_000, MaxOutputTokens: 64_000, CompactRatio: 0.8}, 20_000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.r.CompactReserveTokens(); got != tc.want {
+				t.Fatalf("CompactReserveTokens() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
