@@ -104,6 +104,17 @@ func (s *Session) handleAutomaticRewrite(info agentctx.RewriteEvent) {
 		KeptCount:          keptCount,
 		SplitTurn:          splitTurn,
 	})
+
+	// The engine installed this view as the new baseline, so the tail of an
+	// explicit /compact applies here too. Info is non-nil only for a summary
+	// rewrite — a tool-result commit produces no checkpoint and needs neither
+	// step.
+	if info.Committed && info.Info != nil {
+		if err := persistCompaction(s.persist.currentStore(), info.View); err != nil {
+			s.emit(SessionEvent{Type: SEError, Error: err})
+		}
+		s.reminders.resetSummarized()
+	}
 }
 
 func compactionKindForStrategy(name string) CompactionKind {

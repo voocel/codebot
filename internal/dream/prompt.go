@@ -2,7 +2,8 @@ package dream
 
 import (
 	"fmt"
-	"path/filepath"
+
+	"github.com/voocel/codebot/internal/config"
 )
 
 // dreamSystemPrompt fixes the dream sub-agent's role and tool boundary. The
@@ -13,10 +14,10 @@ const dreamSystemPrompt = `You are a memory-consolidation agent running in the b
 You have read-only exploration tools (read, grep, glob, ls) plus write and edit that only work inside the memory directory. There is no bash. Do not attempt to modify anything outside the memory directory. Work autonomously — nobody will answer questions. Finish with a brief summary of what changed.`
 
 // buildConsolidationPrompt builds the four-phase consolidation task prompt.
-// It mirrors CC's consolidationPrompt.ts but adapts to codebot's memory
-// shape: MEMORY.md is an index injected into every turn's system-reminder and
-// truncated past 200 lines; there is no daily-logs directory; transcripts are
-// <date>_<id>.jsonl files under SessionsDir.
+// It mirrors CC's consolidationPrompt.ts, minus the daily-logs source: those
+// are CC's assistant-mode layout, which codebot has no equivalent of. What
+// stays is CC's own fallback — drifted memories plus narrow transcript search.
+// Transcripts are <date>_<id>.jsonl files under SessionsDir.
 func buildConsolidationPrompt(memoryDir, transcriptDir string, sessionsTouched int) string {
 	return fmt.Sprintf(`# Dream: Memory Consolidation
 
@@ -37,27 +38,29 @@ Sessions active since the last consolidation: %d
 Look for new information worth persisting, in priority order:
 
 1. Existing memories that drifted — facts contradicted by what the codebase shows now
-2. The session digest at %s — its "Errors & Corrections" and "Learnings" sections are already-distilled signal from recent sessions; read it before touching transcripts
-3. Transcript search — grep the *.jsonl transcripts for narrow terms you already suspect matter
+2. Transcript search — grep the *.jsonl transcripts for narrow terms you already suspect matter
 
 Do not exhaustively read transcripts. Look only for things you already suspect are important.
 
 ## Phase 3 — Consolidate
 
-- Merge new signal INTO existing topic files rather than creating near-duplicates
-- Ensure every topic file starts with a frontmatter header (name, description, type: user | feedback | project | reference) — add one to files missing it; the description drives future recall, so make it specific
-- Convert relative dates ("yesterday", "last week") to absolute dates so they stay interpretable
-- Delete facts that have been disproven — fix them at the source
-- Keep detailed notes in topic files (e.g. debugging.md, patterns.md), never in MEMORY.md
+For each thing worth remembering, write or update a topic file in the memory directory. The auto-memory section of your system prompt is the source of truth for what to save, how to structure it, and what NOT to save — follow it rather than inventing a format here.
+
+Focus on:
+
+- Merging new signal INTO existing topic files rather than creating near-duplicates
+- Converting relative dates ("yesterday", "last week") to absolute dates so they stay interpretable
+- Deleting facts that have been disproven — fix them at the source
 
 ## Phase 4 — Prune and index
 
-MEMORY.md is injected into every conversation and hard-truncated at 200 lines — it must stay a concise INDEX, never a dump:
+MEMORY.md is injected into every conversation and hard-truncated at %d lines — keep it under that and under ~25KB. It is an INDEX, never a dump: one line per entry, under ~150 characters, shaped `+"`- [Title](file.md) — one-line hook`"+`.
 
-- One line per entry pointing at a topic file, with a one-line hook
 - Remove pointers to memories that are stale, wrong, or superseded
+- Demote verbose entries — an index line past ~200 characters is carrying content that belongs in the topic file; shorten the line and move the detail
+- Add pointers to newly important memories
 - Resolve contradictions — if two files disagree, fix the wrong one
 
 Return a brief summary of what you consolidated, updated, or pruned. If memories are already tight, say so and change nothing.`,
-		memoryDir, transcriptDir, sessionsTouched, filepath.Join(transcriptDir, "session-memory.md"))
+		memoryDir, transcriptDir, sessionsTouched, config.MemoryMaxLines)
 }

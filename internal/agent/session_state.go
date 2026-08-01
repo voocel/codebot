@@ -286,7 +286,6 @@ func (p *sessionPersistence) handleMessageEnd(msg agentcore.Message) {
 	if msg.Role == agentcore.RoleAssistant {
 		p.persistLLMCall(msg)
 		p.tryAutoName()
-		p.maybeExtractSessionMemory()
 	}
 }
 

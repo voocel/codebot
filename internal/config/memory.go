@@ -7,7 +7,9 @@ import (
 	"strings"
 )
 
-const memoryMaxLines = 200
+// MemoryMaxLines is where LoadMemory truncates MEMORY.md. Exported so the
+// prompts that tell the model about the limit cannot drift from it.
+const MemoryMaxLines = 200
 
 // MemoryDir returns ~/.codebot/projects/<projectID>/memory/.
 func MemoryDir(cwd string) string {
@@ -36,12 +38,12 @@ func LoadMemory(cwd string) (content, dir string) {
 	}
 
 	lines := strings.Split(raw, "\n")
-	if len(lines) > memoryMaxLines {
-		content = strings.Join(lines[:memoryMaxLines], "\n")
+	if len(lines) > MemoryMaxLines {
+		content = strings.Join(lines[:MemoryMaxLines], "\n")
 		content += fmt.Sprintf("\n\n<!-- MEMORY.md has %d lines (limit: %d). "+
 			"Only the first %d lines were loaded. Move detailed content into "+
 			"separate topic files and keep MEMORY.md as a concise index. -->",
-			len(lines), memoryMaxLines, memoryMaxLines)
+			len(lines), MemoryMaxLines, MemoryMaxLines)
 	} else {
 		content = raw
 	}
@@ -69,7 +71,7 @@ As you work, consult your memory files to build on previous experience.
 ## How to save memories:
 - Organize memory semantically by topic, not chronologically
 - Use the Write and Edit tools to update your memory files
-- `+"`MEMORY.md`"+` is always loaded into your conversation context — lines after 200 will be truncated, so keep it concise
+- `+"`MEMORY.md`"+` is always loaded into your conversation context — lines after %d will be truncated, so keep it concise
 - Create separate topic files (e.g., `+"`debugging.md`"+`, `+"`patterns.md`"+`) for detailed notes and link to them from MEMORY.md
 - Update or remove memories that turn out to be wrong or outdated
 - Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.
@@ -109,5 +111,5 @@ These exclusions hold even when the user explicitly asks you to remember such co
 ## Explicit user requests:
 - When the user asks you to remember something across sessions (e.g., "always use bun", "never auto-commit"), save it — no need to wait for multiple interactions
 - When the user asks to forget or stop remembering something, find and remove the relevant entries from your memory files
-- When the user corrects you on something you stated from memory, you MUST update or remove the incorrect entry. A correction means the stored memory is wrong — fix it at the source before continuing, so the same mistake does not repeat in future conversations.`, memoryDir)
+- When the user corrects you on something you stated from memory, you MUST update or remove the incorrect entry. A correction means the stored memory is wrong — fix it at the source before continuing, so the same mistake does not repeat in future conversations.`, memoryDir, MemoryMaxLines)
 }

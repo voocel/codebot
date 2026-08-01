@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,8 +42,8 @@ func newTestDreamer(t *testing.T, runner agentRunner, settings config.DreamSetti
 		Settings:    settings,
 		TaskRT:      rt,
 		Runner:      runner,
-		OnDone:      func(err error) { done <- err },
 	})
+	d.SetOnDone(func(_ []string, err error) { done <- err })
 	return d, rt, done
 }
 
@@ -241,4 +242,18 @@ func TestMaybeStartGates(t *testing.T) {
 			t.Fatal("current session was not excluded")
 		}
 	})
+}
+
+// dream writes memory files, so it needs the same auto-memory rules every
+// other path gets — above all the "what NOT to save" list. Its system prompt
+// is a fixed string, so nothing else would notice the rules going missing.
+func TestDreamAgentCarriesAutoMemoryRules(t *testing.T) {
+	t.Parallel()
+
+	cfg, _ := BuildAgentConfig(t.TempDir(), nil, nil, "s1")
+	for _, want := range []string{"# Auto Memory", "What NOT to save", "Topic file format"} {
+		if !strings.Contains(cfg.SystemPrompt, want) {
+			t.Errorf("dream system prompt is missing %q", want)
+		}
+	}
 }

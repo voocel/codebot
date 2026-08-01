@@ -28,7 +28,7 @@ func TestCountSessionsTouchedSince(t *testing.T) {
 	touch(t, dir, "2026-07-14_bbbb2222.jsonl", now) // counted
 	touch(t, dir, "2026-07-01_cccc3333.jsonl", old) // too old
 	touch(t, dir, "2026-07-14_dddd4444.jsonl", now) // current session, excluded
-	touch(t, dir, "session-memory.md", now)         // not a transcript
+	touch(t, dir, "notes.md", now)                  // not a transcript
 	if err := os.Mkdir(filepath.Join(dir, "sub.jsonl"), 0o755); err != nil {
 		t.Fatal(err)
 	}

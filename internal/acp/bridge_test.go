@@ -91,9 +91,9 @@ func TestDiffContent_EmitsNativeDiff(t *testing.T) {
 	}
 }
 
-// A background SEError (async session-memory extraction can fail in a later
-// turn) routes through finishTurn. finishTurn must not drop snapshots for tool
-// calls still in flight — each is reclaimed by its own ToolExecEnd, not a sweep.
+// A background SEError (an async worker failing a turn later) routes through
+// finishTurn. finishTurn must not drop snapshots for tool calls still in
+// flight — each is reclaimed by its own ToolExecEnd, not a sweep.
 func TestFinishTurn_KeepsPendingEdits(t *testing.T) {
 	a := &acpAgent{pendingEdits: map[acp.ToolCallId]editSnapshot{
 		"t1": {path: "/x.go", old: reliable("a")},

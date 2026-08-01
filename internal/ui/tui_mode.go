@@ -3,8 +3,10 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -96,6 +98,16 @@ func RunTUI(rt *bootstrap.Runtime, version string) error {
 	p := tea.NewProgram(m)
 	sendAsync := func(msg tea.Msg) {
 		go p.Send(msg)
+	}
+
+	// A dream runs while the user is away, so without a line in the transcript
+	// it is invisible — /tasks is not somewhere anyone looks.
+	if rt.Dreamer != nil {
+		rt.Dreamer.SetOnDone(func(files []string, err error) {
+			if text, ok := formatDreamNotice(files, err); ok {
+				sendAsync(tui.CommandResultMsg{Text: tui.MutedStyle.Render(text)})
+			}
+		})
 	}
 
 	// Connect MCP servers in background; the TUI shows a spinner until ready.
@@ -382,4 +394,25 @@ func formatRuntimeReminderKind(kind agent.RuntimeReminderKind) string {
 		}
 		return string(kind)
 	}
+}
+
+// formatDreamNotice describes what a finished dream did, or reports ok false
+// when there is nothing to say: a run that wrote nothing, or one the user
+// killed from /tasks and already knows about. Everything else — including
+// failure — gets a line, because the same argument that made success worth
+// printing (nobody opens /tasks) applies twice over to an error.
+func formatDreamNotice(files []string, err error) (string, bool) {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "", false
+	case err != nil:
+		return "Memory consolidation failed: " + err.Error(), true
+	case len(files) == 0:
+		return "", false
+	}
+	noun := "memories"
+	if len(files) == 1 {
+		noun = "memory"
+	}
+	return fmt.Sprintf("Improved %d %s: %s", len(files), noun, strings.Join(files, ", ")), true
 }

@@ -266,11 +266,10 @@ type Session struct {
 
 	events eventBus // SessionEvent fan-out; owns its own lock
 
-	cache         cacheMonitor       // previous turn's system/tools fingerprint + cache_read; owns its own lock
-	idleCompact   *idleMicrocompact  // free tool-result cleanup once the cache prefix has expired; nil disables
-	sessionMemory sessionMemoryState // background extraction bookkeeping — see session_memory.go
-	turn          turnState          // tool-call tracking + turn outcome + run summary; owns its own lock
-	generation    uint64             // incremented on session switch; async goroutines check this to avoid cross-session callbacks
+	cache       cacheMonitor      // previous turn's system/tools fingerprint + cache_read; owns its own lock
+	idleCompact *idleMicrocompact // free tool-result cleanup once the cache prefix has expired; nil disables
+	turn        turnState         // tool-call tracking + turn outcome + run summary; owns its own lock
+	generation  uint64            // incremented on session switch; async goroutines check this to avoid cross-session callbacks
 
 	backgroundWakeSuppressed bool // explicit cancellation keeps results queued without restarting the agent
 
@@ -664,9 +663,6 @@ func (s *Session) resetContextWindowState() {
 	// Runtime reminder queue + auto-memory recall accounting: both describe
 	// what the vanished history already carried.
 	s.reminders.resetAll()
-	// The extraction watermark belongs to the old history: keeping it would
-	// suppress memory extraction until the new history outgrows the old one.
-	s.sessionMemory.reset()
 	// The first cache_read after a history swap has no meaningful baseline —
 	// invalidate so detectCacheBreak skips one observation instead of
 	// reporting a phantom break.

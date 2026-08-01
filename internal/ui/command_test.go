@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -660,6 +661,37 @@ func TestFormatAutoCompactionEventReportsResult(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}
+	}
+}
+
+func TestFormatDreamNotice(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		files []string
+		err   error
+		want  string // "" means the notice must be suppressed
+	}{
+		{"one file", []string{"a.md"}, nil, "Improved 1 memory: a.md"},
+		{"two files", []string{"a.md", "b.md"}, nil, "Improved 2 memories: a.md, b.md"},
+		{"nothing written", nil, nil, ""},
+		// A failed dream is invisible without this: the lock rolls back
+		// silently and /tasks is not somewhere anyone looks.
+		{"failure", nil, errors.New("model exploded"), "Memory consolidation failed: model exploded"},
+		// The user killed it from /tasks, so they already know.
+		{"killed", nil, context.Canceled, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := formatDreamNotice(tc.files, tc.err)
+			if ok != (tc.want != "") {
+				t.Fatalf("ok = %v (text %q), want %v", ok, got, tc.want != "")
+			}
+			if got != tc.want {
+				t.Fatalf("notice = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

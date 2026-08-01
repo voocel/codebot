@@ -353,13 +353,6 @@ func UndoStatePath(cwd, sessionID string) string {
 	return filepath.Join(SessionsDir(cwd), sessionID, "undo-stack.json")
 }
 
-// SessionMemoryPath returns ~/.codebot/projects/<projectID>/session-memory.md.
-// This file is project-scoped (shared across sessions in the same cwd) so
-// that resuming or starting a new session can inherit accumulated context.
-func SessionMemoryPath(cwd string) string {
-	return filepath.Join(SessionsDir(cwd), "session-memory.md")
-}
-
 // CommandsDir returns <cwd>/.codebot/commands/.
 func CommandsDir(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "commands")

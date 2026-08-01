@@ -1434,7 +1434,8 @@ func TestDateChangeReminderFiresOnlyOnRollover(t *testing.T) {
 func TestUniversalBaseIsDeterministic(t *testing.T) {
 	t.Parallel()
 
-	if config.BuildUniversalBase("/tmp/ws") != config.BuildUniversalBase("/tmp/ws") {
+	first, second := config.BuildUniversalBase("/tmp/ws"), config.BuildUniversalBase("/tmp/ws")
+	if first != second {
 		t.Fatal("universal base is not deterministic — leader and teammate will not share a cache prefix")
 	}
 }
@@ -2165,6 +2166,86 @@ func TestHandleProjectedRewriteUpdatesMetrics(t *testing.T) {
 	if metrics.CompactionByKind[CompactionKindTrim] != 1 || metrics.CompactionSavedByKind[CompactionKindTrim] != 400 {
 		t.Fatalf("unexpected trim compaction metrics: %#v", metrics)
 	}
+}
+
+// The engine now commits a summary rewrite on its own, so the session file has
+// to record the checkpoint too. Without it resume replays the history the
+// summary retired and pays to summarize it again — and the runtime baseline and
+// the store disagree in the meantime.
+func TestCommittedRewriteRecordsCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	newSessionWithStore := func(t *testing.T) (*Session, *storage.Store) {
+		t.Helper()
+		dir := t.TempDir()
+		store, err := storage.NewManager(dir).Create(dir)
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		for range 3 {
+			if err := store.AppendMessage(agentcore.UserMsg("pre-compaction noise")); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+		}
+		s := NewSession(SessionConfig{
+			Agent:    agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
+			Store:    store,
+			Settings: config.Resolved{MaxTurns: 30},
+			Cwd:      dir,
+		})
+		t.Cleanup(s.Close)
+		return s, store
+	}
+
+	summaryView := []agentcore.AgentMessage{
+		agentctx.ContextSummary{Summary: "what came before"},
+		agentcore.UserMsg("kept tail"),
+	}
+
+	t.Run("summary commit", func(t *testing.T) {
+		s, store := newSessionWithStore(t)
+		s.HandleProjectedRewrite(agentctx.RewriteEvent{
+			Reason:    "threshold",
+			Strategy:  "full_summary",
+			Changed:   true,
+			Committed: true,
+			Info:      &agentctx.SummaryInfo{CompactedCount: 6, KeptCount: 1},
+			View:      summaryView,
+		})
+
+		snap, err := store.BuildSnapshot()
+		if err != nil {
+			t.Fatalf("build snapshot: %v", err)
+		}
+		if len(snap.Messages) != 2 {
+			t.Fatalf("snapshot has %d messages, want summary + tail", len(snap.Messages))
+		}
+		if got := snap.Messages[0].TextContent(); !strings.Contains(got, "what came before") {
+			t.Fatalf("messages[0] = %q, want the summary", got)
+		}
+	})
+
+	// Clearing tool results produces no checkpoint, so there is nothing for
+	// resume to replay from — writing one would truncate the history to a
+	// summary that does not exist.
+	t.Run("tool result commit writes nothing", func(t *testing.T) {
+		s, store := newSessionWithStore(t)
+		s.HandleProjectedRewrite(agentctx.RewriteEvent{
+			Reason:    "threshold",
+			Strategy:  "tool_result_microcompact",
+			Changed:   true,
+			Committed: true,
+			View:      []agentcore.AgentMessage{agentcore.UserMsg("cleared")},
+		})
+
+		snap, err := store.BuildSnapshot()
+		if err != nil {
+			t.Fatalf("build snapshot: %v", err)
+		}
+		if len(snap.Messages) != 3 {
+			t.Fatalf("snapshot has %d messages, want the 3 originals untouched", len(snap.Messages))
+		}
+	})
 }
 
 // Regression: ephemeralQuery must forward the parent agent's tool specs so

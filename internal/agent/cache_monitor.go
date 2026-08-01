@@ -124,12 +124,6 @@ func (c *cacheMonitor) idleFor(now time.Time) (time.Duration, bool) {
 	return now.Sub(c.lastTurn), true
 }
 
-func (c *cacheMonitor) snapshot() cacheSnapshot {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.snap
-}
-
 // breakDropFraction is the minimum relative drop in cache_read (vs previous
 // turn) that we treat as a "break".
 const breakDropFraction = 0.05

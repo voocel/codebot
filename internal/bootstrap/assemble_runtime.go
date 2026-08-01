@@ -58,7 +58,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	if r := assembly.settings.CompactRatio; r > 0 && r < 1 {
 		reserveTokens = assembly.settings.ContextWindow - int(float64(assembly.settings.ContextWindow)*r)
 	}
-	contextEngine, summaryCompact, toolCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens, input.cwd)
+	contextEngine, summaryCompact, toolCompact := buildContextEngine(assembly.chatModel, assembly.settings.ContextWindow, reserveTokens)
 
 	agentCore, err := buildAgent(assembly, services, contextEngine, tools, sessionID)
 	if err != nil {
@@ -76,7 +76,7 @@ func assembleRuntime(input *resolvedInput, services *bootServices, assembly *ses
 	if input.telemetryTracer != nil {
 		input.telemetryTracer.BindSession(session.SessionID)
 	}
-	wireSessionRuntime(input, assembly, services, session, tools, agentCore, taskRT, contextEngine, summaryCompact)
+	wireSessionRuntime(input, assembly, services, session, tools, taskRT, contextEngine, summaryCompact)
 
 	// Wire team spawn on the subagent tool. Each spawned teammate gets its
 	// own send_message instance — a per-spawn instance keeps the tool
@@ -191,7 +191,7 @@ func wireDream(input *resolvedInput, assembly *sessionAssembly, session *agent.S
 	if input.nonTTY {
 		return nil
 	}
-	cfg := dream.BuildAgentConfig(input.cwd, assembly.chatModel,
+	cfg, watcher := dream.BuildAgentConfig(input.cwd, assembly.chatModel,
 		func(m agentcore.ChatModel) agentcore.ContextManager {
 			return newSubAgentContextManager(m, assembly.settings.ContextWindow)
 		}, sessionID)
@@ -202,6 +202,7 @@ func wireDream(input *resolvedInput, assembly *sessionAssembly, session *agent.S
 		CurrentSession: session.SessionID,
 		TaskRT:         taskRT,
 		Runner:         subagent.NewRunner(cfg),
+		Watcher:        watcher,
 	})
 	session.SetIdleHook(dreamer.MaybeStart)
 	return dreamer
@@ -281,35 +282,41 @@ func buildAssignmentNotifier(reg *team.Registry) localtools.AssignmentNotifier {
 	}
 }
 
-// buildContextEngine assembles the four-stage strategy chain, cheapest first.
+// buildContextEngine assembles the two-stage strategy chain, cheapest first:
+// clear old tool results, then summarize.
 //
-// CommitOnProject is left off, so a threshold-triggered run produces a view for
-// that one request and nothing more: the agent's own history — and the session
-// file — keep the full tool output. These stages shrink what gets SENT, not
-// what is stored. Only the idle path (see idleMicrocompact) and an explicit
-// /compact write their result back.
-func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int, cwd string) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy, *agentctx.ToolResultMicrocompactStrategy) {
+// A third stage seeded from a project-scoped living document used to sit in
+// between. It always won — its file appears around 10k tokens while compaction
+// fires near the window — so FullSummary and the recovery hook hanging off it
+// never ran, and the document described the project rather than the messages
+// being dropped. Summarizing costs a blocking call; being accurate is worth it.
+//
+// CommitOnProject is on because Project runs per LLM call — including every
+// continuation inside a tool loop — and caches nothing. Left off, each of those
+// calls re-summarized the same history from scratch: one blocking model call
+// per request for a result that was thrown away. The session keeps the full
+// tool output regardless; these stages only ever rewrite the runtime baseline.
+//
+// It also costs nothing in cache terms. Below the threshold apply() returns
+// before any strategy runs, so the switch is inert (idle microcompact's
+// cold-cache timing lives entirely down here). Above it, microcompact's
+// protection window is a rolling one — each new tool result pushes an older one
+// out to be cleared — so the projected prefix already churns every turn.
+func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTokens int) (*agentctx.ContextEngine, *agentctx.FullSummaryStrategy, *agentctx.ToolResultMicrocompactStrategy) {
 	toolCompact := agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
 		Classifier:       agent.CodebotToolClassifier,
 		KeepRecent:       5,
 		ClearedMessageFn: agent.ClearedToolResultMessage,
 	})
-	// SessionMemory-backed compaction runs ahead of the LLM summary path so
-	// that a populated session-memory.md reuses the living document instead of
-	// triggering a synchronous summarization call. Empty / template-only
-	// memory files fall through to FullSummary automatically.
-	memoryCompact := agentctx.NewSessionMemory(agentctx.SessionMemoryConfig{
-		SeedFn: agent.SessionMemorySeedFn(cwd),
-	})
 	summaryCompact := agentctx.NewFullSummary(agentctx.FullSummaryConfig{
 		Model: chatModel,
 	})
 	engine := agentctx.NewEngine(agentctx.EngineConfig{
-		ContextWindow: contextWindow,
-		ReserveTokens: reserveTokens,
+		ContextWindow:   contextWindow,
+		ReserveTokens:   reserveTokens,
+		CommitOnProject: true,
 		Strategies: []agentctx.Strategy{
 			toolCompact,
-			memoryCompact,
 			summaryCompact,
 		},
 	})
@@ -444,7 +451,7 @@ func buildSnapshotter(cwd, sessionID string, enabled bool) agent.Snapshotter {
 	return snapshot.New(config.SnapshotDir(cwd), cwd, config.UndoStatePath(cwd, sessionID))
 }
 
-func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, services *bootServices, session *agent.Session, tools []agentcore.Tool, ag *agentcore.Agent, taskRT *task.Runtime, contextEngine *agentctx.ContextEngine, summaryCompact *agentctx.FullSummaryStrategy) {
+func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, services *bootServices, session *agent.Session, tools []agentcore.Tool, taskRT *task.Runtime, contextEngine *agentctx.ContextEngine, summaryCompact *agentctx.FullSummaryStrategy) {
 	summaryCompact.SetPostSummaryHooks(session.PostSummaryRecoveryHook())
 	contextEngine.SetProjectHook(session.HandleProjectedRewrite)
 	contextEngine.SetRecoverHook(session.HandleOverflowRewrite)

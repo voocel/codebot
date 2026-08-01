@@ -139,6 +139,9 @@ func (s *Session) compactWithReason(reason string) (result CompactionResult, err
 	return result, nil
 }
 
+// persistCompaction records the checkpoint a summary rewrite produced. Without
+// it resume replays the history that summary retired, and pays to summarize it
+// a second time. A rewrite carrying no summary is a no-op.
 func persistCompaction(store appendCompactionStore, msgs []agentcore.AgentMessage) error {
 	if store == nil {
 		return nil

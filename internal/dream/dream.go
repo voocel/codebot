@@ -44,8 +44,9 @@ type Config struct {
 	// Runner executes the dream agent; a private subagent.Runner so
 	// the run never touches the main agent (no notify, no follow-up).
 	Runner agentRunner
-	// OnDone fires after a run finishes; err is nil on success. Optional.
-	OnDone func(err error)
+	// Watcher records the memory files a run touched, for the completion
+	// notice. Comes from BuildAgentConfig; nil gets an inert one.
+	Watcher *Watcher
 }
 
 // Dreamer triggers background memory consolidation. MaybeStart is the
@@ -58,10 +59,22 @@ type Dreamer struct {
 	mu         sync.Mutex
 	running    bool
 	lastScanAt time.Time
+	onDone     func(files []string, err error)
 }
 
 func New(cfg Config) *Dreamer {
+	if cfg.Watcher == nil {
+		cfg.Watcher = NewWatcher()
+	}
 	return &Dreamer{cfg: cfg, lock: NewLock(cfg.MemoryDir)}
+}
+
+// SetOnDone installs the completion callback. Set here rather than in Config
+// because the UI that renders the notice is built after the Dreamer.
+func (d *Dreamer) SetOnDone(fn func(files []string, err error)) {
+	d.mu.Lock()
+	d.onDone = fn
+	d.mu.Unlock()
 }
 
 // MaybeStart runs the auto-trigger gates, cheapest first: enabled (no IO),
@@ -125,6 +138,9 @@ func (d *Dreamer) start(prior time.Time, sessionsTouched int) string {
 	taskID := d.cfg.TaskRT.NextID("dream")
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 
+	// Reset before the run, not after: the notice names what THIS run wrote,
+	// and a previous run's files would otherwise be reported again.
+	d.cfg.Watcher.reset()
 	prompt := buildConsolidationPrompt(d.cfg.MemoryDir, d.cfg.SessionsDir, sessionsTouched)
 	entry := &task.Entry{
 		ID:          taskID,
@@ -153,12 +169,19 @@ func (d *Dreamer) run(ctx context.Context, cancel context.CancelFunc, taskID str
 	}()
 
 	res, err := d.cfg.Runner.Run(ctx, agentName, prompt)
+	// ctx is the authoritative source for "the user killed it"; the runner's
+	// error is not guaranteed to wrap the cause. Normalize so onDone consumers
+	// can tell a kill from a genuine failure.
+	killed := err != nil && errors.Is(ctx.Err(), context.Canceled)
+	if killed {
+		err = context.Canceled
+	}
 
 	d.cfg.TaskRT.Update(taskID, func(e *task.Entry) {
 		e.EndedAt = time.Now()
 		e.TokensIn, e.TokensOut, e.ToolCount = res.Usage.Input, res.Usage.Output, res.Usage.Tools
 		switch {
-		case err != nil && errors.Is(ctx.Err(), context.Canceled):
+		case killed:
 			e.Status = task.Killed
 			e.Error = "killed"
 		case err != nil:
@@ -177,8 +200,13 @@ func (d *Dreamer) run(ctx context.Context, cancel context.CancelFunc, taskID str
 	} else {
 		d.lock.Complete()
 	}
-	if d.cfg.OnDone != nil {
-		d.cfg.OnDone(err)
+
+	files := d.cfg.Watcher.touched()
+	d.mu.Lock()
+	onDone := d.onDone
+	d.mu.Unlock()
+	if onDone != nil {
+		onDone(files, err)
 	}
 }
 
