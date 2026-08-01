@@ -83,8 +83,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Images = append(m.Images, msg.Block)
 		return m, nil
 	case PasteTextMsg:
+		// Stays counted until the text lands, so a submit racing the paste
+		// cannot send a half-populated input.
+		return m, readClipboardText
+	case pasteTextReadyMsg:
 		m.Pasting--
-		return m, textarea.Paste
+		m.insertPaste(msg.Text)
+		// Inserting directly skips the textarea's own key path, which is where
+		// the height would otherwise be recomputed.
+		m.adjustInputHeight()
+		return m, nil
 	case PasteErrorMsg:
 		m.Pasting--
 		return m, m.Emit(indentBlock(msg.Text, 2))
@@ -284,6 +292,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if next, cmd, handled := m.handleImageSelectionKey(msg); handled {
 		return next, cmd
 	}
+	if next, cmd, handled := m.handlePasteRefKey(msg); handled {
+		return next, cmd
+	}
 
 	switch msg.String() {
 	case "ctrl+c":
@@ -408,16 +419,26 @@ func (m *Model) handleCompletionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	}
 }
 
+// handleDropKey takes the terminal's bracketed-paste event. Anything that is
+// not a droppable image path is pasted text and must go through insertPaste —
+// falling through to the textarea inserts it verbatim, which is how a real
+// terminal's oversized paste used to bypass the reference entirely. Ctrl+V is
+// a separate path (PasteTextMsg) that lands in the same place.
 func (m *Model) handleDropKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
-	if !msg.Paste || m.config.OnDrop == nil {
+	if !msg.Paste {
 		return m, nil, false
 	}
-	cmd := m.config.OnDrop(m, string(msg.Runes))
-	if cmd == nil {
-		return m, nil, false
+	if m.config.OnDrop != nil {
+		if cmd := m.config.OnDrop(m, string(msg.Runes)); cmd != nil {
+			m.Pasting++
+			return m, cmd, true
+		}
 	}
-	m.Pasting++
-	return m, cmd, true
+	m.insertPaste(string(msg.Runes))
+	// Inserting directly skips the textarea's own key path, which is where the
+	// height would otherwise be recomputed.
+	m.adjustInputHeight()
+	return m, nil, true
 }
 
 func (m *Model) handleImageSelectionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
@@ -495,16 +516,20 @@ func (m *Model) prepareSubmission() (submitRequest, bool) {
 	}
 
 	if m.history != nil && text != "" {
-		m.history.Add(text)
+		// Stored with its paste bodies, or recalling it in a later session
+		// would send the bare reference as literal text.
+		m.history.Add(text, m.pastedFor(text))
 	}
 	m.histIdx = -1
 	m.histDraft = ""
 
 	req := submitRequest{
-		text:   text,
+		// The model gets the full bodies; the transcript keeps the references,
+		// so a 50KB paste does not replay into scrollback.
+		text:   m.expandPasteRefs(text),
 		images: m.Images,
 	}
-	req.displayText = formatSubmitDisplayText(req.text, req.images)
+	req.displayText = formatSubmitDisplayText(text, req.images)
 
 	m.Images = nil
 	m.ImageCursor = -1
@@ -581,7 +606,7 @@ func (m *Model) handleDownKey() (tea.Model, tea.Cmd, bool) {
 		if m.histIdx > 0 {
 			m.histIdx--
 			m.Input.Reset()
-			m.Input.SetValue(m.history.Get(m.histIdx))
+			m.Input.SetValue(m.recallHistory(m.histIdx))
 		} else {
 			m.histIdx = -1
 			m.Input.Reset()

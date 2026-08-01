@@ -70,6 +70,10 @@ type SessionConfig struct {
 	// SkillAllowsSetter updates temporary tool allows for the active skill.
 	SkillAllowsSetter func([]string)
 
+	// ToolOutputRoot is the project's session root. The session appends its own
+	// id, so the path follows /new and /resume instead of freezing at boot.
+	ToolOutputRoot string
+
 	// FileReadState records read timestamps consumed by write/edit Validators.
 	// Held on the Session so Clear / Reset / SwitchSession can drop stale
 	// stamps — otherwise the LLM may write based on stamps from a read it
@@ -115,6 +119,10 @@ type sessionDeps struct {
 	snapshotter     Snapshotter
 	taskStore       *storage.TaskStore
 	fileReadState   *agenttools.FileReadState
+	// toolOutputRoot is the project session root; ToolOutputDir appends the
+	// live session id so tools registered after boot (MCP) land alongside the
+	// rest of this session's output.
+	toolOutputRoot string
 
 	// providers is settings.Providers — the same map, never mutated after
 	// boot (only read for credential/type/small-model lookups), so it needs
@@ -537,6 +545,7 @@ func NewSession(cfg SessionConfig) *Session {
 			snapshotter:     cfg.Snapshotter,
 			taskStore:       cfg.TaskStore,
 			fileReadState:   cfg.FileReadState,
+			toolOutputRoot:  cfg.ToolOutputRoot,
 			providers:       cfg.Settings.Providers,
 		},
 		hooks: sessionHooks{skillAllowsSetter: cfg.SkillAllowsSetter},

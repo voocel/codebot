@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -31,100 +32,90 @@ const (
 	saveFailedPath     = "(save failed)"
 )
 
-// fallbackOutputDir catches tools that were never pointed at a session — tests
-// and any wiring path that forgot SetOutputDir. Writing somewhere harmless
-// beats failing the tool call.
+// fallbackOutputDir catches a limiter that was never pointed at a session —
+// tests and any wiring path that forgot SetOutputDir. Writing somewhere
+// harmless beats failing the tool call.
 func fallbackOutputDir() string {
 	return filepath.Join(os.TempDir(), "codebot-outputs")
 }
 
-// limitableTools is the set of tools whose output should be size-limited.
-// read is excluded: persisted output files are read via Read tool, and
-// truncating Read results would cause an infinite loop (Read → persist → Read → persist).
-var limitableTools = map[string]struct{}{
-	"bash":       {},
-	"grep":       {},
-	"glob":       {},
-	"ls":         {},
-	"web_fetch":  {},
-	"web_search": {},
-}
-
-// OutputLimitedTool wraps a Tool and truncates oversized output to disk.
-type OutputLimitedTool struct {
-	inner agentcore.Tool
-	limit int
-	dirFn func() string
-}
-
-// WrapWithOutputLimit wraps tools in the limitable set with output truncation.
-// Tools not in the set are returned unchanged.
-func WrapWithOutputLimit(tools []agentcore.Tool) []agentcore.Tool {
-	out := make([]agentcore.Tool, len(tools))
-	for i, t := range tools {
-		if _, ok := limitableTools[t.Name()]; ok {
-			out[i] = &OutputLimitedTool{inner: t, limit: DefaultOutputLimit}
-		} else {
-			out[i] = t
-		}
-	}
-	return out
-}
-
-// SetOutputDir points the wrapped tools at their session's output directory.
+// unlimitedTools opt out of truncation; everything else is limited, MCP
+// included. A whitelist would need extending per tool and silently misses the
+// ones registered at runtime — that is how MCP results went unhandled.
 //
-// dirFn is called per save, not once: /new and /resume move the session
-// directory underneath a running process. A path captured at wiring time keeps
-// writing into the session the process started in, so cleaning that session
-// later breaks paths the live one already handed the model.
-func SetOutputDir(tools []agentcore.Tool, dirFn func() string) {
-	for _, t := range tools {
-		if lt, ok := t.(*OutputLimitedTool); ok {
-			lt.dirFn = dirFn
+//   - read: persisted output is read back with it, so truncating loops.
+//   - skill: its output is a procedure to follow, not data to sample, and the
+//     model has no reason to suspect a preview is incomplete. opencode
+//     protects it for the same reason (PRUNE_PROTECTED_TOOLS).
+var unlimitedTools = map[string]struct{}{
+	"read":  {},
+	"skill": {},
+}
+
+// OutputLimiter truncates oversized tool output to disk, leaving a head/tail
+// preview and a path in the transcript.
+//
+// Middleware, not a Tool decorator, and that is the whole design: substituting
+// the Tool object upcasts it to bare agentcore.Tool and silently drops every
+// optional capability it implements — Validator, Previewer, ConcurrencySafe,
+// PermissionMetadata — plus whichever one gets added next. Wrapping the
+// execution leaves the tool's identity intact.
+type OutputLimiter struct {
+	mu    sync.Mutex
+	dirFn func() string
+	limit int
+}
+
+func NewOutputLimiter() *OutputLimiter {
+	return &OutputLimiter{limit: DefaultOutputLimit}
+}
+
+// SetOutputDir points the limiter at the live session's output directory.
+// dirFn is called per save, not once: /new and /resume move the directory
+// underneath a running process, and a path captured at wiring time keeps
+// writing into a session that later gets swept.
+func (l *OutputLimiter) SetOutputDir(dirFn func() string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.dirFn = dirFn
+}
+
+// Middleware returns the hook to register with agentcore. Install it innermost
+// (last in the middleware slice) so hooks and telemetry observe the same
+// shortened result the model will see.
+func (l *OutputLimiter) Middleware() agentcore.ToolMiddleware {
+	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolExecuteFunc) (json.RawMessage, error) {
+		result, err := next(ctx, call.Args)
+		if err != nil {
+			return result, err
 		}
+		if _, optedOut := unlimitedTools[call.Name]; optedOut {
+			return result, nil
+		}
+		if len(result) <= l.limit {
+			return result, nil
+		}
+		return l.truncateAndSave(call.Name, result), nil
 	}
 }
 
-func (t *OutputLimitedTool) outputDir() string {
-	if t.dirFn != nil {
-		if dir := t.dirFn(); dir != "" {
+func (l *OutputLimiter) outputDir() string {
+	l.mu.Lock()
+	dirFn := l.dirFn
+	l.mu.Unlock()
+	if dirFn != nil {
+		if dir := dirFn(); dir != "" {
 			return dir
 		}
 	}
 	return fallbackOutputDir()
 }
 
-// Unwrap returns the underlying tool, allowing type assertions through the wrapper.
-func (t *OutputLimitedTool) Unwrap() agentcore.Tool { return t.inner }
-
-func (t *OutputLimitedTool) Name() string           { return t.inner.Name() }
-func (t *OutputLimitedTool) Description() string    { return t.inner.Description() }
-func (t *OutputLimitedTool) Schema() map[string]any { return t.inner.Schema() }
-
-// Label forwards the optional ToolLabeler interface.
-func (t *OutputLimitedTool) Label() string {
-	if labeler, ok := t.inner.(agentcore.ToolLabeler); ok {
-		return labeler.Label()
-	}
-	return t.inner.Name()
-}
-
-func (t *OutputLimitedTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-	result, err := t.inner.Execute(ctx, args)
-	if err != nil {
-		return result, err
-	}
-	if len(result) <= t.limit {
-		return result, nil
-	}
-	return t.truncateAndSave(result), nil
-}
-
-func (t *OutputLimitedTool) truncateAndSave(result json.RawMessage) json.RawMessage {
+func (l *OutputLimiter) truncateAndSave(toolName string, result json.RawMessage) json.RawMessage {
 	var obj map[string]any
 	if err := json.Unmarshal(result, &obj); err == nil {
 		if text, ok := obj["output"].(string); ok {
-			path := t.saveToFile(text)
+			path := l.saveToFile(toolName, text)
 			obj["output"] = truncatedOutputSummary(text, path)
 			data, merr := json.Marshal(obj)
 			if merr == nil {
@@ -139,16 +130,16 @@ func (t *OutputLimitedTool) truncateAndSave(result json.RawMessage) json.RawMess
 		text = string(result)
 	}
 
-	path := t.saveToFile(text)
+	path := l.saveToFile(toolName, text)
 	return buildTruncatedOutput(text, path)
 }
 
-func (t *OutputLimitedTool) saveToFile(text string) string {
-	dir := t.outputDir()
+func (l *OutputLimiter) saveToFile(toolName, text string) string {
+	dir := l.outputDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return saveFailedPath
 	}
-	filename := fmt.Sprintf("%s-%d.txt", t.inner.Name(), time.Now().UnixMilli())
+	filename := fmt.Sprintf("%s-%d.txt", toolName, time.Now().UnixMilli())
 	path := filepath.Join(dir, filename)
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 		return saveFailedPath

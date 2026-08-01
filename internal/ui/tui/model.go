@@ -146,6 +146,11 @@ type State struct {
 	Images      []agentcore.ContentBlock // attached images (from Ctrl+V clipboard paste)
 	ImageCursor int                      // -1 = not selecting; 0+ = selected image index
 	Pasting     int                      // number of async image reads in progress (clipboard paste or drag-drop)
+	// Pasted holds oversized paste bodies keyed by the id in their reference.
+	// Kept for the whole session, not cleared on submit, so a prompt recalled
+	// from history still expands. See paste.go.
+	Pasted      map[int]string
+	nextPasteID int
 
 	Markdown *markdown.Renderer
 

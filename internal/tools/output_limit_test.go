@@ -13,7 +13,7 @@ import (
 )
 
 // bigOutputTool returns a payload past DefaultOutputLimit in the shape the tool
-// is told to use, so the wrapper's two truncation branches both get exercised.
+// is told to use, so both truncation branches get exercised.
 type bigOutputTool struct {
 	name       string
 	structured bool
@@ -31,27 +31,28 @@ func (t *bigOutputTool) Execute(context.Context, json.RawMessage) (json.RawMessa
 	return json.Marshal(payload)
 }
 
-func execTool(t *testing.T, tool agentcore.Tool) string {
+// limiterAt builds a limiter aimed at dirFn, the way wireSessionRuntime does.
+func limiterAt(dirFn func() string) *OutputLimiter {
+	l := NewOutputLimiter()
+	l.SetOutputDir(dirFn)
+	return l
+}
+
+// runLimiter drives the middleware the way agentcore's chain does: the limiter
+// wraps tool.Execute and is handed the call it is limiting.
+func runLimiter(t *testing.T, l *OutputLimiter, tool agentcore.Tool) string {
 	t.Helper()
-	out, err := tool.Execute(context.Background(), nil)
+	out, err := l.Middleware()(context.Background(), agentcore.ToolCall{Name: tool.Name()}, tool.Execute)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	return string(out)
 }
 
-// wrapPointedAt wraps a tool and aims it at dirFn, the way wireSessionRuntime
-// does.
-func wrapPointedAt(tool agentcore.Tool, dirFn func() string) agentcore.Tool {
-	wrapped := WrapWithOutputLimit([]agentcore.Tool{tool})
-	SetOutputDir(wrapped, dirFn)
-	return wrapped[0]
-}
-
 func runLimited(t *testing.T, tool agentcore.Tool) string {
 	t.Helper()
 	dir := t.TempDir()
-	return execTool(t, wrapPointedAt(tool, func() string { return dir }))
+	return runLimiter(t, limiterAt(func() string { return dir }), tool)
 }
 
 // The path travels through the transcript as the tool's own JSON, so on Windows
@@ -112,14 +113,12 @@ func TestOutputDirFollowsSessionSwitch(t *testing.T) {
 
 	first, second := t.TempDir(), t.TempDir()
 	current := first
-	tool := wrapPointedAt(
-		&bigOutputTool{name: "bash", structured: true},
-		func() string { return current },
-	)
+	limiter := limiterAt(func() string { return current })
+	tool := &bigOutputTool{name: "bash", structured: true}
 
-	before := PersistedOutputPath(execTool(t, tool))
+	before := PersistedOutputPath(runLimiter(t, limiter, tool))
 	current = second
-	after := PersistedOutputPath(execTool(t, tool))
+	after := PersistedOutputPath(runLimiter(t, limiter, tool))
 
 	if !strings.HasPrefix(before, first) {
 		t.Fatalf("first save landed outside %s: %s", first, before)
@@ -166,13 +165,30 @@ func TestCleanOldOutputsSweepsEverySession(t *testing.T) {
 	}
 }
 
-// read is deliberately outside the limitable set: its results are how the model
-// reads persisted files back, so truncating them would loop.
-func TestReadIsNotOutputLimited(t *testing.T) {
+// Opting out is a short, deliberate list; everything else must be covered.
+// A whitelist is what let MCP results through with no size handling at all.
+func TestLimiterCoversEverythingExceptOptOuts(t *testing.T) {
 	t.Parallel()
 
-	wrapped := WrapWithOutputLimit([]agentcore.Tool{&bigOutputTool{name: "read"}})
-	if _, ok := wrapped[0].(*OutputLimitedTool); ok {
-		t.Fatal("read got wrapped; persisted output would be re-persisted on every read")
+	for _, tc := range []struct {
+		tool    string
+		limited bool
+	}{
+		// Persisted output is read back with read, so truncating its results
+		// loops. Skill output is a procedure to follow, not data to sample.
+		{"read", false},
+		{"skill", false},
+		{"bash", true},
+		{"web_fetch", true},
+		{"edit", true},
+		{"mcp__github__list_issues", true},
+	} {
+		// Checked via the recovered path rather than the tag: json.Marshal
+		// escapes "<" to "<", so the raw result never contains the tag
+		// literally.
+		got := runLimited(t, &bigOutputTool{name: tc.tool})
+		if limited := PersistedOutputPath(got) != ""; limited != tc.limited {
+			t.Errorf("%s: limited=%v, want %v", tc.tool, limited, tc.limited)
+		}
 	}
 }

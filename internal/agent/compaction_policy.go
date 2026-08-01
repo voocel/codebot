@@ -110,6 +110,8 @@ func compactionKindForStrategy(name string) CompactionKind {
 	switch name {
 	case "tool_result_microcompact":
 		return CompactionKindMicro
+	// light_trim is no longer in the chain — kept so sessions recorded while
+	// it was still running replay with the right kind.
 	case "light_trim":
 		return CompactionKindTrim
 	default:

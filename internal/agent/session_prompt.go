@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"path/filepath"
+
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/skill"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 func (s *Session) ToolsByName(names ...string) []agentcore.Tool {
@@ -18,6 +21,18 @@ func (s *Session) RestoreAllTools(extra ...agentcore.Tool) {
 	s.prompt.restoreAllTools(extra...)
 }
 
+// ToolOutputDir resolves where this session persists oversized tool output.
+// Resolved per call — the session directory moves on /new and /resume.
+func (s *Session) ToolOutputDir() string {
+	if s.deps.toolOutputRoot == "" {
+		return ""
+	}
+	return filepath.Join(s.deps.toolOutputRoot, s.SessionID(), localtools.ToolOutputsSubdir)
+}
+
+// ReplaceMCPTools installs the current MCP toolset. Output limiting needs no
+// wiring here: it runs as middleware around every tool the agent executes, so
+// tools registered on a refresh are covered the moment they are called.
 func (s *Session) ReplaceMCPTools(tools []agentcore.Tool) {
 	s.prompt.replaceMCPTools(tools)
 }

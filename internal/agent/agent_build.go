@@ -56,6 +56,11 @@ type BuildDeps struct {
 	// sub-agent's prompt-cache routing key (agentcore appends "#<seq>" per
 	// spawn). Empty disables the routing hint; cache breakpoints still apply.
 	SessionID string
+
+	// Middlewares wrap each tool execution inside the sub-agent. A sub-agent
+	// runs its own loop and does not inherit the parent's middleware stack, so
+	// anything that must apply everywhere (output limiting) is threaded here.
+	Middlewares []agentcore.ToolMiddleware
 }
 
 // BuildConfig converts an AgentDefinition into a subagent.Config ready to be
@@ -104,6 +109,7 @@ func (d *AgentDefinition) BuildConfig(deps BuildDeps, ctxFactory func(agentcore.
 		// The adapter drops whichever mechanism a provider doesn't support.
 		CacheLastMessage: "ephemeral",
 		PromptCacheKey:   cbteam.PromptCacheKey(deps.SessionID, d.Name),
+		Middlewares:      deps.Middlewares,
 	}
 	return cfg, nil
 }

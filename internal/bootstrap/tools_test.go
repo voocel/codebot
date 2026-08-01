@@ -31,6 +31,44 @@ func TestBuildToolsDefaults(t *testing.T) {
 	}
 }
 
+// Every guarantee beyond Name/Schema/Execute is an optional interface found by
+// type assertion, so any decorator over a tool silently drops the lot and
+// nothing fails loudly. Cross-cutting behaviour belongs in middleware.
+//
+// This covers buildTools' output only; a decorator added further up the boot
+// path is out of its reach.
+func TestBuiltToolsKeepOptionalCapabilities(t *testing.T) {
+	t.Parallel()
+
+	built := buildTools("/tmp/ws", defaultToolFactories(tools.NewFileReadState(), nil))
+	byName := make(map[string]agentcore.Tool, len(built))
+	for _, tool := range built {
+		byName[tool.Name()] = tool
+	}
+
+	for _, name := range []string{"edit", "write"} {
+		tool, ok := byName[name]
+		if !ok {
+			t.Fatalf("%s missing from the default toolset", name)
+		}
+		if _, ok := tool.(agentcore.Validator); !ok {
+			t.Errorf("%s lost Validator — read-before-write is no longer enforced", name)
+		}
+		if _, ok := tool.(agentcore.Previewer); !ok {
+			t.Errorf("%s lost Previewer — approval shows no diff", name)
+		}
+	}
+	for _, name := range []string{"read", "grep", "glob", "ls"} {
+		tool, ok := byName[name]
+		if !ok {
+			t.Fatalf("%s missing from the default toolset", name)
+		}
+		if _, ok := tool.(agentcore.ConcurrencySafeTool); !ok {
+			t.Errorf("%s lost ConcurrencySafe — it will run serially", name)
+		}
+	}
+}
+
 func TestBuildToolsCustom(t *testing.T) {
 	t.Parallel()
 

@@ -13,6 +13,7 @@ import (
 	"github.com/voocel/codebot/internal/agent"
 	"github.com/voocel/codebot/internal/config"
 	cbteam "github.com/voocel/codebot/internal/team"
+	localtools "github.com/voocel/codebot/internal/tools"
 )
 
 // subAgentDeps holds everything needed to build the sub-agent runtime.
@@ -36,6 +37,10 @@ type subAgentDeps struct {
 	// SessionID seeds each sub-agent's prompt-cache routing key. See
 	// agent.BuildDeps.SessionID.
 	SessionID string
+
+	// OutputLimiter is installed as middleware in every sub-agent so oversized
+	// tool output is persisted there too, not just in the main agent.
+	OutputLimiter *localtools.OutputLimiter
 }
 
 type subAgents struct {
@@ -92,6 +97,9 @@ func buildSubAgents(deps subAgentDeps) subAgents {
 		ResolveModel:  resolveModel,
 		WorkspaceFS:   deps.WorkspaceFS,
 		SessionID:     deps.SessionID,
+	}
+	if deps.OutputLimiter != nil {
+		buildDeps.Middlewares = []agentcore.ToolMiddleware{deps.OutputLimiter.Middleware()}
 	}
 	ctxFactory := func(model agentcore.ChatModel) agentcore.ContextManager {
 		return newSubAgentContextManager(model, deps.ContextWindow)
@@ -213,7 +221,6 @@ func newSubAgentContextManager(model agentcore.ChatModel, window int) agentcore.
 				KeepRecent:       3,
 				ClearedMessageFn: agent.ClearedToolResultMessage,
 			}),
-			agentctx.NewLightTrim(agentctx.LightTrimConfig{}),
 			agentctx.NewFullSummary(agentctx.FullSummaryConfig{
 				Model:            model,
 				KeepRecentTokens: 12000,

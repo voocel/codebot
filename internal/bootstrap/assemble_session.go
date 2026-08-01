@@ -34,6 +34,7 @@ type sessionAssembly struct {
 	subagents             subAgents
 	bashTool              *agentcoretools.BashTool
 	fileReadState         *agentcoretools.FileReadState
+	outputLimiter         *localtools.OutputLimiter
 }
 
 func buildSessionAssembly(input *resolvedInput, services *bootServices, factories []ToolFactory, fs agentcoretools.WorkspaceFS) (*sessionAssembly, error) {
@@ -60,7 +61,12 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		factories = defaultToolFactories(fileReadState, fs)
 	}
 
-	tools, subagents, bashTool, err := buildToolset(input, services, settings, activeProvider, chatModel, factories, fs)
+	// Built before the toolset so sub-agents can install the same middleware.
+	// Pointed at a session in wireSessionRuntime — the session does not exist
+	// yet here, and its directory moves on /new and /resume.
+	outputLimiter := localtools.NewOutputLimiter()
+
+	tools, subagents, bashTool, err := buildToolset(input, services, settings, activeProvider, chatModel, factories, fs, outputLimiter)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +93,7 @@ func buildSessionAssembly(input *resolvedInput, services *bootServices, factorie
 		subagents:             subagents,
 		bashTool:              bashTool,
 		fileReadState:         fileReadState,
+		outputLimiter:         outputLimiter,
 	}, nil
 }
 
@@ -128,7 +135,7 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 	return settings, activeProvider, chatModel, nil
 }
 
-func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, fs agentcoretools.WorkspaceFS) ([]agentcore.Tool, subAgents, *agentcoretools.BashTool, error) {
+func buildToolset(input *resolvedInput, services *bootServices, settings config.Resolved, activeProvider string, chatModel agentcore.ChatModel, factories []ToolFactory, fs agentcoretools.WorkspaceFS, outputLimiter *localtools.OutputLimiter) ([]agentcore.Tool, subAgents, *agentcoretools.BashTool, error) {
 	builtTools := buildTools(input.cwd, factories)
 
 	var bashTool *agentcoretools.BashTool
@@ -161,10 +168,6 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 	}
 	builtTools = append(builtTools, cronTools...)
 
-	// Pointed at a session in wireSessionRuntime — the session does not exist
-	// yet here, and its directory moves on /new and /resume.
-	builtTools = localtools.WrapWithOutputLimit(builtTools)
-
 	subagents := buildSubAgents(subAgentDeps{
 		Cwd:           input.cwd,
 		Model:         chatModel,
@@ -176,6 +179,10 @@ func buildToolset(input *resolvedInput, services *bootServices, settings config.
 		SmallModel:    settings.SmallModel,
 		WorkspaceFS:   fs,
 		SessionID:     input.sessionStore.Header().SessionID,
+		// Sub-agents run their own loop, so the main agent's middleware stack
+		// does not reach them — without this a sub-agent's 50KB tool result
+		// goes into its context untouched.
+		OutputLimiter: outputLimiter,
 	})
 	builtTools = append(builtTools, subagents.tool)
 

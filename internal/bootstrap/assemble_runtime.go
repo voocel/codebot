@@ -294,7 +294,6 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 		KeepRecent:       5,
 		ClearedMessageFn: agent.ClearedToolResultMessage,
 	})
-	trimCompact := agentctx.NewLightTrim(agentctx.LightTrimConfig{})
 	// SessionMemory-backed compaction runs ahead of the LLM summary path so
 	// that a populated session-memory.md reuses the living document instead of
 	// triggering a synchronous summarization call. Empty / template-only
@@ -310,7 +309,6 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 		ReserveTokens: reserveTokens,
 		Strategies: []agentctx.Strategy{
 			toolCompact,
-			trimCompact,
 			memoryCompact,
 			summaryCompact,
 		},
@@ -357,6 +355,11 @@ func buildAgent(assembly *sessionAssembly, services *bootServices, contextEngine
 	}
 	if assembly.hookRunner != nil {
 		middlewares = append(middlewares, assembly.hookRunner.Middleware())
+	}
+	// Innermost, so hooks and telemetry observe the same shortened result the
+	// model will see rather than the full output that never reaches it.
+	if assembly.outputLimiter != nil {
+		middlewares = append(middlewares, assembly.outputLimiter.Middleware())
 	}
 	if len(middlewares) > 0 {
 		opts = append(opts, agentcore.WithMiddlewares(middlewares...))
@@ -426,6 +429,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		SkillAllowsSetter:     services.approvalEngine.SetSkillAllows,
 		FileReadState:         assembly.fileReadState,
 		TelemetryTracer:       input.telemetryTracer,
+		ToolOutputRoot:        config.SessionsDir(input.cwd),
 	})
 }
 
@@ -454,10 +458,7 @@ func wireSessionRuntime(input *resolvedInput, assembly *sessionAssembly, service
 	assembly.subagents.tool.SetTaskRuntime(taskRT)
 	assembly.subagents.tool.SetNotifyFn(session.EnqueueBackgroundResult)
 
-	// Resolved per save so it follows /new and /resume; see SetOutputDir.
-	localtools.SetOutputDir(tools, func() string {
-		return filepath.Join(config.SessionsDir(input.cwd), session.SessionID(), localtools.ToolOutputsSubdir)
-	})
+	assembly.outputLimiter.SetOutputDir(session.ToolOutputDir)
 
 	sessionID := input.sessionStore.Header().SessionID
 	bgDir := filepath.Join(config.SessionsDir(input.cwd), sessionID, "bg")
