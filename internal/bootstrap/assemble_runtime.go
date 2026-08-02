@@ -287,6 +287,7 @@ func buildContextEngine(chatModel agentcore.ChatModel, contextWindow, reserveTok
 	toolCompact := agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
 		Classifier:       agent.CodebotToolClassifier,
 		KeepRecent:       5,
+		MinResultTokens:  agent.MinCompactableResultTokens,
 		ClearedMessageFn: agent.ClearedToolResultMessage,
 	})
 	summaryCompact := agentctx.NewFullSummary(agentctx.FullSummaryConfig{

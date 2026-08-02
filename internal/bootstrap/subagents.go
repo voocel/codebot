@@ -219,12 +219,11 @@ func newSubAgentContextManager(model agentcore.ChatModel, window int) agentcore.
 			agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
 				Classifier:       agent.CodebotToolClassifier,
 				KeepRecent:       3,
+				MinResultTokens:  agent.MinCompactableResultTokens,
 				ClearedMessageFn: agent.ClearedToolResultMessage,
 			}),
-			agentctx.NewFullSummary(agentctx.FullSummaryConfig{
-				Model:            model,
-				KeepRecentTokens: 12000,
-			}),
+			// Scale the retained tail with the sub-agent window.
+			agentctx.NewFullSummary(agentctx.FullSummaryConfig{Model: model}),
 		},
 	})
 }

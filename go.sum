@@ -103,10 +103,10 @@ github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 h1:KRzFb2m7YtdldCEkzs6KqmJw4nqEV
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.2/go.mod h1:JXeL+ps8p7/KNMjDQk3TCwPpBy0wYklyWTfbkIzdIFU=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/voocel/agentcore v1.8.0 h1:ymChpkiWP/LYXYLdSU+fjeSc7Cl6RGAVZfTF4prptME=
-github.com/voocel/agentcore v1.8.0/go.mod h1:DPwvw35WNqcBXJckzghQF8FyBaTGbrugY1CO+Vni17U=
-github.com/voocel/litellm v1.8.8 h1:w782tOhF0lDAhz/RFuiYtwrFC2ayJGFNqxiuJg54J5U=
-github.com/voocel/litellm v1.8.8/go.mod h1:6MBUu3I4DHm7h72Vl+3nqLruSwYmgqMf/I9BGoordJ4=
+github.com/voocel/agentcore v1.8.1 h1:psl6pSOYJAPyln19dVFaloF0/NCovtPkqj34BO6pnko=
+github.com/voocel/agentcore v1.8.1/go.mod h1:AiAvZs2NXc/2jQ/8DI7T+iAA9e+0qSYdRZggyYsEDEQ=
+github.com/voocel/litellm v1.8.9 h1:qzllpc4pgqK0b27RcoP6Ost5pL0I85G2bC3whxZ+8eY=
+github.com/voocel/litellm v1.8.9/go.mod h1:6MBUu3I4DHm7h72Vl+3nqLruSwYmgqMf/I9BGoordJ4=
 github.com/voocel/litellm/otel v0.0.0-20260731121717-538a6d8cceb8 h1:qJmBnqrjVpYjs8PNqwq5ENixxBazRo18OOREoNz8YAo=
 github.com/voocel/litellm/otel v0.0.0-20260731121717-538a6d8cceb8/go.mod h1:3LEtJgsLixNHaKtRjKStJHMTbuMg3AJ5G55wjn7EI0Q=
 github.com/voocel/mcp-sdk-go v1.3.0 h1:ab8oMGc63onFRhGw5ildTWrGy0FqxxJR7qpwFfeYQsA=

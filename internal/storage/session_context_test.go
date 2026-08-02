@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/voocel/agentcore"
+	agentctx "github.com/voocel/agentcore/context"
 )
 
 func TestBuildContextSnapshotIncludesModelProviderAndReasoningEffort(t *testing.T) {
@@ -207,12 +208,14 @@ func TestBuildSnapshotPreservesPreCompactionStateWhileSkippingMessages(t *testin
 	if len(snapshot.Messages) != 2 {
 		t.Fatalf("messages len = %d, want 2 (summary + post-compaction tail)", len(snapshot.Messages))
 	}
-	first, ok := snapshot.Messages[0].(agentcore.Message)
+	// ContextSummary, not a flattened user message: the next compaction keys off
+	// this type to update the summary incrementally instead of re-summarizing it.
+	first, ok := snapshot.Messages[0].(agentctx.ContextSummary)
 	if !ok {
-		t.Fatalf("messages[0] type = %T, want agentcore.Message", snapshot.Messages[0])
+		t.Fatalf("messages[0] type = %T, want agentctx.ContextSummary", snapshot.Messages[0])
 	}
-	if !strings.Contains(first.TextContent(), "summary of earlier work") {
-		t.Fatalf("messages[0] should be compaction summary, got %q", first.TextContent())
+	if !strings.Contains(first.Summary, "summary of earlier work") {
+		t.Fatalf("messages[0] should be compaction summary, got %q", first.Summary)
 	}
 	last, ok := snapshot.Messages[1].(agentcore.Message)
 	if !ok {

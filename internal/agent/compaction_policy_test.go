@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -155,7 +156,7 @@ func TestPostCompactRecoveryRestoresWorkingFiles(t *testing.T) {
 	s := newRecoveryTestSession(t)
 	info := agentctx.SummaryInfo{ModifiedFiles: []string{edited}}
 
-	out, err := s.postCompactRecoveryMessages(context.Background(), info, nil)
+	out, err := s.postCompactRecoveryMessages(context.Background(), info, nil, postCompactMaxTokens)
 	if err != nil {
 		t.Fatalf("recovery: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestPostCompactRecoverySkipsFilesStillInKept(t *testing.T) {
 	kept[0] = call
 
 	info := agentctx.SummaryInfo{ReadFiles: []string{stillThere, dropped}}
-	out, err := s.postCompactRecoveryMessages(context.Background(), info, kept)
+	out, err := s.postCompactRecoveryMessages(context.Background(), info, kept, postCompactMaxTokens)
 	if err != nil {
 		t.Fatalf("recovery: %v", err)
 	}
@@ -223,7 +224,7 @@ func TestPostCompactRecoveryExcludesSelfManagedFiles(t *testing.T) {
 
 	s := newRecoveryTestSession(t)
 	out, err := s.postCompactRecoveryMessages(context.Background(),
-		agentctx.SummaryInfo{ReadFiles: []string{mem}}, nil)
+		agentctx.SummaryInfo{ReadFiles: []string{mem}}, nil, postCompactMaxTokens)
 	if err != nil {
 		t.Fatalf("recovery: %v", err)
 	}
@@ -258,5 +259,115 @@ func TestModelSwitchResizesTheReserve(t *testing.T) {
 	}
 	if _, reserve := m.applyContextWindow(200_000, 64_000); reserve != 20_000 {
 		t.Fatalf("reserve = %d after switching to a large-output model, want the cap", reserve)
+	}
+}
+
+// Recovery must stay within the room left by the terminal summary strategy.
+func TestPostCompactRecoveryHonorsRemainingRoom(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fat := filepath.Join(dir, "fat.go")
+	if err := os.WriteFile(fat, []byte(strings.Repeat("x", 40000)), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	s := newRecoveryTestSession(t)
+	info := agentctx.SummaryInfo{ModifiedFiles: []string{fat}}
+
+	const room = 500
+	out, err := s.postCompactRecoveryMessages(context.Background(), info, nil, room)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	if got := agentctx.EstimateTotal(out); got > room {
+		t.Fatalf("recovery injected %d tokens into %d of room", got, room)
+	}
+
+	if err := s.prompt.recordInvoked(invokedSkillSnapshot{
+		Name:       "review",
+		PromptText: strings.Repeat("preserve this instruction ", 80),
+	}, "review"); err != nil {
+		t.Fatalf("record skill: %v", err)
+	}
+
+	// Required reminders must fail explicitly rather than disappear while
+	// lower-priority file content consumes the budget.
+	out, err = s.postCompactRecoveryMessages(context.Background(), info, nil, 0)
+	if err == nil || !strings.Contains(err.Error(), "invoked-skill reminder") {
+		t.Fatalf("expected explicit reminder budget error, got %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("returned %d recovery messages after required reminder failed", len(out))
+	}
+}
+
+// Runtime tools must be compactable unless explicitly protected.
+func TestMicrocompactClassifierIsABlacklist(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"mcp__github__list_issues", "subagent", "task_output",
+		"bash", "read", "web_fetch", "some_tool_added_next_release",
+	} {
+		if !CodebotToolClassifier(name) {
+			t.Errorf("%q must be compactable", name)
+		}
+	}
+	// Recoverable by re-running is the test; these two are not.
+	for _, name := range []string{"skill", "ask_user"} {
+		if CodebotToolClassifier(name) {
+			t.Errorf("%q must be protected from clearing", name)
+		}
+	}
+}
+
+// Clear bulky MCP output but preserve small state transitions.
+func TestMicrocompactClearsBulkyMCPResultsAndSparesSmallOnes(t *testing.T) {
+	t.Parallel()
+
+	bulky := strings.Repeat("issue body ", 400) // well past the floor
+	var msgs []agentcore.AgentMessage
+	// Put the short result outside the recency window.
+	msgs = append(msgs, toolExchange("plan", "enter_plan_mode", "Entered plan mode.")...)
+	for i := range 8 {
+		msgs = append(msgs, toolExchange(fmt.Sprintf("mcp-%d", i), "mcp__github__list_issues", bulky)...)
+	}
+	for i := range 3 {
+		msgs = append(msgs, toolExchange(fmt.Sprintf("tail-%d", i), "bash", bulky)...)
+	}
+
+	strategy := agentctx.NewToolResultMicrocompact(agentctx.ToolResultMicrocompactConfig{
+		Classifier:       CodebotToolClassifier,
+		KeepRecent:       5,
+		MinResultTokens:  MinCompactableResultTokens,
+		ClearedMessageFn: ClearedToolResultMessage,
+	})
+	out, res, err := strategy.Apply(context.Background(), msgs, msgs, agentctx.Budget{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !res.Applied {
+		t.Fatal("nothing cleared; MCP results are unreachable again")
+	}
+
+	clearedMCP, clearedPlan := 0, 0
+	for _, m := range out {
+		msg, ok := m.(agentcore.Message)
+		if !ok || msg.Metadata["compacted_tool_result"] != true {
+			continue
+		}
+		switch msg.Metadata["compacted_tool_name"] {
+		case "mcp__github__list_issues":
+			clearedMCP++
+		case "enter_plan_mode":
+			clearedPlan++
+		}
+	}
+	if clearedMCP == 0 {
+		t.Fatal("no MCP result was cleared")
+	}
+	if clearedPlan != 0 {
+		t.Fatalf("cleared %d short state-transition result(s); the floor should spare them", clearedPlan)
 	}
 }

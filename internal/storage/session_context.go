@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/voocel/agentcore"
+	agentctx "github.com/voocel/agentcore/context"
 )
 
 const interruptedToolResult = `"Tool execution was interrupted by a previous process termination. Its outcome and side effects are unknown; inspect the workspace or external state before retrying."`
@@ -90,6 +91,7 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 
 	// Build context from the chain.
 	var msgs []agentcore.AgentMessage
+	var summary *agentctx.ContextSummary
 	lastProvider := ""
 	lastModel := ""
 	lastReasoningEffort := ""
@@ -127,12 +129,10 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 			if json.Unmarshal(entry.Data, &c) == nil {
 				// Compaction replaces all prior messages with summary + kept messages.
 				msgs = nil
+				summary = nil
 				if c.Summary != "" {
-					msgs = append(msgs, agentcore.Message{
-						Role:      agentcore.RoleUser,
-						Content:   []agentcore.ContentBlock{agentcore.TextBlock(c.Summary)},
-						Timestamp: entry.Timestamp,
-					})
+					// Preserve the checkpoint type for incremental compaction.
+					summary = &agentctx.ContextSummary{Summary: c.Summary, Timestamp: entry.Timestamp}
 				}
 				for _, raw := range c.Messages {
 					var msg agentcore.Message
@@ -163,10 +163,14 @@ func (s *Store) BuildSnapshot() (ContextSnapshot, error) {
 		}
 	}
 
-	repaired := repairInterruptedToolCalls(agentcore.CollectMessages(msgs))
+	// CollectMessages drops custom checkpoints, so restore it after repair.
+	restored := agentcore.ToAgentMessages(repairInterruptedToolCalls(agentcore.CollectMessages(msgs)))
+	if summary != nil {
+		restored = append([]agentcore.AgentMessage{*summary}, restored...)
+	}
 
 	return ContextSnapshot{
-		Messages:        agentcore.ToAgentMessages(repaired),
+		Messages:        restored,
 		Provider:        lastProvider,
 		Model:           lastModel,
 		ReasoningEffort: lastReasoningEffort,

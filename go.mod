@@ -11,8 +11,8 @@ require (
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/muesli/reflow v0.3.0
 	github.com/muesli/termenv v0.16.0
-	github.com/voocel/agentcore v1.8.0
-	github.com/voocel/litellm v1.8.8
+	github.com/voocel/agentcore v1.8.1
+	github.com/voocel/litellm v1.8.9
 	github.com/voocel/litellm/otel v0.0.0-20260731121717-538a6d8cceb8
 	github.com/voocel/mcp-sdk-go v1.3.0
 	go.opentelemetry.io/otel v1.44.0

@@ -13,31 +13,22 @@ import (
 	localtools "github.com/voocel/codebot/internal/tools"
 )
 
-var compactableTools = map[string]bool{
-	"read":       true,
-	"bash":       true,
-	"grep":       true,
-	"glob":       true,
-	"ls":         true,
-	"web_search": true,
-	"web_fetch":  true,
+// MinCompactableResultTokens avoids rewriting small, often stateful results.
+const MinCompactableResultTokens = 200
+
+// These results cannot be reconstructed after clearing.
+var protectedFromMicrocompact = map[string]struct{}{
+	"skill":    {},
+	"ask_user": {},
 }
 
 func CodebotToolClassifier(name string) bool {
-	if strings.HasPrefix(name, "mcp__") {
-		return false
-	}
-	return compactableTools[name]
+	_, protected := protectedFromMicrocompact[name]
+	return !protected
 }
 
-// ClearedToolResultMessage keeps the persisted-output path alive when
-// microcompact drops a tool result. Oversized output is already on disk by the
-// time it gets here (see tools.OutputLimitedTool), so the path is the model's
-// route back to it — clearing the whole block strands the file and leaves
-// re-running the command as the only way to recover.
-//
-// Results small enough to never have been persisted return "", falling back to
-// the plain cleared message.
+// ClearedToolResultMessage preserves the path of output already persisted by
+// tools.OutputLimiter. "" selects the default cleared message.
 func ClearedToolResultMessage(_ string, original agentcore.Message) string {
 	for _, b := range original.Content {
 		if b.Type != agentcore.ContentText {
@@ -137,37 +128,40 @@ func compactionKindForStrategy(name string) CompactionKind {
 }
 
 const (
-	postCompactMaxFiles        = 5
-	postCompactTokenBudget     = 50000
+	postCompactMaxFiles = 5
+	// room remains the effective limit.
+	postCompactMaxTokens       = 50000
 	postCompactMaxTokenPerFile = 5000
 	postCompactBytesPerToken   = 4
 )
 
-// postCompactRecoveryMessages re-injects everything a summary rewrite drops
-// but the model still needs: the files it was working on, the invoked-skill
-// log, and the deferred-tools preamble. Workspace context (AGENTS.md,
-// MEMORY.md, skills) needs no recovery — it sits in system block 2, which
-// compaction never touches.
-//
-// This is the ONLY recovery path. It hangs off FullSummaryStrategy's hook,
-// which fires from both Apply (automatic, under token pressure) and ForceApply
-// (explicit /compact) — recovering from one but not the other would leave the
-// common case worse off.
-func (s *Session) postCompactRecoveryMessages(_ context.Context, info agentctx.SummaryInfo, kept []agentcore.AgentMessage) ([]agentcore.AgentMessage, error) {
-	// Files first: bulk content ahead of the short reminders.
-	out := readRecentFiles(info, kept)
-
+// postCompactRecoveryMessages restores required reminders before optional file
+// bodies, without exceeding room.
+func (s *Session) postCompactRecoveryMessages(_ context.Context, info agentctx.SummaryInfo, kept []agentcore.AgentMessage, room int) ([]agentcore.AgentMessage, error) {
+	left := room
+	var tail []agentcore.AgentMessage
+	claim := func(name string, msg agentcore.AgentMessage) error {
+		cost := agentctx.EstimateTokens(msg)
+		if cost > left {
+			return fmt.Errorf("post-compact recovery: %s requires %d tokens, only %d available", name, cost, left)
+		}
+		tail = append(tail, msg)
+		left -= cost
+		return nil
+	}
 	if reminder := s.invokedSkillReminderMessage(); reminder != nil {
-		out = append(out, *reminder)
+		if err := claim("invoked-skill reminder", *reminder); err != nil {
+			return nil, err
+		}
 	}
-
-	// preambleSnapshot (not takePreamble): recovery re-injects without
-	// consuming the one-shot flag.
 	if preamble := s.prompt.preambleSnapshot(); preamble != "" {
-		out = append(out, injectedUserMsg(preamble))
+		if err := claim("deferred-tools preamble", injectedUserMsg(preamble)); err != nil {
+			return nil, err
+		}
 	}
 
-	return out, nil
+	files := readRecentFiles(info, kept, min(postCompactMaxTokens, left))
+	return append(files, tail...), nil
 }
 
 // readRecentFiles re-reads files referenced by a committed summary rewrite so
@@ -178,8 +172,12 @@ func (s *Session) postCompactRecoveryMessages(_ context.Context, info agentctx.S
 // Strategy:
 //   - modified files first (higher priority), then read-only
 //   - skip files already in kept messages, plan files, memory files, binaries
-//   - max 5 files, 50k token total budget, 5k per file
-func readRecentFiles(info agentctx.SummaryInfo, kept []agentcore.AgentMessage) []agentcore.AgentMessage {
+//   - max 5 files, budget tokens in total, 5k per file
+func readRecentFiles(info agentctx.SummaryInfo, kept []agentcore.AgentMessage, budget int) []agentcore.AgentMessage {
+	if budget <= 0 {
+		return nil
+	}
+
 	var candidates []string
 	candidates = append(candidates, info.ModifiedFiles...)
 	candidates = append(candidates, info.ReadFiles...)
@@ -208,7 +206,7 @@ func readRecentFiles(info agentctx.SummaryInfo, kept []agentcore.AgentMessage) [
 	var out []agentcore.AgentMessage
 	totalTokens := 0
 	for _, path := range files {
-		if totalTokens >= postCompactTokenBudget {
+		if totalTokens >= budget {
 			break
 		}
 
@@ -225,22 +223,19 @@ func readRecentFiles(info agentctx.SummaryInfo, kept []agentcore.AgentMessage) [
 			continue
 		}
 
-		// Truncate to per-file budget
-		maxBytes := postCompactMaxTokenPerFile * postCompactBytesPerToken
+		// Include the wrapper in the budget.
+		wrapper := len(fmt.Sprintf("<file-restore path=%q>\n\n</file-restore>", path))
+		maxBytes := min(postCompactMaxTokenPerFile, budget-totalTokens)*postCompactBytesPerToken - wrapper
+		if maxBytes <= 0 {
+			break
+		}
 		if len(content) > maxBytes {
 			content = content[:maxBytes]
 		}
-		// Truncate to remaining total budget
-		remainBytes := (postCompactTokenBudget - totalTokens) * postCompactBytesPerToken
-		if len(content) > remainBytes {
-			content = content[:remainBytes]
-		}
 
-		tokens := (len(content) + postCompactBytesPerToken - 1) / postCompactBytesPerToken
-		totalTokens += tokens
-
-		text := fmt.Sprintf("<file-restore path=%q>\n%s\n</file-restore>", path, string(content))
-		out = append(out, injectedUserMsg(text))
+		msg := injectedUserMsg(fmt.Sprintf("<file-restore path=%q>\n%s\n</file-restore>", path, string(content)))
+		totalTokens += agentctx.EstimateTokens(msg)
+		out = append(out, msg)
 	}
 	return out
 }
