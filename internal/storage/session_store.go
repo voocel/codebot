@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -286,8 +287,21 @@ func (s *Store) appendEntry(entry Entry) error {
 		return fmt.Errorf("marshal entry: %w", err)
 	}
 	line = append(line, '\n')
-	_, err = s.file.Write(line)
-	return err
+	offset, err := s.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("locate append offset: %w", err)
+	}
+	if _, err := s.file.Write(line); err != nil {
+		// A short write leaves a partial, unterminated line. Left in place, the
+		// next successful append splices onto it into a newline-terminated but
+		// malformed line that recovery cannot skip — permanently unresumable.
+		// Roll back to the pre-write offset so the torn bytes never durably land.
+		if _, seekErr := s.file.Seek(offset, io.SeekStart); seekErr == nil {
+			_ = s.file.Truncate(offset)
+		}
+		return err
+	}
+	return nil
 }
 
 // appendChained appends an entry linked to the current leaf and advances the leaf pointer.

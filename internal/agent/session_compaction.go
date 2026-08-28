@@ -27,12 +27,17 @@ func (s *Session) Compact() (CompactionResult, error) {
 }
 
 func (s *Session) compactWithReason(reason string) (result CompactionResult, err error) {
-	// Summarization can run for up to 90s off the tea loop; a /new or /resume
-	// completing in that window must not have this stale result installed over
-	// the fresh session — the generation is re-checked before commit.
-	s.mu.Lock()
-	gen := s.generation
-	s.mu.Unlock()
+	// Summarization can run for up to 90s. Freeze the run lifecycle for the
+	// whole window (fourth HoldRuns holder alongside Reset/SwitchSession/
+	// ClearConversation) so a prompt, cron wake, or background result cannot
+	// start a run that mutates history between the snapshot and the install.
+	// Without this the summary is built from a stale view and either fails to
+	// install (SetMessages → ErrAlreadyRunning) or overwrites the raced turn,
+	// while the checkpoint has already been persisted below.
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
+	release := s.deps.agent.HoldRuns()
+	defer release()
 
 	result = CompactionResult{Reason: reason}
 	s.metrics.recordCompactionAttempt(CompactionKindFull)
@@ -113,22 +118,16 @@ func (s *Session) compactWithReason(reason string) (result CompactionResult, err
 		result.TokensAfter = tokensBefore
 		return result, nil
 	}
+	// Install first, persist second: the runs are held, so SetMessages cannot
+	// race a live run, and the checkpoint only lands after the in-memory window
+	// is actually replaced — never a persisted summary the memory never took.
+	if err := s.deps.agent.SetMessages(commit.Messages); err != nil {
+		return result, fmt.Errorf("set compacted messages: %w", err)
+	}
 	if store != nil {
 		if err := persistCompaction(store, commit.Messages); err != nil {
 			return result, err
 		}
-	}
-	// Generation check and install in one s.mu critical section (legal
-	// nesting: s.mu → agent lock), so a switch cannot land in between.
-	s.mu.Lock()
-	if s.generation != gen {
-		s.mu.Unlock()
-		return result, fmt.Errorf("compact context: session switched during compaction")
-	}
-	err = s.deps.agent.SetMessages(commit.Messages)
-	s.mu.Unlock()
-	if err != nil {
-		return result, fmt.Errorf("set compacted messages: %w", err)
 	}
 	// Recalled memories and the date correction were summarized away with the
 	// rest of the window; let them resurface. Compaction keeps the tail, so
