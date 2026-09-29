@@ -12,7 +12,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/litellm/catalog"
-	"github.com/voocel/litellm/providers"
+	llmprovider "github.com/voocel/litellm/provider"
 )
 
 type stubModel struct{}
@@ -88,7 +88,7 @@ func TestModelsLookup(t *testing.T) {
 	t.Parallel()
 
 	m := &Models{}
-	for name, cap := range map[string]int{"claude-x": 1, "xai/grok-x": 2, "moonshot/kimi-x": 3} {
+	for name, cap := range map[string]int{"claude-x": 1, "xai/grok-x": 2, "moonshot/kimi-x": 3, "gemini-x": 4} {
 		if err := m.catalog.Set(name, catalog.Model{MaxOutputTokens: cap}); err != nil {
 			t.Fatal(err)
 		}
@@ -100,7 +100,9 @@ func TestModelsLookup(t *testing.T) {
 	}{
 		{"unprefixed name", ModelSpec{Provider: "anthropic", Type: "anthropic", Model: "claude-x"}, 1},
 		{"vendor prefix of the type", ModelSpec{Provider: "my-grok", Type: "grok", Model: "grok-x"}, 2},
+		{"another vendor's entry", ModelSpec{Provider: "gemini", Type: "gemini", Model: "gemini-x"}, 0},
 		{"prefix of the provider name", ModelSpec{Provider: "moonshot", Type: "compat", Model: "kimi-x"}, 3},
+		{"bare name behind compat", ModelSpec{Provider: "gateway", Type: "compat", Model: "claude-x"}, 1},
 		{"unknown vendor", ModelSpec{Provider: "gateway", Type: "compat", Model: "kimi-x"}, 0},
 	} {
 		facts, ok := m.Lookup(tt.spec)
@@ -151,7 +153,7 @@ func TestModelFactoryAnthropic(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := NewModelFactory(models)
-	conn := providers.Config{APIKey: "test-key", BaseURL: server.URL, Headers: map[string]string{"anthropic-beta": "beta-a"}}
+	conn := llmprovider.Config{APIKey: "test-key", BaseURL: server.URL, Headers: map[string]string{"anthropic-beta": "beta-a"}}
 	generate := func(model string) *agentcore.Usage {
 		t.Helper()
 		m, err := factory(ModelSpec{Provider: "anthropic", Type: "anthropic", Model: model, Conn: conn})
@@ -176,7 +178,7 @@ func TestModelFactoryAnthropic(t *testing.T) {
 	}
 
 	usage = generate("claude-unlisted")
-	if body.MaxTokens != anthropicFallbackMaxTokens || usage.Cost != nil {
+	if body.MaxTokens != fallbackMaxTokens || usage.Cost != nil {
 		t.Fatalf("unlisted model: max_tokens = %d, cost = %+v", body.MaxTokens, usage.Cost)
 	}
 }

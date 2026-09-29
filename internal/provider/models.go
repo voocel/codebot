@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/voocel/litellm/catalog"
+	llmprovider "github.com/voocel/litellm/provider"
 )
 
 // snapshot is LiteLLM's model list as of the last go generate, trimmed to the
@@ -27,14 +28,6 @@ const (
 	listCacheTTL  = 24 * time.Hour
 	fetchTimeout  = 30 * time.Second
 )
-
-// catalogVendors maps the provider names whose LiteLLM prefix differs.
-var catalogVendors = map[string]string{
-	"glm":  "zai",
-	"grok": "xai",
-	"mimo": "xiaomi_mimo",
-	"qwen": "dashscope",
-}
 
 // Models holds model facts (context window, output cap, reasoning, prices)
 // from LiteLLM's model list: the built-in snapshot until Refresh loads a
@@ -52,24 +45,18 @@ func NewModels() *Models {
 	return m
 }
 
-// Lookup returns the facts for spec's model, listed under the LiteLLM prefix
-// of its provider type or, for custom providers such as a compat provider
-// named "moonshot", of its provider name; OpenAI and Anthropic models, among
-// others, are listed unprefixed.
+// Lookup returns the facts for spec's model. Built-in provider types list it
+// under the name provider.CatalogName gives; compat providers reach vendors
+// litellm does not know, so the provider name is tried as the vendor prefix,
+// as for one named "moonshot", before the bare model name.
 func (m *Models) Lookup(spec ModelSpec) (catalog.Model, bool) {
-	names := make([]string, 0, 3)
-	for _, vendor := range []string{spec.Type, spec.Provider} {
-		if v, ok := catalogVendors[vendor]; ok {
-			vendor = v
-		}
-		names = append(names, vendor+"/"+spec.Model)
+	if name, ok := llmprovider.CatalogName(spec.Type, spec.Model); ok {
+		return m.catalog.Get(name)
 	}
-	for _, name := range append(names, spec.Model) {
-		if facts, ok := m.catalog.Get(name); ok {
-			return facts, true
-		}
+	if facts, ok := m.catalog.Get(spec.Provider + "/" + spec.Model); ok {
+		return facts, true
 	}
-	return catalog.Model{}, false
+	return m.catalog.Get(spec.Model)
 }
 
 // Refresh replaces the facts with LiteLLM's current list in the background,

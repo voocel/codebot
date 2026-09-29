@@ -1656,9 +1656,14 @@ func TestBackgroundResultAutoContinuesWhenIdle(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	s.EnqueueBackgroundResult(agentcore.UserMsg("background result"))
+	// Messages enter the transcript from the run's event loop, after the model
+	// call returns; wait for the response itself.
 	waitFor(t, time.Second, func() bool {
-		return model.Calls() == 1 && !ag.HasFollowUps()
+		return s.LastAssistantText() == "counted"
 	})
+	if model.Calls() != 1 || ag.HasFollowUps() {
+		t.Fatalf("calls = %d, follow-ups pending = %v; want one call, none pending", model.Calls(), ag.HasFollowUps())
+	}
 
 	messages := ag.Messages()
 	if len(messages) < 2 || messages[len(messages)-2].TextContent() != "background result" {

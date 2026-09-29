@@ -12,8 +12,8 @@ import (
 
 	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/provider"
+	llmprovider "github.com/voocel/litellm/provider"
 	"github.com/voocel/litellm/provider/bedrock"
-	"github.com/voocel/litellm/providers"
 )
 
 // ConfigDir is the project-level config directory name.
@@ -51,8 +51,8 @@ func (pc ProviderConfig) HasCredentials() bool {
 }
 
 // Connection returns the settings for reaching the provider.
-func (pc ProviderConfig) Connection() providers.Config {
-	conn := providers.Config{APIKey: pc.APIKey, BaseURL: pc.BaseURL, API: pc.API}
+func (pc ProviderConfig) Connection() llmprovider.Config {
+	conn := llmprovider.Config{APIKey: pc.APIKey, BaseURL: pc.BaseURL, API: pc.API}
 	x := pc.Extra
 	if x == nil {
 		return conn
