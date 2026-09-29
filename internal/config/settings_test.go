@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -13,7 +14,7 @@ func TestMergeSettingsProviderAPI(t *testing.T) {
 			"openai": {
 				API:    "chat",
 				APIKey: "sk-base",
-				Extra:  map[string]any{"user_agent": "base-client/1.0"},
+				Extra:  &ProviderExtra{UserAgent: "base-client/1.0"},
 			},
 		},
 	}
@@ -21,7 +22,7 @@ func TestMergeSettingsProviderAPI(t *testing.T) {
 		Providers: map[string]*ProviderConfig{
 			"openai": {
 				API:   "responses",
-				Extra: map[string]any{"user_agent": "override-client/1.0"},
+				Extra: &ProviderExtra{UserAgent: "override-client/1.0"},
 			},
 		},
 	}
@@ -34,8 +35,8 @@ func TestMergeSettingsProviderAPI(t *testing.T) {
 	if pc.APIKey != "sk-base" {
 		t.Fatalf("APIKey = %q, want inherited key", pc.APIKey)
 	}
-	if got := pc.Extra["user_agent"]; got != "override-client/1.0" {
-		t.Fatalf("Extra[user_agent] = %#v, want override-client/1.0", got)
+	if got := pc.Extra.UserAgent; got != "override-client/1.0" {
+		t.Fatalf("Extra.UserAgent = %q, want override-client/1.0", got)
 	}
 }
 
@@ -74,20 +75,45 @@ func TestMergeSettingsDreamReplacesWhole(t *testing.T) {
 	}
 }
 
-func TestProviderExtraIncludesAPI(t *testing.T) {
+func TestConnection(t *testing.T) {
+	headers := map[string]string{"Anthropic-Beta": "explicit"}
 	pc := ProviderConfig{
-		API:   "responses",
-		Extra: map[string]any{"user_agent": "codebot-test/1.0"},
+		API:    "responses",
+		APIKey: "key",
+		Extra: &ProviderExtra{
+			UserAgent:     "codebot-test/1.0",
+			Headers:       headers,
+			AnthropicBeta: "alias",
+		},
 	}
-	extra := pc.ProviderExtra()
-	if extra["api"] != "responses" {
-		t.Fatalf("extra[api] = %#v, want responses", extra["api"])
+	conn := pc.Connection()
+	if conn.API != "responses" || conn.APIKey != "key" || conn.UserAgent != "codebot-test/1.0" {
+		t.Fatalf("connection = %+v", conn)
 	}
-	if extra["user_agent"] != "codebot-test/1.0" {
-		t.Fatalf("extra[user_agent] = %#v, want codebot-test/1.0", extra["user_agent"])
+	// The explicit header wins over the alias.
+	if len(conn.Headers) != 1 || conn.Headers["Anthropic-Beta"] != "explicit" {
+		t.Fatalf("headers = %v", conn.Headers)
 	}
-	if _, ok := pc.Extra["api"]; ok {
-		t.Fatalf("ProviderExtra mutated original Extra: %#v", pc.Extra)
+
+	pc.Extra = &ProviderExtra{AnthropicBeta: "alias", Headers: headers}
+	delete(headers, "Anthropic-Beta")
+	if conn := pc.Connection(); conn.Headers["anthropic-beta"] != "alias" || len(headers) != 0 {
+		t.Fatalf("headers = %v; settings headers = %v", conn.Headers, headers)
+	}
+}
+
+func TestConnectionBedrock(t *testing.T) {
+	pc := ProviderConfig{Extra: &ProviderExtra{Region: "eu-west-1", AccessKeyID: "AKID", SecretAccessKey: "secret"}}
+	if !pc.HasCredentials() {
+		t.Fatal("AWS keys should count as credentials")
+	}
+	conn := pc.Connection()
+	creds, err := conn.Credentials.Credentials(context.Background())
+	if err != nil || conn.Region != "eu-west-1" || creds.AccessKeyID != "AKID" || creds.SecretAccessKey != "secret" {
+		t.Fatalf("connection = %+v, credentials = %+v, %v", conn, creds, err)
+	}
+	if (ProviderConfig{}).HasCredentials() {
+		t.Fatal("empty provider has no credentials")
 	}
 }
 

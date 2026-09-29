@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/provider"
+	"github.com/voocel/litellm/provider/bedrock"
+	"github.com/voocel/litellm/providers"
 )
 
 // ConfigDir is the project-level config directory name.
@@ -24,7 +27,69 @@ type ProviderConfig struct {
 	BaseURL    string         `json:"base_url,omitempty"`
 	Models     []string       `json:"models,omitempty"`      // available model list for this provider
 	SmallModel string         `json:"small_model,omitempty"` // lightweight model for sub-agents
-	Extra      map[string]any `json:"extra,omitempty"`       // provider-level litellm config: headers, user_agent, anthropic_beta
+	Extra      *ProviderExtra `json:"extra,omitempty"`
+}
+
+// ProviderExtra holds the provider's connection settings beyond the API key
+// and base URL. They configure the HTTP client, never the request body.
+type ProviderExtra struct {
+	UserAgent string            `json:"user_agent,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	// AnthropicBeta sets the anthropic-beta header unless Headers sets it.
+	AnthropicBeta string `json:"anthropic_beta,omitempty"`
+	// Region and the AWS keys authenticate bedrock, which takes no API key.
+	Region          string `json:"region,omitempty"`
+	AccessKeyID     string `json:"access_key_id,omitempty"`
+	SecretAccessKey string `json:"secret_access_key,omitempty"`
+	SessionToken    string `json:"session_token,omitempty"`
+}
+
+// HasCredentials reports whether the provider has an API key, or AWS keys
+// for bedrock.
+func (pc ProviderConfig) HasCredentials() bool {
+	return pc.APIKey != "" || pc.Extra != nil && pc.Extra.AccessKeyID != ""
+}
+
+// Connection returns the settings for reaching the provider.
+func (pc ProviderConfig) Connection() providers.Config {
+	conn := providers.Config{APIKey: pc.APIKey, BaseURL: pc.BaseURL, API: pc.API}
+	x := pc.Extra
+	if x == nil {
+		return conn
+	}
+	conn.UserAgent = x.UserAgent
+	conn.Headers = maps.Clone(x.Headers)
+	if x.AnthropicBeta != "" && !hasHeader(conn.Headers, "anthropic-beta") {
+		if conn.Headers == nil {
+			conn.Headers = make(map[string]string, 1)
+		}
+		conn.Headers["anthropic-beta"] = x.AnthropicBeta
+	}
+	conn.Region = x.Region
+	if x.AccessKeyID != "" {
+		conn.Credentials = bedrock.StaticCredentials(x.AccessKeyID, x.SecretAccessKey, x.SessionToken)
+	}
+	return conn
+}
+
+// hasHeader reports whether headers sets name, compared case-insensitively.
+func hasHeader(headers map[string]string, name string) bool {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// ModelSpec resolves how to build model from the provider configured under
+// name; a name missing from providers must be a built-in provider type.
+func ModelSpec(providers map[string]ProviderConfig, name, model string) (provider.ModelSpec, error) {
+	typ, err := ResolveConfiguredProviderType(providers, name)
+	if err != nil {
+		return provider.ModelSpec{}, err
+	}
+	return provider.ModelSpec{Provider: name, Type: typ, Model: model, Conn: providers[name].Connection()}, nil
 }
 
 // TelemetryConfig configures OpenTelemetry trace export to an OTLP backend
@@ -168,36 +233,6 @@ type Resolved struct {
 	Dream DreamSettings // background memory consolidation; defaults on
 
 	Snapshot bool // workspace checkpoints for /undo; defaults on
-}
-
-// ProviderCredentials returns API key and base URL for the given provider.
-// Credentials come exclusively from settings.json — no environment fallback.
-func (r Resolved) ProviderCredentials(prov string) (apiKey, baseURL string) {
-	if pc, ok := r.Providers[prov]; ok {
-		return pc.APIKey, pc.BaseURL
-	}
-	return "", ""
-}
-
-// ProviderExtra returns provider-level litellm config for the given provider.
-func (r Resolved) ProviderExtra(prov string) map[string]any {
-	if pc, ok := r.Providers[prov]; ok {
-		return pc.ProviderExtra()
-	}
-	return nil
-}
-
-// ProviderExtra returns provider-level litellm config, including codebot's
-// first-class provider fields that agentcore still receives through Extra.
-func (pc ProviderConfig) ProviderExtra() map[string]any {
-	extra := cloneExtra(pc.Extra)
-	if pc.API != "" {
-		if extra == nil {
-			extra = make(map[string]any, 1)
-		}
-		extra["api"] = pc.API
-	}
-	return extra
 }
 
 // FormatModelID combines provider and model into "provider/model".
@@ -494,8 +529,8 @@ func mergeSettings(base, override Settings) Settings {
 			if v.SmallModel != "" {
 				existing.SmallModel = v.SmallModel
 			}
-			if len(v.Extra) > 0 {
-				existing.Extra = cloneExtra(v.Extra)
+			if v.Extra != nil {
+				existing.Extra = v.Extra
 			}
 			base.Providers[k] = existing
 		}

@@ -19,8 +19,8 @@ import (
 	"github.com/voocel/codebot/internal/telemetry"
 )
 
-// ModelFactory creates a chat model instance for a provider/model tuple.
-type ModelFactory func(prov, model, apiKey, baseURL string, providerExtra map[string]any) (agentcore.ChatModel, error)
+// ModelFactory creates a chat model instance for a model spec.
+type ModelFactory func(spec provider.ModelSpec) (agentcore.ChatModel, error)
 
 // SessionConfig configures a new Session.
 type SessionConfig struct {
@@ -28,12 +28,13 @@ type SessionConfig struct {
 	ContextManager agentcore.ContextManager
 	Store          *storage.Store
 	Manager        *storage.Manager
-	Registry       *provider.ModelRegistry
-	Settings       config.Resolved
-	Cwd            string
-	TaskStore      *storage.TaskStore
-	// CreateModel allows tests/integrations to override model construction.
-	// Defaults to provider.CreateModel when nil.
+	// Models supplies model facts such as context windows and prices; nil
+	// leaves them unknown.
+	Models    *provider.Models
+	Settings  config.Resolved
+	Cwd       string
+	TaskStore *storage.TaskStore
+	// CreateModel builds the chat models the session switches to.
 	CreateModel ModelFactory
 	// LazyPersist buffers user messages and flushes them only when
 	// an assistant response arrives. Disabled by default for safety.
@@ -110,7 +111,7 @@ type sessionDeps struct {
 	agent          *agentcore.Agent
 	contextManager agentcore.ContextManager
 	mgr            *storage.Manager
-	registry       *provider.ModelRegistry
+	models         *provider.Models
 	createModel    ModelFactory
 	lazyPersist    bool
 
@@ -526,18 +527,13 @@ func (o *overlayStore) texts() []string {
 
 // NewSession creates a Session and wires auto-persist to the agent.
 func NewSession(cfg SessionConfig) *Session {
-	modelFactory := cfg.CreateModel
-	if modelFactory == nil {
-		modelFactory = provider.CreateModel
-	}
-
 	s := &Session{
 		deps: sessionDeps{
 			agent:           cfg.Agent,
 			contextManager:  cfg.ContextManager,
 			mgr:             cfg.Manager,
-			registry:        cfg.Registry,
-			createModel:     modelFactory,
+			models:          cfg.Models,
+			createModel:     cfg.CreateModel,
 			lazyPersist:     cfg.LazyPersist,
 			telemetryTracer: cfg.TelemetryTracer,
 			hookRunner:      cfg.HookRunner,

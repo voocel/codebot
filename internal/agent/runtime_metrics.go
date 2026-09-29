@@ -48,6 +48,20 @@ type runtimeMetrics struct {
 
 	recentErrors   []ErrorSnapshot
 	lastCompaction *CompactionSnapshot
+
+	cacheSavedUSD float64
+}
+
+func (m *runtimeMetrics) recordCacheSavings(usd float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cacheSavedUSD += usd
+}
+
+func (m *runtimeMetrics) cacheSavings() float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cacheSavedUSD
 }
 
 func (m *runtimeMetrics) recordReminder(kind RuntimeReminderKind) {
@@ -172,6 +186,7 @@ func (m *runtimeMetrics) reset() {
 	m.errorTotal = 0
 	m.errorByCategory = nil
 	m.recentErrors = nil
+	m.cacheSavedUSD = 0
 	m.lastCompaction = nil
 }
 

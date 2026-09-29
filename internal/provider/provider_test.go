@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -10,13 +11,13 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/litellm/catalog"
+	"github.com/voocel/litellm/providers"
 )
 
-type cfgModel struct {
-	cfg llm.GenerationConfig
-}
+type stubModel struct{}
 
-func (m *cfgModel) Generate(
+func (m *stubModel) Generate(
 	_ context.Context,
 	_ []agentcore.Message,
 	_ []agentcore.ToolSpec,
@@ -25,7 +26,7 @@ func (m *cfgModel) Generate(
 	return &agentcore.LLMResponse{}, nil
 }
 
-func (m *cfgModel) GenerateStream(
+func (m *stubModel) GenerateStream(
 	_ context.Context,
 	_ []agentcore.Message,
 	_ []agentcore.ToolSpec,
@@ -36,23 +37,15 @@ func (m *cfgModel) GenerateStream(
 	return ch, nil
 }
 
-func (m *cfgModel) SupportsTools() bool { return true }
-
-func (m *cfgModel) GetConfig() *llm.GenerationConfig { return &m.cfg }
+func (m *stubModel) SupportsTools() bool { return true }
 
 type thinkingCapsModel struct {
-	cfgModel
-	efforts []agentcore.ThinkingLevel
+	stubModel
+	effort bool
 }
 
-func (m *thinkingCapsModel) Capabilities() llm.Capabilities {
-	return llm.Capabilities{
-		Thinking: llm.ThinkingCapabilities{
-			Supported: llm.SupportYes,
-			Disable:   llm.SupportYes,
-			Efforts:   m.efforts,
-		},
-	}
+func (m *thinkingCapsModel) Capabilities() (llm.Capabilities, bool) {
+	return llm.Capabilities{Thinking: true, DisableThinking: true, ThinkingEffort: m.effort}, true
 }
 
 func TestReasoningEffortMinimalIsNotUserSelectable(t *testing.T) {
@@ -67,24 +60,12 @@ func TestReasoningEffortMinimalIsNotUserSelectable(t *testing.T) {
 	if IsValidThinkingLevel("High") || IsValidThinkingLevel(" high ") {
 		t.Fatal("reasoning effort values must match exactly")
 	}
-	if slices.Contains(ThinkingLevelOrder, "minimal") {
-		t.Fatalf("thinking order contains minimal: %v", ThinkingLevelOrder)
-	}
-
-	reg := NewModelRegistry()
-	if levels := reg.AvailableThinkingLevels("unknown-model"); slices.Contains(levels, "minimal") {
-		t.Fatalf("unknown model levels contain minimal: %v", levels)
-	}
 }
 
 func TestThinkingLevelsForModelFiltersMinimal(t *testing.T) {
 	t.Parallel()
 
-	model := &thinkingCapsModel{efforts: []agentcore.ThinkingLevel{
-		agentcore.ThinkingMinimal,
-		agentcore.ThinkingLow,
-		agentcore.ThinkingHigh,
-	}}
+	model := &thinkingCapsModel{effort: true}
 	levels := ThinkingLevelsForModel(model)
 	if slices.Contains(levels, "minimal") {
 		t.Fatalf("thinking levels contain minimal: %v", levels)
@@ -103,91 +84,99 @@ func TestThinkingLevelsForModelFiltersMinimal(t *testing.T) {
 	}
 }
 
-func TestApplyProviderDefaultsAnthropicClamp(t *testing.T) {
+func TestModelsLookup(t *testing.T) {
 	t.Parallel()
 
-	m := &cfgModel{cfg: llm.GenerationConfig{MaxTokens: 65536}}
-	applyProviderDefaults("anthropic", "claude-sonnet-4-5-20250929", m)
-	if m.cfg.MaxTokens != 64000 {
-		t.Fatalf("max tokens = %d, want 64000", m.cfg.MaxTokens)
+	m := &Models{}
+	for name, cap := range map[string]int{"claude-x": 1, "xai/grok-x": 2, "moonshot/kimi-x": 3} {
+		if err := m.catalog.Set(name, catalog.Model{MaxOutputTokens: cap}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		spec ModelSpec
+		want int
+	}{
+		{"unprefixed name", ModelSpec{Provider: "anthropic", Type: "anthropic", Model: "claude-x"}, 1},
+		{"vendor prefix of the type", ModelSpec{Provider: "my-grok", Type: "grok", Model: "grok-x"}, 2},
+		{"prefix of the provider name", ModelSpec{Provider: "moonshot", Type: "compat", Model: "kimi-x"}, 3},
+		{"unknown vendor", ModelSpec{Provider: "gateway", Type: "compat", Model: "kimi-x"}, 0},
+	} {
+		facts, ok := m.Lookup(tt.spec)
+		if ok != (tt.want != 0) || facts.MaxOutputTokens != tt.want {
+			t.Errorf("%s: Lookup = %+v, %v; want cap %d", tt.name, facts, ok, tt.want)
+		}
 	}
 }
 
-func TestApplyProviderDefaultsAnthropicClampOpus(t *testing.T) {
+func TestNewModelsLoadsSnapshot(t *testing.T) {
 	t.Parallel()
 
-	m := &cfgModel{cfg: llm.GenerationConfig{MaxTokens: 200000}}
-	applyProviderDefaults("anthropic", "claude-opus-4-6", m)
-	if m.cfg.MaxTokens != 128000 {
-		t.Fatalf("max tokens = %d, want 128000", m.cfg.MaxTokens)
+	facts, ok := NewModels().Lookup(ModelSpec{Provider: "anthropic", Type: "anthropic", Model: "claude-sonnet-4-5"})
+	if !ok || facts.MaxInputTokens <= 0 || facts.MaxOutputTokens <= 0 || facts.Pricing == nil {
+		t.Fatalf("snapshot facts = %+v, %v", facts, ok)
 	}
 }
 
-func TestApplyProviderDefaultsNonAnthropicUnchanged(t *testing.T) {
-	t.Parallel()
-
-	m := &cfgModel{cfg: llm.GenerationConfig{MaxTokens: 65536}}
-	applyProviderDefaults("openai", "gpt-4.1", m)
-	if m.cfg.MaxTokens != 65536 {
-		t.Fatalf("max tokens = %d, want 65536", m.cfg.MaxTokens)
-	}
-}
-
-func TestApplyProviderDefaultsAnthropicUnknownFallback(t *testing.T) {
-	t.Parallel()
-
-	m := &cfgModel{cfg: llm.GenerationConfig{MaxTokens: 65536}}
-	applyProviderDefaults("anthropic", "claude-unknown-next", m)
-	if m.cfg.MaxTokens != 32000 {
-		t.Fatalf("max tokens = %d, want 32000", m.cfg.MaxTokens)
-	}
-}
-
-func TestCreateModelPassesProviderExtraHeaders(t *testing.T) {
-	var gotUserAgent, gotCustomHeader string
+// Anthropic models carry the listed output cap, or a fallback for unlisted
+// ones, since Anthropic rejects requests without one; listed prices cost
+// each call.
+func TestModelFactoryAnthropic(t *testing.T) {
+	var (
+		body struct {
+			MaxTokens int `json:"max_tokens"`
+		}
+		beta string
+	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotUserAgent = r.Header.Get("User-Agent")
-		gotCustomHeader = r.Header.Get("X-Custom-Client")
+		beta = r.Header.Get("Anthropic-Beta")
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":      "chatcmpl-test",
-			"object":  "chat.completion",
-			"created": 1,
-			"model":   "gpt-test",
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"message": map[string]any{
-						"role":    "assistant",
-						"content": "ok",
-					},
-					"finish_reason": "stop",
-				},
-			},
+			"id":          "msg_test",
+			"type":        "message",
+			"role":        "assistant",
+			"model":       "claude-x",
+			"content":     []map[string]any{{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 2},
 		})
 	}))
 	defer server.Close()
 
-	model, err := CreateModel("openai", "gpt-test", "test-key", server.URL, map[string]any{
-		"user_agent": "codebot-test/1.0",
-		"headers": map[string]string{
-			"X-Custom-Client": "codebot",
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateModel: %v", err)
+	models := &Models{}
+	pricing := &catalog.Pricing{InputCostPerToken: 3e-6, OutputCostPerToken: 15e-6}
+	if err := models.catalog.Set("claude-x", catalog.Model{MaxOutputTokens: 64000, Pricing: pricing}); err != nil {
+		t.Fatal(err)
+	}
+	factory := NewModelFactory(models)
+	conn := providers.Config{APIKey: "test-key", BaseURL: server.URL, Headers: map[string]string{"anthropic-beta": "beta-a"}}
+	generate := func(model string) *agentcore.Usage {
+		t.Helper()
+		m, err := factory(ModelSpec{Provider: "anthropic", Type: "anthropic", Model: model, Conn: conn})
+		if err != nil {
+			t.Fatalf("factory: %v", err)
+		}
+		resp, err := m.Generate(context.Background(), []agentcore.Message{
+			{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.TextBlock("hi")}},
+		}, nil)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		return resp.Message.Usage
 	}
 
-	_, err = model.Generate(context.Background(), []agentcore.Message{
-		{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.TextBlock("hi")}},
-	}, nil)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
+	usage := generate("claude-x")
+	if body.MaxTokens != 64000 || beta != "beta-a" {
+		t.Fatalf("max_tokens = %d, anthropic-beta = %q; want 64000, beta-a", body.MaxTokens, beta)
 	}
-	if gotUserAgent != "codebot-test/1.0" {
-		t.Fatalf("User-Agent = %q, want codebot-test/1.0", gotUserAgent)
+	if usage.Cost == nil || math.Abs(usage.Cost.Total-60e-6) > 1e-12 {
+		t.Fatalf("cost = %+v, want total 6e-5", usage.Cost)
 	}
-	if gotCustomHeader != "codebot" {
-		t.Fatalf("X-Custom-Client = %q, want codebot", gotCustomHeader)
+
+	usage = generate("claude-unlisted")
+	if body.MaxTokens != anthropicFallbackMaxTokens || usage.Cost != nil {
+		t.Fatalf("unlisted model: max_tokens = %d, cost = %+v", body.MaxTokens, usage.Cost)
 	}
 }

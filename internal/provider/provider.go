@@ -1,100 +1,61 @@
 package provider
 
 import (
+	"cmp"
 	"fmt"
-	"strings"
+	"slices"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/providers"
 )
 
-// IsSupportedType reports whether the given provider type is registered in
-// litellm (built-in or custom). The check is delegated to agentcore/litellm so
-// codebot does not maintain a duplicate whitelist.
+// IsSupportedType reports whether litellm builds a provider of the given type,
+// so codebot does not maintain a duplicate whitelist.
 func IsSupportedType(name string) bool {
-	return llm.IsProviderRegistered(name)
+	return slices.Contains(providers.Names(), name)
 }
 
-// SupportedTypeNames returns all provider names known to litellm, sorted.
+// SupportedTypeNames returns the provider types litellm builds, sorted.
 func SupportedTypeNames() []string {
-	return llm.RegisteredProviders()
+	return providers.Names()
 }
 
-// CreateModel creates a ChatModel for the given provider, model name, API key,
-// optional base URL, and provider-level extra config.
-func CreateModel(prov, name, apiKey, baseURL string, providerExtra map[string]any) (agentcore.ChatModel, error) {
-	return createModel(prov, name, apiKey, baseURL, providerExtra)
+// ModelSpec names a model and how to reach the provider serving it.
+type ModelSpec struct {
+	// Provider is the configured provider name; Type is the litellm provider
+	// it speaks, which differs for custom providers.
+	Provider string
+	Type     string
+	Model    string
+	Conn     providers.Config
 }
 
-// NewModelFactory returns a model factory that forwards the given litellm
-// ClientOptions (e.g. litellm.WithHook for telemetry) into every model it
-// builds. The return type structurally matches agent.ModelFactory without
+// anthropicFallbackMaxTokens caps Anthropic models missing from the model
+// list; every Claude 4 or later model accepts it.
+const anthropicFallbackMaxTokens = 32000
+
+// NewModelFactory returns a factory that builds models with the output caps
+// and prices in models, forwarding clientOpts (e.g. litellm.WithObservers for
+// telemetry) to every client. Its type matches agent.ModelFactory without
 // importing that package, avoiding an import cycle.
-func NewModelFactory(clientOpts ...litellm.ClientOption) func(prov, name, apiKey, baseURL string, providerExtra map[string]any) (agentcore.ChatModel, error) {
-	return func(prov, name, apiKey, baseURL string, providerExtra map[string]any) (agentcore.ChatModel, error) {
-		return createModel(prov, name, apiKey, baseURL, providerExtra, clientOpts...)
-	}
-}
-
-func createModel(prov, name, apiKey, baseURL string, providerExtra map[string]any, clientOpts ...litellm.ClientOption) (agentcore.ChatModel, error) {
-	normalizedProvider := strings.ToLower(strings.TrimSpace(prov))
-	modelOpts := []llm.ModelOption{
-		llm.WithAPIKey(apiKey),
-		llm.WithBaseURL(baseURL),
-		llm.WithProviderExtra(providerExtra),
-	}
-	if len(clientOpts) > 0 {
-		modelOpts = append(modelOpts, llm.WithClientOptions(clientOpts...))
-	}
-	model, err := llm.NewModel(normalizedProvider, name, modelOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("create model %s/%s: %w: %w",
-			normalizedProvider, name, diag.ErrProvider, err)
-	}
-	applyProviderDefaults(normalizedProvider, name, model)
-	return WrapStreamSafe(model), nil
-}
-
-func applyProviderDefaults(prov, modelName string, model agentcore.ChatModel) {
-	cfgOwner, ok := model.(interface {
-		GetConfig() *llm.GenerationConfig
-	})
-	if !ok {
-		return
-	}
-	cfg := cfgOwner.GetConfig()
-	if cfg == nil {
-		return
-	}
-
-	switch prov {
-	case "anthropic":
-		limit := anthropicMaxOutputTokens(modelName)
-		if cfg.MaxTokens <= 0 || cfg.MaxTokens > limit {
-			cfg.MaxTokens = limit
+func NewModelFactory(models *Models, clientOpts ...litellm.ClientOption) func(ModelSpec) (agentcore.ChatModel, error) {
+	return func(spec ModelSpec) (agentcore.ChatModel, error) {
+		facts, _ := models.Lookup(spec)
+		opts := []llm.ModelOption{llm.WithClientOptions(clientOpts...)}
+		if facts.Pricing != nil {
+			opts = append(opts, llm.WithPricing(*facts.Pricing))
 		}
-	}
-}
-
-func anthropicMaxOutputTokens(modelName string) int {
-	if entry, ok := lookupGeneratedModel("anthropic", modelName); ok && entry.MaxTokens > 0 {
-		return entry.MaxTokens
-	}
-
-	name := strings.ToLower(strings.TrimSpace(modelName))
-	switch {
-	case strings.Contains(name, "sonnet-4-5"):
-		return 64000
-	case strings.Contains(name, "haiku-3-5"):
-		return 8192
-	case strings.Contains(name, "sonnet-3-7"):
-		return 16000
-	case strings.Contains(name, "opus"):
-		return 32000
-	default:
-		// Conservative fallback so unknown models don't trip a provider 400.
-		return 32000
+		if spec.Type == "anthropic" {
+			// Anthropic rejects requests without an output cap.
+			opts = append(opts, llm.WithMaxTokens(cmp.Or(facts.MaxOutputTokens, anthropicFallbackMaxTokens)))
+		}
+		model, err := llm.NewModel(spec.Type, spec.Model, spec.Conn, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("create model %s/%s: %w: %w", spec.Provider, spec.Model, diag.ErrProvider, err)
+		}
+		return WrapStreamSafe(model), nil
 	}
 }

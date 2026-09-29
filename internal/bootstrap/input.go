@@ -23,7 +23,7 @@ import (
 type resolvedInput struct {
 	cwd               string
 	settings          config.Resolved
-	registry          *provider.ModelRegistry
+	models            *provider.Models
 	approvalMode      approval.Mode
 	modelFactory      agent.ModelFactory
 	sessionManager    *storage.Manager
@@ -48,8 +48,8 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 	if err != nil {
 		return nil, err
 	}
-	registry := provider.NewModelRegistry()
-	provider.StartPricingRefresh(registry, config.UserConfigDir())
+	models := provider.NewModels()
+	models.Refresh(config.UserConfigDir())
 
 	approvalMode, err := approval.ParseMode(opts.ApprovalMode)
 	if err != nil {
@@ -60,17 +60,17 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 	var telemetryShutdown func(context.Context) error
 	var telemetryTracer *telemetry.Tracer
 	if modelFactory == nil {
-		hook, tracer, shutdown, err := telemetry.Setup(context.Background(), settings.Telemetry)
+		observer, tracer, shutdown, err := telemetry.Setup(context.Background(), settings.Telemetry)
 		if err != nil {
 			return nil, err
 		}
 		telemetryShutdown = shutdown
 		telemetryTracer = tracer
-		if hook != nil {
-			modelFactory = provider.NewModelFactory(litellm.WithHook(hook))
-		} else {
-			modelFactory = provider.CreateModel
+		var clientOpts []litellm.ClientOption
+		if observer != nil {
+			clientOpts = append(clientOpts, litellm.WithObservers(observer))
 		}
+		modelFactory = provider.NewModelFactory(models, clientOpts...)
 	}
 
 	if err := ensureProviderSetup(cwd, settings); err != nil {
@@ -95,7 +95,7 @@ func resolveInput(opts Options) (*resolvedInput, error) {
 	return &resolvedInput{
 		cwd:               cwd,
 		settings:          settings,
-		registry:          registry,
+		models:            models,
 		approvalMode:      approvalMode,
 		modelFactory:      modelFactory,
 		sessionManager:    sessionManager,
@@ -126,7 +126,7 @@ func ensureProviderSetup(cwd string, settings config.Resolved) error {
 
 func hasConfiguredProviderCredentials(settings config.Resolved, provider string) bool {
 	pc, ok := settings.Providers[provider]
-	return ok && pc.APIKey != ""
+	return ok && pc.HasCredentials()
 }
 
 func resolveSession(mgr *storage.Manager, cwd string, cont, resume, nonTTY bool) (*storage.Store, error) {

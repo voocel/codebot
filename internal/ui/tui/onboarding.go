@@ -7,6 +7,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -100,7 +101,8 @@ func newOnboardModel() *onboardModel {
 	}
 	rows = append(rows, onboardRow{name: "Custom", hint: "any endpoint litellm speaks", custom: true})
 
-	types := provider.SupportedTypeNames()
+	// Bedrock authenticates with AWS keys, set in settings.json, not an API key.
+	types := slices.DeleteFunc(provider.SupportedTypeNames(), func(t string) bool { return t == "bedrock" })
 	typeIdx := 0
 	for i, t := range types {
 		if t == "openai" {

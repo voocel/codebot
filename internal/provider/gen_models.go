@@ -1,241 +1,95 @@
 //go:build ignore
 
-// gen_models.go fetches model data from OpenRouter API and generates models_generated.go.
+// gen_models.go snapshots LiteLLM's model list into models.json, keeping the
+// chat models of the vendors codebot users reach and the fields
+// catalog.LoadFromReader reads.
 // Usage: go generate ./internal/provider/...
 
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
+	"maps"
 	"net/http"
 	"os"
-	"sort"
-	"strconv"
-	"strings"
+	"slices"
 	"time"
+
+	"github.com/voocel/litellm/catalog"
 )
 
-const (
-	openRouterURL = "https://openrouter.ai/api/v1/models"
-	// maxModelAgeDays decides how old a baseline entry can be. Anything older is
-	// treated as obsolete (e.g. GPT-3.5, GPT-4-0314, Claude 2) and skipped to keep
-	// the binary lean and lookups low-noise. Kept in sync with pricing.go.
-	maxModelAgeDays = 730
-)
-
-var providerMap = map[string]string{
-	"anthropic":  "anthropic",
-	"openai":     "openai",
-	"google":     "gemini",
-	"deepseek":   "deepseek",
-	"qwen":       "qwen",
-	"x-ai":       "grok",
-	"z-ai":       "glm",
-	"meta-llama": "meta-llama",
-	"mistralai":  "mistral",
-	"moonshotai": "moonshot",
+// vendors are LiteLLM provider names: those codebot builds, plus those
+// reached through a compat provider.
+var vendors = []string{
+	"anthropic", "bedrock", "bedrock_converse", "dashscope", "deepseek",
+	"gemini", "minimax", "mistral", "moonshot", "ollama", "openai",
+	"openrouter", "xai", "xiaomi_mimo", "zai",
 }
 
-type apiResponse struct {
-	Data []apiModel `json:"data"`
-}
-
-type apiModel struct {
-	ID            string       `json:"id"`
-	Name          string       `json:"name"`
-	ContextLength int          `json:"context_length"`
-	Created       int64        `json:"created"`
-	Pricing       *apiPricing  `json:"pricing"`
-	TopProvider   *apiProvider `json:"top_provider"`
-}
-
-type apiPricing struct {
-	Prompt          string `json:"prompt"`
-	Completion      string `json:"completion"`
-	InputCacheRead  string `json:"input_cache_read"`
-	InputCacheWrite string `json:"input_cache_write"`
-}
-
-type apiProvider struct {
-	MaxCompletionTokens int `json:"max_completion_tokens"`
-}
-
-type entry struct {
-	Provider            string
-	ID                  string
-	Name                string
-	ContextWindow       int
-	MaxTokens           int
-	Reasoning           bool
-	InputCostPer1M      float64
-	OutputCostPer1M     float64
-	CacheReadCostPer1M  float64
-	CacheWriteCostPer1M float64
+var fields = []string{
+	"mode", "litellm_provider", "max_input_tokens", "max_output_tokens",
+	"supports_reasoning", "input_cost_per_token", "output_cost_per_token",
+	"cache_read_input_token_cost", "cache_creation_input_token_cost",
 }
 
 func main() {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(openRouterURL)
+	resp, err := client.Get(catalog.DefaultURL)
 	if err != nil {
 		log.Fatalf("fetch: %v", err)
 	}
 	defer resp.Body.Close()
-
-	var result apiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if resp.StatusCode != http.StatusOK {
+		log.Fatalf("fetch: HTTP %d", resp.StatusCode)
+	}
+	var list map[string]map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		log.Fatalf("decode: %v", err)
 	}
 
-	var entries []entry
-	for _, m := range result.Data {
-		e, ok := convert(m)
-		if !ok {
+	kept := make(map[string]map[string]any)
+	for name, entry := range list {
+		mode, _ := entry["mode"].(string)
+		vendor, _ := entry["litellm_provider"].(string)
+		if (mode != "chat" && mode != "responses") || !slices.Contains(vendors, vendor) {
 			continue
 		}
-		entries = append(entries, e)
+		trimmed := make(map[string]any, len(fields))
+		for _, field := range fields {
+			if value, ok := entry[field]; ok {
+				trimmed[field] = value
+			}
+		}
+		kept[name] = trimmed
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Provider != entries[j].Provider {
-			return entries[i].Provider < entries[j].Provider
+	// One model per line keeps regenerated diffs readable.
+	var buf bytes.Buffer
+	buf.WriteString("{\n")
+	names := slices.Sorted(maps.Keys(kept))
+	for i, name := range names {
+		key, _ := json.Marshal(name)
+		value, err := json.Marshal(kept[name])
+		if err != nil {
+			log.Fatalf("encode %s: %v", name, err)
 		}
-		return entries[i].ID < entries[j].ID
-	})
+		sep := ","
+		if i == len(names)-1 {
+			sep = ""
+		}
+		fmt.Fprintf(&buf, "  %s: %s%s\n", key, value, sep)
+	}
+	buf.WriteString("}\n")
 
-	if err := writeFile(entries); err != nil {
+	var c catalog.Catalog
+	if err := c.LoadFromReader(bytes.NewReader(buf.Bytes())); err != nil {
+		log.Fatalf("validate: %v", err)
+	}
+	if err := os.WriteFile("models.json", buf.Bytes(), 0o644); err != nil {
 		log.Fatalf("write: %v", err)
 	}
-	fmt.Printf("generated %d models\n", len(entries))
-}
-
-func convert(m apiModel) (entry, bool) {
-	parts := strings.SplitN(m.ID, "/", 2)
-	if len(parts) != 2 {
-		return entry{}, false
-	}
-	prov, ok := providerMap[parts[0]]
-	if !ok {
-		return entry{}, false
-	}
-	modelID := parts[1]
-
-	// Skip variant suffixes (e.g., ":thinking", ":free").
-	if strings.Contains(modelID, ":") {
-		return entry{}, false
-	}
-	if isTooOld(m.Created) {
-		return entry{}, false
-	}
-
-	e := entry{
-		Provider:      prov,
-		ID:            modelID,
-		Name:          cleanName(m.Name),
-		ContextWindow: m.ContextLength,
-		Reasoning:     inferReasoning(prov, modelID),
-	}
-	if m.TopProvider != nil {
-		e.MaxTokens = m.TopProvider.MaxCompletionTokens
-	}
-	if m.Pricing != nil {
-		e.InputCostPer1M = toMillion(m.Pricing.Prompt)
-		e.OutputCostPer1M = toMillion(m.Pricing.Completion)
-		e.CacheReadCostPer1M = toMillion(m.Pricing.InputCacheRead)
-		e.CacheWriteCostPer1M = toMillion(m.Pricing.InputCacheWrite)
-	}
-	return e, true
-}
-
-// NOTE: inferReasoning, toMillion, cleanName are intentionally duplicated from
-// pricing.go because this file compiles as a standalone program (package main).
-// Keep them in sync when editing.
-
-// isTooOld reports whether a model's Created timestamp is older than
-// maxModelAgeDays. Zero or negative values are treated as missing data and
-// dropped as well.
-func isTooOld(created int64) bool {
-	if created <= 0 {
-		return true
-	}
-	age := time.Since(time.Unix(created, 0)).Hours() / 24
-	return age > maxModelAgeDays
-}
-
-func toMillion(s string) float64 {
-	if s == "" {
-		return 0
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0
-	}
-	// Round to 6 decimal places to avoid floating point artifacts.
-	return math.Round(v*1_000_000*1e6) / 1e6
-}
-
-func cleanName(name string) string {
-	if _, after, ok := strings.Cut(name, ": "); ok {
-		return after
-	}
-	return name
-}
-
-func writeFile(entries []entry) error {
-	var sb strings.Builder
-	sb.WriteString("// Code generated by go generate; DO NOT EDIT.\n")
-	fmt.Fprintf(&sb, "// Source: %s\n", openRouterURL)
-	fmt.Fprintf(&sb, "// Generated: %s\n\n", time.Now().UTC().Format("2006-01-02"))
-	sb.WriteString("package provider\n\n")
-	sb.WriteString("var generatedModels = []ModelEntry{\n")
-
-	prevProvider := ""
-	for _, e := range entries {
-		if e.Provider != prevProvider {
-			if prevProvider != "" {
-				sb.WriteString("\n")
-			}
-			fmt.Fprintf(&sb, "\t// %s\n", e.Provider)
-			prevProvider = e.Provider
-		}
-		fmt.Fprintf(&sb, "\t{Provider: %q, ID: %q, Name: %q, ContextWindow: %d, MaxTokens: %d, Reasoning: %v",
-			e.Provider, e.ID, e.Name, e.ContextWindow, e.MaxTokens, e.Reasoning)
-		fmt.Fprintf(&sb, ", InputCostPer1M: %s, OutputCostPer1M: %s",
-			formatFloat(e.InputCostPer1M), formatFloat(e.OutputCostPer1M))
-		if e.CacheReadCostPer1M > 0 || e.CacheWriteCostPer1M > 0 {
-			fmt.Fprintf(&sb, ", CacheReadCostPer1M: %s, CacheWriteCostPer1M: %s",
-				formatFloat(e.CacheReadCostPer1M), formatFloat(e.CacheWriteCostPer1M))
-		}
-		sb.WriteString("},\n")
-	}
-
-	sb.WriteString("}\n")
-	return os.WriteFile("models_generated.go", []byte(sb.String()), 0o644)
-}
-
-func formatFloat(f float64) string {
-	if f == 0 {
-		return "0"
-	}
-	s := strconv.FormatFloat(f, 'f', -1, 64)
-	if !strings.Contains(s, ".") {
-		s += ".0"
-	}
-	return s
-}
-
-func inferReasoning(provider, modelID string) bool {
-	id := strings.ToLower(modelID)
-	switch provider {
-	case "anthropic":
-		return strings.Contains(id, "sonnet-4") || strings.Contains(id, "opus-4") ||
-			strings.Contains(id, "haiku-4") || strings.Contains(id, "3.7-sonnet")
-	case "openai":
-		return len(id) >= 2 && id[0] == 'o' && id[1] >= '0' && id[1] <= '9'
-	case "gemini":
-		return strings.HasPrefix(id, "gemini-2.5-") || strings.HasPrefix(id, "gemini-3")
-	}
-	return false
+	fmt.Printf("snapshotted %d models\n", len(names))
 }

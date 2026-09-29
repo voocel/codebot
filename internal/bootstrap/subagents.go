@@ -171,14 +171,11 @@ func buildModelResolver(deps subAgentDeps) func(string) (agentcore.ChatModel, er
 				}
 			}
 		}
-		prov := defaultProv
-		apiKey, baseURL := resolveFromProviders(providers, prov)
-		providerExtra := resolveExtraFromProviders(providers, prov)
-		provType, err := resolveProviderType(providers, prov)
+		spec, err := config.ModelSpec(providers, defaultProv, name)
 		if err != nil {
 			return nil, err
 		}
-		return factory(provType, name, apiKey, baseURL, providerExtra)
+		return factory(spec)
 	}
 }
 
@@ -226,25 +223,4 @@ func newSubAgentContextManager(model agentcore.ChatModel, window int) agentcore.
 			agentctx.NewFullSummary(agentctx.FullSummaryConfig{Model: model}),
 		},
 	})
-}
-
-// resolveFromProviders returns credentials for a provider from the settings
-// map. Credentials come exclusively from settings.json — no env fallback.
-func resolveFromProviders(providers map[string]config.ProviderConfig, prov string) (apiKey, baseURL string) {
-	if pc, ok := providers[prov]; ok {
-		return pc.APIKey, pc.BaseURL
-	}
-	return "", ""
-}
-
-func resolveExtraFromProviders(providers map[string]config.ProviderConfig, prov string) map[string]any {
-	if pc, ok := providers[prov]; ok {
-		return pc.ProviderExtra()
-	}
-	return nil
-}
-
-// resolveProviderType returns the protocol type for a provider key.
-func resolveProviderType(providers map[string]config.ProviderConfig, prov string) (string, error) {
-	return config.ResolveConfiguredProviderType(providers, prov)
 }

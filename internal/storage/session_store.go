@@ -137,8 +137,10 @@ func (s *Store) AppendMessage(msg agentcore.Message) error {
 const maxStoredThinkingRunes = 200
 
 // trimThinkingForStorage returns a copy of msg with each thinking block
-// truncated to maxStoredThinkingRunes. Other content blocks are unchanged.
-// When no trimming is needed the input is returned as-is (no allocation).
+// truncated to maxStoredThinkingRunes. A truncated block drops its provider
+// state: the signature covers the full text, so replaying it with the
+// shortened text would be rejected. Other content blocks are unchanged. When
+// no trimming is needed the input is returned as-is (no allocation).
 func trimThinkingForStorage(msg agentcore.Message) agentcore.Message {
 	needClone := false
 	for _, b := range msg.Content {
@@ -159,6 +161,7 @@ func trimThinkingForStorage(msg agentcore.Message) agentcore.Message {
 		runes := []rune(cloned[i].Thinking)
 		if len(runes) > maxStoredThinkingRunes {
 			cloned[i].Thinking = string(runes[:maxStoredThinkingRunes-1]) + "…"
+			cloned[i].State = nil
 		}
 	}
 	msg.Content = cloned

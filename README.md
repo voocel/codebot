@@ -149,7 +149,9 @@ Config files: `~/.codebot/settings.json` (global) or `.codebot/settings.json` (p
 
 All fields are optional. See [settings.example.jsonc](settings.example.jsonc) for the full reference with comments.
 
-Provider entries support `extra` for provider-level litellm options such as `user_agent`, `headers`, and `anthropic_beta`; these are sent as HTTP/client config, not request-body fields.
+Provider entries support `extra` for connection settings sent as HTTP/client config, never as request-body fields: `user_agent`, `headers`, and `anthropic_beta` (an explicit `anthropic-beta` header wins); Bedrock takes `region`, `access_key_id`, `secret_access_key`, and optionally `session_token` instead of `api_key`.
+
+Context windows, output caps, and prices come from LiteLLM's model list: a snapshot built into codebot, refreshed daily into `~/.codebot/litellm-models.json`.
 
 OpenAI-protocol providers also support `api: "chat"` (default) or `api: "responses"` to choose between `/v1/chat/completions` and `/v1/responses`.
 

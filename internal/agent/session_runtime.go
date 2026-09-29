@@ -16,6 +16,7 @@ import (
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/telemetry"
+	"github.com/voocel/litellm/catalog"
 )
 
 var errStaleSessionGeneration = errors.New("stale session generation")
@@ -597,7 +598,7 @@ func (s *Session) applyTemporarySkillThinking(level string) error {
 	if level == "" {
 		return nil
 	}
-	return s.model.overrideThinkingForSkill(level, s.deps.registry)
+	return s.model.overrideThinkingForSkill(level)
 }
 
 func (s *Session) applySkillPathHints(name string, paths []string) {
@@ -644,14 +645,11 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 
 	if strings.Contains(pattern, "/") {
 		if prov, model, ok := strings.Cut(pattern, "/"); ok {
-			provType, err := s.providerType(prov)
+			spec, err := s.modelSpec(prov, model)
 			if err != nil {
 				return "", "", nil, err
 			}
-			apiKey, baseURL := s.resolveCredentials(prov)
-			providerExtra := s.resolveProviderExtra(prov)
-			chatModel, err := s.deps.createModel(provType, model, apiKey, baseURL, providerExtra)
-			if err == nil {
+			if chatModel, err := s.deps.createModel(spec); err == nil {
 				return prov, model, chatModel, nil
 			}
 		}
@@ -672,22 +670,10 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 	switch len(matches) {
 	case 1:
 		m := matches[0]
-		provType, err := s.providerType(m.provider)
-		if err != nil {
-			return "", "", nil, err
-		}
-		apiKey, baseURL := s.resolveCredentials(m.provider)
-		providerExtra := s.resolveProviderExtra(m.provider)
-		chatModel, err := s.deps.createModel(provType, m.model, apiKey, baseURL, providerExtra)
+		chatModel, err := s.createModel(m.provider, m.model)
 		return m.provider, m.model, chatModel, err
 	case 0:
-		provType, err := s.providerType(curProv)
-		if err != nil {
-			return "", "", nil, err
-		}
-		apiKey, baseURL := s.resolveCredentials(curProv)
-		providerExtra := s.resolveProviderExtra(curProv)
-		chatModel, err := s.deps.createModel(provType, pattern, apiKey, baseURL, providerExtra)
+		chatModel, err := s.createModel(curProv, pattern)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -702,13 +688,7 @@ func (s *Session) resolveModelOverride(pattern string) (string, string, agentcor
 }
 
 func (s *Session) SetModel(prov, model string) error {
-	provType, err := s.providerType(prov)
-	if err != nil {
-		return err
-	}
-	apiKey, baseURL := s.resolveCredentials(prov)
-	providerExtra := s.resolveProviderExtra(prov)
-	chatModel, err := s.deps.createModel(provType, model, apiKey, baseURL, providerExtra)
+	chatModel, err := s.createModel(prov, model)
 	if err != nil {
 		return fmt.Errorf("create model %s/%s: %w", prov, model, err)
 	}
@@ -738,47 +718,46 @@ func (s *Session) SetModel(prov, model string) error {
 		Provider:  prov,
 	})
 
-	s.updateContextFromRegistry(prov, model)
+	s.updateContextFromModels(prov, model)
 
 	return nil
 }
 
-// providerType returns the protocol type for a provider key.
-func (s *Session) providerType(prov string) (string, error) {
-	if pc, ok := s.deps.providers[prov]; ok {
-		return pc.ProviderType(prov)
-	}
-	return config.ResolveProviderType(prov, "")
+// modelSpec resolves how to build model from the provider configured as prov.
+func (s *Session) modelSpec(prov, model string) (provider.ModelSpec, error) {
+	return config.ModelSpec(s.deps.providers, prov, model)
 }
 
-func (s *Session) resolveProviderExtra(prov string) map[string]any {
-	if pc, ok := s.deps.providers[prov]; ok {
-		return pc.ProviderExtra()
+// createModel builds model from the provider configured as prov.
+func (s *Session) createModel(prov, model string) (agentcore.ChatModel, error) {
+	spec, err := s.modelSpec(prov, model)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return s.deps.createModel(spec)
 }
 
-// updateContextFromRegistry updates context window from registry metadata if available.
-// It tries provider-qualified lookup first (e.g. "anthropic/claude-sonnet-4-5"),
-// then falls back to bare modelID for custom providers not in the registry.
-func (s *Session) updateContextFromRegistry(providerKey, modelID string) {
-	if s.deps.registry == nil {
+// ModelFacts returns what the model list knows about model as served by the
+// provider configured as prov.
+func (s *Session) ModelFacts(prov, model string) (catalog.Model, bool) {
+	if s.deps.models == nil {
+		return catalog.Model{}, false
+	}
+	spec, err := s.modelSpec(prov, model)
+	if err != nil {
+		return catalog.Model{}, false
+	}
+	return s.deps.models.Lookup(spec)
+}
+
+// updateContextFromModels applies the model's context window and output cap
+// when the model list knows them.
+func (s *Session) updateContextFromModels(prov, model string) {
+	facts, ok := s.ModelFacts(prov, model)
+	if !ok || facts.MaxInputTokens <= 0 {
 		return
 	}
-	// Try provider-qualified lookup using the protocol type.
-	provType, err := s.providerType(providerKey)
-	if err == nil {
-		entry, _, err := s.deps.registry.Resolve(provType + "/" + modelID)
-		if err == nil && entry.ContextWindow > 0 {
-			s.applyContextWindow(entry.ContextWindow, entry.MaxTokens)
-			return
-		}
-	}
-	entry, _, err := s.deps.registry.Resolve(modelID)
-	if err != nil || entry.ContextWindow <= 0 {
-		return
-	}
-	s.applyContextWindow(entry.ContextWindow, entry.MaxTokens)
+	s.applyContextWindow(facts.MaxInputTokens, facts.MaxOutputTokens)
 }
 
 func (s *Session) applyContextWindow(window, maxOutput int) {
@@ -850,19 +829,15 @@ func (s *Session) BaseURL() string {
 }
 
 func (s *Session) AvailableThinkingLevels() []string {
-	_, modelName, model := s.model.current()
+	_, _, model := s.model.current()
 	if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
 		return levels
-	}
-	if reg := s.deps.registry; reg != nil {
-		return reg.AvailableThinkingLevels(modelName)
 	}
 	return []string{""}
 }
 
 func (s *Session) AvailableThinkingLevelsFor(prov, modelName string) []string {
 	currentProvider, currentModel, currentChatModel := s.model.current()
-	reg := s.deps.registry
 
 	if strings.EqualFold(prov, currentProvider) && strings.EqualFold(modelName, currentModel) {
 		if levels := provider.ThinkingLevelsForModel(currentChatModel); len(levels) > 0 {
@@ -870,27 +845,17 @@ func (s *Session) AvailableThinkingLevelsFor(prov, modelName string) []string {
 		}
 	}
 
-	provType, err := s.providerType(prov)
-	if err == nil {
-		apiKey, baseURL := s.resolveCredentials(prov)
-		providerExtra := s.resolveProviderExtra(prov)
-		model, err := s.deps.createModel(provType, modelName, apiKey, baseURL, providerExtra)
-		if err == nil {
-			if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
-				return levels
-			}
+	if model, err := s.createModel(prov, modelName); err == nil {
+		if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
+			return levels
 		}
-	}
-
-	if reg != nil {
-		return reg.AvailableThinkingLevels(modelName)
 	}
 	return []string{""}
 }
 
 func (s *Session) resolveThinkingLevel(level string) (string, bool) {
-	_, modelName, model := s.model.current()
-	return resolveThinkingAgainst(model, modelName, s.deps.registry, level)
+	_, _, model := s.model.current()
+	return resolveThinkingLevelForModelStrict(model, level)
 }
 
 func resolveThinkingLevelForModelStrict(model agentcore.ChatModel, level string) (string, bool) {
@@ -987,16 +952,9 @@ func (s *Session) SwitchSession(id string) error {
 		targetModel = snapshot.Model
 	}
 
-	targetKey, targetBase := s.resolveCredentials(targetProvider)
-	targetExtra := s.resolveProviderExtra(targetProvider)
-
 	restoredModel := curChatModel
 	if snapshot.Model != "" || snapshot.Provider != "" {
-		targetType, err := s.providerType(targetProvider)
-		if err != nil {
-			return err
-		}
-		restoredModel, err = s.deps.createModel(targetType, targetModel, targetKey, targetBase, targetExtra)
+		restoredModel, err = s.createModel(targetProvider, targetModel)
 		if err != nil {
 			return fmt.Errorf("restore model %s/%s: %w", targetProvider, targetModel, err)
 		}
@@ -1121,14 +1079,9 @@ func (s *Session) TotalTokens() int {
 	return s.deps.agent.TotalUsage().TotalTokens
 }
 
-func (s *Session) Registry() *provider.ModelRegistry {
-	return s.deps.registry
-}
-
 // CacheStats reports session-cumulative prompt cache metrics. Input includes
-// CacheRead per litellm convention; HitRate is CacheRead / Input. SavedUSD
-// estimates the dollars saved by serving CacheRead tokens at the cache-read
-// rate instead of the full input rate.
+// the cache reads and writes; HitRate is CacheRead / Input. SavedUSD sums what
+// each call's cache reads saved at the rates of the model that made it.
 type CacheStats struct {
 	Input       int
 	ReadTokens  int
@@ -1143,44 +1096,31 @@ func (s *Session) CacheStats() CacheStats {
 		Input:       usage.Input,
 		ReadTokens:  usage.CacheRead,
 		WriteTokens: usage.CacheWrite,
+		SavedUSD:    s.metrics.cacheSavings(),
 	}
 	if usage.Input > 0 {
 		cs.HitRate = float64(usage.CacheRead) / float64(usage.Input)
 	}
-
-	_, model, _ := s.model.current()
-	if reg := s.deps.registry; reg != nil {
-		inRate, _, crRate, _ := reg.CostRates(model)
-		if inRate > crRate {
-			cs.SavedUSD = float64(usage.CacheRead) * (inRate - crRate) / 1e6
-		}
-	}
 	return cs
 }
 
+// cacheReadSavings is what reading tokens from the prompt cache saved over
+// sending them as input.
+func cacheReadSavings(tokens int, p catalog.Pricing) float64 {
+	if p.CacheReadCostPerToken == nil {
+		return 0 // cache reads bill at the input rate
+	}
+	return float64(tokens) * (p.InputCostPerToken - *p.CacheReadCostPerToken)
+}
+
+// CostEstimate reports the session's token counts and the cost of the calls
+// whose model has known prices.
 func (s *Session) CostEstimate() (inputTokens, outputTokens int, cost float64) {
 	usage := s.deps.agent.TotalUsage()
-
-	// Input already includes CacheRead per the litellm convention; subtract
-	// it so the cached portion is only billed at the cache-read rate, not
-	// twice (once at full input rate, once at cache-read rate).
-	nonCachedInput := usage.Input - usage.CacheRead
-	if nonCachedInput < 0 {
-		nonCachedInput = usage.Input
+	if usage.Cost != nil {
+		cost = usage.Cost.Total
 	}
-
-	inputTokens = nonCachedInput + usage.CacheRead + usage.CacheWrite
-	outputTokens = usage.Output
-
-	_, model, _ := s.model.current()
-	if reg := s.deps.registry; reg != nil {
-		inRate, outRate, crRate, cwRate := reg.CostRates(model)
-		cost = float64(nonCachedInput)*inRate/1e6 +
-			float64(outputTokens)*outRate/1e6 +
-			float64(usage.CacheRead)*crRate/1e6 +
-			float64(usage.CacheWrite)*cwRate/1e6
-	}
-	return
+	return usage.Input, usage.Output, cost
 }
 
 // Messages returns the current agent message history.

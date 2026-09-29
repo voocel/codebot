@@ -309,6 +309,9 @@ func (p *sessionPersistence) persistLLMCall(msg agentcore.Message) {
 	thinking := p.session.model.currentSettings().ReasoningEffort
 
 	prevSnap, currSnap := p.session.cache.observe(u.CacheRead, time.Now())
+	if facts, ok := p.session.ModelFacts(provider, model); ok && facts.Pricing != nil {
+		p.session.metrics.recordCacheSavings(cacheReadSavings(u.CacheRead, *facts.Pricing))
+	}
 
 	var latencyMs int64
 	if !start.IsZero() {

@@ -234,7 +234,6 @@ func (c *ModelCommand) View(width, _ int) string {
 	currentMark := lipgloss.NewStyle().Foreground(tui.Success)
 	dimStyle := tui.MutedStyle
 
-	reg := c.session.Registry()
 	models := s.sections[s.provIdx].models
 	provName := s.sections[s.provIdx].name
 
@@ -253,12 +252,12 @@ func (c *ModelCommand) View(width, _ int) string {
 		}
 
 		var ctx, reasoning string
-		if reg != nil {
-			if entry, _, err := reg.Resolve(m); err == nil {
-				ctx = tui.FormatTokens(entry.ContextWindow)
-				if entry.Reasoning {
-					reasoning = "reasoning"
-				}
+		if facts, ok := c.session.ModelFacts(provName, m); ok {
+			if facts.MaxInputTokens > 0 {
+				ctx = tui.FormatTokens(facts.MaxInputTokens)
+			}
+			if facts.Reasoning != nil && *facts.Reasoning {
+				reasoning = "reasoning"
 			}
 		}
 

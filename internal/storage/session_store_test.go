@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -213,10 +214,12 @@ func TestTrimThinkingForStorage(t *testing.T) {
 	t.Parallel()
 
 	long := strings.Repeat("x", maxStoredThinkingRunes+50)
+	signed := agentcore.ThinkingBlock(long)
+	signed.State = &agentcore.ProviderState{Provider: "anthropic", Data: json.RawMessage(`{"type":"thinking","signature":"s"}`)}
 	in := agentcore.Message{
 		Role: agentcore.RoleAssistant,
 		Content: []agentcore.ContentBlock{
-			agentcore.ThinkingBlock(long),
+			signed,
 			agentcore.TextBlock("visible answer"),
 		},
 	}
@@ -230,6 +233,10 @@ func TestTrimThinkingForStorage(t *testing.T) {
 	}
 	if !strings.HasSuffix(out.Content[0].Thinking, "…") {
 		t.Fatalf("trimmed thinking should end with ellipsis, got %q", out.Content[0].Thinking)
+	}
+	// The signature no longer matches the shortened text.
+	if out.Content[0].State != nil || in.Content[0].State == nil {
+		t.Fatalf("trimmed thinking must drop only its stored state")
 	}
 	if out.Content[1].Text != "visible answer" {
 		t.Fatalf("non-thinking blocks must not be modified, got %q", out.Content[1].Text)

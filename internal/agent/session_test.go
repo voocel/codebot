@@ -18,6 +18,7 @@ import (
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/codebot/internal/config"
 	goalstate "github.com/voocel/codebot/internal/goal"
+	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/skill"
 	"github.com/voocel/codebot/internal/storage"
 	localtools "github.com/voocel/codebot/internal/tools"
@@ -110,13 +111,8 @@ type noEffortChatModel struct {
 	stubChatModel
 }
 
-func (m *noEffortChatModel) Capabilities() llm.Capabilities {
-	return llm.Capabilities{
-		Thinking: llm.ThinkingCapabilities{
-			Supported: llm.SupportYes,
-			Disable:   llm.SupportYes,
-		},
-	}
+func (m *noEffortChatModel) Capabilities() (llm.Capabilities, bool) {
+	return llm.Capabilities{Thinking: true, DisableThinking: true}, true
 }
 
 type panicChatModel struct{}
@@ -643,8 +639,8 @@ func TestSwitchSessionKeepsCurrentStateOnModelRestoreFailure(t *testing.T) {
 			MaxTurns: 30,
 		},
 		Cwd: dir,
-		CreateModel: func(_ string, model string, _ string, _ string, _ map[string]any) (agentcore.ChatModel, error) {
-			if model == "bad-model" {
+		CreateModel: func(spec provider.ModelSpec) (agentcore.ChatModel, error) {
+			if spec.Model == "bad-model" {
 				return nil, errors.New("model restore failed")
 			}
 			return &stubChatModel{}, nil
@@ -742,7 +738,7 @@ func TestSetModelKeepsStateWhenPersistFails(t *testing.T) {
 			MaxTurns: 30,
 		},
 		Cwd: dir,
-		CreateModel: func(_ string, _ string, _ string, _ string, _ map[string]any) (agentcore.ChatModel, error) {
+		CreateModel: func(provider.ModelSpec) (agentcore.ChatModel, error) {
 			return &stubChatModel{}, nil
 		},
 	})
@@ -791,7 +787,7 @@ func TestSetModelRejectsUnsupportedCurrentReasoningEffort(t *testing.T) {
 			MaxTurns:      30,
 		},
 		Cwd: dir,
-		CreateModel: func(_ string, _ string, _ string, _ string, _ map[string]any) (agentcore.ChatModel, error) {
+		CreateModel: func(provider.ModelSpec) (agentcore.ChatModel, error) {
 			return &noEffortChatModel{}, nil
 		},
 		ChatModel: &stubChatModel{},
@@ -859,7 +855,7 @@ func TestSetModelDoesNotRewriteGlobalSettings(t *testing.T) {
 			MaxTurns: 30,
 		},
 		Cwd: dir,
-		CreateModel: func(_ string, _ string, _ string, _ string, _ map[string]any) (agentcore.ChatModel, error) {
+		CreateModel: func(provider.ModelSpec) (agentcore.ChatModel, error) {
 			return &stubChatModel{}, nil
 		},
 	})
@@ -1073,7 +1069,7 @@ func TestResolveCredentialsPerProvider(t *testing.T) {
 	}
 }
 
-func TestSetModelPassesProviderExtra(t *testing.T) {
+func TestSetModelPassesConnection(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -1083,7 +1079,7 @@ func TestSetModelPassesProviderExtra(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	var gotExtra map[string]any
+	var got provider.ModelSpec
 	s := NewSession(SessionConfig{
 		Agent:   agentcore.NewAgent(agentcore.WithModel(&stubChatModel{})),
 		Store:   store,
@@ -1095,9 +1091,9 @@ func TestSetModelPassesProviderExtra(t *testing.T) {
 				"anthropic-proxy": {
 					Type:   "anthropic",
 					APIKey: "proxy-key",
-					Extra: map[string]any{
-						"user_agent":     "claude-code/2.1.183",
-						"anthropic_beta": "claude-code-20250219",
+					Extra: &config.ProviderExtra{
+						UserAgent:     "claude-code/2.1.183",
+						AnthropicBeta: "claude-code-20250219",
 					},
 				},
 				"openai-proxy": {
@@ -1108,8 +1104,8 @@ func TestSetModelPassesProviderExtra(t *testing.T) {
 			},
 		},
 		Cwd: dir,
-		CreateModel: func(_ string, _ string, _ string, _ string, extra map[string]any) (agentcore.ChatModel, error) {
-			gotExtra = extra
+		CreateModel: func(spec provider.ModelSpec) (agentcore.ChatModel, error) {
+			got = spec
 			return &stubChatModel{}, nil
 		},
 	})
@@ -1118,18 +1114,17 @@ func TestSetModelPassesProviderExtra(t *testing.T) {
 	if err := s.SetModel("anthropic-proxy", "claude-sonnet-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
-	if gotExtra["user_agent"] != "claude-code/2.1.183" {
-		t.Fatalf("user_agent extra = %#v", gotExtra["user_agent"])
-	}
-	if gotExtra["anthropic_beta"] != "claude-code-20250219" {
-		t.Fatalf("anthropic_beta extra = %#v", gotExtra["anthropic_beta"])
+	if got.Provider != "anthropic-proxy" || got.Type != "anthropic" || got.Model != "claude-sonnet-4-6" ||
+		got.Conn.APIKey != "proxy-key" || got.Conn.UserAgent != "claude-code/2.1.183" ||
+		got.Conn.Headers["anthropic-beta"] != "claude-code-20250219" {
+		t.Fatalf("spec = %+v", got)
 	}
 
 	if err := s.SetModel("openai-proxy", "gpt-5.4"); err != nil {
 		t.Fatalf("SetModel openai-proxy: %v", err)
 	}
-	if gotExtra["api"] != "responses" {
-		t.Fatalf("api extra = %#v, want responses", gotExtra["api"])
+	if got.Conn.API != "responses" {
+		t.Fatalf("API = %q, want responses", got.Conn.API)
 	}
 }
 
@@ -1153,8 +1148,8 @@ func TestApplySkillInvocationUsesTemporaryOverrides(t *testing.T) {
 		},
 		Cwd:       dir,
 		ChatModel: baseModel,
-		CreateModel: func(_ string, model string, _ string, _ string, _ map[string]any) (agentcore.ChatModel, error) {
-			return &namedChatModel{name: model}, nil
+		CreateModel: func(spec provider.ModelSpec) (agentcore.ChatModel, error) {
+			return &namedChatModel{name: spec.Model}, nil
 		},
 	})
 	t.Cleanup(s.Close)

@@ -107,21 +107,19 @@ func resolveActiveModel(input *resolvedInput) (config.Resolved, string, agentcor
 		activeModel = input.sessionSnapshot.Model
 	}
 
-	activeAPIKey, activeBaseURL := input.settings.ProviderCredentials(activeProvider)
-	activeProviderExtra := input.settings.ProviderExtra(activeProvider)
-	provType, err := config.ResolveConfiguredProviderType(input.settings.Providers, activeProvider)
+	spec, err := config.ModelSpec(input.settings.Providers, activeProvider, activeModel)
 	if err != nil {
 		return config.Resolved{}, "", nil, err
 	}
-	chatModel, err := input.modelFactory(provType, activeModel, activeAPIKey, activeBaseURL, activeProviderExtra)
+	chatModel, err := input.modelFactory(spec)
 	if err != nil {
 		return config.Resolved{}, "", nil, fmt.Errorf("create model failed: %w: %w", diag.ErrProvider, err)
 	}
 
 	settings := input.settings
-	if entry, _, err := input.registry.Resolve(activeModel); err == nil && entry.ContextWindow > 0 {
-		settings.ContextWindow = entry.ContextWindow
-		settings.MaxOutputTokens = entry.MaxTokens
+	if facts, ok := input.models.Lookup(spec); ok && facts.MaxInputTokens > 0 {
+		settings.ContextWindow = facts.MaxInputTokens
+		settings.MaxOutputTokens = facts.MaxOutputTokens
 	} else if settings.ContextWindow <= 0 {
 		settings.ContextWindow = 128000
 	}

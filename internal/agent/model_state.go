@@ -6,7 +6,6 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/provider"
 )
 
 // modelSink is the narrow slice of the agent that modelState delivers to.
@@ -129,10 +128,10 @@ func (m *modelState) overrideForSkill(prov, name string, chatModel agentcore.Cha
 
 // overrideThinkingForSkill applies a skill's thinking level, capturing the
 // baseline in the same critical section.
-func (m *modelState) overrideThinkingForSkill(level string, reg *provider.ModelRegistry) error {
+func (m *modelState) overrideThinkingForSkill(level string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	resolved, ok := resolveThinkingAgainst(m.chatModel, m.modelName, reg, level)
+	resolved, ok := resolveThinkingLevelForModelStrict(m.chatModel, level)
 	if !ok {
 		return fmt.Errorf("unsupported reasoning_effort %q", level)
 	}
@@ -201,17 +200,4 @@ func (m *modelState) applyContextWindow(window, maxOutput int) (applied, reserve
 	m.settings.ContextWindow = window
 	m.settings.MaxOutputTokens = maxOutput
 	return window, m.settings.CompactReserveTokens()
-}
-
-// resolveThinkingAgainst resolves level against a live model, falling back to
-// the registry's levels for the model name. Pure function shared by the locked
-// modelState methods and Session.resolveThinkingLevel.
-func resolveThinkingAgainst(model agentcore.ChatModel, modelName string, reg *provider.ModelRegistry, level string) (string, bool) {
-	if levels := provider.ThinkingLevelsForModel(model); len(levels) > 0 {
-		return provider.ResolveThinkingLevel(model, level)
-	}
-	if reg != nil {
-		return provider.ClampThinkingLevel(level, reg.AvailableThinkingLevels(modelName))
-	}
-	return provider.ResolveThinkingLevel(nil, level)
 }

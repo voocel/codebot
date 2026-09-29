@@ -396,7 +396,7 @@ func buildSession(input *resolvedInput, services *bootServices, assembly *sessio
 		ToolMicrocompact:      toolCompact,
 		Store:                 input.sessionStore,
 		Manager:               input.sessionManager,
-		Registry:              input.registry,
+		Models:                input.models,
 		Settings:              assembly.settings,
 		Cwd:                   input.cwd,
 		CreateModel:           input.modelFactory,

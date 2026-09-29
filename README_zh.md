@@ -149,7 +149,9 @@ Codebot 采用分层的 Coding Agent 架构：
 
 所有字段可选，参考 [settings.example.jsonc](settings.example.jsonc) 了解完整配置项及说明。
 
-Provider 条目支持 `extra`，用于配置 provider 级 litellm 选项，例如 `user_agent`、`headers`、`anthropic_beta`；这些会作为 HTTP/客户端配置发送，不会进入请求体。
+Provider 条目支持 `extra`，用于配置连接参数，作为 HTTP/客户端配置发送，不会进入请求体：`user_agent`、`headers`、`anthropic_beta`（`headers` 中显式的 `anthropic-beta` 优先）；Bedrock 不用 `api_key`，改用 `region`、`access_key_id`、`secret_access_key`，可选 `session_token`。
+
+上下文窗口、输出上限和价格来自 LiteLLM 的模型列表：codebot 内置一份快照，每天刷新到 `~/.codebot/litellm-models.json`。
 
 OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`，用于在 `/v1/chat/completions` 和 `/v1/responses` 之间切换。
 

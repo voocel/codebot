@@ -1,6 +1,6 @@
 // Package telemetry wires codebot's observability. It builds an OTLP/HTTP
 // trace exporter for the configured backend (e.g. Langfuse), returns a litellm
-// hook for generation spans, and exposes a small Tracer for agent-run/tool
+// observer for generation spans, and exposes a small Tracer for agent-run/tool
 // spans. Every span is tagged with the current session id so the backend can
 // group a session's work. When disabled it is a no-op, so the rest of the app
 // stays unaware of OpenTelemetry.
@@ -27,7 +27,7 @@ import (
 )
 
 // Tracer creates codebot-level spans that share the same tracer provider as the
-// litellm hook. It is nil when telemetry is disabled.
+// litellm observer. It is nil when telemetry is disabled.
 type Tracer struct {
 	tracer          trace.Tracer
 	sessionProvider atomic.Pointer[func() string]
@@ -106,10 +106,10 @@ func (t *Tracer) sessionAttributes() []attribute.KeyValue {
 	return sessionSpanAttributes((*p)())
 }
 
-// Setup builds the trace pipeline for cfg and returns a litellm hook, a
+// Setup builds the trace pipeline for cfg and returns a litellm observer, a
 // codebot tracer, and a shutdown func that flushes pending spans. When telemetry
 // is disabled it returns (nil, nil, noop, nil).
-func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Hook, *Tracer, func(context.Context) error, error) {
+func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Observer, *Tracer, func(context.Context) error, error) {
 	noop := func(context.Context) error { return nil }
 	if !cfg.Enabled || cfg.Endpoint == "" {
 		return nil, nil, noop, nil
@@ -150,8 +150,8 @@ func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Hook, *Trac
 		return tracer.sessionAttributes()
 	}
 
-	hook := litellmotel.New(tp.Tracer("litellm"), litellmotel.WithSpanAttributes(resolver))
-	return hook, tracer, tp.Shutdown, nil
+	observer := litellmotel.New(tp.Tracer("litellm"), litellmotel.WithSpanAttributes(resolver))
+	return observer, tracer, tp.Shutdown, nil
 }
 
 // sessionSpanAttributes maps a session id to the span attributes used to group
