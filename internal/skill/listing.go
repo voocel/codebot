@@ -1,76 +1,43 @@
 package skill
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
-type ListingOptions struct {
-	CharBudget       int
-	MaxLineChars     int
-	MaxWhenChars     int
-	IncludeWhenToUse bool
-}
-
-func DefaultListingOptions() ListingOptions {
-	return ListingOptions{
-		CharBudget:       4000,
-		MaxLineChars:     220,
-		MaxWhenChars:     160,
-		IncludeWhenToUse: true,
-	}
-}
-
-// OrderForPrompt ranks skills by relevance (applicable → usage → source →
-// name). The ranking decides which skills SURVIVE RenderListing's char budget,
-// not the order they appear in — see RenderListing.
-func OrderForPrompt(skills []Spec, cwd string, usage map[string]float64) []Spec {
-	ordered := append([]Spec(nil), skills...)
-	sortSkillsForPrompt(ordered, cwd, usage)
-	return ordered
-}
+const (
+	listingBudget = 4000 // characters
+	maxLineChars  = 220
+	maxWhenChars  = 160
+)
 
 const listingHeader = "The following skills are available for use with the Skill tool:\n\n"
 
-// RenderListing renders the skill listing that goes into the cached system
-// block. Two-phase on purpose:
-//
-//  1. walk `skills` in the caller's order (OrderForPrompt's usage ranking) and
-//     keep entries until the char budget runs out — the most relevant skills
-//     win the budget;
-//  2. sort the survivors by a time-independent key and render.
-//
-// Phase 2 is what makes the output byte-stable. Usage scores decay with wall
-// time, so rendering in ranking order would reshuffle the block on every
-// rebuild and invalidate the prompt cache prefix for no semantic gain. The
-// output only changes when the surviving SET changes, which needs the catalog
-// to exceed the budget AND a ranking swap across the cutoff.
-func RenderListing(skills []Spec, opts ListingOptions) string {
-	if len(skills) == 0 {
-		return ""
-	}
-	if opts.CharBudget <= 0 {
-		opts.CharBudget = DefaultListingOptions().CharBudget
-	}
-	if opts.MaxLineChars <= 0 {
-		opts.MaxLineChars = DefaultListingOptions().MaxLineChars
-	}
-	if opts.MaxWhenChars <= 0 {
-		opts.MaxWhenChars = DefaultListingOptions().MaxWhenChars
-	}
+// Listing renders the skills the model may invoke for the system prompt.
+// The ones used most, by usage score, then those from the most trusted
+// sources, win the budget. The listing itself is ordered by source and name,
+// so it changes only when the skills in it do, not as usage scores decay: it
+// sits in the cached prefix of every request.
+func Listing(skills []Spec, usage map[string]float64) string {
+	ranked := slices.Clone(skills)
+	slices.SortStableFunc(ranked, func(a, b Spec) int {
+		if ua, ub := usage[a.Name], usage[b.Name]; ua != ub {
+			return cmp.Compare(ub, ua)
+		}
+		return compareStable(a, b)
+	})
 
 	type entry struct {
 		spec Spec
 		text string
 	}
-
-	// Phase 1 — budget selection in relevance order.
 	var selected []entry
 	used := len(listingHeader)
-	for _, spec := range skills {
+	for _, spec := range ranked {
 		if spec.DisableModelInvocation {
 			continue
 		}
@@ -78,93 +45,48 @@ func RenderListing(skills []Spec, opts ListingOptions) string {
 		if spec.ArgumentHint != "" {
 			line += " " + spec.ArgumentHint
 		}
-		if desc := strings.TrimSpace(spec.Description); desc != "" {
-			line += ": " + desc
+		if spec.Description != "" {
+			line += ": " + spec.Description
 		}
-		text := truncate(line, opts.MaxLineChars) + "\n"
-		if used+len(text)+1 > opts.CharBudget {
+		text := truncate(line, maxLineChars) + "\n"
+		if used+len(text)+1 > listingBudget {
 			break
 		}
 		used += len(text)
-		if opts.IncludeWhenToUse {
-			if when := strings.TrimSpace(spec.WhenToUse); when != "" {
-				whenLine := "  when: " + truncate(when, opts.MaxWhenChars) + "\n"
-				if used+len(whenLine) <= opts.CharBudget {
-					text += whenLine
-					used += len(whenLine)
-				}
+		if spec.WhenToUse != "" {
+			when := "  when: " + truncate(spec.WhenToUse, maxWhenChars) + "\n"
+			if used+len(when) <= listingBudget {
+				text += when
+				used += len(when)
 			}
 		}
-		selected = append(selected, entry{spec: spec, text: text})
+		selected = append(selected, entry{spec, text})
 	}
 	if len(selected) == 0 {
 		return ""
 	}
-
-	// Phase 2 — stable presentation order, independent of usage/time.
-	sort.SliceStable(selected, func(i, j int) bool {
-		return lessStable(selected[i].spec, selected[j].spec)
-	})
+	slices.SortFunc(selected, func(a, b entry) int { return compareStable(a.spec, b.spec) })
 
 	var sb strings.Builder
-	sb.Grow(used + 128)
 	sb.WriteString(listingHeader)
 	for _, item := range selected {
 		sb.WriteString(item.text)
 	}
-	sb.WriteString("\nIMPORTANT: Only use Skill for skills listed above - do not guess or use built-in CLI commands.")
+	sb.WriteString("\nOnly the skills listed above exist; the Skill tool cannot run CLI commands.")
 	return sb.String()
 }
 
-// lessStable orders skills by source priority then name — no wall-clock or
-// usage input, so equal inputs always produce equal bytes.
-func lessStable(a, b Spec) bool {
-	aSource, bSource := sourcePriority(a.Source), sourcePriority(b.Source)
-	if aSource != bSource {
-		return aSource < bSource
-	}
-	return a.Name < b.Name
-}
-
-func sortSkillsForPrompt(skills []Spec, cwd string, usage map[string]float64) {
-	if len(skills) < 2 {
-		return
-	}
-	sort.SliceStable(skills, func(i, j int) bool {
-		a, b := skills[i], skills[j]
-		aApplicable := skillIsActive(a, cwd)
-		bApplicable := skillIsActive(b, cwd)
-		if aApplicable != bApplicable {
-			return aApplicable
-		}
-		aUsage := usage[NormalizeName(a.Name)]
-		bUsage := usage[NormalizeName(b.Name)]
-		if aUsage != bUsage {
-			return aUsage > bUsage
-		}
-		aSource := sourcePriority(a.Source)
-		bSource := sourcePriority(b.Source)
-		if aSource != bSource {
-			return aSource < bSource
-		}
-		return a.Name < b.Name
-	})
+// compareStable orders skills by source, then name: nothing that changes
+// with time.
+func compareStable(a, b Spec) int {
+	return cmp.Or(cmp.Compare(sourcePriority(a.Source), sourcePriority(b.Source)), strings.Compare(a.Name, b.Name))
 }
 
 func skillIsActive(spec Spec, cwd string) bool {
 	if len(spec.Paths) == 0 || cwd == "" {
 		return true
 	}
-	for _, pattern := range spec.Paths {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			continue
-		}
-		if pathPatternExists(cwd, pattern) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(spec.Paths, func(pattern string) bool { return pathPatternExists(cwd, pattern) })
 }
 
 func pathPatternExists(cwd, pattern string) bool {
@@ -255,7 +177,7 @@ func globToRegexp(pattern string) string {
 }
 
 func sourcePriority(source string) int {
-	switch strings.ToLower(strings.TrimSpace(source)) {
+	switch source {
 	case "project":
 		return 0
 	case "user":
@@ -268,15 +190,9 @@ func sourcePriority(source string) int {
 }
 
 func truncate(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
 	runes := []rune(s)
 	if len(runes) <= max {
 		return s
-	}
-	if max == 1 {
-		return string(runes[:1])
 	}
 	return string(runes[:max-1]) + "…"
 }

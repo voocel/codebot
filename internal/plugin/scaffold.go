@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,13 +33,13 @@ type ScaffoldResult struct {
 	ManifestPath string
 }
 
-func NormalizeID(raw string) string {
+func normalizeID(raw string) string {
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	normalized = pluginIDNormalizer.ReplaceAllString(normalized, "-")
 	return strings.Trim(normalized, "-")
 }
 
-func ValidateID(id string) error {
+func validateID(id string) error {
 	if !skill.ValidName(id) {
 		return fmt.Errorf("plugin id %q is invalid; use lowercase letters, digits, '-' or '_'", id)
 	}
@@ -46,20 +47,15 @@ func ValidateID(id string) error {
 }
 
 func Scaffold(input ScaffoldInput) (*ScaffoldResult, error) {
-	id := NormalizeID(input.ID)
+	id := normalizeID(input.ID)
 	if id == "" {
-		return nil, fmt.Errorf("plugin id is required")
+		return nil, errors.New("plugin id is required")
 	}
-	if err := ValidateID(id); err != nil {
+	if err := validateID(id); err != nil {
 		return nil, err
 	}
 
-	scope := strings.ToLower(strings.TrimSpace(input.Scope))
-	if scope == "" {
-		scope = ScopeProject
-	}
-
-	rootDir, err := scaffoldRootDir(input.Cwd, scope, id)
+	rootDir, err := scaffoldRootDir(input.Cwd, input.Scope, id)
 	if err != nil {
 		return nil, err
 	}
@@ -72,14 +68,8 @@ func Scaffold(input ScaffoldInput) (*ScaffoldResult, error) {
 	if err := os.MkdirAll(filepath.Join(rootDir, "skills"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir skills dir: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(rootDir, "commands"), 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir commands dir: %w", err)
-	}
 	if err := os.WriteFile(filepath.Join(rootDir, "skills", ".keep"), nil, 0o644); err != nil {
 		return nil, fmt.Errorf("write skills keep file: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(rootDir, "commands", ".keep"), nil, 0o644); err != nil {
-		return nil, fmt.Errorf("write commands keep file: %w", err)
 	}
 
 	manifest := Manifest{
@@ -88,7 +78,6 @@ func Scaffold(input ScaffoldInput) (*ScaffoldResult, error) {
 		Version:     "0.1.0",
 		Description: "TODO: describe what this plugin adds to codebot",
 		SkillsDir:   "./skills",
-		CommandsDir: "./commands",
 	}
 	manifestPath := filepath.Join(rootDir, "plugin.json")
 	data, err := json.MarshalIndent(manifest, "", "  ")
@@ -100,14 +89,14 @@ func Scaffold(input ScaffoldInput) (*ScaffoldResult, error) {
 		return nil, fmt.Errorf("write plugin manifest: %w", err)
 	}
 
-	readme := buildScaffoldREADME(id, scope)
+	readme := buildScaffoldREADME(id, input.Scope)
 	if err := os.WriteFile(filepath.Join(rootDir, "README.md"), []byte(readme), 0o644); err != nil {
 		return nil, fmt.Errorf("write plugin readme: %w", err)
 	}
 
 	return &ScaffoldResult{
 		ID:           id,
-		Scope:        scope,
+		Scope:        input.Scope,
 		RootDir:      rootDir,
 		ManifestPath: manifestPath,
 	}, nil
@@ -120,7 +109,7 @@ func scaffoldRootDir(cwd, scope, id string) (string, error) {
 	case ScopeUser:
 		userDir := config.UserConfigDir()
 		if userDir == "" {
-			return "", fmt.Errorf("cannot resolve user config dir")
+			return "", errors.New("cannot resolve user config dir")
 		}
 		return filepath.Join(userDir, "plugins", id), nil
 	default:
@@ -147,15 +136,13 @@ func buildScaffoldREADME(id, scope string) string {
 			"A codebot plugin scaffold.\n\n"+
 			"## Layout\n\n"+
 			"- `plugin.json` — plugin manifest\n"+
-			"- `skills/` — skill files; the filename becomes the skill name\n"+
-			"- `commands/` — Markdown files for slash commands\n\n"+
+			"- `skills/` — skill files; the filename becomes the skill name and the `/` command\n\n"+
 			"## Scope\n\n"+
 			"- %s\n\n"+
 			"## Next steps\n\n"+
 			"1. Edit `plugin.json` to fill in the description and version.\n"+
 			"2. Add a skill file under `skills/`, e.g. `review.md`.\n"+
-			"3. Add a command file under `commands/`, e.g. `triage.md`.\n"+
-			"4. Run `/reload` or `/plugins list` in your project to verify it loads.\n\n"+
+			"3. Run `/reload` or `/plugins list` in your project to verify it loads.\n\n"+
 			"## Minimal skill example\n\n"+
 			"```md\n"+
 			"---\n"+
@@ -164,13 +151,15 @@ func buildScaffoldREADME(id, scope string) string {
 			"---\n\n"+
 			"Read the change first, then return a list of issues sorted by severity.\n"+
 			"```\n\n"+
-			"## Minimal command example\n\n"+
+			"## Command-only skill example\n\n"+
+			"A skill the model never calls on its own; it runs when you type `/release-check`.\n\n"+
 			"```md\n"+
 			"---\n"+
 			"description: Enter the release-check flow\n"+
-			"usage: /release-check [version]\n"+
+			"argument-hint: [version]\n"+
+			"disable-model-invocation: true\n"+
 			"---\n\n"+
-			"Check the current workspace's changes, test status, and outstanding release risks.\n"+
+			"Check the current workspace's changes, test status, and outstanding release risks for $ARGUMENTS.\n"+
 			"```\n",
 		id,
 		scope,

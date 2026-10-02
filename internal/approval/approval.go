@@ -1,73 +1,38 @@
+// Package approval is codebot's permission policy over the permission
+// engine: which capability each tool has, the paths that always need
+// confirming, and how the user is asked.
 package approval
 
 import (
-	"context"
 	"strings"
 
-	"github.com/voocel/agentcore/permission"
+	"github.com/voocel/codebot/internal/permission"
 )
 
-type Mode = permission.Mode
-
-const (
-	ModeStrict   = permission.ModeStrict
-	ModeBalanced = permission.ModeBalanced
-	ModeAuto     = permission.ModeAuto
-	ModeTrust    = permission.ModeTrust
+type (
+	AuditEntry      = permission.AuditEntry
+	FilesystemRoots = permission.FilesystemRoots
+	Rule            = permission.Rule
+	RuleSet         = permission.RuleSet
 )
-
-type Capability = permission.Capability
-
-const (
-	CapHook     = permission.CapabilityHook
-	CapInternal = permission.CapabilityInternal
-)
-
-type Choice = permission.Choice
-
-const (
-	ChoiceAllowOnce    = permission.ChoiceAllowOnce
-	ChoiceAllowSession = permission.ChoiceAllowSession
-	ChoiceAllowAlways  = permission.ChoiceAllowAlways
-	ChoiceDeny         = permission.ChoiceDeny
-)
-
-type Prompt = permission.Prompt
-type ApproverFunc = permission.Approver
-type FilesystemRoots = permission.FilesystemRoots
-type AuditEntry = permission.AuditEntry
-type Rule = permission.Rule
-type RuleSet = permission.RuleSet
-type storedEntry = permission.StoreEntry
-
-func ParseMode(raw string) (Mode, error) {
-	return permission.ParseMode(raw)
-}
 
 func ParseRuleSet(allow, deny []string) (*RuleSet, error) {
 	return permission.ParseRuleSet(allow, deny)
 }
 
-type CommandCategory string
-
-const (
-	CommandCategoryInfo    CommandCategory = "info"
-	CommandCategoryPrompt  CommandCategory = "prompt"
-	CommandCategorySession CommandCategory = "session"
-	CommandCategoryConfig  CommandCategory = "config"
-	CommandCategoryPlan    CommandCategory = "plan"
-	CommandCategoryExit    CommandCategory = "exit"
-)
-
-type CommandRequest struct {
-	Name      string
-	Category  CommandCategory
-	NeedsIdle bool
-	IsRunning bool
-	Summary   string
-	Preview   string
+// ParseGrants parses the tools a skill allows. Entries that do not parse
+// grant nothing.
+func ParseGrants(raw []string) []Rule {
+	var rules []Rule
+	for _, r := range raw {
+		if rule, err := permission.ParseRule(r); err == nil {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
 }
 
+// HookRequest is a hook command about to run.
 type HookRequest struct {
 	Event    string
 	Tool     string
@@ -75,84 +40,31 @@ type HookRequest struct {
 	Blocking bool
 }
 
-type toolInfo struct {
-	tool       string
-	capability Capability
-	summary    string
-	preview    string
-	reason     string
-	key        string
-}
-
-func NormalizeCommandCategory(raw string) CommandCategory {
-	return normalizeCommandCategory(CommandCategory(strings.ToLower(strings.TrimSpace(raw))))
-}
-
-func normalizeCommandCategory(category CommandCategory) CommandCategory {
-	switch category {
-	case CommandCategoryInfo, CommandCategorySession, CommandCategoryConfig, CommandCategoryPlan, CommandCategoryExit:
-		return category
-	default:
-		return CommandCategoryPrompt
-	}
-}
-
-func inspectHook(req HookRequest) toolInfo {
-	event := firstNonEmpty(req.Event, "unknown")
-	summary := strings.TrimSpace(req.Command)
-	if req.Event != "" {
-		summary = strings.TrimSpace(req.Event + " -> " + req.Command)
-	}
-	if req.Tool != "" {
-		summary = strings.TrimSpace(req.Event + " (" + req.Tool + ") -> " + req.Command)
+// request is how the engine sees a hook command: a tool of its own, with the
+// hook capability, remembered per event and command.
+func (h HookRequest) request() permission.Request {
+	event := strings.ToLower(strings.TrimSpace(firstNonEmpty(h.Event, "unknown")))
+	command := strings.TrimSpace(h.Command)
+	summary := command
+	switch {
+	case h.Tool != "":
+		summary = h.Event + " (" + h.Tool + ") -> " + command
+	case h.Event != "":
+		summary = h.Event + " -> " + command
 	}
 	reason := "hook command requires approval"
-	if req.Blocking {
+	if h.Blocking {
 		reason = "blocking hook command requires approval"
 	}
-	return toolInfo{
-		tool:       "hook/" + strings.ToLower(strings.TrimSpace(event)),
-		capability: CapHook,
-		summary:    summary,
-		preview:    strings.TrimSpace(req.Command),
-		reason:     reason,
-		key:        "hook:" + strings.ToLower(strings.TrimSpace(event)) + ":" + permissionKey(req.Command),
+	return permission.Request{
+		ToolName: "hook/" + event,
+		Summary:  summary,
+		Reason:   reason,
+		Metadata: permission.Metadata{
+			Capability: permission.CapabilityHook,
+			Key:        "hook:" + event + ":" + command,
+		},
 	}
-}
-
-func inspectCommand(req CommandRequest) toolInfo {
-	name := strings.ToLower(strings.TrimSpace(req.Name))
-	summary := strings.TrimSpace(req.Summary)
-	if summary == "" {
-		summary = "/" + name
-	}
-	return toolInfo{
-		tool:       "command/" + name,
-		capability: CapInternal,
-		summary:    summary,
-		preview:    truncate(strings.TrimSpace(req.Preview), 400),
-		key:        "command:" + string(normalizeCommandCategory(req.Category)) + ":" + name,
-	}
-}
-
-type decisionEngine interface {
-	Decide(ctx context.Context, req permission.Request) (*permission.Decision, error)
-	SetFilesystemRoots(roots permission.FilesystemRoots)
-	FilesystemRoots() permission.FilesystemRoots
-	SetMode(mode permission.Mode)
-	Mode() permission.Mode
-	SetPlanMode(active bool)
-	PlanMode() bool
-	SetApprover(fn permission.Approver)
-	SetSkillAllows(rawTools []string)
-}
-
-func truncate(s string, max int) string {
-	runes := []rune(strings.TrimSpace(s))
-	if len(runes) <= max {
-		return string(runes)
-	}
-	return string(runes[:max]) + "..."
 }
 
 func firstNonEmpty(values ...string) string {
@@ -162,8 +74,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func permissionKey(input string) string {
-	return strings.TrimSpace(input)
 }

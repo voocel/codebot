@@ -7,10 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
-	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/codebot/internal/provider"
 	llmprovider "github.com/voocel/litellm/provider"
 	"github.com/voocel/litellm/provider/bedrock"
@@ -21,7 +21,7 @@ const ConfigDir = ".codebot"
 
 // ProviderConfig holds credentials and model configuration for a single provider.
 type ProviderConfig struct {
-	Type       string         `json:"type,omitempty"` // LiteLLM protocol type; required only when the provider name is not a known litellm provider
+	Type       string         `json:"type,omitempty"` // protocol type: a LiteLLM provider, "gateway" for a model gateway; required only when the provider name is not a known litellm provider
 	API        string         `json:"api,omitempty"`  // OpenAI protocol endpoint: chat (default) or responses
 	APIKey     string         `json:"api_key,omitempty"`
 	BaseURL    string         `json:"base_url,omitempty"`
@@ -50,8 +50,8 @@ func (pc ProviderConfig) HasCredentials() bool {
 	return pc.APIKey != "" || pc.Extra != nil && pc.Extra.AccessKeyID != ""
 }
 
-// Connection returns the settings for reaching the provider.
-func (pc ProviderConfig) Connection() llmprovider.Config {
+// connection returns the settings for reaching the provider.
+func (pc ProviderConfig) connection() llmprovider.Config {
 	conn := llmprovider.Config{APIKey: pc.APIKey, BaseURL: pc.BaseURL, API: pc.API}
 	x := pc.Extra
 	if x == nil {
@@ -85,11 +85,11 @@ func hasHeader(headers map[string]string, name string) bool {
 // ModelSpec resolves how to build model from the provider configured under
 // name; a name missing from providers must be a built-in provider type.
 func ModelSpec(providers map[string]ProviderConfig, name, model string) (provider.ModelSpec, error) {
-	typ, err := ResolveConfiguredProviderType(providers, name)
+	typ, err := resolveConfiguredProviderType(providers, name)
 	if err != nil {
 		return provider.ModelSpec{}, err
 	}
-	return provider.ModelSpec{Provider: name, Type: typ, Model: model, Conn: providers[name].Connection()}, nil
+	return provider.ModelSpec{Provider: name, Type: typ, Model: model, Conn: providers[name].connection()}, nil
 }
 
 // TelemetryConfig configures OpenTelemetry trace export to an OTLP backend
@@ -101,52 +101,36 @@ type TelemetryConfig struct {
 	SecretKey string `json:"secret_key,omitempty"` // basic-auth password
 }
 
-// DreamConfig configures background memory consolidation ("dream"): when the
-// session goes idle, a restricted subagent reorganizes the auto-memory
-// directory. Fields are pointers so unset falls back to defaults (on, 24h, 5).
-type DreamConfig struct {
-	Enabled     *bool `json:"enabled,omitempty"`      // nil = enabled
-	MinHours    *int  `json:"min_hours,omitempty"`    // hours since last consolidation; default 24
-	MinSessions *int  `json:"min_sessions,omitempty"` // other sessions touched since; default 5
-}
-
-// DreamSettings is the resolved form of DreamConfig.
-type DreamSettings struct {
-	Enabled     bool
-	MinHours    int
-	MinSessions int
-}
-
-// ProviderType resolves the protocol type for this provider.
+// providerType resolves the protocol type for this provider.
 // The protocol type maps to a name registered in litellm's provider registry.
-func (pc ProviderConfig) ProviderType(name string) (string, error) {
-	return ResolveProviderType(name, pc.Type)
+func (pc ProviderConfig) providerType(name string) (string, error) {
+	return resolveProviderType(name, pc.Type)
 }
 
-// ResolveProviderType resolves a provider's protocol type. When explicitType
+// resolveProviderType resolves a provider's protocol type. When explicitType
 // is set it wins (and must be registered); otherwise the provider name itself
 // must be a registered litellm provider.
-func ResolveProviderType(name, explicitType string) (string, error) {
+func resolveProviderType(name, explicitType string) (string, error) {
 	provType := strings.ToLower(strings.TrimSpace(explicitType))
 	if provType != "" {
 		if provider.IsSupportedType(provType) {
 			return provType, nil
 		}
-		return "", fmt.Errorf("configuration error: providers.%s.type=%q is unsupported: %w", name, explicitType, diag.ErrConfig)
+		return "", fmt.Errorf("configuration error: providers.%s.type=%q is unsupported", name, explicitType)
 	}
 	lowered := strings.ToLower(strings.TrimSpace(name))
 	if provider.IsSupportedType(lowered) {
 		return lowered, nil
 	}
-	return "", fmt.Errorf("configuration error: providers.%s.type is required for custom providers: %w", name, diag.ErrConfig)
+	return "", fmt.Errorf("configuration error: providers.%s.type is required for custom providers", name)
 }
 
-// ResolveConfiguredProviderType resolves the protocol type for a configured provider.
-func ResolveConfiguredProviderType(providers map[string]ProviderConfig, name string) (string, error) {
+// resolveConfiguredProviderType resolves the protocol type for a configured provider.
+func resolveConfiguredProviderType(providers map[string]ProviderConfig, name string) (string, error) {
 	if pc, ok := providers[name]; ok {
-		return pc.ProviderType(name)
+		return pc.providerType(name)
 	}
-	return ResolveProviderType(name, "")
+	return resolveProviderType(name, "")
 }
 
 // HookEntry describes a single hook.
@@ -157,14 +141,32 @@ type HookEntry struct {
 	Prompt   string            `json:"prompt,omitempty"`   // type=prompt: LLM prompt ($ARGUMENTS = payload)
 	URL      string            `json:"url,omitempty"`      // type=http: POST endpoint
 	Headers  map[string]string `json:"headers,omitempty"`  // type=http: request headers
-	Matcher  string            `json:"matcher,omitempty"`  // tool name filter: exact or /regex/
-	If       string            `json:"if,omitempty"`       // argument content filter: substring or /regex/
+	Matcher  string            `json:"matcher,omitempty"`  // tool name filter: exact (case-insensitive) or /regex/
+	If       string            `json:"if,omitempty"`       // tool arguments JSON filter: /regex/, or the exact JSON
 	Blocking *bool             `json:"blocking,omitempty"` // can block execution
 	Timeout  *int              `json:"timeout,omitempty"`  // seconds (default 60)
 }
 
 // HooksConfig maps event names to their hook entries.
 type HooksConfig map[string][]HookEntry
+
+// MCPServer describes a single MCP server connection.
+//
+// Stdio example (default):
+//
+//	{"command": "npx", "args": ["-y", "@upstash/context7-mcp"], "env": {"KEY": "${VAR}"}}
+//
+// HTTP example:
+//
+//	{"type": "http", "url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"}}
+type MCPServer struct {
+	Type    string            `json:"type,omitempty"` // "stdio" (default) or "http"
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
 
 // Settings holds application-level configuration.
 // Fields use pointer types so unset fields fall back to defaults.
@@ -181,7 +183,7 @@ type Settings struct {
 	// Effective = min(model's detected window, CompactWindow). 0 = disabled.
 	CompactWindow *int `json:"compact_window,omitempty"`
 	// CompactRatio triggers compaction when usage >= effective * ratio.
-	// Range (0, 1). 0 = engine default (fixed headroom buffer).
+	// Range (0, 1). Unset leaves room for the model's reply instead.
 	CompactRatio *float64 `json:"compact_ratio,omitempty"`
 
 	SearchProvider *string `json:"search_provider,omitempty"`
@@ -189,11 +191,13 @@ type Settings struct {
 
 	Hooks HooksConfig `json:"hooks,omitempty"` // lifecycle hooks
 
+	// MCPServers are the MCP servers to connect, by name; a project entry
+	// replaces the global one of the same name.
+	MCPServers map[string]MCPServer `json:"mcp_servers,omitempty"`
+
 	Permissions *PermissionsConfig `json:"permissions,omitempty"`
 
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"` // OpenTelemetry trace export
-
-	Dream *DreamConfig `json:"dream,omitempty"` // background memory consolidation
 
 	// Snapshot toggles workspace file checkpoints backing /undo. Unset means on;
 	// set false to disable (e.g. on a large repo where per-turn scans lag).
@@ -215,10 +219,8 @@ type Resolved struct {
 	SmallModel string                    // sub-agent model; equals Model when not configured
 	Providers  map[string]ProviderConfig // per-provider credentials
 
-	ContextWindow   int     // effective window after applying CompactWindow cap
-	MaxOutputTokens int     // model's output ceiling from the registry; 0 = unknown
 	CompactWindow   int     // user-configured cap on effective window; 0 = disabled
-	CompactRatio    float64 // usage ratio that triggers compaction; 0 = engine default
+	CompactRatio    float64 // usage ratio that triggers compaction; 0 = unset
 	ReasoningEffort string
 	MaxTurns        int
 	SearchProvider  string
@@ -226,11 +228,11 @@ type Resolved struct {
 
 	Hooks HooksConfig // lifecycle hooks
 
+	MCPServers map[string]MCPServer
+
 	Permissions PermissionsConfig // user-defined permission rules
 
 	Telemetry TelemetryConfig // OTLP trace export config
-
-	Dream DreamSettings // background memory consolidation; defaults on
 
 	Snapshot bool // workspace checkpoints for /undo; defaults on
 }
@@ -244,21 +246,6 @@ func FormatModelID(provider, model string) string {
 	return provider + "/" + model
 }
 
-// maxCompactReserveTokens caps model-derived output headroom.
-const maxCompactReserveTokens = 20000
-
-// CompactReserveTokens returns reply headroom; zero selects the engine default.
-func (r Resolved) CompactReserveTokens() int {
-	if r.CompactRatio > 0 && r.CompactRatio < 1 {
-		return r.ContextWindow - int(float64(r.ContextWindow)*r.CompactRatio)
-	}
-	if r.MaxOutputTokens <= 0 || r.ContextWindow <= 0 {
-		return 0
-	}
-	// Preserve at least half the window for prompt content.
-	return min(min(maxCompactReserveTokens, r.MaxOutputTokens), r.ContextWindow/2)
-}
-
 // Resolve converts Settings to Resolved using defaults for unset fields.
 func (s Settings) Resolve() Resolved {
 	r := Resolved{
@@ -266,7 +253,6 @@ func (s Settings) Resolve() Resolved {
 		Providers: make(map[string]ProviderConfig),
 		MaxTurns:  200,
 		Snapshot:  true,
-		Dream:     DreamSettings{Enabled: true, MinHours: 24, MinSessions: 5},
 	}
 	if s.Provider != nil && *s.Provider != "" {
 		r.Provider = *s.Provider
@@ -306,23 +292,12 @@ func (s Settings) Resolve() Resolved {
 	if len(s.Hooks) > 0 {
 		r.Hooks = s.Hooks
 	}
+	r.MCPServers = s.MCPServers
 	if s.Permissions != nil {
 		r.Permissions = *s.Permissions
 	}
 	if s.Telemetry != nil {
 		r.Telemetry = *s.Telemetry
-	}
-	if s.Dream != nil {
-		if s.Dream.Enabled != nil {
-			r.Dream.Enabled = *s.Dream.Enabled
-		}
-		// Invalid values (<= 0) silently keep defaults, same as CompactRatio.
-		if s.Dream.MinHours != nil && *s.Dream.MinHours > 0 {
-			r.Dream.MinHours = *s.Dream.MinHours
-		}
-		if s.Dream.MinSessions != nil && *s.Dream.MinSessions > 0 {
-			r.Dream.MinSessions = *s.Dream.MinSessions
-		}
 	}
 	if s.Snapshot != nil {
 		r.Snapshot = *s.Snapshot
@@ -330,11 +305,11 @@ func (s Settings) Resolve() Resolved {
 	return r
 }
 
-// ValidateResolved rejects unsupported values after global/project settings
+// validateResolved rejects unsupported values after global/project settings
 // have been merged and defaults applied.
-func ValidateResolved(r Resolved) error {
-	if _, ok := provider.ResolveThinkingLevel(nil, r.ReasoningEffort); !ok {
-		return fmt.Errorf("configuration error: reasoning_effort=%q is unsupported; use empty string, off, low, medium, high, xhigh, or max: %w", r.ReasoningEffort, diag.ErrConfig)
+func validateResolved(r Resolved) error {
+	if !provider.ValidEffort(r.ReasoningEffort) {
+		return fmt.Errorf("configuration error: reasoning_effort=%q is unsupported; use empty string, off, low, medium, high, xhigh, or max", r.ReasoningEffort)
 	}
 	for name, pc := range r.Providers {
 		if err := validateProviderAPI(name, pc); err != nil {
@@ -348,17 +323,17 @@ func validateProviderAPI(name string, pc ProviderConfig) error {
 	switch pc.API {
 	case "", "chat", "responses":
 	default:
-		return fmt.Errorf("configuration error: providers.%s.api=%q is unsupported; use chat or responses: %w", name, pc.API, diag.ErrConfig)
+		return fmt.Errorf("configuration error: providers.%s.api=%q is unsupported; use chat or responses", name, pc.API)
 	}
 	if pc.API == "" {
 		return nil
 	}
-	provType, err := pc.ProviderType(name)
+	provType, err := pc.providerType(name)
 	if err != nil {
 		return err
 	}
 	if provType != "openai" {
-		return fmt.Errorf("configuration error: providers.%s.api is only supported for OpenAI protocol providers: %w", name, diag.ErrConfig)
+		return fmt.Errorf("configuration error: providers.%s.api is only supported for OpenAI protocol providers", name)
 	}
 	return nil
 }
@@ -368,20 +343,20 @@ func SettingsPath(cwd string) string {
 	return filepath.Join(cwd, ConfigDir, "settings.json")
 }
 
-// ProjectConfigExists reports whether <cwd>/.codebot/settings.json exists.
-func ProjectConfigExists(cwd string) bool {
+// projectConfigExists reports whether <cwd>/.codebot/settings.json exists.
+func projectConfigExists(cwd string) bool {
 	_, err := os.Stat(SettingsPath(cwd))
 	return err == nil
 }
 
-// GlobalSettingsPath returns ~/.codebot/settings.json.
-func GlobalSettingsPath() string {
+// globalSettingsPath returns ~/.codebot/settings.json.
+func globalSettingsPath() string {
 	return filepath.Join(UserConfigDir(), "settings.json")
 }
 
-// GlobalConfigExists reports whether ~/.codebot/settings.json exists.
-func GlobalConfigExists() bool {
-	_, err := os.Stat(GlobalSettingsPath())
+// globalConfigExists reports whether ~/.codebot/settings.json exists.
+func globalConfigExists() bool {
+	_, err := os.Stat(globalSettingsPath())
 	return err == nil
 }
 
@@ -404,34 +379,9 @@ func UndoStatePath(cwd, sessionID string) string {
 	return filepath.Join(SessionsDir(cwd), sessionID, "undo-stack.json")
 }
 
-// CommandsDir returns <cwd>/.codebot/commands/.
-func CommandsDir(cwd string) string {
-	return filepath.Join(cwd, ConfigDir, "commands")
-}
-
-// PlansDir returns ~/.codebot/plans/. A single global directory shared across
-// projects; word-slug filenames make collisions vanishingly rare.
-func PlansDir(_ string) string {
-	return filepath.Join(UserConfigDir(), "plans")
-}
-
 // ApprovalsPath returns ~/.codebot/approvals/<projectID>.json.
 func ApprovalsPath(cwd string) string {
 	return filepath.Join(UserConfigDir(), "approvals", projectID(cwd)+".json")
-}
-
-// TasksDir returns ~/.codebot/tasks/.
-func TasksDir() string {
-	return filepath.Join(UserConfigDir(), "tasks")
-}
-
-// TeamDir returns ~/.codebot/tasks/<sessionID>/team/ — the per-session home
-// for team coordination artifacts (roster, teammate transcripts, mailbox
-// backlog) that must survive a restart alongside the durable task list. It
-// lives under the session's task dir so a session's entire coordination
-// state is reclaimed together.
-func TeamDir(sessionID string) string {
-	return filepath.Join(TasksDir(), sessionID, "team")
 }
 
 // AuditLogPath returns ~/.codebot/audit.log.
@@ -466,10 +416,9 @@ func UserConfigDir() string {
 // global. Returns an error when either settings file exists and cannot be parsed.
 func LoadSettingsStrict(cwd string) (Resolved, error) {
 	var global Settings
-	if dir := UserConfigDir(); dir != "" {
+	if UserConfigDir() != "" {
 		var err error
-		global, err = loadSettingsFileStrict(filepath.Join(dir, "settings.json"))
-		if err != nil {
+		if global, err = loadSettingsFileStrict(globalSettingsPath()); err != nil {
 			return Resolved{}, err
 		}
 	}
@@ -480,7 +429,7 @@ func LoadSettingsStrict(cwd string) (Resolved, error) {
 	}
 
 	resolved := mergeSettings(global, project).Resolve()
-	if err := ValidateResolved(resolved); err != nil {
+	if err := validateResolved(resolved); err != nil {
 		return Resolved{}, err
 	}
 	return resolved, nil
@@ -573,81 +522,31 @@ func mergeSettings(base, override Settings) Settings {
 	if override.Telemetry != nil {
 		base.Telemetry = override.Telemetry
 	}
-	if override.Dream != nil {
-		base.Dream = override.Dream
-	}
 	if override.Snapshot != nil {
 		base.Snapshot = override.Snapshot
+	}
+	for name, server := range override.MCPServers {
+		if base.MCPServers == nil {
+			base.MCPServers = make(map[string]MCPServer)
+		}
+		base.MCPServers[name] = server
 	}
 	return base
 }
 
-func cloneExtra(m map[string]any) map[string]any {
-	if len(m) == 0 {
-		return nil
-	}
-	c := make(map[string]any, len(m))
-	for k, v := range m {
-		c[k] = v
-	}
-	return c
-}
-
-// SaveSettings writes settings to ~/.codebot/settings.json (global).
-func SaveSettings(s Settings) error {
-	dir := UserConfigDir()
-	path := filepath.Join(dir, "settings.json")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal settings: %w", err)
-	}
-	settingsWriteMu.Lock()
-	defer settingsWriteMu.Unlock()
-	return writeFileAtomic(path, data, 0o600)
-}
-
-// PatchGlobalSettings loads the global settings, applies the patch, and saves back.
-// Only non-nil fields in patch are updated.
-func PatchGlobalSettings(patch Settings) error {
-	dir := UserConfigDir()
-	if dir == "" {
-		return fmt.Errorf("cannot determine user config directory: %w", diag.ErrConfig)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	settingsWriteMu.Lock()
-	defer settingsWriteMu.Unlock()
-	existing, err := loadSettingsFileStrict(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		return err
-	}
-	merged := mergeSettings(existing, patch)
-	data, err := json.MarshalIndent(merged, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal settings: %w", err)
-	}
-	return writeFileAtomic(filepath.Join(dir, "settings.json"), data, 0o600)
-}
-
-// PatchProjectSettings loads project-level settings, applies the patch, and saves back.
-func PatchProjectSettings(cwd string, patch Settings) error {
-	path := SettingsPath(cwd)
+// patchSettingsFile applies the non-nil fields of patch to the settings file
+// at path.
+func patchSettingsFile(path string, patch Settings) error {
 	settingsWriteMu.Lock()
 	defer settingsWriteMu.Unlock()
 	existing, err := loadSettingsFileStrict(path)
 	if err != nil {
 		return err
 	}
-	merged := mergeSettings(existing, patch)
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create project config dir: %w", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
 	}
-	data, err := json.MarshalIndent(merged, "", "  ")
+	data, err := json.MarshalIndent(mergeSettings(existing, patch), "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
@@ -658,10 +557,11 @@ func PatchProjectSettings(cwd string, patch Settings) error {
 // otherwise to the global settings file. Runtime UI changes should use this
 // so the visible state matches the settings layer ResolveAllStrict reads.
 func PatchEffectiveSettings(cwd string, patch Settings) error {
-	if ProjectConfigExists(cwd) {
-		return PatchProjectSettings(cwd, patch)
+	path := globalSettingsPath()
+	if projectConfigExists(cwd) {
+		path = SettingsPath(cwd)
 	}
-	return PatchGlobalSettings(patch)
+	return patchSettingsFile(path, patch)
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
@@ -704,7 +604,7 @@ func loadSettingsFileStrict(path string) (Settings, error) {
 		return s, err
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
-		return s, fmt.Errorf("configuration error: malformed settings.json (%s): %w: %w", path, diag.ErrConfig, err)
+		return s, fmt.Errorf("configuration error: malformed settings.json (%s): %w", path, err)
 	}
 	return s, nil
 }
@@ -727,71 +627,53 @@ func ResolveAllStrict(cwd string) (Resolved, error) {
 		}
 	}
 
-	switch strings.ToLower(strings.TrimSpace(settings.SearchProvider)) {
-	case "jina", "jina.ai", "jinaai":
-		settings.SearchProvider = "jina"
+	switch settings.SearchProvider {
+	case "":
+		settings.SearchProvider = "tavily"
+	case "tavily", "jina":
+	default:
+		return Resolved{}, fmt.Errorf("search_provider %q: want tavily or jina", settings.SearchProvider)
 	}
 	if settings.SearchAPIKey == "" {
-		settings.SearchAPIKey = searchAPIKeyFromEnv(settings.SearchProvider)
+		settings.SearchAPIKey = os.Getenv(strings.ToUpper(settings.SearchProvider) + "_API_KEY")
 	}
 
 	settings.Permissions = normalizePermissionRoots(cwd, settings.Permissions)
 	return settings, nil
 }
 
-func searchAPIKeyFromEnv(provider string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "tavily":
-		return os.Getenv("TAVILY_API_KEY")
-	case "jina", "jina.ai", "jinaai":
-		return os.Getenv("JINA_API_KEY")
-	default:
-		return os.Getenv("SEARCH_API_KEY")
-	}
-}
-
+// normalizePermissionRoots makes the roots absolute, the workspace when none
+// are set; whatever is writable is readable.
 func normalizePermissionRoots(cwd string, perms PermissionsConfig) PermissionsConfig {
-	perms.ReadRoots = normalizeRootList(cwd, perms.ReadRoots, true)
-	perms.WriteRoots = normalizeRootList(cwd, perms.WriteRoots, true)
-	perms.ReadRoots = unionRoots(perms.ReadRoots, perms.WriteRoots)
+	perms.WriteRoots = normalizeRoots(cwd, perms.WriteRoots)
+	perms.ReadRoots = normalizeRoots(cwd, append(normalizeRoots(cwd, perms.ReadRoots), perms.WriteRoots...))
 	return perms
 }
 
-func normalizeRootList(cwd string, roots []string, defaultToCWD bool) []string {
-	if len(roots) == 0 {
-		if !defaultToCWD {
-			return nil
-		}
-		roots = []string{"."}
-	}
-
-	seen := make(map[string]struct{}, len(roots))
-	out := make([]string, 0, len(roots))
+// normalizeRoots makes roots absolute against cwd, without duplicates; no
+// roots means cwd.
+func normalizeRoots(cwd string, roots []string) []string {
+	var out []string
 	for _, root := range roots {
 		root = strings.TrimSpace(root)
 		if root == "" {
 			continue
 		}
-
-		root = ExpandHome(root)
+		root = expandHome(root)
 		if !filepath.IsAbs(root) {
 			root = filepath.Join(cwd, root)
 		}
-		root = filepath.Clean(root)
-		if _, ok := seen[root]; ok {
-			continue
+		if root = filepath.Clean(root); !slices.Contains(out, root) {
+			out = append(out, root)
 		}
-		seen[root] = struct{}{}
-		out = append(out, root)
 	}
-
-	if len(out) == 0 && defaultToCWD {
+	if len(out) == 0 {
 		return []string{filepath.Clean(cwd)}
 	}
 	return out
 }
 
-func ExpandHome(path string) string {
+func expandHome(path string) string {
 	if path == "" {
 		return ""
 	}
@@ -810,33 +692,4 @@ func ExpandHome(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
-}
-
-func unionRoots(base, extra []string) []string {
-	if len(extra) == 0 {
-		return base
-	}
-	seen := make(map[string]struct{}, len(base)+len(extra))
-	out := make([]string, 0, len(base)+len(extra))
-	for _, root := range base {
-		if root == "" {
-			continue
-		}
-		if _, ok := seen[root]; ok {
-			continue
-		}
-		seen[root] = struct{}{}
-		out = append(out, root)
-	}
-	for _, root := range extra {
-		if root == "" {
-			continue
-		}
-		if _, ok := seen[root]; ok {
-			continue
-		}
-		seen[root] = struct{}{}
-		out = append(out, root)
-	}
-	return out
 }

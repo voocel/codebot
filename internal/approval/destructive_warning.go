@@ -47,12 +47,12 @@ var destructivePatterns = []destructivePattern{
 	{regexp.MustCompile(`\bterraform\s+destroy\b`), "may destroy Terraform infrastructure"},
 }
 
-// DestructiveCommandWarning returns a short warning string when cmd matches
+// destructiveCommandWarning returns a short warning string when cmd matches
 // a known destructive pattern, or "" otherwise. The returned phrase is the
 // noun phrase only (e.g. "may overwrite remote history") — the caller adds
 // any label / icon / styling. Returns the FIRST match, so order patterns from
 // most specific to least.
-func DestructiveCommandWarning(cmd string) string {
+func destructiveCommandWarning(cmd string) string {
 	if cmd == "" {
 		return ""
 	}

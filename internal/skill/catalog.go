@@ -1,69 +1,65 @@
 package skill
 
 import (
-	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
-	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
+// Catalog is the skills available, by name. It does not change; reloading
+// makes a new one.
 type Catalog struct {
-	mu        sync.RWMutex
-	cwd       string
-	baseSpecs []Spec
-	extraDirs []DirSource
-	list      []Spec
-	byName    map[string]Spec
+	list   []Spec // by name
+	byName map[string]Spec
 }
 
-type DirSource struct {
-	Path   string
-	Source string
-}
-
-type frontmatter struct {
-	Name                   string   `yaml:"name"`
-	Description            string   `yaml:"description"`
-	WhenToUse              string   `yaml:"when_to_use"`
-	Version                string   `yaml:"version"`
-	ArgumentHint           string   `yaml:"argument-hint"`
-	Arguments              []string `yaml:"arguments"`
-	Context                string   `yaml:"context"`
-	Agent                  string   `yaml:"agent"`
-	Model                  string   `yaml:"model"`
-	Effort                 string   `yaml:"effort"`
-	AllowedTools           any      `yaml:"allowed-tools"`
-	Paths                  []string `yaml:"paths"`
-	UserInvocable          *bool    `yaml:"user-invocable"`
-	DisableModelInvocation *bool    `yaml:"disable-model-invocation"`
-}
-
-func NewCatalog(cwd string, baseSpecs []Spec, extraDirs ...DirSource) *Catalog {
-	c := &Catalog{
-		cwd:       cwd,
-		baseSpecs: append([]Spec(nil), baseSpecs...),
-		extraDirs: append([]DirSource(nil), extraDirs...),
+// NewCatalog collects skills. Of several with one name, the one from the most
+// trusted source wins: project, then user, then bundled, then remote; among
+// equals, the later one.
+func NewCatalog(specs []Spec) *Catalog {
+	c := &Catalog{byName: make(map[string]Spec, len(specs))}
+	for _, spec := range specs {
+		if cur, ok := c.byName[spec.Name]; ok && sourcePriority(cur.Source) < sourcePriority(spec.Source) {
+			continue
+		}
+		c.byName[spec.Name] = spec
 	}
-	c.Reload()
+	for _, name := range slices.Sorted(maps.Keys(c.byName)) {
+		c.list = append(c.list, c.byName[name])
+	}
 	return c
 }
 
-func NewStaticCatalog(specs []Spec) *Catalog {
-	c := &Catalog{}
-	c.setSpecs(specs)
-	return c
+// List returns the skills active in the workspace at cwd: those whose Paths
+// match something there, or that have none. An empty cwd lists them all.
+func (c *Catalog) List(cwd string) []Spec {
+	var out []Spec
+	for _, spec := range c.list {
+		if skillIsActive(spec, cwd) {
+			out = append(out, spec)
+		}
+	}
+	return out
 }
 
-func LoadFromDir(dir, source string) []Spec {
-	return loadSkillsFromDir(dir, source)
+// Get returns the named skill if it is active in the workspace at cwd.
+func (c *Catalog) Get(name, cwd string) (Spec, bool) {
+	spec, ok := c.byName[normalizeName(name)]
+	if !ok || !skillIsActive(spec, cwd) {
+		return Spec{}, false
+	}
+	return spec, true
 }
 
-func ValidateDir(dir, source string) ([]Spec, []error) {
+// LoadDir loads the skills in dir: each *.md file, and each subdirectory
+// holding a SKILL.md, at any depth, named after the subdirectory. What fails
+// to load is reported, and left out.
+func LoadDir(dir string) ([]Spec, []error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, []error{err}
@@ -74,18 +70,17 @@ func ValidateDir(dir, source string) ([]Spec, []error) {
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
-			spec, ok := findSkillInDir(path, entry.Name(), source)
-			if ok {
+			if spec, ok := findSkillInDir(path, entry.Name()); ok {
 				specs = append(specs, spec)
-				continue
+			} else {
+				errs = append(errs, fmt.Errorf("%s: no valid skill found", path))
 			}
-			errs = append(errs, fmt.Errorf("%s: no valid skill found", path))
 			continue
 		}
 		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
 			continue
 		}
-		spec, err := loadSkillFile(path, source)
+		spec, err := loadSkillFile(path, strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", path, err))
 			continue
@@ -95,172 +90,12 @@ func ValidateDir(dir, source string) ([]Spec, []error) {
 	return specs, errs
 }
 
-func (c *Catalog) Reload() {
-	specs := append([]Spec(nil), c.baseSpecs...)
-	for _, extra := range c.extraDirs {
-		if strings.TrimSpace(extra.Path) == "" {
-			continue
-		}
-		source := strings.TrimSpace(extra.Source)
-		if source == "" {
-			source = "plugin"
-		}
-		specs = append(specs, loadSkillsFromDir(extra.Path, source)...)
+// findSkillInDir finds the SKILL.md in dir or, failing that, the first one
+// below it.
+func findSkillInDir(dir, name string) (Spec, bool) {
+	if spec, err := loadSkillFile(filepath.Join(dir, "SKILL.md"), name); err == nil {
+		return spec, true
 	}
-	c.setSpecs(deduplicateSpecs(specs))
-}
-
-func deduplicateSpecs(specs []Spec) []Spec {
-	if len(specs) < 2 {
-		return append([]Spec(nil), specs...)
-	}
-	deduped := make([]Spec, 0, len(specs))
-	byName := make(map[string]int, len(specs))
-	byIdentity := make(map[string]int, len(specs))
-	for _, spec := range specs {
-		nameKey := NormalizeName(spec.Name)
-		identityKey := specIdentityKey(spec)
-		if idx, ok := byName[nameKey]; ok {
-			releaseSpecKeys(deduped[idx], byName, byIdentity, idx)
-			deduped[idx] = spec
-			storeSpecKeys(spec, byName, byIdentity, idx, identityKey)
-			continue
-		}
-		if identityKey != "" {
-			if idx, ok := byIdentity[identityKey]; ok {
-				releaseSpecKeys(deduped[idx], byName, byIdentity, idx)
-				deduped[idx] = spec
-				storeSpecKeys(spec, byName, byIdentity, idx, identityKey)
-				continue
-			}
-		}
-		idx := len(deduped)
-		deduped = append(deduped, spec)
-		storeSpecKeys(spec, byName, byIdentity, idx, identityKey)
-	}
-	sort.Slice(deduped, func(i, j int) bool { return deduped[i].Name < deduped[j].Name })
-	return deduped
-}
-
-func storeSpecKeys(spec Spec, byName map[string]int, byIdentity map[string]int, idx int, identityKey string) {
-	byName[NormalizeName(spec.Name)] = idx
-	if identityKey != "" {
-		byIdentity[identityKey] = idx
-	}
-}
-
-func releaseSpecKeys(spec Spec, byName map[string]int, byIdentity map[string]int, idx int) {
-	nameKey := NormalizeName(spec.Name)
-	if cur, ok := byName[nameKey]; ok && cur == idx {
-		delete(byName, nameKey)
-	}
-	if identityKey := specIdentityKey(spec); identityKey != "" {
-		if cur, ok := byIdentity[identityKey]; ok && cur == idx {
-			delete(byIdentity, identityKey)
-		}
-	}
-}
-
-func specIdentityKey(spec Spec) string {
-	if spec.FilePath == "" {
-		return ""
-	}
-	resolved, err := filepath.EvalSymlinks(spec.FilePath)
-	if err == nil && resolved != "" {
-		return filepath.Clean(resolved)
-	}
-	abs, err := filepath.Abs(spec.FilePath)
-	if err != nil {
-		return filepath.Clean(spec.FilePath)
-	}
-	return filepath.Clean(abs)
-}
-
-func (c *Catalog) setSpecs(specs []Spec) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.list = make([]Spec, len(specs))
-	c.byName = make(map[string]Spec, len(specs))
-	for i, spec := range specs {
-		spec = cloneSpec(spec)
-		if spec.GetPrompt == nil && spec.FilePath != "" {
-			spec.GetPrompt = buildPromptFn(spec, "")
-		}
-		c.list[i] = spec
-		c.byName[spec.Name] = spec
-	}
-}
-
-// Retarget points the catalog at a new workspace root. Only the activation
-// check (Spec.Paths, resolved against cwd) depends on it — the specs themselves
-// come from plugin contributions and configured directories, so no reload is
-// needed. Called on a worktree enter/exit: leaving the boot cwd here would keep
-// deciding which skills apply from the workspace the session has left.
-func (c *Catalog) Retarget(cwd string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cwd = cwd
-}
-
-func (c *Catalog) List() []Spec {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	out := make([]Spec, 0, len(c.list))
-	for _, spec := range c.list {
-		if !skillIsActive(spec, c.cwd) {
-			continue
-		}
-		out = append(out, cloneSpec(spec))
-	}
-	return out
-}
-
-func (c *Catalog) Get(name string) (Spec, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	spec, ok := c.byName[NormalizeName(name)]
-	if !ok || !skillIsActive(spec, c.cwd) {
-		return Spec{}, false
-	}
-	return cloneSpec(spec), true
-}
-
-func loadSkillsFromDir(dir, source string) []Spec {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-
-	var specs []Spec
-	for _, entry := range entries {
-		if entry.IsDir() {
-			if spec, ok := findSkillInDir(filepath.Join(dir, entry.Name()), entry.Name(), source); ok {
-				specs = append(specs, spec)
-			}
-			continue
-		}
-		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
-			continue
-		}
-		spec, err := loadSkillFile(filepath.Join(dir, entry.Name()), source)
-		if err == nil {
-			specs = append(specs, spec)
-		}
-	}
-	return specs
-}
-
-func findSkillInDir(dir, dirName, source string) (Spec, bool) {
-	skillFile := filepath.Join(dir, "SKILL.md")
-	if spec, err := loadSkillFile(skillFile, source); err == nil {
-		if spec.Name == "skill" {
-			spec.Name = NormalizeName(dirName)
-		}
-		if ValidName(spec.Name) {
-			return spec, true
-		}
-	}
-
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return Spec{}, false
@@ -269,183 +104,96 @@ func findSkillInDir(dir, dirName, source string) (Spec, bool) {
 		if !entry.IsDir() {
 			continue
 		}
-		if spec, ok := findSkillInDir(filepath.Join(dir, entry.Name()), dirName, source); ok {
+		if spec, ok := findSkillInDir(filepath.Join(dir, entry.Name()), name); ok {
 			return spec, true
 		}
 	}
 	return Spec{}, false
 }
 
-func loadSkillFile(path, source string) (Spec, error) {
+func loadSkillFile(path, name string) (Spec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Spec{}, err
 	}
-	return parseSkillContent(string(data), skillSource{
-		NameHint: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
-		FilePath: path,
-		BaseDir:  filepath.Dir(path),
-		Source:   source,
-	}, buildPromptFn)
-}
-
-type skillSource struct {
-	NameHint string
-	FilePath string
-	BaseDir  string
-	Source   string
-}
-
-func parseSkillContent(content string, src skillSource, promptFactory func(Spec, string) GetPromptFn) (Spec, error) {
-	fm, keys, err := parseFrontmatter(content)
+	spec, err := parseSkill(string(data), name)
 	if err != nil {
 		return Spec{}, err
 	}
-
-	name := src.NameHint
-	if fm.Name != "" {
-		name = fm.Name
-	}
-	name = NormalizeName(name)
-	if !ValidName(name) {
-		return Spec{}, os.ErrInvalid
-	}
-
-	userInvocable := true
-	if fm.UserInvocable != nil {
-		userInvocable = *fm.UserInvocable
-	}
-	disableModel := false
-	if fm.DisableModelInvocation != nil {
-		disableModel = *fm.DisableModelInvocation
-	}
-
-	body := strings.TrimSpace(StripFrontmatter(content))
-	description := strings.TrimSpace(fm.Description)
-	if description == "" {
-		description = FirstLine(body, 80)
-	}
-
-	spec := Spec{
-		Name:                   name,
-		Description:            description,
-		WhenToUse:              strings.TrimSpace(fm.WhenToUse),
-		Version:                strings.TrimSpace(fm.Version),
-		FilePath:               src.FilePath,
-		BaseDir:                src.BaseDir,
-		Source:                 src.Source,
-		DisableModelInvocation: disableModel,
-		DisableUserInvocation:  !userInvocable,
-		ArgumentHint:           strings.TrimSpace(fm.ArgumentHint),
-		ArgumentNames:          append([]string(nil), fm.Arguments...),
-		Context:                normalizeContext(fm.Context),
-		Agent:                  strings.TrimSpace(fm.Agent),
-		Model:                  strings.TrimSpace(fm.Model),
-		Effort:                 strings.TrimSpace(fm.Effort),
-		AllowedTools:           normalizeAllowedTools(fm.AllowedTools),
-		Paths:                  append([]string(nil), fm.Paths...),
-		HasExplicitDescription: strings.TrimSpace(fm.Description) != "",
-		FrontmatterKeys:        keys,
-	}
-	spec.GetPrompt = promptFactory(spec, content)
+	spec.FilePath, spec.BaseDir = path, filepath.Dir(path)
 	return spec, nil
 }
 
-func parseFrontmatter(content string) (frontmatter, []string, error) {
-	if !strings.HasPrefix(content, "---\n") && !strings.HasPrefix(content, "---\r\n") {
-		return frontmatter{}, nil, nil
-	}
-	rest := content[4:]
-	raw, _, ok := strings.Cut(rest, "\n---")
-	if !ok {
-		return frontmatter{}, nil, nil
-	}
+type frontmatter struct {
+	Name                   string   `yaml:"name"`
+	Description            string   `yaml:"description"`
+	WhenToUse              string   `yaml:"when_to_use"`
+	ArgumentHint           string   `yaml:"argument-hint"`
+	Context                string   `yaml:"context"`
+	Agent                  string   `yaml:"agent"`
+	Model                  string   `yaml:"model"`
+	AllowedTools           any      `yaml:"allowed-tools"`
+	Paths                  []string `yaml:"paths"`
+	UserInvocable          *bool    `yaml:"user-invocable"`
+	DisableModelInvocation bool     `yaml:"disable-model-invocation"`
+}
 
-	var node yaml.Node
-	if err := yaml.Unmarshal([]byte(raw), &node); err != nil {
-		return frontmatter{}, nil, err
-	}
-	var keys []string
-	if len(node.Content) > 0 && node.Content[0].Kind == yaml.MappingNode {
-		mapping := node.Content[0]
-		for i := 0; i+1 < len(mapping.Content); i += 2 {
-			keys = append(keys, mapping.Content[i].Value)
-		}
-	}
+// parseSkill reads a skill file's frontmatter. The skill is named by its
+// frontmatter, else by name.
+func parseSkill(content, name string) (Spec, error) {
+	raw, body := splitFrontmatter(content)
 	var fm frontmatter
 	if err := yaml.Unmarshal([]byte(raw), &fm); err != nil {
-		return frontmatter{}, nil, err
+		return Spec{}, err
 	}
-	return fm, keys, nil
+	if fm.Name != "" {
+		name = fm.Name
+	}
+	if !ValidName(name) {
+		return Spec{}, fmt.Errorf("invalid skill name %q", name)
+	}
+
+	description := strings.TrimSpace(fm.Description)
+	if description == "" {
+		description = firstLine(body, 80)
+	}
+	mode := "inline"
+	if strings.EqualFold(strings.TrimSpace(fm.Context), "fork") {
+		mode = "fork"
+	}
+	return Spec{
+		Name:                   normalizeName(name),
+		Description:            description,
+		WhenToUse:              strings.TrimSpace(fm.WhenToUse),
+		DisableModelInvocation: fm.DisableModelInvocation,
+		DisableUserInvocation:  fm.UserInvocable != nil && !*fm.UserInvocable,
+		ArgumentHint:           strings.TrimSpace(fm.ArgumentHint),
+		Context:                mode,
+		Agent:                  strings.TrimSpace(fm.Agent),
+		Model:                  strings.TrimSpace(fm.Model),
+		AllowedTools:           allowedTools(fm.AllowedTools),
+		Paths:                  fm.Paths,
+	}, nil
 }
 
-func buildPromptFn(spec Spec, _ string) GetPromptFn {
-	return func(ctx context.Context, args string, sessionID string) (string, error) {
-		_ = ctx
-		data, err := os.ReadFile(spec.FilePath)
-		if err != nil {
-			return "", err
-		}
-		body := strings.TrimSpace(StripFrontmatter(string(data)))
-		body = ExpandVars(body, spec.BaseDir, sessionID)
-		if SourceAllowsShellExecution(spec.Source) {
-			body = ExpandShellInjections(body)
-		}
-		body = ExpandArgs(body, args)
-		return WrapPrompt(spec, body), nil
-	}
-}
-
-func buildStaticPromptFn(spec Spec, content string) GetPromptFn {
-	return func(ctx context.Context, args string, sessionID string) (string, error) {
-		_ = ctx
-		body := strings.TrimSpace(StripFrontmatter(content))
-		body = ExpandVars(body, spec.BaseDir, sessionID)
-		if SourceAllowsShellExecution(spec.Source) {
-			body = ExpandShellInjections(body)
-		}
-		body = ExpandArgs(body, args)
-		return WrapPrompt(spec, body), nil
-	}
-}
-
-func normalizeAllowedTools(v any) []string {
+// allowedTools reads allowed-tools, a comma-separated string or a list.
+func allowedTools(v any) []string {
+	var items []string
 	switch raw := v.(type) {
 	case string:
-		var out []string
-		for _, item := range strings.Split(raw, ",") {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				out = append(out, item)
-			}
-		}
-		return out
+		items = strings.Split(raw, ",")
 	case []any:
-		var out []string
 		for _, item := range raw {
-			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
-				out = append(out, strings.TrimSpace(s))
+			if s, ok := item.(string); ok {
+				items = append(items, s)
 			}
 		}
-		return out
-	case []string:
-		return append([]string(nil), raw...)
-	default:
-		return nil
 	}
-}
-
-func normalizeContext(raw string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), "fork") {
-		return "fork"
+	var out []string
+	for _, item := range items {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
 	}
-	return "inline"
-}
-
-func cloneSpec(spec Spec) Spec {
-	spec.ArgumentNames = append([]string(nil), spec.ArgumentNames...)
-	spec.AllowedTools = append([]string(nil), spec.AllowedTools...)
-	spec.Paths = append([]string(nil), spec.Paths...)
-	spec.FrontmatterKeys = append([]string(nil), spec.FrontmatterKeys...)
-	return spec
+	return out
 }

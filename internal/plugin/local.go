@@ -28,11 +28,7 @@ func InstallLocal(input InstallInput) (*InstallResult, error) {
 		return nil, err
 	}
 
-	scope := strings.ToLower(strings.TrimSpace(input.Scope))
-	if scope == "" {
-		scope = ScopeProject
-	}
-	destRoot, err := scaffoldRootDir(input.Cwd, scope, manifest.ID)
+	destRoot, err := scaffoldRootDir(input.Cwd, input.Scope, manifest.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +47,7 @@ func InstallLocal(input InstallInput) (*InstallResult, error) {
 
 	return &InstallResult{
 		ID:           manifest.ID,
-		Scope:        scope,
+		Scope:        input.Scope,
 		RootDir:      destRoot,
 		ManifestPath: filepath.Join(destRoot, "plugin.json"),
 	}, nil

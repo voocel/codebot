@@ -1,0 +1,22 @@
+[
+  {
+    "llm_calls": 6,
+    "input": 58076,
+    "output": 2305,
+    "cache_read": 29561,
+    "cache_write": 0,
+    "cost_usd": 0.068,
+    "turns": 6,
+    "tool_calls": 6,
+    "tool_errors": 0,
+    "runs": 1,
+    "end_reason": "done",
+    "id": "qa",
+    "ok": true,
+    "detail": "kinds mentioned 9/9, worktree clean=True",
+    "rc": 0,
+    "timed_out": false,
+    "seconds": 117.4,
+    "compactions": 0
+  }
+]

@@ -14,7 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/provider"
+	llmprovider "github.com/voocel/litellm/provider"
 )
 
 // OnboardingResult reports what the wizard did. Saved=false means the user
@@ -102,7 +102,7 @@ func newOnboardModel() *onboardModel {
 	rows = append(rows, onboardRow{name: "Custom", hint: "any endpoint litellm speaks", custom: true})
 
 	// Bedrock authenticates with AWS keys, set in settings.json, not an API key.
-	types := slices.DeleteFunc(provider.SupportedTypeNames(), func(t string) bool { return t == "bedrock" })
+	types := slices.DeleteFunc(llmprovider.Names(), func(t string) bool { return t == "bedrock" })
 	typeIdx := 0
 	for i, t := range types {
 		if t == "openai" {

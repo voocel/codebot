@@ -2,45 +2,28 @@ package skill
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
 	"path"
-	"sort"
 	"strings"
 )
 
 //go:embed bundled/*.md
 var bundledFS embed.FS
 
-func BundledSpecs(cwd string) []Spec {
-	entries, err := fs.ReadDir(bundledFS, "bundled")
-	if err != nil {
-		return nil
-	}
-
-	specs := make([]Spec, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
-			continue
-		}
-
-		virtualPath := path.Join("bundled", entry.Name())
-		data, err := bundledFS.ReadFile(virtualPath)
+// Bundled returns the skills built into codebot, their references relative
+// to baseDir.
+func Bundled(baseDir string) []Spec {
+	files, _ := fs.Glob(bundledFS, "bundled/*.md")
+	specs := make([]Spec, 0, len(files))
+	for _, file := range files {
+		data, _ := bundledFS.ReadFile(file)
+		spec, err := parseSkill(string(data), strings.TrimSuffix(path.Base(file), ".md"))
 		if err != nil {
-			continue
+			panic(fmt.Sprintf("bundled skill %s: %v", file, err))
 		}
-
-		spec, err := parseSkillContent(string(data), skillSource{
-			NameHint: strings.TrimSuffix(entry.Name(), path.Ext(entry.Name())),
-			FilePath: virtualPath,
-			BaseDir:  cwd,
-			Source:   "bundled",
-		}, buildStaticPromptFn)
-		if err != nil {
-			continue
-		}
+		spec.BaseDir, spec.Source, spec.text = baseDir, "bundled", string(data)
 		specs = append(specs, spec)
 	}
-
-	sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
 	return specs
 }

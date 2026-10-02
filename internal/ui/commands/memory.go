@@ -7,18 +7,20 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // Memory constructs the /memory command. With no args it prints the memory
 // directory status; with `edit` it opens MEMORY.md in $EDITOR and reloads
-// the session afterwards via the supplied callback.
-func Memory(cwd string, reloadSession func()) Command {
+// the conversation's context afterwards.
+func Memory(a *app.App) Command {
 	return NewSimple(Spec{
-		Name: "memory", Usage: "/memory", Description: "Show or edit auto memory",
-		Category: "info", Kind: KindBuiltin,
+		Name: "memory", Usage: "/memory", Description: "Show or edit auto memory", Kind: KindBuiltin,
 	}, func(inv Invocation) tea.Cmd {
+		cwd := a.Cwd()
 		memDir := config.MemoryDir(cwd)
 		memPath := config.MemoryFilePath(cwd)
 
@@ -28,7 +30,8 @@ func Memory(cwd string, reloadSession func()) Command {
 			if _, err := os.Stat(memPath); os.IsNotExist(err) {
 				_ = os.WriteFile(memPath, []byte("# Project Memory\n"), 0o644)
 			}
-			return OpenEditor(memPath, "Memory reloaded.", reloadSession)
+			conv := a.Current()
+			return openEditor(memPath, "Memory reloaded.", conv.Reload)
 		}
 
 		var sb strings.Builder
@@ -56,9 +59,9 @@ func Memory(cwd string, reloadSession func()) Command {
 	})
 }
 
-// OpenEditor launches $EDITOR (or vi as fallback) on path and runs onReload
-// after the editor exits. Shared by /memory and /plan open.
-func OpenEditor(path, successText string, onReload func()) tea.Cmd {
+// openEditor launches $EDITOR (or vi as fallback) on path and runs onReload
+// after the editor exits.
+func openEditor(path, successText string, onReload func()) tea.Cmd {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = os.Getenv("VISUAL")

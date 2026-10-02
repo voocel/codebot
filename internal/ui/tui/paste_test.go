@@ -1,17 +1,17 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/codebot/internal/storage"
 )
 
 func pasteTestModel(t *testing.T) *Model {
 	t.Helper()
-	m := New(nil, "test-model")
+	m := testModel("test-model")
 	m.Ready = true
 	m.Input.SetWidth(80)
 	return m
@@ -179,28 +179,30 @@ func TestTerminalPasteGoesThroughReference(t *testing.T) {
 	}
 }
 
-// Dropping an image path is also a paste event and must still reach OnDrop.
-func TestTerminalPasteStillReachesDropHandler(t *testing.T) {
+// Dropping an image path is also a paste event and must attach the image
+// rather than insert the path.
+func TestTerminalPasteOfAnImagePathAttachesIt(t *testing.T) {
 	m := pasteTestModel(t)
-	called := ""
-	m.config.OnDrop = func(_ *Model, text string) tea.Cmd {
-		called = text
-		return func() tea.Msg { return nil }
+	path := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(path, []byte("not really a png"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/tmp/shot.png"), Paste: true})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(path), Paste: true})
 
-	if called != "/tmp/shot.png" {
-		t.Fatalf("OnDrop got %q", called)
+	m = mustModel(t, next)
+	if cmd == nil || m.Pasting != 1 {
+		t.Fatalf("drop was not taken as an image (pasting = %d)", m.Pasting)
 	}
-	if got := mustModel(t, next).Input.Value(); got != "" {
+	if got := m.Input.Value(); got != "" {
 		t.Fatalf("input = %q, want the drop handled without inserting text", got)
 	}
 }
 
 func historyModel(t *testing.T, path string) *Model {
 	t.Helper()
-	m := New(nil, "test-model", Config{History: storage.NewHistory(path, "proj", "sess")})
+	m := testModel("test-model")
+	m.history = newInputHistory(path, "proj", "sess")
 	m.Ready = true
 	m.Input.SetWidth(80)
 	return m
@@ -238,6 +240,27 @@ func TestRecalledPasteDoesNotStealAnotherSessionsBody(t *testing.T) {
 	}
 }
 
+// Up is how a prompt is recalled; what it brings back must send the stored
+// body, not this session's paste of the same id.
+func TestUpRecallsThePastedBody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+
+	first := historyModel(t, path)
+	firstBody := strings.Repeat("first\n", 400)
+	first.insertPaste(firstBody)
+	if _, ok := first.prepareSubmission(); !ok {
+		t.Fatal("submission rejected")
+	}
+
+	second := historyModel(t, path)
+	second.insertPaste(strings.Repeat("second\n", 400))
+	second.Input.Reset()
+	second.handleUpKey()
+	if got := second.expandPasteRefs(second.Input.Value()); got != firstBody {
+		t.Fatalf("Up recalled %.60q", got)
+	}
+}
+
 // Recalling the same entry repeatedly must not issue a fresh id per press.
 func TestRepeatedRecallReusesTheSameBody(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.jsonl")
@@ -263,7 +286,7 @@ func TestRecalledPasteShowsWhenTheBodyIsGone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.jsonl")
 
 	first := historyModel(t, path)
-	first.insertPaste(strings.Repeat("x", storage.MaxPastedBytes+1))
+	first.insertPaste(strings.Repeat("x", maxPastedBytes+1))
 	if _, ok := first.prepareSubmission(); !ok {
 		t.Fatal("submission rejected")
 	}

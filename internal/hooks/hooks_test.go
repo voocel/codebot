@@ -11,6 +11,9 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/litellmtest"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -70,7 +73,7 @@ func TestNewRunner(t *testing.T) {
 			{Type: "command", Command: "echo bad"},
 		},
 	}
-	r := New(cfg, "sess1", nil, nil)
+	r := newRunner(t, cfg, nil)
 	if r == nil {
 		t.Fatal("expected valid hook runner")
 	}
@@ -87,13 +90,13 @@ func TestRunPreToolUse(t *testing.T) {
 			{Type: "command", Command: `echo '{"block":true,"reason":"not allowed"}'`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test", nil, nil)
+	r := newRunner(t, cfg, nil)
 
-	if _, err := r.RunPreToolUse(context.Background(), "write", json.RawMessage(`{}`)); err != nil {
+	if _, err := r.preToolUse(context.Background(), "write", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("non-matching hook should be skipped: %v", err)
 	}
 
-	_, err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
+	_, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err == nil || err.Error() != "hook: not allowed" {
 		t.Fatalf("expected blocking error, got %v", err)
 	}
@@ -110,13 +113,43 @@ func TestRunPostToolUse_FireAndForget(t *testing.T) {
 			{Type: "command", Command: "touch " + filepath.ToSlash(marker)},
 		},
 	}
-	r := New(cfg, "test", nil, nil)
-	r.RunPostToolUse(context.Background(), "bash", nil, json.RawMessage(`"ok"`), false)
+	r := newRunner(t, cfg, nil)
+	r.postToolUse("bash", nil, json.RawMessage(`"ok"`), false)
 
 	waitFor(t, "expected PostToolUse hook to run", func() bool {
 		_, err := os.Stat(marker)
 		return err == nil
 	})
+}
+
+// The PostToolUse hooks get the result's text as a JSON string, and whether
+// the call failed.
+func TestPostToolUseMiddleware(t *testing.T) {
+	t.Parallel()
+
+	payload := filepath.Join(t.TempDir(), "payload")
+	cfg := config.HooksConfig{
+		"PostToolUse": {{Type: "command", Command: "cat > " + filepath.ToSlash(payload)}},
+	}
+	mw := newRunner(t, cfg, nil).PostToolUse()
+	res, err := mw(context.Background(), agentcore.ToolCall{Name: "bash", Args: json.RawMessage(`{"command":"false"}`)},
+		func(context.Context, agentcore.ToolCall) (agentcore.Result, error) {
+			return agentcore.ErrorResult("exit 1"), nil
+		})
+	if err != nil || !res.IsError {
+		t.Fatalf("the result changed: %+v, %v", res, err)
+	}
+	var got struct {
+		Output  string `json:"output"`
+		IsError bool   `json:"is_error"`
+	}
+	waitFor(t, "expected PostToolUse hook to run", func() bool {
+		data, err := os.ReadFile(payload)
+		return err == nil && json.Unmarshal(data, &got) == nil
+	})
+	if got.Output != "exit 1" || !got.IsError {
+		t.Fatalf("payload = %+v", got)
+	}
 }
 
 // waitFor polls until ok reports true, failing the test after a deadline.
@@ -135,13 +168,17 @@ func waitFor(t *testing.T, desc string, ok func() bool) {
 func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
 	t.Parallel()
 
-	engine, err := approval.NewEngine(t.TempDir(), approval.ModeBalanced, nil, nil)
+	// A denial stores nothing, so the user's approvals file is only read.
+	engine, err := approval.NewEngine(approval.Config{
+		Cwd:  t.TempDir(),
+		Mode: interact.ModeBalanced,
+		UI: approveFunc(func(context.Context, interact.Approval) (interact.Choice, error) {
+			return interact.Deny, nil
+		}),
+	})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	engine.SetApprover(func(context.Context, approval.Prompt) (approval.Choice, error) {
-		return approval.ChoiceDeny, nil
-	})
 
 	cfg := config.HooksConfig{
 		"PreToolUse": {
@@ -149,83 +186,9 @@ func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
 		},
 	}
 	r := New(cfg, "test", engine, nil)
-	_, err = r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`))
+	_, err = r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`))
 	if err == nil || err.Error() != "hook: blocking hook command requires approval" {
 		t.Fatalf("expected approval denial, got %v", err)
-	}
-}
-
-func TestRunTaskCreated_Payload(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	outFile := filepath.Join(dir, "task-created.json")
-	cfg := config.HooksConfig{
-		"TaskCreated": {
-			// ToSlash: the command runs via `sh -c`, where backslashes escape.
-			{Type: "command", Command: "cat > " + filepath.ToSlash(outFile)},
-		},
-	}
-	r := New(cfg, "test", nil, nil)
-	task := TaskSnapshot{
-		ID:          "1",
-		Subject:     "Fix auth",
-		Description: "Add task lifecycle hooks",
-		Status:      "pending",
-	}
-	if err := r.RunTaskCreated(context.Background(), task); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(outFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var payload Payload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.Event != TaskCreated || payload.Tool != "task_create" {
-		t.Fatalf("unexpected payload header: %#v", payload)
-	}
-	if payload.Task == nil || payload.Task.ID != "1" {
-		t.Fatalf("missing task payload: %#v", payload.Task)
-	}
-}
-
-func TestRunTaskCompleted_Blocking(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.HooksConfig{
-		"TaskCompleted": {
-			{Type: "command", Command: `echo '{"block":true,"reason":"verify results first"}'`, Blocking: boolPtr(true)},
-		},
-	}
-	r := New(cfg, "test", nil, nil)
-	err := r.RunTaskCompleted(context.Background(),
-		TaskSnapshot{ID: "1", Subject: "Fix auth", Status: "in_progress"},
-		TaskSnapshot{ID: "1", Subject: "Fix auth", Status: "completed"},
-	)
-	if err == nil || err.Error() != "hook: verify results first" {
-		t.Fatalf("expected blocking completion hook, got %v", err)
-	}
-}
-
-func TestRunTaskCompleted_NonBlocking(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.HooksConfig{
-		"TaskCompleted": {
-			{Type: "command", Command: "exit 1", Blocking: boolPtr(false)},
-		},
-	}
-	r := New(cfg, "test", nil, nil)
-	err := r.RunTaskCompleted(context.Background(),
-		TaskSnapshot{ID: "1", Subject: "Fix auth", Status: "in_progress"},
-		TaskSnapshot{ID: "1", Subject: "Fix auth", Status: "completed"},
-	)
-	if err != nil {
-		t.Fatalf("non-blocking completion hook should not fail: %v", err)
 	}
 }
 
@@ -237,9 +200,9 @@ func TestPreToolUse_UpdatedInput(t *testing.T) {
 			{Type: "command", Command: `echo '{"updated_input":{"path":"/safe"}}'`, Matcher: "write"},
 		},
 	}
-	r := New(cfg, "test", nil, nil)
+	r := newRunner(t, cfg, nil)
 
-	dec, err := r.RunPreToolUse(context.Background(), "write", json.RawMessage(`{"path":"/raw"}`))
+	dec, err := r.preToolUse(context.Background(), "write", json.RawMessage(`{"path":"/raw"}`))
 	if err != nil {
 		t.Fatalf("hook should not block: %v", err)
 	}
@@ -248,7 +211,7 @@ func TestPreToolUse_UpdatedInput(t *testing.T) {
 	}
 }
 
-func TestWrapGate(t *testing.T) {
+func TestPreToolUseMiddleware(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.HooksConfig{
@@ -257,55 +220,28 @@ func TestWrapGate(t *testing.T) {
 			{Type: "command", Command: `echo '{"block":true,"reason":"nope"}'`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test", nil, nil)
+	mw := newRunner(t, cfg, nil).PreToolUse()
 
-	t.Run("hook rewrite reaches next gate and kernel", func(t *testing.T) {
-		var seen json.RawMessage
-		gate := r.WrapGate(func(_ context.Context, req agentcore.GateRequest) (*agentcore.GateDecision, error) {
-			seen = req.Call.Args
-			return &agentcore.GateDecision{Allowed: true}, nil
+	// The rewrite is what the rest of the chain decides on and runs.
+	var seen json.RawMessage
+	res, err := mw(context.Background(), agentcore.ToolCall{Name: "write", Args: json.RawMessage(`{"path":"/raw"}`)},
+		func(_ context.Context, call agentcore.ToolCall) (agentcore.Result, error) {
+			seen = call.Args
+			return agentcore.TextResult("ok"), nil
 		})
-		dec, err := gate(context.Background(), agentcore.GateRequest{
-			Call: agentcore.ToolCall{Name: "write", Args: json.RawMessage(`{"path":"/raw"}`)},
-		})
-		if err != nil || dec == nil || !dec.Allowed {
-			t.Fatalf("expected allow, got %+v err=%v", dec, err)
-		}
-		if string(seen) != `{"path":"/safe"}` {
-			t.Fatalf("permission gate should see hook-updated args, got %s", seen)
-		}
-		if string(dec.UpdatedArgs) != `{"path":"/safe"}` {
-			t.Fatalf("kernel should receive the rewrite, got %s", dec.UpdatedArgs)
-		}
-	})
+	if err != nil || res.IsError || string(seen) != `{"path":"/safe"}` {
+		t.Fatalf("result %+v, err %v, the rest saw %s", res, err, seen)
+	}
 
-	t.Run("blocking hook denies without reaching next gate", func(t *testing.T) {
-		gate := r.WrapGate(func(_ context.Context, _ agentcore.GateRequest) (*agentcore.GateDecision, error) {
-			t.Fatal("next gate must not run after a blocking hook")
-			return nil, nil
+	// A blocking hook refuses the call before the rest of the chain.
+	res, err = mw(context.Background(), agentcore.ToolCall{Name: "bash", Args: json.RawMessage(`{}`)},
+		func(context.Context, agentcore.ToolCall) (agentcore.Result, error) {
+			t.Fatal("the chain went on after a blocking hook")
+			return agentcore.Result{}, nil
 		})
-		dec, err := gate(context.Background(), agentcore.GateRequest{
-			Call: agentcore.ToolCall{Name: "bash", Args: json.RawMessage(`{}`)},
-		})
-		if err != nil || dec == nil || dec.Allowed {
-			t.Fatalf("expected deny, got %+v err=%v", dec, err)
-		}
-	})
-
-	t.Run("next gate rewrite wins over hook rewrite", func(t *testing.T) {
-		gate := r.WrapGate(func(_ context.Context, _ agentcore.GateRequest) (*agentcore.GateDecision, error) {
-			return &agentcore.GateDecision{Allowed: true, UpdatedArgs: json.RawMessage(`{"path":"/final"}`)}, nil
-		})
-		dec, err := gate(context.Background(), agentcore.GateRequest{
-			Call: agentcore.ToolCall{Name: "write", Args: json.RawMessage(`{"path":"/raw"}`)},
-		})
-		if err != nil || dec == nil {
-			t.Fatalf("unexpected: %+v err=%v", dec, err)
-		}
-		if string(dec.UpdatedArgs) != `{"path":"/final"}` {
-			t.Fatalf("permission gate rewrite must win, got %s", dec.UpdatedArgs)
-		}
-	})
+	if err != nil || !res.IsError {
+		t.Fatalf("expected a refusal, got %+v err=%v", res, err)
+	}
 }
 
 func TestPreToolUse_ExitCode2Blocks(t *testing.T) {
@@ -316,9 +252,9 @@ func TestPreToolUse_ExitCode2Blocks(t *testing.T) {
 			{Type: "command", Command: `echo "denied" >&2; exit 2`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test", nil, nil)
+	r := newRunner(t, cfg, nil)
 
-	if _, err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err == nil {
+	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("expected exit-2 hook to block")
 	}
 }
@@ -331,9 +267,9 @@ func TestPreToolUse_ExitCode1NonBlocking(t *testing.T) {
 			{Type: "command", Command: `echo "oops" >&2; exit 1`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	r := New(cfg, "test", nil, nil)
+	r := newRunner(t, cfg, nil)
 
-	if _, err := r.RunPreToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
+	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("exit-1 should be a non-blocking error, got block: %v", err)
 	}
 }
@@ -346,7 +282,7 @@ func TestUserPromptSubmit_AdditionalContext(t *testing.T) {
 			{Type: "command", Command: `echo '{"additional_context":"remember: be concise"}'`},
 		},
 	}
-	r := New(cfg, "test", nil, nil)
+	r := newRunner(t, cfg, nil)
 
 	dec, err := r.RunUserPromptSubmit(context.Background(), "hello")
 	if err != nil {
@@ -357,58 +293,56 @@ func TestUserPromptSubmit_AdditionalContext(t *testing.T) {
 	}
 }
 
-func TestRunSubagentStop_FireAndForget(t *testing.T) {
+// A prompt hook asks the model the conversation has switched to, not the one
+// it started with.
+func TestPromptHookUsesTheCurrentModel(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "stop.json")
 	cfg := config.HooksConfig{
-		"SubagentStop": {
-			// ToSlash: the command runs via `sh -c`, where backslashes escape.
-			{Type: "command", Command: "cat > " + filepath.ToSlash(marker), Matcher: "researcher"},
-		},
+		"PreToolUse": {{Type: "prompt", Prompt: "May this run? $ARGUMENTS", Blocking: boolPtr(true)}},
 	}
-	r := New(cfg, "test", nil, nil)
-	r.RunSubagentStop(context.Background(), "researcher")
-
-	var data []byte
-	waitFor(t, "expected SubagentStop hook to run", func() bool {
-		b, err := os.ReadFile(marker)
-		if err != nil || len(b) == 0 {
-			return false
-		}
-		data = b
-		return true
-	})
-	var payload Payload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		t.Fatal(err)
+	current := answerModel(t, `{"ok":true}`)
+	r := newRunner(t, cfg, func() agentcore.Model { return current })
+	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("first model allows: %v", err)
 	}
-	if payload.Event != SubagentStop || payload.Agent != "researcher" {
-		t.Fatalf("unexpected payload: %#v", payload)
+	current = answerModel(t, `{"ok":false,"reason":"switched"}`)
+	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err == nil || err.Error() != "hook: switched" {
+		t.Fatalf("expected the switched model to block, got %v", err)
 	}
 }
 
-func TestWrapGateNilDecisionKeepsRewrite(t *testing.T) {
-	t.Parallel()
+// newRunner compiles cfg with an engine that lets every hook run.
+func newRunner(t *testing.T, cfg config.HooksConfig, model func() agentcore.Model) *Runner {
+	t.Helper()
+	engine, err := approval.NewEngine(approval.Config{Cwd: t.TempDir(), Mode: interact.ModeTrust})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	return New(cfg, "test", engine, model)
+}
 
-	cfg := config.HooksConfig{
-		"PreToolUse": {
-			{Type: "command", Command: `echo '{"updated_input":{"path":"/safe"}}'`, Matcher: "write"},
-		},
+// answerModel is a model that always answers with text.
+func answerModel(t *testing.T, text string) agentcore.Model {
+	t.Helper()
+	replies := make([]litellmtest.Reply, 4)
+	for i := range replies {
+		replies[i] = litellmtest.Text(text)
 	}
-	r := New(cfg, "test", nil, nil)
+	client, err := litellm.New(litellmtest.New(replies...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agentcore.Model{Client: client, Request: litellm.Request{Model: "m"}}
+}
 
-	gate := r.WrapGate(func(_ context.Context, _ agentcore.GateRequest) (*agentcore.GateDecision, error) {
-		return nil, nil // no opinion
-	})
-	dec, err := gate(context.Background(), agentcore.GateRequest{
-		Call: agentcore.ToolCall{Name: "write", Args: json.RawMessage(`{"path":"/raw"}`)},
-	})
-	if err != nil || dec == nil || !dec.Allowed {
-		t.Fatalf("expected synthesized allow, got %+v err=%v", dec, err)
-	}
-	if string(dec.UpdatedArgs) != `{"path":"/safe"}` {
-		t.Fatalf("hook rewrite must survive a nil next decision, got %s", dec.UpdatedArgs)
-	}
+// approveFunc is a UI that answers approvals with itself.
+type approveFunc func(context.Context, interact.Approval) (interact.Choice, error)
+
+func (f approveFunc) Approve(ctx context.Context, a interact.Approval) (interact.Choice, error) {
+	return f(ctx, a)
+}
+
+func (approveFunc) Ask(context.Context, []interact.Question) (interact.Answers, error) {
+	return interact.Answers{}, interact.ErrUnsupported
 }

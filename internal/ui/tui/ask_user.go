@@ -7,19 +7,19 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/interact"
 )
 
-// AskUserMsg is sent by the ask_user gate wiring to show questions in the TUI.
+// AskUserMsg shows questions from ask_user.
 type AskUserMsg struct {
-	Questions []tools.Question
-	RespCh    chan<- *tools.AskUserResponse
+	Questions []interact.Question
+	RespCh    chan<- interact.Answers
 }
 
-// AskUserDismissMsg tells the TUI to close a pending ask_user dialog whose
-// gate-side context was cancelled. RespCh identifies the card to drop.
+// AskUserDismissMsg closes a pending ask_user dialog whose asker stopped
+// waiting. RespCh identifies the card to drop.
 type AskUserDismissMsg struct {
-	RespCh chan<- *tools.AskUserResponse
+	RespCh chan<- interact.Answers
 }
 
 // askUserState tracks the interactive multi-question UI.
@@ -33,8 +33,8 @@ type AskUserDismissMsg struct {
 //     and edit-mode flag. Keeping these per-tab lets users freely revisit
 //     earlier questions via Tab / Shift-Tab without losing prior input.
 type askUserState struct {
-	questions []tools.Question
-	respCh    chan<- *tools.AskUserResponse
+	questions []interact.Question
+	respCh    chan<- interact.Answers
 	width     int
 	height    int
 
@@ -114,7 +114,7 @@ func initAskUser(msg AskUserMsg, width, height int) *askUserState {
 func (s *askUserState) key() any       { return s.respCh }
 func (s *askUserState) finished() bool { return s.done }
 
-// abort drops the response channel without an answer: the gate side sees a
+// abort drops the response channel without an answer: the asker sees a
 // closed channel and reports a cancelled interaction to the model.
 func (s *askUserState) abort() {
 	if s.done {
@@ -142,9 +142,7 @@ func (s *askUserState) hidesContextBar() bool { return true }
 func (s *askUserState) handleKey(m *Model, msg tea.KeyMsg) (bool, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		s.abort()
-		if m.Running && m.Driver != nil {
-			m.Driver.Abort()
-		}
+		m.cancelRun()
 		return true, nil
 	}
 	return handleAskUserKey(s, msg)
@@ -170,9 +168,9 @@ func (s *askUserState) onConfirm() bool {
 }
 
 // activeQuestion returns the question for the current tab (zero value at Confirm).
-func (s *askUserState) activeQuestion() tools.Question {
+func (s *askUserState) activeQuestion() interact.Question {
 	if s.onConfirm() {
-		return tools.Question{}
+		return interact.Question{}
 	}
 	return s.questions[s.tab]
 }
@@ -371,7 +369,7 @@ func handleAskUserEnter(s *askUserState) (bool, tea.Cmd) {
 
 // collectMultiPicks returns labels for currently checked listed options,
 // preserving original option order.
-func collectMultiPicks(q tools.Question, st *questionState) []string {
+func collectMultiPicks(q interact.Question, st *questionState) []string {
 	out := make([]string, 0, len(st.picked))
 	for i, opt := range q.Options {
 		if st.picked[i] {
@@ -423,7 +421,7 @@ func (s *askUserState) cancel() {
 	s.done = true
 }
 
-func (s *askUserState) buildResponse(cancelled bool) *tools.AskUserResponse {
+func (s *askUserState) buildResponse(cancelled bool) interact.Answers {
 	answers := make(map[string][]string, len(s.questions))
 	notes := make(map[string]string)
 	for i, q := range s.questions {
@@ -437,8 +435,8 @@ func (s *askUserState) buildResponse(cancelled bool) *tools.AskUserResponse {
 			notes[q.Question] = note
 		}
 	}
-	return &tools.AskUserResponse{
-		Answers:   answers,
+	return interact.Answers{
+		Selected:  answers,
 		Notes:     notes,
 		Cancelled: cancelled,
 	}
@@ -566,7 +564,7 @@ func (s *askUserState) renderOptionList() string {
 	return b.String()
 }
 
-func (s *askUserState) renderOptionRow(q tools.Question, st *questionState, i int, label string) string {
+func (s *askUserState) renderOptionRow(q interact.Question, st *questionState, i int, label string) string {
 	num := fmt.Sprintf("%d. ", i+1)
 	active := i == st.cursor
 	check := ""
@@ -585,7 +583,7 @@ func (s *askUserState) renderOptionRow(q tools.Question, st *questionState, i in
 	return askOptionInactiveStyle.Render(prefix + label)
 }
 
-func (s *askUserState) renderCustomRow(q tools.Question, st *questionState) string {
+func (s *askUserState) renderCustomRow(q interact.Question, st *questionState) string {
 	idx := len(q.Options)
 	num := fmt.Sprintf("%d. ", idx+1)
 	active := st.cursor == idx

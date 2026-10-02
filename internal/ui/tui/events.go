@@ -1,61 +1,23 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
+	"fmt"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/voocel/agentcore"
-	cbteam "github.com/voocel/codebot/internal/team"
-)
+	"github.com/voocel/agentcore/subagent"
+	"github.com/voocel/litellm"
 
-// isPlanFileTool reports whether a write/edit tool call targets a file under
-// the plans directory. Plan-file write/edit calls render as a status-only
-// line ("Plan") so the tool log isn't drowned out by the model's incremental
-// edits. The full plan body surfaces once exit_plan_mode succeeds.
-//
-// `cwd` lets us resolve relative paths the same way agentcore's write/edit
-// tool does (ResolvePath(WorkDir, path)), so a relative-path write still
-// matches when it lands inside plansDir.
-func isPlanFileTool(tool, cwd, plansDir string, args json.RawMessage) bool {
-	if plansDir == "" {
-		return false
-	}
-	if tool != "write" && tool != "edit" {
-		return false
-	}
-	if len(args) == 0 {
-		return false
-	}
-	var parsed struct {
-		FilePath string `json:"file_path"`
-		Path     string `json:"path"`
-	}
-	if err := json.Unmarshal(args, &parsed); err != nil {
-		return false
-	}
-	target := parsed.FilePath
-	if target == "" {
-		target = parsed.Path
-	}
-	if target == "" {
-		return false
-	}
-	if !filepath.IsAbs(target) && cwd != "" {
-		target = filepath.Join(cwd, target)
-	}
-	cleaned := filepath.Clean(target)
-	root := filepath.Clean(plansDir)
-	rel, err := filepath.Rel(root, cleaned)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
+	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/todo"
+)
 
 // formatScrollbackBlock applies the project's standard spacing rules to a
 // block of scrollback output: trailing newlines stripped, and optionally a
@@ -78,11 +40,7 @@ const scrollbackCacheLimit = 5000
 
 // Emit is the single entry point for writing content to terminal scrollback.
 // It caches the exact body given to tea.Println so handleResize can replay
-// the entire stream after a clear. All pre-formatted paths — printBlock,
-// printInline, and direct tea.Println calls that used to exist — funnel
-// through here so the cache stays authoritative. Exported so the outer
-// ui package (app.go, plan.go) can push external scrollback writes
-// through the same cache.
+// the entire stream after a clear.
 func (m *Model) Emit(body string) tea.Cmd {
 	m.Scrollback = append(m.Scrollback, body)
 	if overflow := len(m.Scrollback) - scrollbackCacheLimit; overflow > 0 {
@@ -106,36 +64,12 @@ func (m *Model) printInline(content string) tea.Cmd {
 	return m.Emit(formatScrollbackBlock(content, true))
 }
 
-// FlushStreamingAssistant prints the current live assistant stream into
-// scrollback before a programmatic abort can skip EventMessageEnd.
-func (m *Model) FlushStreamingAssistant() tea.Cmd {
-	if m.Streaming == nil || m.Thinking == nil {
-		return nil
-	}
-	content := strings.TrimSpace(m.Streaming.String())
-	thinkingText := strings.TrimSpace(m.Thinking.String())
-	if content == "" && thinkingText == "" {
-		return nil
-	}
-
-	var block strings.Builder
-	if thinkingText != "" {
-		indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2)
-		block.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
-		if content != "" {
-			block.WriteString("\n\n")
-		}
-	}
-	if content != "" {
-		indented := m.RenderMarkdownBlock(content, 2)
-		block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
-		m.SuppressNextAssistantText = content
-	}
-
-	m.IsStream = false
-	m.Streaming.Reset()
-	m.Thinking.Reset()
-	return m.printBlock(block.String())
+// startRun resets the live state for a run the conversation started.
+func (m *Model) startRun() {
+	m.Running = true
+	m.clearStatusLine()
+	m.RunStats = runStats{StartedAt: time.Now()}
+	m.clearSuggestion()
 }
 
 // HandleAgentEvent processes agent events.
@@ -144,16 +78,14 @@ func (m *Model) FlushStreamingAssistant() tea.Cmd {
 func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	switch ev.Type {
-	case agentcore.EventAgentStart:
-		m.Running = true
-		m.clearStatusLine()
-		m.RunStats = runStats{StartedAt: time.Now()}
-		m.clearSuggestion()
-
-	case agentcore.EventAgentEnd:
+	switch e := ev.(type) {
+	case agentcore.RunEnd:
 		m.Running = false
 		m.clearStatusLine()
+		if e.Err != nil && !errors.Is(e.Err, context.Canceled) {
+			cmds = append(cmds, m.printBlock(indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+e.Err.Error(), 2)), 2)))
+		}
+		m.RunStats.Turns = e.Turns
 		m.RunStats.Duration = time.Since(m.RunStats.StartedAt)
 		m.RunStats.DisplayInput = m.RunStats.Input
 		m.RunStats.DisplayOutput = m.RunStats.Output
@@ -163,323 +95,141 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		clear(m.HiddenToolCalls)
 		clear(m.ToolHeaders)
 		clear(m.ToolOutputBuf)
-		clear(m.ToolDeltaBuf)
-		clear(m.ToolThinkingBuf)
-		// Defensive stream cleanup: normally EventMessageEnd clears these,
-		// but a mid-message abort (e.g. exit_plan_mode → Session.AbortSilent())
-		// fires AgentEnd without ever firing MessageEnd, leaving IsStream=true
-		// and a populated Streaming buffer behind. View() then keeps painting
-		// the assistant bullet + spinner forever, even after the plan card is
-		// dismissed. Reset here so the live area returns to a clean state on
-		// any agent termination — completion OR abort.
+		clear(m.SubagentUsage)
+		// A run cancelled mid-response ends without the response's
+		// MessageEnd; clear the stream so the live area does not keep
+		// painting it.
 		m.IsStream = false
 		m.Streaming.Reset()
 		m.Thinking.Reset()
-		m.SuppressNextAssistantText = ""
 		// Any dialog still open after the run died has nobody listening for
 		// its answer — release the blocked gate goroutines and clear the
 		// queue. abort() is idempotent, so racing with a targeted dismiss
 		// message is harmless.
 		m.Dialogs.abortAll()
 
-	case agentcore.EventTurnStart:
-		m.TurnCount++
-		m.RunStats.Turns++
+	case agentcore.Retry:
+		// The failed response is discarded.
+		m.IsStream = false
+		m.Streaming.Reset()
+		m.Thinking.Reset()
+		m.StatusPrefix = fmt.Sprintf("Request failed, retrying (%d/%d)", e.Attempt, e.MaxRetries)
+		m.StatusDeadline = time.Now().Add(e.Delay)
+		cmds = append(cmds, statusCountdownTick())
 
-	case agentcore.EventMessageStart:
-		if ev.Message.GetRole() == agentcore.RoleAssistant {
-			m.IsStream = true
-			m.Streaming.Reset()
-			m.Thinking.Reset()
+	case agentcore.CompactionStart:
+		m.StatusPrefix, m.StatusDeadline = "Compacting context", time.Time{}
+
+	case agentcore.CompactionEnd:
+		m.clearStatusLine()
+		switch {
+		case e.Err != nil && !errors.Is(e.Err, context.Canceled):
+			cmds = append(cmds, m.printBlock(indentBlock(ErrorStyle.Render("Compaction failed: "+e.Err.Error()), 2)))
+		case e.Compaction != nil:
+			cmds = append(cmds, m.printBlock(indentBlock(SystemMsgStyle.Render(
+				fmt.Sprintf("Context compacted: %d messages summarized.", e.Compaction.Replaced)), 2)))
+		case e.Err == nil:
+			cmds = append(cmds, m.printBlock(indentBlock(MutedStyle.Render("Nothing to compact yet."), 2)))
 		}
 
-	case agentcore.EventMessageUpdate:
+	case agentcore.MessageStart:
+		m.clearStatusLine() // a retry's countdown ends with the response
+		m.IsStream = true
+		m.Streaming.Reset()
+		m.Thinking.Reset()
+
+	case agentcore.MessageDelta:
 		if !m.IsStream {
 			break
 		}
-		if ev.Message != nil {
-			if text := ev.Message.TextContent(); text != "" {
-				m.Streaming.Reset()
-				m.Streaming.WriteString(text)
-			}
-			if thinking := ev.Message.ThinkingContent(); thinking != "" {
-				m.Thinking.Reset()
-				m.Thinking.WriteString(thinking)
-			}
-		} else if ev.Delta != "" {
-			m.Streaming.WriteString(ev.Delta)
+		switch d := e.Event.(type) {
+		case litellm.TextDelta:
+			m.Streaming.WriteString(d.Text)
+		case litellm.ReasoningDelta:
+			m.Thinking.WriteString(d.Text)
 		}
 
-	case agentcore.EventMessageEnd:
-		if ev.Message.GetRole() == agentcore.RoleAssistant {
-			m.IsStream = false
-			m.Streaming.Reset()
-			m.Thinking.Reset()
-
-			// Accumulate token usage via type assertion (AgentMessage has no Usage method).
-			if msg, ok := ev.Message.(agentcore.Message); ok && msg.Usage != nil {
-				m.RunStats.Input += msg.Usage.Input
-				m.RunStats.Output += msg.Usage.Output
-			}
-
-			content := strings.TrimSpace(ev.Message.TextContent())
-			thinkingText := strings.TrimSpace(ev.Message.ThinkingContent())
-			if content != "" && content == m.SuppressNextAssistantText {
-				content = ""
-				thinkingText = ""
-				m.SuppressNextAssistantText = ""
-			}
-
-			// Single printBlock to guarantee display order in scrollback.
-			var block strings.Builder
-			if thinkingText != "" {
-				indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinkingText, 2)), 2)
-				block.WriteString(ThinkingBodyStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
-				block.WriteString("\n\n")
-			}
-			if content != "" {
-				indented := m.RenderMarkdownBlock(content, 2)
-				block.WriteString(AssistantIconStyle.Render("● ") + strings.TrimPrefix(indented, "  "))
-			}
-			if block.Len() > 0 {
-				cmds = append(cmds, m.printBlock(block.String()))
-			}
-		} else if ev.Message.GetRole() == agentcore.RoleUser {
-			// Regular user input is already rendered eagerly at submit time
-			// via RenderPromptOutput, so we skip it. The exception is a
-			// pump-injected teammate message — those bypass the submit path,
-			// so without this branch the user never sees them in scrollback
-			// even though they shape the leader's next reply.
-			text := ev.Message.TextContent()
-			if from, body, ok := cbteam.ParseTeammateAttachment(text); ok && body != "" {
-				cmds = append(cmds, m.printBlock(m.renderTeammateMessage(from, body)))
-			}
+	case agentcore.MessageEnd:
+		if e.Message.Role != litellm.RoleAssistant {
+			break
+		}
+		m.IsStream = false
+		m.Streaming.Reset()
+		m.Thinking.Reset()
+		if u := e.Message.Usage; u != nil {
+			m.RunStats.Input += u.Input
+			m.RunStats.Output += u.Output
+		}
+		if reply := m.renderAssistantMessage(e.Message); reply != "" {
+			cmds = append(cmds, m.printBlock(reply))
 		}
 
-	case agentcore.EventToolExecStart:
+	case agentcore.ToolStart:
+		call := e.Call
 		// Hidden tools (task_*) skip the visible pipeline entirely: no header,
 		// no output buffer, no tool count. The call still happens in the agent
 		// loop — only the TUI side is silent.
-		if IsHiddenToolCall(ev.Tool, ev.Args) {
-			m.HiddenToolCalls[ev.ToolID] = struct{}{}
+		if app.HiddenToolCall(call.Name, call.Args) {
+			m.HiddenToolCalls[call.ID] = struct{}{}
 			break
 		}
-		label := ev.Tool
-		if ev.ToolLabel != "" {
-			label = ev.ToolLabel
+		label := call.Name
+		switch {
+		case call.Name == "subagent":
+			label, _ = parseSubagentHeader(call.Args)
+		case call.Tool != nil && call.Tool.Label != "":
+			label = call.Tool.Label
 		}
-		m.ToolOutputBuf[ev.ToolID] = &strings.Builder{}
+		m.PendingTools[call.ID] = label
+		m.ToolOutputBuf[call.ID] = &strings.Builder{}
 		m.RunStats.ToolCalls++
-
-		// Buffer the header — it will be printed together with the result
-		// at EventToolExecEnd so parallel tools stay grouped.
-		if ev.Tool == "subagent" {
-			name, hint := parseSubagentHeader(ev.Args)
-			m.PendingTools[ev.ToolID] = name
-			header := ToolIconStyle.Render("● ") + ToolNameStyle.Render(name)
-			if hint != "" {
-				header += MutedStyle.Render(" → ") + ToolArgsStyle.Render(truncateRunes(hint, 80))
-			}
-			m.ToolHeaders[ev.ToolID] = header
-		} else if isPlanFileTool(ev.Tool, m.Cwd, m.PlansDir, ev.Args) {
-			// Plan files render as a single status line ("Plan"). Incremental
-			// write/edit on the plan file would otherwise spam the tool log
-			// with diffs of an artifact the user will see in full once
-			// exit_plan_mode succeeds. The "Plan" label in PendingTools doubles
-			// as the marker EventToolExecEnd reads to suppress the diff body —
-			// agentcore drops Args from End events so per-call state must come
-			// from somewhere set at Start.
-			m.PendingTools[ev.ToolID] = "Plan"
-			m.ToolHeaders[ev.ToolID] = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Plan")
-		} else {
-			m.PendingTools[ev.ToolID] = label
-			m.ToolHeaders[ev.ToolID] = ToolIconStyle.Render("● ") + RenderToolHeader(ev.Tool, ev.Args)
-		}
-
-	case agentcore.EventToolExecUpdate:
-		if _, hidden := m.HiddenToolCalls[ev.ToolID]; hidden || IsHiddenToolCall(ev.Tool, ev.Args) {
+		// The header is printed with the result, so that the calls of a
+		// parallel batch each stay together; a previewed diff shows it
+		// before the call is approved.
+		header := toolCallHeader(call.Name, call.Args)
+		if call.Preview == "" {
+			m.ToolHeaders[call.ID] = header
 			break
 		}
-		switch ev.UpdateKind {
-		case agentcore.ToolExecUpdatePreview:
-			// Plan files: the preview pipeline is skipped entirely. The header
-			// alone (rendered at EventToolExecEnd as "● Plan" + footer hint)
-			// avoids paint thrash from many edits.
-			if m.PendingTools[ev.ToolID] == "Plan" {
-				break
-			}
-			rendered := RenderEditResult(ev.Result, extractPathArg(ev.Args), m.diffBodyWidth())
-			if rendered != "" {
-				// Flush buffered header with the first preview.
-				if header, ok := m.ToolHeaders[ev.ToolID]; ok {
-					delete(m.ToolHeaders, ev.ToolID)
-					cmds = append(cmds, m.printBlock(header+"\n"+indentBlock(rendered, 2)))
-				} else {
-					cmds = append(cmds, m.printBlock(indentBlock(rendered, 2)))
-				}
-			}
-		case agentcore.ToolExecUpdateProgress:
-			if ev.Progress == nil {
-				break
-			}
-			switch ev.Progress.Kind {
-			case agentcore.ProgressToolDelta:
-				if ev.Progress.Delta == "" {
-					break
-				}
-				buf := m.ToolDeltaBuf[ev.ToolID]
-				if buf == nil {
-					buf = &strings.Builder{}
-					m.ToolDeltaBuf[ev.ToolID] = buf
-				}
-				buf.WriteString(ev.Progress.Delta)
-			case agentcore.ProgressThinking:
-				if ev.Progress.Thinking == "" {
-					break
-				}
-				buf := m.ToolThinkingBuf[ev.ToolID]
-				if buf == nil {
-					buf = &strings.Builder{}
-					m.ToolThinkingBuf[ev.ToolID] = buf
-				}
-				buf.Reset()
-				buf.WriteString(ev.Progress.Thinking)
-			default:
-				if line := FormatProgressLine(ev.Progress); line != "" {
-					if buf, ok := m.ToolOutputBuf[ev.ToolID]; ok {
-						// Flush accumulated thinking/delta before the new tool/turn line.
-						m.flushSubagentStreaming(ev.ToolID, buf)
-						buf.WriteString(line)
-						buf.WriteByte('\n')
-					}
-				}
-			}
-		}
+		cmds = append(cmds, m.printBlock(header+"\n"+indentBlock(RenderDiff(call.Preview, extractPathArg(call.Args), m.diffBodyWidth()), 2)))
 
-	case agentcore.EventToolExecEnd:
-		if _, hidden := m.HiddenToolCalls[ev.ToolID]; hidden || IsHiddenToolCall(ev.Tool, ev.Args) {
-			delete(m.HiddenToolCalls, ev.ToolID)
-			delete(m.PendingTools, ev.ToolID)
-			delete(m.ToolHeaders, ev.ToolID)
-			delete(m.ToolOutputBuf, ev.ToolID)
-			delete(m.ToolDeltaBuf, ev.ToolID)
-			delete(m.ToolThinkingBuf, ev.ToolID)
+	case agentcore.ToolUpdate:
+		buf, ok := m.ToolOutputBuf[e.Call.ID]
+		if !ok {
 			break
 		}
-		delete(m.HiddenToolCalls, ev.ToolID)
-		// agentcore drops Args from End events, so we recover the plan-file
-		// marker from PendingTools (set to "Plan" at Start) before deleting it.
-		// Subagent's same-name collision is impossible: subagent End is dispatched
-		// by the `ev.Tool == "subagent"` branch below, never reaching the plan-file
-		// branch.
-		isPlanFile := m.PendingTools[ev.ToolID] == "Plan"
-		delete(m.PendingTools, ev.ToolID)
-		delete(m.ToolOutputBuf, ev.ToolID)
-		delete(m.ToolDeltaBuf, ev.ToolID)
-		delete(m.ToolThinkingBuf, ev.ToolID)
-
-		// Build header + result as a single block so they stay grouped.
-		header := m.ToolHeaders[ev.ToolID]
-		delete(m.ToolHeaders, ev.ToolID)
-		if ev.IsError {
-			// Retint the bullet red but keep the args summary captured at
-			// EventToolExecStart — agentcore drops Args from the End event
-			// (see loop.go), so re-rendering from ev.Args alone would lose
-			// the command/path the user needs to read the error.
-			okBullet := ToolIconStyle.Render("● ")
-			redBullet := ErrorIconStyle.Render("● ")
-			if rest, ok := strings.CutPrefix(header, okBullet); ok {
-				header = redBullet + rest
-			} else if header == "" {
-				header = redBullet + RenderToolHeader(ev.Tool, ev.Args)
-			} else {
-				header = redBullet + header
-			}
+		switch p := e.Progress.(type) {
+		case string: // a line of bash output
+			buf.WriteString(p)
+			buf.WriteByte('\n')
+		case subagent.Progress:
+			m.subagentProgress(e.Call.ID, buf, p.Event)
 		}
 
-		var body string
-		if ev.Tool == "subagent" && !ev.IsError {
-			content := FormatSubagentOutput(ev.Result)
-			body = indentBlock(m.renderSubagentCard(content), 2)
-		} else if isPlanFile && !ev.IsError {
-			// Plan files: hide the 12-line diff. The full plan body surfaces
-			// once exit_plan_mode succeeds (see plan.go renderPlanForReview);
-			// during incremental edits we only show a one-line affordance.
-			body = indentBlock(MutedStyle.Render("/plan to preview"), 2)
-		} else if ev.Tool == "edit" && !ev.IsError {
-			// Preview already painted "header + diff" for this tool call
-			// (agentcore emits ToolExecUpdatePreview before Run, and edit
-			// returns the same diff from Preview() and Run() — see
-			// agentcore/tools/edit.go:150,184). Repainting here just
-			// duplicates the block in the transcript.
-			//
-			// Signal: the preview branch consumed ToolHeaders[ev.ToolID];
-			// if header is empty here, preview ran and the diff is already
-			// on screen. Skip the body so the End event becomes a no-op
-			// for state cleanup only.
-			//
-			// IsError takes a different branch above (line ~372) and
-			// rebuilds the header, so failed edits still surface even when
-			// preview ran first.
-			if header != "" {
-				body = indentBlock(RenderEditResult(ev.Result, extractPathArg(ev.Args), m.diffBodyWidth()), 2)
-			}
-		} else if ev.Tool == "write" && !ev.IsError {
-			body = indentBlock(RenderWriteResult(ev.Result), 2)
-		} else if ev.Tool == "read" && !ev.IsError {
-			body = indentBlock(RenderReadSummary(ev.Result), 2)
-		} else if ev.Tool == "glob" && !ev.IsError {
-			body = indentBlock(RenderReadResult(ev.Result), 2)
-		} else if ev.Tool == "ls" && !ev.IsError {
-			dirPath, lsBody := RenderLsResult(ev.Result)
-			if dirPath != "" {
-				header = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Ls") + ToolArgsStyle.Render("("+ShortenPath(dirPath)+")")
-			}
-			body = indentBlock(lsBody, 2)
-		} else {
-			text := FormatToolResult(ev.Result, ev.IsError)
-			text = m.wrapTextForIndent(text, 4)
-			if ev.IsError {
-				// Failure signal is carried by the red bullet (header). Body
-				// text stays muted so the eye doesn't get hit twice — error
-				// detail is supporting info, not a second alarm.
-				body = indentBlock(FormatToolOutput(text, ToolResultMaxLines, MutedStyle), 2)
-			} else {
-				body = indentBlock(FormatToolOutput(text, ToolResultMaxLines), 2)
+	case agentcore.ToolEnd:
+		call := e.Call
+		if call.Name == todo.ToolName && !e.Result.IsError {
+			if items, err := todo.Parse(call.Args); err == nil {
+				cmds = append(cmds, m.setTodos(items))
 			}
 		}
-
-		var block string
-		if body != "" {
-			if header != "" {
-				block = header + "\n" + body
-			} else {
-				block = body
-			}
-		} else {
-			block = header
+		_, hidden := m.HiddenToolCalls[call.ID]
+		header := m.ToolHeaders[call.ID]
+		usage := m.SubagentUsage[call.ID]
+		delete(m.HiddenToolCalls, call.ID)
+		delete(m.PendingTools, call.ID)
+		delete(m.ToolHeaders, call.ID)
+		delete(m.ToolOutputBuf, call.ID)
+		delete(m.SubagentUsage, call.ID)
+		if hidden {
+			break
 		}
-		if block != "" {
+		result := e.Result.Text()
+		if usage != nil && !e.Result.IsError {
+			result += "\n\n" + usage.String()
+		}
+		if block := m.renderToolCall(header, call.Name, call.Args, result, e.Result.IsError); block != "" {
 			cmds = append(cmds, m.printBlock(block))
-		}
-
-	case agentcore.EventError:
-		m.clearStatusLine()
-		// Context cancellation is a normal operation (user Esc, plan submission stop).
-		if ev.Err != nil && errors.Is(ev.Err, context.Canceled) {
-			break
-		}
-		errMsg := "unknown error"
-		if ev.Err != nil {
-			errMsg = ev.Err.Error()
-		}
-		wrapped := indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+errMsg, 2)), 2)
-		cmds = append(cmds, m.printBlock(wrapped))
-	}
-
-	if m.config.OnEvent != nil {
-		if cmd := m.config.OnEvent(m, ev); cmd != nil {
-			cmds = append(cmds, cmd)
 		}
 	}
 
@@ -489,24 +239,146 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// subagentUsage sums what the sub-agent runs of a call used.
+type subagentUsage struct {
+	turns, tools, input, output int
+}
+
+func (u *subagentUsage) String() string {
+	return fmt.Sprintf("%d turns · %d tools · ↑%s ↓%s tokens", u.turns, u.tools, FormatTokens(u.input), FormatTokens(u.output))
+}
+
+// subagentProgress shows an event of a sub-agent run of call id as a line
+// of its output, and adds up what the run used.
+func (m *Model) subagentProgress(id string, buf *strings.Builder, ev agentcore.Event) {
+	usage := m.SubagentUsage[id]
+	if usage == nil {
+		usage = &subagentUsage{}
+		m.SubagentUsage[id] = usage
+	}
+	var lines []string
+	switch e := ev.(type) {
+	case agentcore.MessageEnd:
+		if e.Message.Role != litellm.RoleAssistant {
+			break
+		}
+		if u := e.Message.Usage; u != nil {
+			usage.input += u.Input
+			usage.output += u.Output
+		}
+		if text := oneLine(e.Message.Reasoning()); text != "" {
+			lines = append(lines, ThinkingBodyStyle.Render("thinking "+ansi.Truncate(text, 71, "…")))
+		}
+		if text := oneLine(e.Message.Text()); text != "" {
+			lines = append(lines, ReplyLabelStyle.Render("reply ")+ansi.Truncate(text, 74, "…"))
+		}
+	case agentcore.ToolStart:
+		line := ToolNameStyle.Render(e.Call.Name)
+		if hint := toolArgHint(e.Call.Args); hint != "" {
+			line += MutedStyle.Render(" " + hint)
+		}
+		lines = append(lines, line)
+	case agentcore.ToolEnd:
+		if e.Result.IsError {
+			lines = append(lines, ToolNameStyle.Render(e.Call.Name)+MutedStyle.Render(" failed"))
+		}
+	case agentcore.Retry:
+		lines = append(lines, MutedStyle.Render(fmt.Sprintf("retry %d/%d", e.Attempt, e.MaxRetries)))
+	case agentcore.RunEnd:
+		usage.turns += e.Turns
+		usage.tools += e.ToolCalls
+	}
+	for _, line := range lines {
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
+}
+
+// oneLine is text trimmed, on a single line.
+func oneLine(text string) string {
+	return strings.ReplaceAll(strings.TrimSpace(text), "\n", " ")
+}
+
 // clearStatusLine clears the live status and its countdown.
 func (m *Model) clearStatusLine() {
 	m.StatusPrefix = ""
 	m.StatusDeadline = time.Time{}
 }
 
-// flushSubagentStreaming writes accumulated thinking/delta to the output buffer as single lines.
-func (m *Model) flushSubagentStreaming(toolID string, buf *strings.Builder) {
-	if tbuf, ok := m.ToolThinkingBuf[toolID]; ok && tbuf.Len() > 0 {
-		text := strings.ReplaceAll(strings.TrimSpace(tbuf.String()), "\n", " ")
-		buf.WriteString(ThinkingBodyStyle.Render("thinking " + truncateRunes(text, 71)))
-		buf.WriteByte('\n')
-		tbuf.Reset()
+// renderAssistantMessage renders a reply: its thinking, then its text.
+func (m *Model) renderAssistantMessage(msg agentcore.Message) string {
+	var parts []string
+	if thinking := strings.TrimSpace(msg.Reasoning()); thinking != "" {
+		indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
+		parts = append(parts, ThinkingBodyStyle.Render("● ")+strings.TrimPrefix(indented, "  "))
 	}
-	if dbuf, ok := m.ToolDeltaBuf[toolID]; ok && dbuf.Len() > 0 {
-		text := strings.ReplaceAll(strings.TrimSpace(dbuf.String()), "\n", " ")
-		buf.WriteString(ReplyLabelStyle.Render("reply ") + truncateRunes(text, 74))
-		buf.WriteByte('\n')
-		dbuf.Reset()
+	if text := strings.TrimSpace(msg.Text()); text != "" {
+		parts = append(parts, AssistantIconStyle.Render("● ")+strings.TrimPrefix(m.RenderMarkdownBlock(text, 2), "  "))
 	}
+	return strings.Join(parts, "\n\n")
+}
+
+// toolCallHeader renders the header line of a call of tool with args.
+func toolCallHeader(tool string, args json.RawMessage) string {
+	if tool != "subagent" {
+		return ToolIconStyle.Render("● ") + RenderToolHeader(tool, args)
+	}
+	name, hint := parseSubagentHeader(args)
+	header := ToolIconStyle.Render("● ") + ToolNameStyle.Render(name)
+	if hint != "" {
+		header += MutedStyle.Render(" → ") + ToolArgsStyle.Render(ansi.Truncate(hint, 80, "…"))
+	}
+	return header
+}
+
+// renderToolCall renders a finished tool call, live or restored: its header,
+// with a red bullet if it failed, over the text of its result. An empty
+// header means a preview already showed the header and the diff.
+func (m *Model) renderToolCall(header, tool string, args json.RawMessage, result string, isError bool) string {
+	if isError {
+		if header == "" {
+			header = toolCallHeader(tool, args)
+		}
+		// The bullet carries the failure; the muted body is detail.
+		header = ErrorIconStyle.Render("● ") + strings.TrimPrefix(header, ToolIconStyle.Render("● "))
+		text := m.wrapTextForIndent(FormatToolResult(result, true), 4)
+		return joinBlock(header, indentBlock(FormatToolOutput(text, ToolResultMaxLines, MutedStyle), 2))
+	}
+
+	var body string
+	switch tool {
+	case "subagent":
+		body = m.renderSubagentCard(cmp.Or(strings.TrimSpace(result), "(no output)"))
+	case "edit":
+		if header == "" {
+			return ""
+		}
+		// The result is a line naming the file over the diff.
+		_, diff, _ := strings.Cut(result, "\n")
+		body = RenderDiff(diff, extractPathArg(args), m.diffBodyWidth())
+	case "write":
+		body = RenderWriteResult(result)
+	case "read":
+		body = RenderReadSummary(result)
+	case "glob":
+		body = RenderGlobResult(result)
+	case "ls":
+		var dir string
+		dir, body = RenderLsResult(result)
+		if dir != "" {
+			header = ToolIconStyle.Render("● ") + ToolNameStyle.Render("Ls") + ToolArgsStyle.Render("("+ShortenPath(dir)+")")
+		}
+	default:
+		text := m.wrapTextForIndent(FormatToolResult(result, false), 4)
+		body = FormatToolOutput(text, ToolResultMaxLines)
+	}
+	return joinBlock(header, indentBlock(body, 2))
+}
+
+// joinBlock puts the non-empty of header and body one over the other.
+func joinBlock(header, body string) string {
+	if header == "" || body == "" {
+		return header + body
+	}
+	return header + "\n" + body
 }

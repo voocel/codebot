@@ -19,7 +19,7 @@
 从架构上说，codebot 现在已经形成了清晰的 **Harness 层**，建立在 `agentcore` 之上：
 
 - `agentcore` 是执行内核：Agent 循环、工具调用、事件流、消息状态
-- `codebot` 是 Harness / 运行时层：Prompt 组装、会话持久化、审批流、上下文压缩、运行时提醒、TUI 编排
+- `codebot` 是 Harness / 运行时层：Prompt 组装、会话持久化、审批流，以及 TUI、print、ACP 三个前端
 
 这个分层很重要。Agent 循环保持小而可复用，而长周期终端工作流中的复杂性放在 Harness 层解决。
 
@@ -27,8 +27,8 @@
 
 **Agent**
 - 流式响应，支持可配置推理强度（off → xhigh）
-- 工具执行：read, write, edit, bash, grep, find, ls, web_search, web_fetch
-- 任务管理：task_create, task_get, task_update, task_list（SubAgent 协调）
+- 工具执行：read, write, edit, bash, grep, glob, ls, web_search, web_fetch
+- Todo 清单：`todo_write` 为多步任务维护可见的清单
 - SubAgent 委托，支持并行/链式执行
 - 上下文满时自动压缩
 - 多 Provider：Anthropic、OpenAI、OpenRouter、Gemini、DeepSeek
@@ -36,27 +36,29 @@
 
 **会话**
 - 仅追加 JSONL 持久化 — 崩溃安全、人类可读
-- 恢复会话（`-c` 最近，`-r` 选择），支持分叉、回放
+- 恢复会话（`-c` 最近，`-r` 选择）
 - 模型和推理强度按会话保存
+- 会话格式变更之前（格式 3）保存的会话无法恢复，也不会出现在 `-r` 列表里；不再需要的话可从 `~/.codebot/projects/*/` 删除
 
 **安全**
-- 四种权限模式：`strict` / `balanced` / `accept-edits` / `trust`
-- 危险命令拦截（rm -rf, sudo, dd, ...）
+- 四种权限模式：`strict` / `balanced` / `accept-edits` / `trust`（Shift+Tab 切换）
+- 破坏性命令（rm -rf、git reset --hard 等）在审批提示中标出
+- 读写凭据、修改 shell 启动文件或 git hooks，在任何模式下每次都要确认
 - 工作区范围的文件访问控制
 - 每次工具决策的 JSON 审计日志
 
 **界面**
 - 交互式 TUI，实时流式输出和 Markdown 渲染
-- Plan 模式：Agent 提出修改方案，用户审核批准
 - AskUser：Agent 向用户发起结构化多选问题
 - 图片粘贴（Ctrl+V），支持选择（↑）和删除（Delete）
-- 任务进度展示：进度条 + 状态图标，固定在输入区上方
+- Todo 清单固定在输入区上方
 - 非交互管道模式（`-p`）
-- 斜杠命令：`/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
+- 斜杠命令：`/model`, `/compact`, `/resume`, `/copy`, ...；每个 skill 也是一个 `/` 命令
 
 **扩展**
 - plugin-first 架构，支持 project / user 两级 plugin
-- plugin 贡献：skills、commands、MCP servers
+- plugin 贡献：skills、MCP servers
+- 自定义斜杠命令就是 skill：加 `disable-model-invocation: true` 即只供用户调用
 - `/plugins create`、`/plugins install`、`/plugins remove` 管理本地 plugin 生命周期
 - trust / enable / disable 治理与运行时热刷新
 
@@ -138,8 +140,8 @@ codebot --mode strict
 Codebot 采用分层的 Coding Agent 架构：
 
 - **执行内核（`agentcore`）**：模型调用、工具执行、事件流、消息生命周期
-- **Harness 层（`codebot`）**：会话控制、运行时策略、审批路由、Prompt 组装、上下文工程、恢复流程、交互体验
-- **应用表层**：TUI、print 模式、slash 命令、会话恢复/分叉、配置
+- **Harness 层（`codebot`）**：会话控制、审批路由、Prompt 组装、hooks、交互体验
+- **应用表层**：TUI、print 模式、ACP、slash 命令、会话恢复、配置
 
 这意味着 codebot 不只是“带工具的 Agent”，而是“Agent + 面向长周期终端工作流的 Harness”。
 
@@ -154,6 +156,8 @@ Provider 条目支持 `extra`，用于配置连接参数，作为 HTTP/客户端
 上下文窗口、输出上限和价格来自 LiteLLM 的模型列表：codebot 内置一份快照，每天刷新到 `~/.codebot/litellm-models.json`。
 
 OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`，用于在 `/v1/chat/completions` 和 `/v1/responses` 之间切换。
+
+`type: "gateway"` 的 provider 是一个 [LiteLLM 网关](https://github.com/voocel/litellm/blob/main/README_CN.md#网关)：codebot 负责运行 agent（比如在沙盒里），`base_url` 处的网关持有 provider key、执行模型调用并计费；`api_key` 是 codebot 访问网关的 token。思考级别、prompt 缓存和重试与直连 provider 时一样有效。
 
 Plugin 开发参考 [docs/plugins.md](docs/plugins.md)。真实示例 plugin 放在 `docs/examples/plugins/`，目前包含 `review-assistant`、`release-ops`、`docs-context`。
 

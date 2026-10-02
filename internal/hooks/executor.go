@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
 )
 
 // outcome is the raw result of running a hook's executor.
@@ -61,23 +62,20 @@ func (c *commandExec) execute(ctx context.Context, payload []byte, env []string)
 // The prompt template may contain $ARGUMENTS which is replaced with the payload.
 type promptExec struct {
 	prompt string
+	model  func() agentcore.Model
 }
 
 func (p *promptExec) execute(ctx context.Context, payload []byte, _ []string) outcome {
-	model := modelFromCtx(ctx)
-	if model == nil {
-		return outcome{exitCode: 1, err: fmt.Errorf("prompt hook: no model available")}
-	}
-
 	prompt := strings.ReplaceAll(p.prompt, "$ARGUMENTS", string(payload))
-	resp, err := model.Generate(ctx, []agentcore.Message{
-		{Role: "user", Content: []agentcore.ContentBlock{agentcore.TextBlock(prompt)}},
-	}, nil)
+	m := p.model()
+	req := m.Request
+	req.Messages = []litellm.Message{litellm.UserText(prompt)}
+	resp, err := m.Client.Chat(ctx, req)
 	if err != nil {
 		return outcome{exitCode: 1, err: fmt.Errorf("prompt hook: %w", err)}
 	}
 
-	text := extractText(resp)
+	text := resp.Text()
 	ok, reason := parseHookResponse(text)
 	data, _ := json.Marshal(hookOutput{Block: !ok, Reason: reason})
 	return outcome{stdout: data}
@@ -187,19 +185,6 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// extractText pulls the first text block from a chat response.
-func extractText(resp *agentcore.LLMResponse) string {
-	if resp == nil {
-		return ""
-	}
-	for _, block := range resp.Message.Content {
-		if block.Type == "text" {
-			return block.Text
-		}
-	}
-	return ""
-}
-
 // parseHookResponse tries to extract {ok, reason} from LLM text output.
 // Falls back to ok=true if parsing fails (permissive).
 func parseHookResponse(text string) (ok bool, reason string) {
@@ -224,16 +209,4 @@ func parseHookResponse(text string) (ok bool, reason string) {
 	}
 
 	return true, "" // permissive default
-}
-
-// modelKey is a context key for passing the ChatModel to prompt executors.
-type modelKey struct{}
-
-func withModel(ctx context.Context, m agentcore.ChatModel) context.Context {
-	return context.WithValue(ctx, modelKey{}, m)
-}
-
-func modelFromCtx(ctx context.Context) agentcore.ChatModel {
-	m, _ := ctx.Value(modelKey{}).(agentcore.ChatModel)
-	return m
 }

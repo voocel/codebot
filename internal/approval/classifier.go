@@ -5,28 +5,34 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/voocel/agentcore/permission"
+	"github.com/voocel/codebot/internal/permission"
 )
 
-// classify maps a codebot tool request to its capability and operand
-// fields. The agentcore permission engine consults this via
-// EngineConfig.Classifier; the library itself stays harness-agnostic.
-//
-// Tools fall into five buckets:
+// classify maps a codebot tool request, run in workspace, to its capability
+// and operand fields, and asks to confirm each call that touches a dangerous
+// path (see checkDangerousPath).
+func classify(workspace string, req permission.Request) permission.Classification {
+	c := classifyTool(req)
+	c.Confirm = checkDangerousPath(workspace, req)
+	return c
+}
+
+// classifyTool maps a tool request to its capability and operand fields.
+// Tools whose request carries permission.Metadata, the MCP tools, classify
+// themselves; this covers the rest:
 //   - read/glob/grep/ls       → Read  (path checked against ReadRoots)
 //   - write/edit              → Write (path checked against WriteRoots)
 //   - bash                    → Exec  (command + optional workdir)
-//   - web_fetch / web_search  → Read  (no local side effect; LLM cannot
-//     send arbitrary payloads — web_fetch is GET-only behind Tavily, and
-//     web_search only takes a query string. Users who want air-gapped
-//     execution can add `deny: WebFetch(*)` rules)
-//   - Skill, ask_user, plan/task/cron/team control, tool_search, subagent,
-//     send_message            → Internal (pure in-memory state changes
-//     authored by the model; no external side effects to gate on)
+//   - web_fetch / web_search  → Read  (no local side effect: web_fetch only
+//     GETs, web_search only takes a query; a deny rule on the tool name,
+//     such as "web_fetch", turns them off)
+//   - skill, todo_write, task control, subagent, ask_user,
+//     tool_search, worktree   → Internal (state changes authored by the
+//     model, with no side effects of their own to gate on)
 //
 // read/edit/write expose `file_path`; glob/grep/ls expose `path`. We probe
 // `file_path` first so the canonical argument wins when both are present.
-func classify(req permission.Request) permission.Classification {
+func classifyTool(req permission.Request) permission.Classification {
 	switch req.ToolName {
 	case "read":
 		return permission.Classification{
@@ -69,12 +75,7 @@ func classify(req permission.Request) permission.Classification {
 			Capability: permission.CapabilityRead,
 			Key:        "web_search",
 		}
-	case "ask_user",
-		"enter_plan_mode", "exit_plan_mode",
-		"task_create", "task_get", "task_update", "task_list", "task_output", "task_stop",
-		"cron_create", "cron_delete", "cron_list",
-		"team_create", "team_dismiss", "send_message",
-		"tool_search", "subagent", "Skill":
+	case "todo_write", "task_output", "task_stop", "subagent", "skill", "ask_user", "tool_search", "enter_worktree", "exit_worktree":
 		return permission.Classification{Capability: permission.CapabilityInternal}
 	}
 	return permission.Classification{}

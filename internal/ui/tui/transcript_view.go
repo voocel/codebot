@@ -8,12 +8,15 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	reflowwrap "github.com/muesli/reflow/wrap"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
+
+	"github.com/voocel/codebot/internal/app"
 )
 
 // TranscriptView renders an agentcore.Event stream as a scrollable in-memory
-// transcript. It is the read-only sibling of the leader's scrollback path in
+// transcript. It is the read-only sibling of the main scrollback path in
 // events.go, designed for the modal popup that lets the user observe a
-// teammate's live activity.
+// agent's live activity.
 //
 // Why a separate renderer and not events.go?
 //   - events.go writes to terminal scrollback via tea.Println (global stream,
@@ -21,13 +24,13 @@ import (
 //   - HandleAgentEvent reads/writes >10 Model fields (PendingTools, ToolHeaders,
 //     RunStats, Streaming, …). Reusing it would require either dragging the
 //     whole Model into the modal or extracting every helper that touches them.
-//   - The modal scope is narrower: teammates can't enter plan mode, can't
-//     spawn nested subagents, can't show ask_user dialogs. Most of events.go's
-//     special-case branches don't apply.
+//   - The modal scope is narrower: sub-agents can't spawn nested subagents
+//     or show ask_user dialogs. Most of events.go's special-case branches
+//     don't apply.
 //
 // What IS shared with events.go: the rendering style constants and pure
 // formatting helpers (RenderToolHeader, FormatToolResult, FormatToolOutput,
-// FormatProgressLine, indentBlock, truncateRunes). The two views look the
+// indentBlock). The two views look the
 // same because they call the same helpers — there is no parallel theme to
 // drift.
 type TranscriptView struct {
@@ -49,31 +52,24 @@ type TranscriptView struct {
 	thinking  strings.Builder
 	isStream  bool
 
-	// Active tool calls keyed by ToolID. Set on EventToolExecStart, drained
-	// on EventToolExecEnd. Hidden tools (IsHiddenToolCall) never enter.
-	activeTools map[string]*transcriptToolState
+	// The provisional headers of the tool calls in flight, by call ID. Set on
+	// ToolStart, drained on ToolEnd. Hidden tools (app.HiddenToolCall) never
+	// enter.
+	activeTools map[string]string
 
 	// status is the bottom-bar text, e.g. "● researcher · running · 3 tools".
 	// The view writer sets it; the renderer just displays.
 	status string
 
-	// title is the top-bar text, e.g. "teammate: researcher".
+	// title is the top-bar text, e.g. "agent: researcher".
 	title string
 
 	// liveBadge is a short prefix prepended to the status line — typically a
-	// spinner frame while the teammate is publishing, an idle glyph once it
+	// spinner frame while the agent is publishing, an idle glyph once it
 	// has stopped. Updated per frame by the modal so the user sees motion.
 	// Stored on the view (rather than passed into View()) so the existing
 	// View() signature stays single-argument and tests don't need updating.
 	liveBadge string
-}
-
-type transcriptToolState struct {
-	header      string
-	deltaBuf    strings.Builder
-	thinkingBuf strings.Builder
-	outputBuf   strings.Builder
-	args        []byte // raw args captured at Start; End events drop them
 }
 
 // NewTranscriptView returns an empty view. Call SetSize before View() —
@@ -81,19 +77,9 @@ type transcriptToolState struct {
 func NewTranscriptView(title string) *TranscriptView {
 	return &TranscriptView{
 		vp:          viewport.New(0, 0),
-		activeTools: make(map[string]*transcriptToolState),
+		activeTools: make(map[string]string),
 		title:       title,
 	}
-}
-
-// SetTitle updates the top-bar label. Title visibility affects how much
-// vertical room the viewport gets, so the layout is recomputed.
-func (t *TranscriptView) SetTitle(title string) {
-	if t.title == title {
-		return
-	}
-	t.title = title
-	t.applyLayout()
 }
 
 // SetStatus updates the bottom-bar label. Status visibility affects how
@@ -127,7 +113,7 @@ func (t *TranscriptView) SetSize(width, height int) {
 
 // applyLayout (re)computes the viewport's width/height from the current
 // outer size and the presence of title/status rows. Centralised so
-// SetSize, SetTitle, and SetStatus stay in sync — earlier versions only
+// SetSize and SetStatus stay in sync — earlier versions only
 // recomputed in SetSize, so a SetStatus call after SetSize left the
 // viewport oversized and overlapped the status bar by one row.
 //
@@ -152,138 +138,78 @@ func (t *TranscriptView) applyLayout() {
 }
 
 // HandleEvent updates state in response to one agentcore event. Mirrors the
-// subset of events.go HandleAgentEvent that a teammate actually produces.
+// subset of events.go HandleAgentEvent that a sub-agent actually produces.
 // After each call the viewport content is rebuilt so View() reflects the
 // latest state; the cost is O(len(blocks)) per event which is fine for the
-// target scale (hundreds of blocks per teammate run).
+// target scale (hundreds of blocks per sub-agent run).
 func (t *TranscriptView) HandleEvent(ev agentcore.Event) {
-	switch ev.Type {
-	case agentcore.EventAgentStart:
-		// No state change; the caller usually flips status here.
+	switch e := ev.(type) {
+	case agentcore.MessageStart:
+		t.isStream = true
+		t.streaming.Reset()
+		t.thinking.Reset()
 
-	case agentcore.EventMessageStart:
-		if ev.Message != nil && ev.Message.GetRole() == agentcore.RoleAssistant {
-			t.isStream = true
-			t.streaming.Reset()
-			t.thinking.Reset()
-		}
-
-	case agentcore.EventMessageUpdate:
+	case agentcore.MessageDelta:
 		if !t.isStream {
 			break
 		}
-		if ev.Message != nil {
-			if text := ev.Message.TextContent(); text != "" {
-				t.streaming.Reset()
-				t.streaming.WriteString(text)
-			}
-			if thinking := ev.Message.ThinkingContent(); thinking != "" {
-				t.thinking.Reset()
-				t.thinking.WriteString(thinking)
-			}
-		} else if ev.Delta != "" {
-			t.streaming.WriteString(ev.Delta)
+		switch d := e.Event.(type) {
+		case litellm.TextDelta:
+			t.streaming.WriteString(d.Text)
+		case litellm.ReasoningDelta:
+			t.thinking.WriteString(d.Text)
 		}
 
-	case agentcore.EventMessageEnd:
-		if ev.Message == nil || ev.Message.GetRole() != agentcore.RoleAssistant {
+	case agentcore.Retry:
+		// The failed response is discarded.
+		t.isStream = false
+		t.streaming.Reset()
+		t.thinking.Reset()
+
+	case agentcore.MessageEnd:
+		if e.Message.Role != litellm.RoleAssistant {
 			break
 		}
 		t.isStream = false
-		content := strings.TrimSpace(ev.Message.TextContent())
-		thinkingText := strings.TrimSpace(ev.Message.ThinkingContent())
 		t.streaming.Reset()
 		t.thinking.Reset()
-		if content == "" && thinkingText == "" {
+		t.appendAssistantBlock(strings.TrimSpace(e.Message.Reasoning()), strings.TrimSpace(e.Message.Text()))
+
+	case agentcore.ToolStart:
+		if app.HiddenToolCall(e.Call.Name, e.Call.Args) {
 			break
 		}
-		t.appendAssistantBlock(thinkingText, content)
+		// Show the header at once, so the call reads as in progress; the
+		// End handler replaces it with header and result.
+		header := ToolIconStyle.Render("● ") + RenderToolHeader(e.Call.Name, e.Call.Args)
+		t.activeTools[e.Call.ID] = header
+		t.appendBlock(header)
 
-	case agentcore.EventToolExecStart:
-		if IsHiddenToolCall(ev.Tool, ev.Args) {
-			break
-		}
-		// Build the header eagerly so the End handler doesn't need to
-		// re-render with potentially-dropped args.
-		state := &transcriptToolState{
-			header: ToolIconStyle.Render("● ") + RenderToolHeader(ev.Tool, ev.Args),
-			args:   append([]byte(nil), ev.Args...),
-		}
-		t.activeTools[ev.ToolID] = state
-		// Show the header immediately as a provisional block so the user
-		// sees the tool is in progress; the End handler will replace it
-		// with header+result.
-		t.appendBlock(state.header)
-
-	case agentcore.EventToolExecUpdate:
-		if _, hidden := t.activeTools[ev.ToolID]; !hidden {
-			// Either we missed Start (hidden tool) or the call is stale.
-			break
-		}
-		state := t.activeTools[ev.ToolID]
-		if ev.UpdateKind == agentcore.ToolExecUpdateProgress && ev.Progress != nil {
-			switch ev.Progress.Kind {
-			case agentcore.ProgressToolDelta:
-				if ev.Progress.Delta != "" {
-					state.deltaBuf.WriteString(ev.Progress.Delta)
-				}
-			case agentcore.ProgressThinking:
-				if ev.Progress.Thinking != "" {
-					state.thinkingBuf.Reset()
-					state.thinkingBuf.WriteString(ev.Progress.Thinking)
-				}
-			default:
-				if line := FormatProgressLine(ev.Progress); line != "" {
-					state.outputBuf.WriteString(line)
-					state.outputBuf.WriteByte('\n')
-				}
-			}
-		}
-
-	case agentcore.EventToolExecEnd:
-		state, ok := t.activeTools[ev.ToolID]
+	case agentcore.ToolEnd:
+		provisional, ok := t.activeTools[e.Call.ID]
 		if !ok {
-			// Was either hidden at Start or never tracked.
 			break
 		}
-		delete(t.activeTools, ev.ToolID)
+		delete(t.activeTools, e.Call.ID)
 
-		header := state.header
-		if ev.IsError {
-			// Re-tint the bullet red, keep the header tail (args) intact.
-			okBullet := ToolIconStyle.Render("● ")
-			redBullet := ErrorIconStyle.Render("● ")
-			if rest, hadBullet := strings.CutPrefix(header, okBullet); hadBullet {
-				header = redBullet + rest
-			} else {
-				header = redBullet + RenderToolHeader(ev.Tool, state.args)
-			}
+		header := provisional
+		if e.Result.IsError {
+			header = ErrorIconStyle.Render("● ") + strings.TrimPrefix(provisional, ToolIconStyle.Render("● "))
 		}
-
-		body := t.renderToolBody(ev, state)
 		block := header
-		if body != "" {
+		if body := t.renderToolBody(e.Result); body != "" {
 			block = header + "\n" + body
 		}
-		// Replace the provisional header-only block (last appended by Start)
-		// with the final block. If the user spawned multiple tools in
-		// parallel, the order of "provisional headers" may not match End
-		// order — find by header prefix to be safe.
-		t.replaceProvisional(state.header, block)
+		// Parallel calls end in any order, so the provisional block is found
+		// by its header.
+		t.replaceProvisional(provisional, block)
 
-	case agentcore.EventError:
-		if ev.Err != nil && errors.Is(ev.Err, context.Canceled) {
-			break
+	case agentcore.RunEnd:
+		// A cancelled run ends without the response under way.
+		t.isStream = false
+		if e.Err != nil && !errors.Is(e.Err, context.Canceled) {
+			t.appendBlock(ErrorStyle.Render(wrapTextWidth("error: "+e.Err.Error(), t.bodyWidth())))
 		}
-		msg := "unknown error"
-		if ev.Err != nil {
-			msg = ev.Err.Error()
-		}
-		t.appendBlock(ErrorStyle.Render(wrapTextWidth("error: "+msg, t.bodyWidth())))
-
-	case agentcore.EventAgentEnd:
-		// Status line update is the caller's job (we don't know whether
-		// AgentEnd was clean or aborted at this layer).
 	}
 
 	t.repaint()
@@ -309,16 +235,15 @@ func (t *TranscriptView) appendAssistantBlock(thinkingText, content string) {
 	}
 }
 
-// renderToolBody picks the right formatter for a tool's End event. Mirrors
-// the relevant branches of events.go but skips the leader-only paths
-// (subagent card, plan-file suppression, write/edit diff specialisations) —
-// teammates don't produce those.
-func (t *TranscriptView) renderToolBody(ev agentcore.Event, _ *transcriptToolState) string {
-	if ev.IsError {
-		text := wrapTextWidth(FormatToolResult(ev.Result, true), t.bodyWidth()-4)
+// renderToolBody renders a tool call's result as generic output: the
+// per-tool renderers of events.go are for the main conversation.
+func (t *TranscriptView) renderToolBody(res agentcore.Result) string {
+	text := res.Text()
+	if res.IsError {
+		text = wrapTextWidth(FormatToolResult(text, true), t.bodyWidth()-4)
 		return indentBlock(FormatToolOutput(text, ToolResultMaxLines, MutedStyle), 2)
 	}
-	text := wrapTextWidth(FormatToolResult(ev.Result, false), t.bodyWidth()-4)
+	text = wrapTextWidth(FormatToolResult(text, false), t.bodyWidth()-4)
 	return indentBlock(FormatToolOutput(text, ToolResultMaxLines), 2)
 }
 
@@ -438,10 +363,8 @@ func (t *TranscriptView) bodyWidth() int {
 	return 80
 }
 
-// wrapTextWidth is the model-free sibling of (*Model).wrapTextForIndent. The
-// transcript view does not know its host model so it carries its own width.
-// width <= 1 falls back to 79 (matches Model.wrapTextForIndent's behaviour
-// to keep visual output identical).
+// wrapTextWidth hard-wraps content to width cells; a width too small to use
+// falls back to 79.
 func wrapTextWidth(content string, width int) string {
 	if content == "" {
 		return ""

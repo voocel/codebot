@@ -6,74 +6,57 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/voocel/agentcore/permission"
+	"github.com/voocel/agentcore"
 	"github.com/voocel/mcp-sdk-go/protocol"
+
+	"github.com/voocel/codebot/internal/permission"
 )
 
-// MCPTool adapts an MCP server tool to the agentcore.Tool interface.
-type MCPTool struct {
-	client   *Client
-	tool     *protocol.Tool
-	fullName string // mcp__<server>__<tool>
-}
-
-// NewMCPTool creates an adapter from an MCP tool definition.
-func NewMCPTool(client *Client, tool *protocol.Tool) *MCPTool {
-	return &MCPTool{
-		client:   client,
-		tool:     tool,
-		fullName: "mcp__" + client.Name() + "__" + tool.Name,
+// newTool adapts the MCP tool t of server c, naming it mcp__<server>__<tool>.
+func newTool(c *Client, t *protocol.Tool) agentcore.Tool {
+	schema := t.InputSchema
+	if len(schema) == 0 {
+		schema = map[string]any{"type": "object"}
+	}
+	return agentcore.Tool{
+		Name:        "mcp__" + c.Name() + "__" + t.Name,
+		Label:       label(t),
+		Description: t.Description,
+		Schema:      schema,
+		Run: func(ctx context.Context, args json.RawMessage) (agentcore.Result, error) {
+			var argsMap map[string]any
+			if err := json.Unmarshal(args, &argsMap); err != nil {
+				return agentcore.Result{}, fmt.Errorf("invalid arguments: %w", err)
+			}
+			result, err := c.CallTool(ctx, t.Name, argsMap)
+			if err != nil {
+				return agentcore.Result{}, err
+			}
+			text := extractText(result)
+			if result.IsError {
+				return agentcore.Result{}, fmt.Errorf("tool error: %s", text)
+			}
+			return agentcore.TextResult(text), nil
+		},
 	}
 }
 
-func (t *MCPTool) Name() string { return t.fullName }
-
-func (t *MCPTool) Label() string {
-	if t.tool.Title != "" {
-		return t.tool.Title
+func label(t *protocol.Tool) string {
+	if t.Title != "" {
+		return t.Title
 	}
-	return t.tool.Name
+	return t.Name
 }
 
-func (t *MCPTool) Description() string { return t.tool.Description }
-
-func (t *MCPTool) PermissionMetadata() permission.Metadata {
+// permissionOf is how the permission engine sees the MCP tool t.
+func permissionOf(t *protocol.Tool) permission.Metadata {
+	capability := capabilityOf(t)
 	return permission.Metadata{
-		Capability:  t.capability(),
-		SummaryHint: t.Label(),
-		Reason:      t.reason(),
+		Capability:  capability,
+		SummaryHint: label(t),
+		Reason:      reasonFor(capability),
 		KeyPrefix:   "mcp",
 	}
-}
-
-// Schema converts the MCP tool's InputSchema to the map[string]any format
-// expected by agentcore.
-func (t *MCPTool) Schema() map[string]any {
-	if len(t.tool.InputSchema) == 0 {
-		return map[string]any{"type": "object"}
-	}
-	return t.tool.InputSchema
-}
-
-// Execute calls the MCP tool and converts the result to JSON.
-func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-	var argsMap map[string]any
-	if len(args) > 0 {
-		if err := json.Unmarshal(args, &argsMap); err != nil {
-			return nil, fmt.Errorf("invalid arguments: %w", err)
-		}
-	}
-
-	result, err := t.client.CallTool(ctx, t.tool.Name, argsMap)
-	if err != nil {
-		return nil, err
-	}
-
-	text := extractText(result)
-	if result.IsError {
-		return nil, fmt.Errorf("tool error: %s", text)
-	}
-	return json.Marshal(text)
 }
 
 // extractText concatenates all TextContent from a CallToolResult.
@@ -90,8 +73,8 @@ func extractText(result *protocol.CallToolResult) string {
 	return sb.String()
 }
 
-func (t *MCPTool) capability() permission.Capability {
-	if ann := t.tool.Annotations; ann != nil {
+func capabilityOf(t *protocol.Tool) permission.Capability {
+	if ann := t.Annotations; ann != nil {
 		switch {
 		case hintEnabled(ann.DestructiveHint):
 			return permission.CapabilityWrite
@@ -102,8 +85,8 @@ func (t *MCPTool) capability() permission.Capability {
 		}
 	}
 
-	name := strings.ToLower(t.tool.Name)
-	desc := strings.ToLower(strings.TrimSpace(t.tool.Description))
+	name := strings.ToLower(t.Name)
+	desc := strings.ToLower(strings.TrimSpace(t.Description))
 	text := name + " " + desc
 
 	switch {
@@ -122,8 +105,8 @@ func hintEnabled(hint *bool) bool {
 	return hint != nil && *hint
 }
 
-func (t *MCPTool) reason() string {
-	switch t.capability() {
+func reasonFor(capability permission.Capability) string {
+	switch capability {
 	case permission.CapabilityRead:
 		return ""
 	case permission.CapabilityWrite:

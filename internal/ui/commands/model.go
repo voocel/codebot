@@ -2,25 +2,23 @@ package commands
 
 import (
 	"fmt"
-	"os"
+	"slices"
 	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/agent"
+
+	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // ModelCommand drives /model — an interactive selector that switches the
-// current chat model and persists the choice to whichever settings file
-// already owns the model setting (project if present, otherwise global).
+// conversation's model and reasoning effort, remembered in the settings.
 type ModelCommand struct {
-	session *agent.Session
+	app     *app.App
 	overlay OverlayController
-	cwd     string
 
 	state *modelSelectState
 }
@@ -41,13 +39,14 @@ type modelSelectState struct {
 	modelIdx     int // index within sections[provIdx].models
 	current      string
 	currentProv  string
+	effort       string // the conversation's reasoning effort
 	thinkLevels  []string
 	thinkIdx     int
 }
 
 // Model constructs the /model command.
-func Model(session *agent.Session, overlay OverlayController, cwd string) *ModelCommand {
-	return &ModelCommand{session: session, overlay: overlay, cwd: cwd}
+func Model(a *app.App, overlay OverlayController) *ModelCommand {
+	return &ModelCommand{app: a, overlay: overlay}
 }
 
 func (c *ModelCommand) Spec() Spec {
@@ -56,22 +55,20 @@ func (c *ModelCommand) Spec() Spec {
 		Aliases:     []string{"m"},
 		Usage:       "/model",
 		Description: "Show or switch model",
-		Category:    "config",
 		NeedsIdle:   true,
 		Kind:        KindBuiltin,
 	}
 }
 
 func (c *ModelCommand) Run(_ Invocation) tea.Cmd {
-	settings := c.session.Settings()
-	sections := buildProviderSections(settings.Providers)
+	sections := buildProviderSections(c.app.Settings().Providers)
 	if len(sections) == 0 {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(
 			"No models configured. Add models to your providers in .codebot/settings.json"))
 	}
 
-	currentModel := c.session.ModelName()
-	currentProv := c.session.Provider()
+	st := c.app.Current().Status()
+	currentModel, currentProv := st.Model, st.Provider
 
 	provIdx, modelIdx := 0, 0
 	for i, s := range sections {
@@ -94,14 +91,14 @@ func (c *ModelCommand) Run(_ Invocation) tea.Cmd {
 		modelIdx:     modelIdx,
 		current:      currentModel,
 		currentProv:  currentProv,
+		effort:       string(st.Effort),
 	}
 	c.refreshThinking()
 	c.overlay.SetOverlay(c)
 	return nil
 }
 
-func (c *ModelCommand) Active() bool  { return c.state != nil }
-func (c *ModelCommand) IsModal() bool { return true }
+func (c *ModelCommand) Active() bool { return c.state != nil }
 
 func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if c.state == nil {
@@ -173,40 +170,14 @@ func (c *ModelCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 		c.overlay.ClearOverlay()
 
-		if err := c.session.SetModel(prov, model); err != nil {
+		if err := c.app.Current().SetModel(prov, model, thinkLevel); err != nil {
 			return true, tui.SendCommandResult(tui.ErrorStyle.Render("Failed to switch model: " + err.Error()))
 		}
-
-		if thinkLevel != c.session.Settings().ReasoningEffort {
-			c.session.SetThinkingLevel(agentcore.ThinkingLevel(thinkLevel))
-		}
-
-		// Persist selection so manual edits and /model share one source of
-		// truth. SmallModel is written alongside to avoid leaving a stale
-		// value from a previous provider.
-		small := c.session.Settings().SmallModel
-		patch := config.Settings{
-			Provider:   &prov,
-			Model:      &model,
-			SmallModel: &small,
-		}
-		if err := config.PatchEffectiveSettings(c.cwd, patch); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: persist model setting: %v\n", err)
-		}
-
 		display := config.FormatModelID(prov, model)
-		finalThinking := c.session.Settings().ReasoningEffort
-		if finalThinking != "" && finalThinking != "off" {
-			display += " (reasoning_effort: " + finalThinking + ")"
+		if thinkLevel != "" && thinkLevel != "off" {
+			display += " (reasoning_effort: " + thinkLevel + ")"
 		}
-		return true, func() tea.Msg {
-			return tui.CommandResultMsg{
-				Text:             tui.SystemMsgStyle.Render("Switched to model: " + display),
-				NewProvider:      prov,
-				NewModel:         model,
-				NewContextWindow: c.session.Settings().ContextWindow,
-			}
-		}
+		return true, tui.SendCommandResult(tui.SystemMsgStyle.Render("Switched to model: " + display))
 
 	case "esc", "ctrl+c":
 		c.overlay.ClearOverlay()
@@ -252,7 +223,7 @@ func (c *ModelCommand) View(width, _ int) string {
 		}
 
 		var ctx, reasoning string
-		if facts, ok := c.session.ModelFacts(provName, m); ok {
+		if facts, ok := c.app.ModelFacts(provName, m); ok {
 			if facts.MaxInputTokens > 0 {
 				ctx = tui.FormatTokens(facts.MaxInputTokens)
 			}
@@ -323,8 +294,8 @@ func (c *ModelCommand) refreshThinking() {
 	s := c.state
 	section := s.sections[s.provIdx]
 	model := section.models[s.modelIdx]
-	s.thinkLevels = c.session.AvailableThinkingLevelsFor(section.name, model)
-	s.thinkIdx = currentThinkingIndex(c.session, s.thinkLevels)
+	s.thinkLevels = c.app.ThinkingLevels(section.name, model)
+	s.thinkIdx = max(0, slices.Index(s.thinkLevels, s.effort))
 }
 
 func (c *ModelCommand) renderThinkingIndicator() string {
@@ -333,16 +304,6 @@ func (c *ModelCommand) renderThinkingIndicator() string {
 		return ""
 	}
 	return fmt.Sprintf("[◂ %s ▸]", thinkingLabel(s.thinkLevels[s.thinkIdx]))
-}
-
-func currentThinkingIndex(session *agent.Session, levels []string) int {
-	current := session.Settings().ReasoningEffort
-	for i, l := range levels {
-		if l == current {
-			return i
-		}
-	}
-	return 0
 }
 
 func thinkingLabel(level string) string {

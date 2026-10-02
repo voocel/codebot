@@ -10,65 +10,63 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
 )
 
-// bigOutputTool returns a payload past DefaultOutputLimit in the shape the tool
-// is told to use, so both truncation branches get exercised.
-type bigOutputTool struct {
-	name       string
-	structured bool
-}
-
-func (t *bigOutputTool) Name() string           { return t.name }
-func (t *bigOutputTool) Description() string    { return "test" }
-func (t *bigOutputTool) Schema() map[string]any { return map[string]any{} }
-
-func (t *bigOutputTool) Execute(context.Context, json.RawMessage) (json.RawMessage, error) {
-	payload := strings.Repeat("x", DefaultOutputLimit+1)
-	if t.structured {
-		return json.Marshal(map[string]any{"output": payload, "exit_code": 0})
+// bigOutput returns a result past outputLimit, as bash's JSON object when
+// structured and as plain text otherwise, so both truncation branches get
+// exercised.
+func bigOutput(structured bool) agentcore.ToolFunc {
+	return func(context.Context, agentcore.ToolCall) (agentcore.Result, error) {
+		payload := strings.Repeat("x", outputLimit+1)
+		if structured {
+			return agentcore.JSONResult(map[string]any{"output": payload, "exit_code": 0})
+		}
+		return agentcore.TextResult(payload), nil
 	}
-	return json.Marshal(payload)
 }
 
-// limiterAt builds a limiter aimed at dirFn, the way wireSessionRuntime does.
-func limiterAt(dirFn func() string) *OutputLimiter {
-	l := NewOutputLimiter()
-	l.SetOutputDir(dirFn)
-	return l
-}
-
-// runLimiter drives the middleware the way agentcore's chain does: the limiter
-// wraps tool.Execute and is handed the call it is limiting.
-func runLimiter(t *testing.T, l *OutputLimiter, tool agentcore.Tool) string {
+// runLimited drives the middleware the way agentcore's chain does: the
+// limiter wraps the tool's run and is handed the call it is limiting.
+func runLimited(t *testing.T, name string, structured bool) string {
 	t.Helper()
-	out, err := l.Middleware()(context.Background(), agentcore.ToolCall{Name: tool.Name()}, tool.Execute)
+	l := NewOutputLimiter(t.TempDir())
+	res, err := l.Middleware()(context.Background(), agentcore.ToolCall{Name: name}, bigOutput(structured))
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	return string(out)
+	return text(res)
 }
 
-func runLimited(t *testing.T, tool agentcore.Tool) string {
-	t.Helper()
-	dir := t.TempDir()
-	return runLimiter(t, limiterAt(func() string { return dir }), tool)
+// persistedPath returns the file a limited result points at, or "".
+// Structured results carry the text under "output", the rest are plain text.
+func persistedPath(text string) string {
+	var obj map[string]any
+	if json.Unmarshal([]byte(text), &obj) == nil {
+		text, _ = obj["output"].(string)
+	}
+	_, path, ok := strings.Cut(text, persistedPathLabel)
+	if !ok {
+		return ""
+	}
+	path, _, _ = strings.Cut(path, "\n")
+	return strings.TrimSpace(path)
 }
 
-// The path travels through the transcript as the tool's own JSON, so on Windows
-// every separator arrives doubled. Reading it back has to yield a path that
-// actually opens — that is the whole point of persisting it.
+// A structured result carries the path inside the tool's own JSON, so on
+// Windows every separator arrives doubled. Reading it back has to yield a path
+// that actually opens — that is the whole point of persisting it.
 func TestPersistedOutputPathSurvivesJSONEncoding(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		structured bool
 	}{
 		{"structured", true},
-		{"bare string", false},
+		{"plain text", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := runLimited(t, &bigOutputTool{name: "bash", structured: tc.structured})
-			path := PersistedOutputPath(raw)
+			raw := runLimited(t, "bash", tc.structured)
+			path := persistedPath(raw)
 			if path == "" {
 				t.Fatalf("no path recovered from %.120s", raw)
 			}
@@ -76,55 +74,6 @@ func TestPersistedOutputPathSurvivesJSONEncoding(t *testing.T) {
 				t.Fatalf("recovered path does not open: %v", err)
 			}
 		})
-	}
-}
-
-// Output under the limit is never written to disk, so there is no path to hand
-// back and callers must fall through to their plain cleared message.
-func TestPersistedOutputPathEmptyWhenNotPersisted(t *testing.T) {
-	t.Parallel()
-
-	small, err := json.Marshal("short output")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if got := PersistedOutputPath(string(small)); got != "" {
-		t.Fatalf("got %q, want empty", got)
-	}
-}
-
-// A failed write leaves a placeholder where the path goes; handing that to the
-// model as something it can Read is worse than admitting the content is gone.
-func TestPersistedOutputPathRejectsSaveFailure(t *testing.T) {
-	t.Parallel()
-
-	text := persistedOpenTag + "\nOutput too large (99 chars). " + PersistedPathLabel + saveFailedPath + "\n\nhead\n" + persistedCloseTag
-	if got := PersistedOutputPath(text); got != "" {
-		t.Fatalf("got %q, want empty", got)
-	}
-}
-
-// /new and /resume move the session directory under a running process. A
-// directory captured at wiring time keeps writing into the session the process
-// started in — so cleaning that session later breaks paths the live one already
-// handed the model.
-func TestOutputDirFollowsSessionSwitch(t *testing.T) {
-	t.Parallel()
-
-	first, second := t.TempDir(), t.TempDir()
-	current := first
-	limiter := limiterAt(func() string { return current })
-	tool := &bigOutputTool{name: "bash", structured: true}
-
-	before := PersistedOutputPath(runLimiter(t, limiter, tool))
-	current = second
-	after := PersistedOutputPath(runLimiter(t, limiter, tool))
-
-	if !strings.HasPrefix(before, first) {
-		t.Fatalf("first save landed outside %s: %s", first, before)
-	}
-	if !strings.HasPrefix(after, second) {
-		t.Fatalf("save did not follow the session switch, still under %s: %s", first, after)
 	}
 }
 
@@ -183,12 +132,23 @@ func TestLimiterCoversEverythingExceptOptOuts(t *testing.T) {
 		{"edit", true},
 		{"mcp__github__list_issues", true},
 	} {
-		// Checked via the recovered path rather than the tag: json.Marshal
-		// escapes "<" to "<", so the raw result never contains the tag
-		// literally.
-		got := runLimited(t, &bigOutputTool{name: tc.tool})
-		if limited := PersistedOutputPath(got) != ""; limited != tc.limited {
+		got := runLimited(t, tc.tool, false)
+		if limited := persistedPath(got) != ""; limited != tc.limited {
 			t.Errorf("%s: limited=%v, want %v", tc.tool, limited, tc.limited)
 		}
+	}
+}
+
+// Only a result of one text block is limited; images and the like pass
+// through whole.
+func TestLimiterPassesOtherResults(t *testing.T) {
+	t.Parallel()
+
+	big := strings.Repeat("x", outputLimit+1)
+	image := agentcore.Result{Content: []litellm.Block{litellm.Text(big), litellm.ImageBlock{Data: []byte("png"), MIME: "image/png"}}}
+	res, err := NewOutputLimiter(t.TempDir()).Middleware()(context.Background(), agentcore.ToolCall{Name: "mcp__x__shot"},
+		func(context.Context, agentcore.ToolCall) (agentcore.Result, error) { return image, nil })
+	if err != nil || len(res.Content) != 2 || text(res) != big {
+		t.Fatalf("result changed: %v, %d blocks", err, len(res.Content))
 	}
 }

@@ -26,19 +26,19 @@ type acpFileConn interface {
 	WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error)
 }
 
-// WorkspaceFS is the ACP-backed agentcore WorkspaceFS: read/write of text files
+// EditorFS is the ACP-backed agentcore tools.FS: read/write of text files
 // is routed to the editor (fs/read_text_file, fs/write_text_file) so the agent
 // sees unsaved buffer contents and writes land back in the editor. Everything
 // else — stat, directory listing, mkdir, and any file the editor can't serve as
 // text (binary, images, or when the client lacks the capability) — falls back
-// to the local filesystem via the embedded OSWorkspaceFS.
+// to the local filesystem via the embedded OSFS.
 //
 // The connection and session id are bound lazily: the backend is constructed
 // before Boot (so it can be injected into the tools), while the ACP connection
 // only exists once Serve starts. Until bound, every method transparently uses
 // the OS fallback.
-type WorkspaceFS struct {
-	agentcoretools.OSWorkspaceFS // fallback for stat/readdir/mkdir and non-text reads
+type EditorFS struct {
+	agentcoretools.OSFS // fallback for stat/readdir/mkdir and non-text reads
 
 	logf func(format string, args ...any) // diagnostics sink (stderr); nil = silent
 
@@ -49,45 +49,45 @@ type WorkspaceFS struct {
 	canWrite bool
 }
 
-var _ agentcoretools.WorkspaceFS = (*WorkspaceFS)(nil)
+var _ agentcoretools.FS = (*EditorFS)(nil)
 
-// NewWorkspaceFS creates an unbound ACP backend. Until bindConn/setSession/
+// NewEditorFS creates an unbound ACP backend. Until bindConn/setSession/
 // setCaps are called it behaves exactly like the local filesystem.
 //
 // Diagnostics go to stderr (log is concurrency-safe and stdout is the protocol
 // channel). The fallback to disk on an editor read error stays, but is no longer
 // silent — it is the only signal that the editor's buffer view was bypassed.
-func NewWorkspaceFS() *WorkspaceFS {
-	return &WorkspaceFS{logf: log.New(os.Stderr, "", log.LstdFlags).Printf}
+func NewEditorFS() *EditorFS {
+	return &EditorFS{logf: log.New(os.Stderr, "", log.LstdFlags).Printf}
 }
 
-func (w *WorkspaceFS) bindConn(c *acp.AgentSideConnection) {
+func (w *EditorFS) bindConn(c *acp.AgentSideConnection) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.conn = c
 }
 
-func (w *WorkspaceFS) setSession(sid acp.SessionId) {
+func (w *EditorFS) setSession(sid acp.SessionId) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.sid = sid
 }
 
 // setCaps records the editor's advertised fs capabilities from initialize.
-func (w *WorkspaceFS) setCaps(canRead, canWrite bool) {
+func (w *EditorFS) setCaps(canRead, canWrite bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.canRead = canRead
 	w.canWrite = canWrite
 }
 
-func (w *WorkspaceFS) readReady() (acpFileConn, acp.SessionId, bool) {
+func (w *EditorFS) readReady() (acpFileConn, acp.SessionId, bool) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.conn, w.sid, w.canRead && w.conn != nil && w.sid != ""
 }
 
-func (w *WorkspaceFS) writeReady() (acpFileConn, acp.SessionId, bool) {
+func (w *EditorFS) writeReady() (acpFileConn, acp.SessionId, bool) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.conn, w.sid, w.canWrite && w.conn != nil && w.sid != ""
@@ -99,10 +99,10 @@ func (w *WorkspaceFS) writeReady() (acpFileConn, acp.SessionId, bool) {
 // them) and the agent can stat a buffer that has no file on disk yet. Anything
 // the editor can't serve as text (directories, binaries, images, or when
 // unbound/uncapable) falls through to the local filesystem.
-func (w *WorkspaceFS) Stat(ctx context.Context, path string) (agentcoretools.FileInfo, error) {
+func (w *EditorFS) Stat(ctx context.Context, path string) (agentcoretools.FileInfo, error) {
 	content, ok := w.tryReadText(ctx, path)
 	if !ok {
-		return w.OSWorkspaceFS.Stat(ctx, path)
+		return w.OSFS.Stat(ctx, path)
 	}
 	fi := agentcoretools.FileInfo{
 		Name:    filepath.Base(path),
@@ -113,7 +113,7 @@ func (w *WorkspaceFS) Stat(ctx context.Context, path string) (agentcoretools.Fil
 	// Best-effort real mode/mtime when the file also exists on disk; harmless
 	// when it doesn't (a buffer-only new file). Version, not mtime, drives the
 	// stale check whenever it is set, so an approximate mtime here is fine.
-	if osInfo, err := w.OSWorkspaceFS.Stat(ctx, path); err == nil {
+	if osInfo, err := w.OSFS.Stat(ctx, path); err == nil {
 		fi.Mode = osInfo.Mode
 		fi.ModTime = osInfo.ModTime
 	}
@@ -127,19 +127,19 @@ func (w *WorkspaceFS) Stat(ctx context.Context, path string) (agentcoretools.Fil
 // to sniff/decode), and how brand-new or editor-unknown files are read. A read
 // is non-destructive, so degrading to the on-disk copy is safe — unlike a write
 // (see WriteFile).
-func (w *WorkspaceFS) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+func (w *EditorFS) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 	if data, ok := w.tryReadText(ctx, path); ok {
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}
-	return w.OSWorkspaceFS.Open(ctx, path)
+	return w.OSFS.Open(ctx, path)
 }
 
 // ReadFile returns the editor buffer (if available), else the OS file.
-func (w *WorkspaceFS) ReadFile(ctx context.Context, path string) ([]byte, error) {
+func (w *EditorFS) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	if data, ok := w.tryReadText(ctx, path); ok {
 		return data, nil
 	}
-	return w.OSWorkspaceFS.ReadFile(ctx, path)
+	return w.OSFS.ReadFile(ctx, path)
 }
 
 // WriteFile writes through the editor when it is bound and advertises the
@@ -150,10 +150,10 @@ func (w *WorkspaceFS) ReadFile(ctx context.Context, path string) ([]byte, error)
 // desync the buffer and the file and leave the user thinking the edit landed in
 // the editor. We surface the error instead. (Falling back is only correct when
 // the editor was never going to handle the write — unbound or no capability.)
-func (w *WorkspaceFS) WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error {
+func (w *EditorFS) WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error {
 	conn, sid, ok := w.writeReady()
 	if !ok {
-		return w.OSWorkspaceFS.WriteFile(ctx, path, data, perm)
+		return w.OSFS.WriteFile(ctx, path, data, perm)
 	}
 	if _, err := conn.WriteTextFile(ctx, acp.WriteTextFileRequest{SessionId: sid, Path: path, Content: string(data)}); err != nil {
 		return fmt.Errorf("acp: write_text_file %s: %w", path, err)
@@ -174,7 +174,7 @@ func (w *WorkspaceFS) WriteFile(ctx context.Context, path string, data []byte, p
 // can miss unsaved edits. In practice a conforming client (e.g. Zed) returns
 // content for any text file open or not, so an error here means non-text / truly
 // missing / client fault — for the first two, disk is correct or equally absent.
-func (w *WorkspaceFS) tryReadText(ctx context.Context, path string) ([]byte, bool) {
+func (w *EditorFS) tryReadText(ctx context.Context, path string) ([]byte, bool) {
 	conn, sid, ok := w.readReady()
 	if !ok {
 		return nil, false
@@ -209,11 +209,11 @@ type diffSnapshot struct {
 // unreliable and the caller skips the diff. A file absent on disk (and from the
 // editor) is a reliable new-file snapshot (exists=false), which renders as a
 // new-file diff.
-func (w *WorkspaceFS) textForDiff(ctx context.Context, path string) diffSnapshot {
+func (w *EditorFS) textForDiff(ctx context.Context, path string) diffSnapshot {
 	conn, sid, hasCap := w.readReady()
 	if !hasCap {
 		// No editor read path at all → the OS copy is the source of truth.
-		data, err := w.OSWorkspaceFS.ReadFile(ctx, path)
+		data, err := w.OSFS.ReadFile(ctx, path)
 		switch {
 		case err == nil:
 			return diffSnapshot{text: string(data), exists: true, reliable: true}
@@ -230,7 +230,7 @@ func (w *WorkspaceFS) textForDiff(ctx context.Context, path string) diffSnapshot
 	// file" from "editor couldn't serve an existing file". Only the former is a
 	// safe new-file diff — confirm against disk. If it exists on disk, the disk
 	// copy may not match the unsaved buffer, so treat as unreliable.
-	if _, err := w.OSWorkspaceFS.Stat(ctx, path); os.IsNotExist(err) {
+	if _, err := w.OSFS.Stat(ctx, path); os.IsNotExist(err) {
 		return diffSnapshot{reliable: true} // exists=false → new-file diff
 	}
 	return diffSnapshot{} // unreliable, skip

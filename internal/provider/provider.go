@@ -3,24 +3,21 @@ package provider
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/llm"
-	"github.com/voocel/codebot/internal/diag"
 	"github.com/voocel/litellm"
 	llmprovider "github.com/voocel/litellm/provider"
 )
 
-// IsSupportedType reports whether litellm builds a provider of the given type,
-// so codebot does not maintain a duplicate whitelist.
+// IsSupportedType reports whether codebot builds a provider of the given
+// type: one litellm builds, so codebot keeps no list of its own. Type
+// "gateway" reaches a litellm gateway, which holds the keys, makes the model
+// calls and bills them, so codebot can run where keys must not, say in a
+// sandbox.
 func IsSupportedType(name string) bool {
 	return slices.Contains(llmprovider.Names(), name)
-}
-
-// SupportedTypeNames returns the provider types litellm builds, sorted.
-func SupportedTypeNames() []string {
-	return llmprovider.Names()
 }
 
 // ModelSpec names a model and how to reach the provider serving it.
@@ -39,21 +36,45 @@ const fallbackMaxTokens = 32000
 
 // NewModelFactory returns a factory that builds models with the output caps
 // and prices in models, forwarding clientOpts (e.g. litellm.WithObservers for
-// telemetry) to every client. Its type matches agent.ModelFactory without
-// importing that package, avoiding an import cycle.
-func NewModelFactory(models *Models, clientOpts ...litellm.ClientOption) func(ModelSpec) (agentcore.ChatModel, error) {
-	return func(spec ModelSpec) (agentcore.ChatModel, error) {
-		facts, _ := models.Lookup(spec)
-		opts := []llm.ModelOption{llm.WithClientOptions(clientOpts...)}
-		if facts.Pricing != nil {
-			opts = append(opts, llm.WithPricing(*facts.Pricing))
-		}
-		// Providers that require an output cap, such as Anthropic, get the model's.
-		opts = append(opts, llm.WithMaxTokensIfRequired(cmp.Or(facts.MaxOutputTokens, fallbackMaxTokens)))
-		model, err := llm.NewModel(spec.Type, spec.Model, spec.Conn, opts...)
+// telemetry) to every client. A provider is named as configured, so replay
+// state reaches only the endpoint that issued it.
+func NewModelFactory(models *Models, clientOpts ...litellm.ClientOption) func(ModelSpec) (agentcore.Model, error) {
+	return func(spec ModelSpec) (agentcore.Model, error) {
+		conn := spec.Conn
+		conn.Name = spec.Provider
+		p, err := llmprovider.New(spec.Type, conn)
 		if err != nil {
-			return nil, fmt.Errorf("create model %s/%s: %w: %w", spec.Provider, spec.Model, diag.ErrProvider, err)
+			return agentcore.Model{}, fmt.Errorf("create model %s/%s: %w", spec.Provider, spec.Model, err)
 		}
-		return WrapStreamSafe(model), nil
+		client, err := litellm.New(p, clientOpts...)
+		if err != nil {
+			return agentcore.Model{}, fmt.Errorf("create model %s/%s: %w", spec.Provider, spec.Model, err)
+		}
+		facts, _ := models.Lookup(spec)
+		model := agentcore.Model{Client: client, Request: litellm.Request{Model: spec.Model}, Pricing: facts.Pricing}
+		// Providers that require an output cap, such as Anthropic, get the model's.
+		if caps, _ := client.Capabilities(); caps.MaxTokensRequired {
+			model.Request.MaxTokens = new(cmp.Or(facts.MaxOutputTokens, fallbackMaxTokens))
+		}
+		return model, nil
 	}
+}
+
+// WithCacheKey returns model with its requests routing the prompt cache by
+// key, as OpenAI's prompt_cache_key does, where its provider takes a key:
+// the others reject options they do not list.
+func WithCacheKey(model agentcore.Model, key string) agentcore.Model {
+	const option = "prompt_cache_key"
+	if caps, _ := model.Client.Capabilities(); !slices.Contains(caps.ProviderOptions, option) {
+		return model
+	}
+	opts := maps.Clone(model.Request.ProviderOptions)
+	if opts == nil {
+		opts = litellm.ProviderOptions{}
+	}
+	if err := opts.Set(option, key); err != nil {
+		panic(err) // a string always encodes
+	}
+	model.Request.ProviderOptions = opts
+	return model
 }

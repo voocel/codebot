@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,14 +33,11 @@ func LoadAll(cwd string) (*Catalog, error) {
 		return nil, err
 	}
 
-	byID := make(map[string]Loaded)
-	builtin, err := loadBuiltinPlugins(cwd, userStates, projectStates)
+	builtin, err := loadBuiltin(cwd, userStates, projectStates)
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range builtin {
-		byID[p.Manifest.ID] = p
-	}
+	byID := map[string]Loaded{builtin.Manifest.ID: builtin}
 	for _, scope := range []struct {
 		name   string
 		root   string
@@ -123,13 +121,13 @@ func loadScope(root, scope string, states map[string]rawState) ([]Loaded, error)
 func applyState(scope, id string, raw rawState) (State, error) {
 	state := State{
 		Enabled: true,
-		Trust:   DefaultTrust(scope),
+		Trust:   TrustTrusted,
 	}
 	if raw.Enabled != nil {
 		state.Enabled = *raw.Enabled
 	}
 	if strings.TrimSpace(raw.Trust) != "" {
-		trust := NormalizeTrust(raw.Trust)
+		trust := normalizeTrust(raw.Trust)
 		if trust == "" {
 			return State{}, fmt.Errorf("plugin %s (%s): invalid trust value %q in state file", id, scope, raw.Trust)
 		}
@@ -138,37 +136,34 @@ func applyState(scope, id string, raw rawState) (State, error) {
 	return state, nil
 }
 
-func loadBuiltinPlugins(cwd string, userStates, projectStates map[string]rawState) ([]Loaded, error) {
-	specs := skill.BundledSpecs(cwd)
-	if len(specs) == 0 {
-		return nil, nil
-	}
+// loadBuiltin loads the builtin plugin, which carries the bundled skills.
+func loadBuiltin(cwd string, userStates, projectStates map[string]rawState) (Loaded, error) {
 	raw := userStates["core"]
 	if override, ok := projectStates["core"]; ok {
 		raw = override
 	}
 	state, err := applyState("builtin", "core", raw)
 	if err != nil {
-		return nil, err
+		return Loaded{}, err
 	}
-	return []Loaded{{
+	return Loaded{
 		Manifest: Manifest{
 			ID:          "core",
 			Name:        "Core",
 			Version:     "builtin",
 			Description: "Built-in codebot skills",
 		},
-		State:      state,
-		Scope:      "builtin",
-		skillSpecs: specs,
-	}}, nil
+		State:   state,
+		Scope:   "builtin",
+		bundled: skill.Bundled(cwd),
+	}, nil
 }
 
 func validateManifest(path, root string, manifest Manifest) error {
 	if strings.TrimSpace(manifest.ID) == "" {
 		return fmt.Errorf("plugin manifest %s: id is required", path)
 	}
-	if err := ValidateID(manifest.ID); err != nil {
+	if err := validateID(manifest.ID); err != nil {
 		return fmt.Errorf("plugin manifest %s: %w", path, err)
 	}
 	if strings.TrimSpace(manifest.Name) == "" {
@@ -177,13 +172,8 @@ func validateManifest(path, root string, manifest Manifest) error {
 	if strings.TrimSpace(manifest.Version) == "" {
 		return fmt.Errorf("plugin manifest %s: version is required", path)
 	}
-	for _, rel := range []string{manifest.SkillsDir, manifest.CommandsDir} {
-		if rel == "" {
-			continue
-		}
-		if _, err := resolveRelativeDir(root, rel); err != nil {
-			return fmt.Errorf("plugin manifest %s: %w", path, err)
-		}
+	if _, err := resolveRelativeDir(root, manifest.SkillsDir); err != nil {
+		return fmt.Errorf("plugin manifest %s: %w", path, err)
 	}
 	return nil
 }
@@ -239,7 +229,7 @@ func validateCatalog(plugins []Loaded) error {
 		if !loaded.State.Enabled {
 			continue
 		}
-		for name := range AllowedMCPServers(loaded.State.Trust, loaded.Manifest.MCPServers) {
+		for name := range loaded.mcpServers() {
 			if prev, exists := seen[name]; exists {
 				return fmt.Errorf("duplicate MCP server %q contributed by plugins %s (%s) and %s (%s)", name, prev.id, prev.scope, loaded.Manifest.ID, loaded.Scope)
 			}
@@ -264,7 +254,7 @@ func SetEnabled(cwd string, loaded Loaded, enabled bool) error {
 	}
 	entry := current[loaded.Manifest.ID]
 	entry.Enabled = boolPtr(enabled)
-	if NormalizeTrust(entry.Trust) == "" {
+	if normalizeTrust(entry.Trust) == "" {
 		entry.Trust = loaded.State.Trust
 	}
 	current[loaded.Manifest.ID] = entry
@@ -273,9 +263,9 @@ func SetEnabled(cwd string, loaded Loaded, enabled bool) error {
 
 // SetTrust persists a plugin trust decision into the matching state file.
 func SetTrust(cwd string, loaded Loaded, trust string) error {
-	trust = NormalizeTrust(trust)
+	trust = normalizeTrust(trust)
 	if trust == "" {
-		return fmt.Errorf("invalid trust value")
+		return errors.New("invalid trust value")
 	}
 	path := statePathForScope(cwd, loaded.Scope)
 	if path == "" {

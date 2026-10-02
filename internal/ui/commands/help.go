@@ -14,7 +14,7 @@ import (
 // HelpCommand drives /help — a tabbed modal overlay listing general intro,
 // built-in commands, custom (file/plugin) commands, and skills.
 type HelpCommand struct {
-	registry Registry
+	registry *Table
 
 	state *helpState
 }
@@ -23,11 +23,11 @@ type helpState struct {
 	active int
 }
 
-var helpTabs = []string{"general", "built-in", "custom", "skills"}
+var helpTabs = []string{"general", "built-in", "skills"}
 
 // Help constructs the /help command. The registry is consumed both for
 // listing peer commands and for installing the modal overlay.
-func Help(registry Registry) *HelpCommand {
+func Help(registry *Table) *HelpCommand {
 	return &HelpCommand{registry: registry}
 }
 
@@ -36,7 +36,6 @@ func (c *HelpCommand) Spec() Spec {
 		Name:        "help",
 		Usage:       "/help",
 		Description: "Show this help",
-		Category:    "info",
 		Kind:        KindBuiltin,
 	}
 }
@@ -47,9 +46,8 @@ func (c *HelpCommand) Run(_ Invocation) tea.Cmd {
 	return nil
 }
 
-func (c *HelpCommand) Active() bool  { return c.state != nil }
-func (c *HelpCommand) IsModal() bool { return true }
-func (c *HelpCommand) Dismiss()      { c.state = nil }
+func (c *HelpCommand) Active() bool { return c.state != nil }
+func (c *HelpCommand) Dismiss()     { c.state = nil }
 
 func (c *HelpCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if c.state == nil {
@@ -62,7 +60,7 @@ func (c *HelpCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	case "shift+tab", "left", "h":
 		c.state.active = (c.state.active - 1 + len(helpTabs)) % len(helpTabs)
 		return true, nil
-	case "1", "2", "3", "4":
+	case "1", "2", "3":
 		idx := int(msg.Runes[0] - '1')
 		if idx < len(helpTabs) {
 			c.state.active = idx
@@ -84,11 +82,10 @@ func (c *HelpCommand) View(width, height int) string {
 		Tabs: []tui.InfoOverlayTab{
 			{Name: helpTabs[0], Body: c.renderGeneral},
 			{Name: helpTabs[1], Body: c.renderBuiltin},
-			{Name: helpTabs[2], Body: c.renderCustom},
-			{Name: helpTabs[3], Body: c.renderSkills},
+			{Name: helpTabs[2], Body: c.renderSkills},
 		},
 		Active: c.state.active,
-		Hint:   "Tab / ←→ switch · 1-4 jump · Esc close",
+		Hint:   "Tab / ←→ switch · 1-3 jump · Esc close",
 		Width:  width,
 		Height: height,
 	}
@@ -141,21 +138,16 @@ func (c *HelpCommand) renderBuiltin(width int) string {
 		"No built-in commands registered.")
 }
 
-func (c *HelpCommand) renderCustom(width int) string {
-	return c.renderCommandGroup(width, KindCustom,
-		"No custom commands. Add Markdown files under .codebot/commands/ to register slash commands.")
-}
-
 func (c *HelpCommand) renderSkills(width int) string {
 	return c.renderCommandGroup(width, KindSkill,
-		"No skills loaded. Drop skill bundles into .codebot/skills/ or install via /plugins install.")
+		"No skills loaded. Skills come from plugins: /plugins create, then add skills to its skills/ directory, or /plugins install.")
 }
 
 func (c *HelpCommand) renderCommandGroup(width int, kind Kind, emptyMsg string) string {
 	var cmds []Command
 	for _, cmd := range c.registry.All() {
 		spec := c.registry.EffectiveSpec(cmd)
-		if spec.Hidden || spec.Kind != kind {
+		if spec.Kind != kind {
 			continue
 		}
 		cmds = append(cmds, cmd)

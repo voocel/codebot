@@ -2,80 +2,49 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/codebot/internal/agent"
-	mcpclient "github.com/voocel/codebot/internal/mcp"
+	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
+
+	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // This file groups the small, single-screenful builtin commands that fit a
-// NewSimple wrapper. Commands large enough to warrant their own file (Plan,
-// Memory, Loop, Plugins, and the interactive overlays) live separately.
+// NewSimple wrapper. Commands large enough to warrant their own file (Memory,
+// Plugins, and the interactive overlays) live separately.
 
-// Clear constructs the /clear command which wipes the in-memory conversation
-// (session history on disk is preserved). resetPlanState is invoked so any
-// pending plan-mode UI state is dropped at the same time.
-func Clear(session *agent.Session, resetPlanState func()) Command {
+// Compact constructs the /compact command, which summarizes the history to
+// free up the context window. The TUI reports the outcome from the
+// compaction events.
+func Compact(a *app.App) Command {
 	return NewSimple(Spec{
-		Name: "clear", Usage: "/clear", Description: "Clear current context (memory only)",
-		Category: "session", NeedsIdle: true, Kind: KindBuiltin,
+		Name: "compact", Usage: "/compact", Description: "Compact conversation context", NeedsIdle: true, Kind: KindBuiltin,
 	}, func(_ Invocation) tea.Cmd {
-		// Off the Update goroutine: ClearConversation's HoldRuns drain needs
-		// the tea loop free to pump the dying run's events (p.Send blocks
-		// until the loop receives). resetPlanState only touches self-guarded
-		// managers, safe off-loop.
+		conv := a.Current()
 		return func() tea.Msg {
-			session.ClearConversation()
-			resetPlanState()
-			return tui.CommandResultMsg{
-				Text:  tui.SystemMsgStyle.Render("Current context cleared (session history is kept)."),
-				Clear: true,
-			}
-		}
-	})
-}
-
-// Compact constructs the /compact command which collapses old conversation
-// history into a summary to free up the context window.
-func Compact(session *agent.Session) Command {
-	return NewSimple(Spec{
-		Name: "compact", Usage: "/compact", Description: "Compact conversation context",
-		Category: "session", NeedsIdle: true, Kind: KindBuiltin,
-	}, func(_ Invocation) tea.Cmd {
-		run := func() tea.Msg {
-			result, err := session.Compact()
-			if err != nil {
+			if err := conv.Compact(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
 				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Compaction failed: " + err.Error())}
 			}
-			if !result.Changed {
-				return tui.CommandResultMsg{Text: tui.MutedStyle.Render("Context unchanged; nothing worth compacting yet.")}
-			}
-			return tui.CommandResultMsg{
-				Text: tui.SystemMsgStyle.Render(fmt.Sprintf(
-					"Context compacted: %s -> %s.",
-					tui.FormatTokens(result.TokensBefore),
-					tui.FormatTokens(result.TokensAfter),
-				)),
-			}
+			return nil
 		}
-		// The live status already reports compaction progress.
-		return run
 	})
 }
 
 // Copy constructs the /copy command which writes the last assistant response
 // to the system clipboard.
-func Copy(session *agent.Session) Command {
+func Copy(a *app.App) Command {
 	return NewSimple(Spec{
-		Name: "copy", Usage: "/copy", Description: "Copy last response to clipboard",
-		Category: "info", Kind: KindBuiltin,
+		Name: "copy", Usage: "/copy", Description: "Copy last response to clipboard", Kind: KindBuiltin,
 	}, func(_ Invocation) tea.Cmd {
-		text := session.LastAssistantText()
+		text := lastAssistantText(a.Current().History())
 		if text == "" {
 			return tui.SendCommandResult(tui.ErrorStyle.Render("No assistant response to copy."))
 		}
@@ -87,12 +56,23 @@ func Copy(session *agent.Session) Command {
 	})
 }
 
+// lastAssistantText is the text of the latest assistant reply.
+func lastAssistantText(history []agentcore.Message) string {
+	for _, m := range slices.Backward(history) {
+		if m.Role == litellm.RoleAssistant {
+			if text := strings.TrimSpace(m.Text()); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
 // Exit constructs the /exit command. Aliased as /quit and /q.
 func Exit() Command {
 	return NewSimple(Spec{
 		Name: "exit", Aliases: []string{"quit", "q"},
-		Usage: "/exit", Description: "Quit",
-		Category: "exit", Kind: KindBuiltin,
+		Usage: "/exit", Description: "Quit", Kind: KindBuiltin,
 	}, func(_ Invocation) tea.Cmd {
 		return func() tea.Msg { return tui.CommandResultMsg{Quit: true} }
 	})
@@ -100,21 +80,17 @@ func Exit() Command {
 
 // MCP constructs the /mcp command which lists configured MCP servers and their
 // connection / tool counts.
-func MCP(manager *mcpclient.Manager) Command {
+func MCP(a *app.App) Command {
 	return NewSimple(Spec{
-		Name: "mcp", Usage: "/mcp", Description: "Show MCP server status",
-		Category: "info", Kind: KindBuiltin,
+		Name: "mcp", Usage: "/mcp", Description: "Show MCP server status", Kind: KindBuiltin,
 	}, func(_ Invocation) tea.Cmd {
-		if manager == nil {
-			return tui.SendCommandResult(tui.CommandStyle.Render("No MCP servers configured."))
-		}
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			servers := manager.Status(ctx)
+			servers := a.MCPStatus(ctx)
 			if len(servers) == 0 {
-				return tui.CommandResultMsg{Text: tui.CommandStyle.Render("No MCP servers found.")}
+				return tui.CommandResultMsg{Text: tui.CommandStyle.Render("No MCP servers configured.")}
 			}
 
 			var connected, failed int
@@ -144,54 +120,40 @@ func MCP(manager *mcpclient.Manager) Command {
 	})
 }
 
-// New constructs the /new command which abandons the current session and
-// starts a fresh one. Plan-mode UI state is reset alongside.
-func New(session *agent.Session, resetPlanState func()) Command {
+// NewSession constructs the /new command, aliased /clear, which starts a
+// fresh session; the current one stays on disk for /resume.
+func NewSession(a *app.App) Command {
 	return NewSimple(Spec{
-		Name: "new", Usage: "/new", Description: "Start new session",
-		Category: "session", NeedsIdle: true, Kind: KindBuiltin,
+		Name: "new", Aliases: []string{"clear"}, Usage: "/new", Description: "Start a new session", NeedsIdle: true, Kind: KindBuiltin,
 	}, func(_ Invocation) tea.Cmd {
-		// Off the Update goroutine — same deadlock geometry as /clear: Reset's
-		// HoldRuns drain must not block the loop that pumps p.Send.
+		// Off the TUI's goroutine: opening publishes to it.
 		return func() tea.Msg {
-			if err := session.Reset(); err != nil {
+			if _, err := a.Open(""); err != nil {
 				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Failed to create session: " + err.Error())}
 			}
-			resetPlanState()
-			return tui.CommandResultMsg{
-				Text:  tui.SystemMsgStyle.Render("New session started."),
-				Clear: true,
-			}
+			return nil
 		}
 	})
 }
 
-// ReloadResult summarises the outcome of a /reload run, used to render the
-// terminal feedback line. The host App fills in the counts after reloading
-// plugin / skill / MCP state.
-type ReloadResult struct {
-	Commands     int
-	Skills       int
-	MCPTools     int
-	MCPConnected int
-	MCPFailed    int
-}
-
-// Reload constructs the /reload command which rebuilds the plugin/skill/MCP
-// runtime from disk. The host provides the reload callback returning the
-// outcome counts (or an error to render).
-func Reload(reload func() (ReloadResult, error)) Command {
+// Reload constructs the /reload command which reloads plugins, skills and
+// MCP servers from disk.
+func Reload(a *app.App, t *Table) Command {
 	return NewSimple(Spec{
-		Name: "reload", Usage: "/reload", Description: "Reload skills, prompts, and commands",
-		Category: "session", NeedsIdle: true, Kind: KindBuiltin,
+		Name: "reload", Usage: "/reload", Description: "Reload skills, prompts, and plugins", NeedsIdle: true, Kind: KindBuiltin,
 	}, func(_ Invocation) tea.Cmd {
-		result, err := reload()
-		if err != nil {
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Reload failed: " + err.Error()))
+		return func() tea.Msg {
+			report, err := a.ReloadPlugins(context.Background())
+			if err != nil {
+				return tui.CommandResultMsg{Text: tui.ErrorStyle.Render("Reload failed: " + err.Error())}
+			}
+			return tui.ApplyMsg{Apply: func() tea.Cmd {
+				t.Rebuild() // new skills become commands
+				return tui.SendCommandResult(tui.SystemMsgStyle.Render(fmt.Sprintf(
+					"Reloaded: %d skills, %d MCP tools (%d connected, %d failed).",
+					report.Skills, report.MCP.Tools, report.MCP.Connected, len(report.MCP.Errors),
+				)))
+			}}
 		}
-		return tui.SendCommandResult(tui.SystemMsgStyle.Render(fmt.Sprintf(
-			"Reloaded: %d commands, %d skills, %d MCP tools (%d connected, %d failed).",
-			result.Commands, result.Skills, result.MCPTools, result.MCPConnected, result.MCPFailed,
-		)))
 	})
 }

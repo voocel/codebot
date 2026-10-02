@@ -6,9 +6,11 @@ import (
 	"maps"
 	"slices"
 	"sync"
-	"sync/atomic"
 
 	"github.com/voocel/agentcore"
+
+	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/permission"
 )
 
 // Manager manages the lifecycle of multiple MCP server connections.
@@ -16,20 +18,22 @@ type Manager struct {
 	mu       sync.Mutex
 	clients  map[string]*Client
 	failures map[string]string // server name → error message
-	dirty    atomic.Bool       // set when any server signals tools/list_changed
+	onChange func()            // a server signalled tools/list_changed
 }
 
-// NewManager creates an empty Manager.
-func NewManager() *Manager {
+// NewManager creates an empty Manager. onChange is called, on a goroutine of
+// the server's connection, whenever a server's tool list changes.
+func NewManager(onChange func()) *Manager {
 	return &Manager{
 		clients:  make(map[string]*Client),
 		failures: make(map[string]string),
+		onChange: onChange,
 	}
 }
 
 // StartAll connects to all configured MCP servers in parallel.
 // Partial failures are collected; successful servers remain active.
-func (m *Manager) StartAll(ctx context.Context, servers map[string]ServerConfig) []error {
+func (m *Manager) StartAll(ctx context.Context, servers map[string]config.MCPServer) []error {
 	type result struct {
 		name   string
 		client *Client
@@ -38,8 +42,8 @@ func (m *Manager) StartAll(ctx context.Context, servers map[string]ServerConfig)
 
 	ch := make(chan result, len(servers))
 	for name, cfg := range servers {
-		go func(name string, cfg ServerConfig) {
-			c, err := Connect(ctx, name, cfg, func() { m.dirty.Store(true) })
+		go func(name string, cfg config.MCPServer) {
+			c, err := connect(ctx, name, cfg, m.onChange)
 			ch <- result{name: name, client: c, err: err}
 		}(name, cfg)
 	}
@@ -61,35 +65,18 @@ func (m *Manager) StartAll(ctx context.Context, servers map[string]ServerConfig)
 	return errs
 }
 
-// MarkDirty forces the dirty flag so that the next RefreshIfDirty call
-// triggers a tool reload. Used after initial async connection completes.
-func (m *Manager) MarkDirty() { m.dirty.Store(true) }
-
 // Reconfigure replaces the active MCP server set with a new configuration.
-// Existing clients are closed, connection failures are reset, and the manager
-// is marked dirty so the session can refresh its MCP tool list.
-func (m *Manager) Reconfigure(ctx context.Context, servers map[string]ServerConfig) []error {
+// Existing clients are closed and connection failures are reset.
+func (m *Manager) Reconfigure(ctx context.Context, servers map[string]config.MCPServer) []error {
 	oldClients := m.reset()
 	for _, c := range oldClients {
 		_ = c.Close()
 	}
 
-	var errs []error
-	if len(servers) > 0 {
-		errs = m.StartAll(ctx, servers)
+	if len(servers) == 0 {
+		return nil
 	}
-	m.MarkDirty()
-	return errs
-}
-
-// RefreshIfDirty re-fetches tools from all servers if any sent a list_changed
-// notification since the last call. Returns the new tool list and true,
-// or nil and false if nothing changed. Safe to call from the main loop.
-func (m *Manager) RefreshIfDirty(ctx context.Context) ([]agentcore.Tool, bool) {
-	if !m.dirty.CompareAndSwap(true, false) {
-		return nil, false
-	}
-	return m.Tools(ctx), true
+	return m.StartAll(ctx, servers)
 }
 
 // sortedClients returns connected clients in deterministic (server name)
@@ -106,22 +93,26 @@ func (m *Manager) sortedClients() []*Client {
 	return out
 }
 
-// Tools returns all MCP tools from connected servers as agentcore.Tool adapters.
-func (m *Manager) Tools(ctx context.Context) []agentcore.Tool {
+// Tools returns the tools of the connected servers, and how the permission
+// engine sees each, by name.
+func (m *Manager) Tools(ctx context.Context) ([]agentcore.Tool, map[string]permission.Metadata) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var tools []agentcore.Tool
+	perms := map[string]permission.Metadata{}
 	for _, c := range m.sortedClients() {
-		mcpTools, err := c.ListTools(ctx)
+		listed, err := c.ListTools(ctx)
 		if err != nil {
 			continue
 		}
-		for _, t := range mcpTools {
-			tools = append(tools, NewMCPTool(c, t))
+		for _, t := range listed {
+			tool := newTool(c, t)
+			tools = append(tools, tool)
+			perms[tool.Name] = permissionOf(t)
 		}
 	}
-	return tools
+	return tools, perms
 }
 
 // Instructions collects server instructions from all connected servers.
@@ -157,9 +148,8 @@ type ServerStatus struct {
 	ListError string // non-empty if connected but ListTools failed
 }
 
-// Status returns the status of all MCP servers, including failed ones.
-// ListTools calls run in parallel with per-server timeout; the mutex is not
-// held during network I/O.
+// Status returns the status of all MCP servers, including failed ones. The
+// servers list their tools in parallel, under ctx, without holding the lock.
 func (m *Manager) Status(ctx context.Context) []ServerStatus {
 	m.mu.Lock()
 	clients := make([]*Client, 0, len(m.clients))
@@ -210,6 +200,5 @@ func (m *Manager) reset() []*Client {
 	}
 	m.clients = make(map[string]*Client)
 	m.failures = make(map[string]string)
-	m.dirty.Store(false)
 	return oldClients
 }

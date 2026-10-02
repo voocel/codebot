@@ -73,6 +73,16 @@
           "Session_id": "replace-with-random-session-id"
         }
       }
+    },
+    // Company gateway (a LiteLLM gateway): codebot runs the agent, e.g. in a
+    // sandbox, while the gateway holds the provider keys, makes the model calls and
+    // bills them. "api_key" is codebot's token for the gateway (sent as Bearer).
+    "corp-gateway": {
+      "type": "gateway",
+      "api_key": "sandbox-token",
+      "base_url": "https://llm-gateway.internal/agent",
+      "models": ["claude-sonnet-4-6", "gpt-5"],
+      "small_model": "claude-haiku-4-5"
     }
   },
 
@@ -84,14 +94,14 @@
   "compact_window": 300000,
   "compact_ratio": 0.85,
 
-  "search_provider": "tavily", // tavily | jina
-  "search_api_key": "",
+  "search_provider": "tavily", // tavily (needs a key) | jina
+  "search_api_key": "", // else TAVILY_API_KEY / JINA_API_KEY
 
   // OpenTelemetry trace export. When enabled, every LLM call is emitted as a
   // generation span (gen_ai.* attributes) to an OTLP/HTTP backend such as
   // Langfuse — any OTLP-compatible platform works (Phoenix, Jaeger, …).
   // Each span is tagged with the current session id (langfuse.session.id +
-  // session.id), so a run's calls — leader and teammates — group into one
+  // session.id), so a run's calls — main agent and sub-agents — group into one
   // session on the backend automatically; no extra config needed.
   // endpoint is the full OTLP *traces* URL, used as-is: it must already include
   // the /v1/traces path (it is NOT auto-appended). For Langfuse Cloud:
@@ -103,17 +113,6 @@
     "endpoint": "https://cloud.langfuse.com/api/public/otel/v1/traces",
     "public_key": "pk-lf-...",
     "secret_key": "sk-lf-..."
-  },
-
-  // Background memory consolidation ("dream"). When the session goes idle, a
-  // restricted subagent reorganizes ~/.codebot/projects/<id>/memory/ — merging
-  // duplicates, fixing stale facts, pruning the MEMORY.md index. Fires at most
-  // once per min_hours, and only after min_sessions other sessions have been
-  // active since the last run. /dream triggers one immediately. On by default.
-  "dream": {
-    "enabled": true,
-    "min_hours": 24,
-    "min_sessions": 5
   },
 
   // Hooks: commands/prompts/http triggered on lifecycle events.
@@ -134,19 +133,8 @@
     "PostToolUse": [
       { "type": "command", "command": "echo done" }
     ],
-    "TaskCreated": [
-      { "type": "command", "command": "echo created:$HOOK_TOOL_NAME" }
-    ],
-    "TaskCompleted": [
-      { "type": "command", "command": "echo completed:$HOOK_TOOL_NAME" }
-    ],
     "Notification": [
       { "type": "command", "command": "notify-send 'codebot' 'Agent finished'" }
-    ],
-    // SubagentStop fires when a teammate exits. The matcher tests the teammate
-    // name; the stdin payload carries {"agent": "<name>"}.
-    "SubagentStop": [
-      { "type": "command", "command": "cat >> ~/.codebot/teammates.log" }
     ]
   },
 

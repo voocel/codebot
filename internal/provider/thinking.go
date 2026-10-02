@@ -1,50 +1,47 @@
 package provider
 
 import (
-	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/llm"
+	"slices"
+
+	"github.com/voocel/litellm"
 )
 
-// IsValidThinkingLevel reports whether s is a recognized thinking level.
-func IsValidThinkingLevel(s string) bool {
-	switch s {
-	case "", "off", "low", "medium", "high", "xhigh", "max":
-		return true
-	}
-	return false
+// efforts are the reasoning efforts a user may pick besides "", the provider
+// default.
+var efforts = []string{"off", "low", "medium", "high", "xhigh", "max"}
+
+// ValidEffort reports whether effort is one a user may pick.
+func ValidEffort(effort string) bool {
+	return effort == "" || slices.Contains(efforts, effort)
 }
 
-func ThinkingLevelsForModel(model agentcore.ChatModel) []string {
-	if model == nil {
-		return nil
+// ThinkingLevels lists the reasoning efforts a user may pick for a model of
+// client that the model list says reasoning of, nil when it does not know:
+// "" always, and the others unless the model does not reason, each where
+// the provider sends it. Which efforts a reasoning model takes is the
+// vendor's call.
+func ThinkingLevels(client *litellm.Client, reasoning *bool) []string {
+	levels := []string{""}
+	if reasoning != nil && !*reasoning {
+		return levels
 	}
-	return thinkingLevelsFromPolicy(llm.ThinkingPolicyFor(model))
-}
-
-func ResolveThinkingLevel(model agentcore.ChatModel, level string) (string, bool) {
-	if !IsValidThinkingLevel(level) {
-		return string(agentcore.ThinkingAuto), false
-	}
-	if model == nil {
-		return level, true
-	}
-	resolved, ok := llm.ThinkingPolicyFor(model).Resolve(agentcore.ThinkingLevel(level))
-	if ok && !IsValidThinkingLevel(string(resolved)) {
-		return string(agentcore.ThinkingAuto), false
-	}
-	return string(resolved), ok
-}
-
-func thinkingLevelsFromPolicy(policy llm.ThinkingPolicy) []string {
-	if len(policy.Available) == 0 {
-		return []string{""}
-	}
-	out := make([]string, 0, len(policy.Available))
-	for _, level := range policy.Available {
-		value := string(level)
-		if IsValidThinkingLevel(value) {
-			out = append(out, value)
+	caps, known := client.Capabilities()
+	for _, effort := range efforts {
+		if !known || effort == "off" && caps.DisableThinking || effort != "off" && caps.ThinkingEffort {
+			levels = append(levels, effort)
 		}
 	}
-	return out
+	return levels
+}
+
+// Thinking is the request's setting for a reasoning effort; nil leaves the
+// provider default.
+func Thinking(effort string) *litellm.Thinking {
+	switch effort {
+	case "":
+		return nil
+	case "off":
+		return &litellm.Thinking{Disabled: true}
+	}
+	return &litellm.Thinking{Effort: effort}
 }

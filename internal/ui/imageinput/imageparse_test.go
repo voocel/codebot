@@ -1,6 +1,7 @@
 package imageinput
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,14 +27,8 @@ func TestFromBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if block.Image == nil {
-		t.Fatal("expected image block")
-	}
-	if block.Image.MimeType != "image/png" {
-		t.Errorf("mime = %q, want image/png", block.Image.MimeType)
-	}
-	if block.Image.Data == "" {
-		t.Error("expected non-empty base64 data")
+	if block.MIME != "image/png" || !bytes.Equal(block.Data, minimalPNG) {
+		t.Errorf("block = %q, %d bytes; want the PNG", block.MIME, len(block.Data))
 	}
 }
 
@@ -102,10 +97,7 @@ func TestLoadFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if block.Image == nil {
-		t.Fatal("expected image block")
-	}
-	if block.Image.MimeType != "image/png" {
-		t.Errorf("mime = %q, want image/png", block.Image.MimeType)
+	if block.MIME != "image/png" {
+		t.Errorf("mime = %q, want image/png", block.MIME)
 	}
 }

@@ -3,15 +3,19 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	cbteam "github.com/voocel/codebot/internal/team"
+	"github.com/voocel/agentcore/task"
+
+	"github.com/voocel/codebot/internal/app"
 )
 
-// Fleet list — a live roster of observable agents (long-lived teammates and
-// background sub-agents) pinned just below the input. Keyboard focus normally
+// Fleet list — a live roster of background sub-agents pinned just below the
+// input. Keyboard focus normally
 // sits in the textarea; pressing ↓ at the last input line drops focus into this
 // list (handleDownKey → FleetFocus). While focused, ↑/↓ move the highlight and
 // Enter confirms — an agent previews its live transcript (split layout, the
@@ -19,15 +23,14 @@ import (
 // same flow works whether the upper area is currently the conversation or a
 // transcript, so the user can switch targets from the list at any time.
 //
-// Row 0 is always "main" — the leader conversation. Selecting it (Enter) just
+// Row 0 is always "main" — the main conversation. Selecting it (Enter) just
 // returns focus to the input, so the list is a symmetric switcher: drop in,
 // pick an agent to inspect, or pick main to come back. Agents occupy rows 1..N,
 // so cursor index i>=1 maps to agents[i-1].
 //
-// Data source is the teammate event hub: its KnownAgents() is exactly "which
+// Data source is the sub-agent event hub: its KnownAgents() is exactly "which
 // agents can I preview right now (or replay if ended)", so Enter maps 1:1 to
-// openTranscriptModal with no name reconciliation. Teammates always appear;
-// background sub-agents appear once SubagentHubObserver routes them in.
+// openTranscriptModal with no name reconciliation.
 
 // maxFleetVisible caps how many agent rows render so a long-running session
 // with many finished agents can't push the input off-screen. Active agents
@@ -35,12 +38,8 @@ import (
 const maxFleetVisible = 6
 
 // fleetAgents returns the hub's known agents sorted active-first, then by name.
-// nil when no hub is wired or nothing has published yet.
-func (m *Model) fleetAgents() []cbteam.AgentInfo {
-	if m.config.TeammateEvents == nil {
-		return nil
-	}
-	infos := m.config.TeammateEvents.KnownAgents()
+func (m *Model) fleetAgents() []app.AgentInfo {
+	infos := m.agents.KnownAgents()
 	sort.SliceStable(infos, func(i, j int) bool {
 		if infos[i].Active != infos[j].Active {
 			return infos[i].Active // active before ended
@@ -55,7 +54,7 @@ func (m *Model) fleetAgents() []cbteam.AgentInfo {
 // running work — finished agents are reviewable via the Ctrl+O modal but don't
 // keep the list pinned below the input at idle.
 func (m *Model) fleetEnterable() bool {
-	return m.config.TeammateEvents != nil && len(m.config.TeammateEvents.ActiveAgents()) > 0
+	return len(m.agents.ActiveAgents()) > 0
 }
 
 // handleFleetKey intercepts navigation while focus is in the fleet list.
@@ -122,14 +121,14 @@ func (m *Model) handleFleetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		// Stop the selected agent; stay in the list so the user can stop
 		// others. The task's abort produces EventAgentEnd → hub MarkStopped →
 		// the row flips to "ended" on the next render. (No-op on the main row.)
-		if m.FleetCursor >= 1 && m.config.StopAgent != nil {
-			m.config.StopAgent(agents[m.FleetCursor-1].Name)
+		if m.FleetCursor >= 1 {
+			if e := m.agentTask(agents[m.FleetCursor-1].Name); e != nil {
+				m.tasks.Stop(e.ID)
+			}
 		}
 		return m, nil, true
 	case "ctrl+f":
-		if m.config.StopAllAgents != nil {
-			m.config.StopAllAgents()
-		}
+		m.tasks.StopAll()
 		return m, nil, true
 	case "pgup":
 		if m.TranscriptModal != nil {
@@ -196,7 +195,7 @@ func (m *Model) renderFleetList() string {
 
 	var sb strings.Builder
 
-	// Row 0: main — the leader conversation. Its right edge holds the hint
+	// Row 0: main — the main conversation. Its right edge holds the hint
 	// (it has no elapsed time), keeping the list self-documenting.
 	mainSel := m.FleetFocus && m.FleetCursor == 0
 	mainLeft := rowPrefix(mainSel) + fleetDot(mainSel) + fleetName("main", mainSel)
@@ -222,9 +221,9 @@ func (m *Model) renderFleetList() string {
 		// Live elapsed, right-aligned, for active agents that correlate to a
 		// running task.
 		right := ""
-		if a.Active && m.config.FleetAgentStat != nil {
-			if elapsed, ok := m.config.FleetAgentStat(a.Name); ok {
-				right = MutedStyle.Render(formatDuration(elapsed))
+		if a.Active {
+			if e := m.agentTask(a.Name); e != nil {
+				right = MutedStyle.Render(formatDuration(time.Since(e.StartedAt)))
 			}
 		}
 		sb.WriteString(fleetRow(left, right, width))
@@ -295,12 +294,7 @@ func fleetName(name string, selected bool) string {
 // actions while focused, a discovery cue while idle.
 func (m *Model) fleetHint() string {
 	if m.FleetFocus {
-		h := "Enter to view"
-		if m.config.StopAgent != nil {
-			h += " · x to stop"
-		}
-		h += " · Esc to exit"
-		return MutedStyle.Italic(true).Render(h)
+		return MutedStyle.Italic(true).Render("Enter to view · x to stop · Esc to exit")
 	}
 	return MutedStyle.Italic(true).Render("↓ to inspect")
 }
@@ -314,4 +308,23 @@ func fleetRow(left, right string, width int) string {
 	}
 	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
 	return left + strings.Repeat(" ", gap) + right
+}
+
+// agentTask is the running task behind a fleet agent, by the hub's display
+// name; nil when none is live. The name may carry the hub's " #N" suffix for
+// concurrent runs of one agent type, which the task lacks, so with several
+// runs of a type this finds the first.
+func (m *Model) agentTask(name string) *task.Entry {
+	base := name
+	if i := strings.LastIndex(name, " #"); i > 0 {
+		if _, err := strconv.Atoi(name[i+2:]); err == nil {
+			base = name[:i]
+		}
+	}
+	for _, e := range m.tasks.List() {
+		if e.Status == task.Running && e.Type == task.TypeSubAgent && e.Agent == base {
+			return &e
+		}
+	}
+	return nil
 }

@@ -3,71 +3,55 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/voocel/agentcore/permission"
+	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/schema"
-	"github.com/voocel/codebot/internal/diag"
+
+	"github.com/voocel/codebot/internal/interact"
 )
 
-// AskUserResponse carries the outcome of an ask_user interaction.
-//
-// Answers is always populated: an empty []string means the question was shown
-// but not answered (only possible when Cancelled is true). Notes carries the
-// raw text the user typed into "Type your own answer" — never echoed in the
-// answer list, surfaced separately so the model sees it as user-authored.
-type AskUserResponse struct {
-	Answers   map[string][]string `json:"answers,omitempty"`   // question text → selected labels (or user-typed text)
-	Notes     map[string]string   `json:"notes,omitempty"`     // question text → custom text the user typed
-	Cancelled bool                `json:"cancelled,omitempty"` // true if the user dismissed the dialog before submitting
+type askUserArgs struct {
+	Questions []interact.Question `json:"questions"`
 }
 
-// Question is a single multi-choice question.
-type Question struct {
-	Question    string   `json:"question"`
-	Header      string   `json:"header"`
-	Options     []Option `json:"options"`
-	MultiSelect bool     `json:"multiSelect,omitempty"`
-	// Custom controls whether the host renders a built-in "Type your own
-	// answer" entry below the listed options. Nil = default true.
-	Custom *bool `json:"custom,omitempty"`
+// NewAskUser returns the ask_user tool, which asks the user structured
+// multi-choice questions through ui.
+func NewAskUser(ui interact.UI) agentcore.Tool {
+	tool := agentcore.NewTool("ask_user", askUserDescription, askUserSchema(), func(ctx context.Context, a askUserArgs) (agentcore.Result, error) {
+		answers, err := ui.Ask(ctx, a.Questions)
+		if errors.Is(err, interact.ErrUnsupported) {
+			return agentcore.TextResult("ask_user is unavailable in this run (no interactive user). Make your best judgment and proceed."), nil
+		}
+		if err != nil {
+			return agentcore.Result{}, err
+		}
+		return agentcore.TextResult(formatAnswers(a.Questions, answers)), nil
+	})
+	tool.Label = "Ask User"
+	// Malformed questions fail before the user sees them.
+	tool.Check = func(_ context.Context, args json.RawMessage) (string, error) {
+		var a askUserArgs
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", fmt.Errorf("invalid args: %w", err)
+		}
+		return "", validateQuestions(a.Questions)
+	}
+	return tool
 }
 
-// Option is a selectable choice for a question.
-type Option struct {
-	Label       string `json:"label"`
-	Description string `json:"description"`
-	Preview     string `json:"preview,omitempty"`
-}
-
-// AskUserTool lets the model ask the user structured multi-choice questions.
-// The dialog itself runs at permission-gate time: the approval engine
-// intercepts the call, the UI collects answers, and the response is backfilled
-// into the tool args (InjectAskUserResponse) before Execute runs.
-type AskUserTool struct{}
-
-func NewAskUser() *AskUserTool { return &AskUserTool{} }
-
-func (t *AskUserTool) Name() string  { return "ask_user" }
-func (t *AskUserTool) Label() string { return "Ask User" }
-func (t *AskUserTool) PermissionMetadata() permission.Metadata {
-	return permission.Metadata{Capability: permission.CapabilityInternal}
-}
-func (t *AskUserTool) Description() string {
-	return `Ask the user structured multi-choice questions when you need to clarify intent, validate assumptions, or pick between approaches.
+const askUserDescription = `Ask the user structured multi-choice questions when you need to clarify intent, validate assumptions, or pick between approaches.
 
 Conventions:
 - Provide 2-4 options per question; the host automatically appends a "Type your own answer" entry unless you set "custom": false. Do NOT add "Other" or catch-all options yourself.
 - Set "multiSelect": true when answers are not mutually exclusive.
 - If you recommend a specific option, put it first and suffix the label with "(Recommended)".
-- Question texts must be unique across the call; option labels must be unique within each question.
+- Question texts must be unique across the call; option labels must be unique within each question.`
 
-Plan mode: in plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask "Is my plan ready?" or "Should I proceed?" — that is exit_plan_mode's job. IMPORTANT: do not reference "the plan" in your questions (e.g. "Does this plan look good?"), because the user cannot see your plan until you call exit_plan_mode.`
-}
-
-func (t *AskUserTool) Schema() map[string]any {
+func askUserSchema() map[string]any {
 	option := schema.Object(
 		schema.Property("label", schema.String("Display text (1-5 words)")).Required(),
 		schema.Property("description", schema.String("What this option means")).Required(),
@@ -85,87 +69,9 @@ func (t *AskUserTool) Schema() map[string]any {
 	)
 }
 
-type askUserArgs struct {
-	Questions []Question       `json:"questions"`
-	Response  *AskUserResponse `json:"response,omitempty"` // backfilled by the gate, never sent by the model
-}
-
-func (t *AskUserTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
-	var a askUserArgs
-	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("invalid args: %w: %w", diag.ErrToolInput, err)
-	}
-
-	if err := validateQuestions(a.Questions); err != nil {
-		return json.Marshal(fmt.Sprintf("Validation error: %s", err))
-	}
-
-	if a.Response == nil {
-		return json.Marshal("ask_user is unavailable in this run (no interactive terminal). Make your best judgment and proceed.")
-	}
-
-	return json.Marshal(formatAnswers(a.Questions, a.Response))
-}
-
-// ParseAskUserQuestions extracts and validates the questions of an ask_user
-// call. UI wiring calls it before opening the dialog; an error means the input
-// is malformed and the call should run without a backfill so Execute reports
-// the validation problem to the model.
-func ParseAskUserQuestions(args json.RawMessage) ([]Question, error) {
-	var a askUserArgs
-	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, err
-	}
-	if err := validateQuestions(a.Questions); err != nil {
-		return nil, err
-	}
-	return a.Questions, nil
-}
-
-// InjectAskUserResponse returns the args with the user's response backfilled,
-// preserving every other model-authored field. The result becomes the call's
-// final arguments via GateDecision.UpdatedArgs. Overwriting (not merging)
-// the response field also discards any model-forged response.
-func InjectAskUserResponse(args json.RawMessage, resp *AskUserResponse) (json.RawMessage, error) {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(args, &payload); err != nil {
-		return nil, err
-	}
-	encoded, err := json.Marshal(resp)
-	if err != nil {
-		return nil, err
-	}
-	if payload == nil {
-		payload = make(map[string]json.RawMessage, 1)
-	}
-	payload["response"] = encoded
-	return json.Marshal(payload)
-}
-
-// SanitizeAskUserArgs strips a model-authored "response" field. Only the
-// gate wiring may attach a response (InjectAskUserResponse); a forged one
-// would read as fabricated user consent in the transcript — cron's confirm
-// flow, for one, treats ask_user answers as a real yes. The wiring returns
-// sanitized args on every path that skips the dialog.
-func SanitizeAskUserArgs(args json.RawMessage) json.RawMessage {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(args, &payload); err != nil {
-		return args
-	}
-	if _, ok := payload["response"]; !ok {
-		return args
-	}
-	delete(payload, "response")
-	out, err := json.Marshal(payload)
-	if err != nil {
-		return args
-	}
-	return out
-}
-
-func validateQuestions(questions []Question) error {
+func validateQuestions(questions []interact.Question) error {
 	if len(questions) == 0 {
-		return fmt.Errorf("at least one question is required")
+		return errors.New("at least one question is required")
 	}
 	if len(questions) > 4 {
 		return fmt.Errorf("at most 4 questions allowed, got %d", len(questions))
@@ -205,24 +111,14 @@ func validateQuestions(questions []Question) error {
 	return nil
 }
 
-// AllowsCustom reports whether the host should render a built-in
-// "Type your own answer" entry for this question.
-func (q Question) AllowsCustom() bool {
-	return q.Custom == nil || *q.Custom
-}
-
 // formatAnswers turns a response into the text the model sees.
 // Submit and Cancel share this path; Cancelled flips the framing and includes
 // "(unanswered)" placeholders so partial context still flows back.
-func formatAnswers(questions []Question, resp *AskUserResponse) string {
-	if resp == nil {
-		return "User provided no answers. Make your best judgment and proceed."
-	}
-
+func formatAnswers(questions []interact.Question, resp interact.Answers) string {
 	parts := make([]string, 0, len(questions))
 	anyAnswered := false
 	for _, q := range questions {
-		answers := resp.Answers[q.Question]
+		answers := resp.Selected[q.Question]
 		if len(answers) == 0 {
 			if resp.Cancelled {
 				parts = append(parts, fmt.Sprintf("%q=(unanswered)", q.Question))
@@ -269,7 +165,7 @@ func formatAnswerList(answers []string) string {
 
 // pickPreview returns the preview of the first matched listed option. Custom
 // answers (user-typed text) have no preview to surface.
-func pickPreview(q Question, answers []string) string {
+func pickPreview(q interact.Question, answers []string) string {
 	for _, a := range answers {
 		for _, opt := range q.Options {
 			if opt.Label == a && opt.Preview != "" {

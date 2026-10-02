@@ -7,55 +7,35 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// WrapGate returns a ToolGate that runs PreToolUse hooks before delegating to
-// next (the permission gate). Ordering matches Claude Code: hooks fire first —
-// a blocking hook denies the call, an updated_input rewrite is applied to the
-// request — and the permission decision is then made on the FINAL arguments.
-// The rewrite is surfaced to the kernel via GateDecision.UpdatedArgs so the
-// tool executes exactly what was approved.
-func (r *Runner) WrapGate(next agentcore.ToolGate) agentcore.ToolGate {
-	return func(ctx context.Context, req agentcore.GateRequest) (*agentcore.GateDecision, error) {
-		dec, err := r.RunPreToolUse(ctx, req.Call.Name, req.Call.Args)
+// PreToolUse returns a ToolMiddleware that runs the PreToolUse hooks before
+// the rest of the chain, the permission check among it. A blocking hook
+// refuses the call; arguments a hook rewrites are what the rest decides on
+// and what the tool runs with.
+func (r *Runner) PreToolUse() agentcore.ToolMiddleware {
+	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
+		dec, err := r.preToolUse(ctx, call.Name, call.Args)
 		if err != nil {
-			return &agentcore.GateDecision{Allowed: false, Reason: err.Error()}, nil
+			return agentcore.ErrorResult(err.Error()), nil
 		}
 		if len(dec.UpdatedInput) > 0 {
-			req.Call.Args = dec.UpdatedInput
+			call.Args = dec.UpdatedInput
 		}
-		decision, err := next(ctx, req)
-		if err != nil {
-			return decision, err
-		}
-		// nil decision means "no opinion" (allow) — the hook rewrite must
-		// still reach the kernel, so synthesize an allow that carries it.
-		if decision == nil {
-			if len(dec.UpdatedInput) > 0 {
-				return &agentcore.GateDecision{Allowed: true, UpdatedArgs: dec.UpdatedInput}, nil
-			}
-			return nil, nil
-		}
-		if !decision.Allowed {
-			return decision, nil
-		}
-		// The permission gate's own rewrite (e.g. ask_user answer backfill) is
-		// computed from the hook-updated args, so it already subsumes them.
-		if len(decision.UpdatedArgs) == 0 && len(dec.UpdatedInput) > 0 {
-			d := *decision
-			d.UpdatedArgs = dec.UpdatedInput
-			return &d, nil
-		}
-		return decision, nil
+		return next(ctx, call)
 	}
 }
 
-// Middleware returns a ToolMiddleware that fires PostToolUse hooks after each
-// tool execution. PreToolUse runs earlier, inside the tool gate (WrapGate),
-// so permission decisions see hook-rewritten arguments; by the time this
-// middleware runs, call.Args already carries the approved final form.
-func (r *Runner) Middleware() agentcore.ToolMiddleware {
-	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolExecuteFunc) (json.RawMessage, error) {
-		output, execErr := next(ctx, call.Args)
-		r.RunPostToolUse(ctx, call.Name, call.Args, output, execErr != nil)
-		return output, execErr
+// PostToolUse returns a ToolMiddleware that fires the PostToolUse hooks after
+// each call, with the arguments it ran with and its result's text as a JSON
+// string.
+func (r *Runner) PostToolUse() agentcore.ToolMiddleware {
+	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
+		res, err := next(ctx, call)
+		text := res.Text()
+		if err != nil {
+			text = err.Error()
+		}
+		output, _ := json.Marshal(text) // a string always encodes
+		r.postToolUse(call.Name, call.Args, output, err != nil || res.IsError)
+		return res, err
 	}
 }

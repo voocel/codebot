@@ -1,61 +1,63 @@
 package commands
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// WorktreeCommand drives /worktree — an isolated git-worktree sandbox the
-// session works in, reviewed and merged or discarded on exit.
+// Worktree constructs /worktree — an isolated git-worktree sandbox the
+// conversation works in, reviewed and merged or discarded on exit.
 //
-//	/worktree <name>   create a sandbox and move the session into it
-//	/worktree exit     return to the main workspace, keeping changes for review
-//	/worktree discard  return to the main workspace, discarding the sandbox
-//
-// Enter/Exit are wired to the runtime and return a ready-to-display message.
-// They are nil outside the interactive TUI, where the command is unavailable.
-type WorktreeCommand struct {
-	Enter  func(name string) (string, error)
-	Exit   func(discard bool) (string, error)
-	Active func() bool
-}
-
-func (c *WorktreeCommand) Spec() Spec {
-	return Spec{
+//	/worktree <name>   create a sandbox and move the conversation into it
+//	/worktree exit     return to the workspace, keeping changes for review
+//	/worktree discard  return to the workspace, discarding the sandbox
+func Worktree(a *app.App) Command {
+	return NewSimple(Spec{
 		Name:        "worktree",
 		Usage:       "/worktree <name> | exit | discard",
 		Description: "Work in an isolated git worktree sandbox",
-		Category:    "session",
 		NeedsIdle:   true,
 		Kind:        KindBuiltin,
-	}
+	}, func(inv Invocation) tea.Cmd {
+		conv := a.Current()
+		arg := strings.TrimSpace(inv.RawArgs)
+		var msg string
+		switch arg {
+		case "exit", "discard":
+			res, err := conv.ExitWorktree(arg == "discard")
+			if err != nil {
+				return tui.SendCommandResult(tui.ErrorStyle.Render("Worktree: " + err.Error()))
+			}
+			msg = formatWorktreeExit(res)
+		default:
+			dir, err := conv.EnterWorktree(arg)
+			if err != nil {
+				return tui.SendCommandResult(tui.ErrorStyle.Render("Worktree: " + err.Error()))
+			}
+			msg = fmt.Sprintf("Entered worktree sandbox:\n  %s\nEdits here are isolated from the main workspace. /worktree exit to review, /worktree discard to drop.\nNote: /undo does not cross the worktree boundary.", dir)
+		}
+		return tui.SendCommandResult(tui.CommandStyle.Render(msg))
+	})
 }
 
-func (c *WorktreeCommand) Run(inv Invocation) tea.Cmd {
-	if c.Enter == nil || c.Exit == nil || c.Active == nil {
-		return tui.SendCommandResult(tui.CommandStyle.Render("Worktree is only available in interactive mode."))
-	}
-
-	var (
-		msg string
-		err error
-	)
-	switch strings.TrimSpace(inv.RawArgs) {
-	case "exit":
-		msg, err = c.Exit(false)
-	case "discard":
-		msg, err = c.Exit(true)
+func formatWorktreeExit(res app.WorktreeExit) string {
+	switch {
+	case res.Kept:
+		return fmt.Sprintf(
+			"Left worktree %q — changes kept for review:\n  %s (branch %s)\nReview/merge with git; remove with `git worktree remove %s` when done.",
+			res.Slug, res.Dir, res.Branch, res.Dir)
+	case res.HadChanges:
+		return fmt.Sprintf("Left and discarded worktree %q (changes dropped).", res.Slug)
+	case res.BranchKept:
+		return fmt.Sprintf(
+			"Left worktree %q — working tree was clean, but its branch %s has commits not merged elsewhere, so the branch was kept.\nInspect with `git log %s`; delete with `git branch -D %s` once merged.",
+			res.Slug, res.Branch, res.Branch, res.Branch)
 	default:
-		if c.Active() {
-			return tui.SendCommandResult(tui.ErrorStyle.Render(
-				"Already in a worktree — use /worktree exit or /worktree discard first."))
-		}
-		msg, err = c.Enter(strings.TrimSpace(inv.RawArgs))
+		return fmt.Sprintf("Left worktree %q — no changes, cleaned up.", res.Slug)
 	}
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Worktree: " + err.Error()))
-	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(msg))
 }

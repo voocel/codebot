@@ -1,11 +1,12 @@
 package tui
 
 import (
-	"time"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/litellm"
+
+	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/interact"
 )
 
 // AgentEventMsg bridges agentcore events into the bubbletea Elm loop.
@@ -19,12 +20,8 @@ type CommandResultMsg struct {
 	// Inline prints the result flush against the previous scrollback block
 	// (no leading blank line). Use for output that should feel like a direct
 	// continuation — e.g. shell command output under its echoed prompt.
-	Inline           bool
-	Quit             bool   // true for /exit
-	Clear            bool   // true for /clear
-	NewProvider      string // non-empty if provider was switched
-	NewModel         string // non-empty if model was switched
-	NewContextWindow int    // non-zero if context window changed
+	Inline bool
+	Quit   bool // true for /exit
 }
 
 // SendCommandResult is a helper that wraps text into a CommandResultMsg tea.Cmd.
@@ -32,15 +29,9 @@ func SendCommandResult(text string) tea.Cmd {
 	return func() tea.Msg { return CommandResultMsg{Text: text} }
 }
 
-// PromptMsg injects a message as if the user typed and sent it.
-// The TUI renders it as a user message and forwards it to the agent.
-type PromptMsg struct {
-	Text string
-}
-
 // ImageAttachedMsg notifies the Model that an image has been pasted from clipboard.
 type ImageAttachedMsg struct {
-	Block agentcore.ContentBlock // pre-built ImageBlock (base64 + mime)
+	Block litellm.Block // pre-built ImageBlock
 }
 
 // PasteTextMsg signals that Ctrl+V found no image; the textarea should paste text.
@@ -52,14 +43,9 @@ type PasteErrorMsg struct {
 	Text string
 }
 
-// TaskListUpdateMsg notifies the TUI that the task list has changed.
-type TaskListUpdateMsg struct {
-	Snapshot storage.TaskSnapshot
-}
-
-// HideCompletedTasksMsg hides the task card after all tasks stayed completed
+// hideCompletedTodosMsg hides the todo list after every item stayed completed
 // for a short delay. Version prevents stale timers from hiding a newer list.
-type HideCompletedTasksMsg struct {
+type hideCompletedTodosMsg struct {
 	Version uint64
 }
 
@@ -77,26 +63,32 @@ type SuggestionMsg struct {
 	Text string
 }
 
-// StatusMsg updates the live status. Empty Prefix clears it.
-type StatusMsg struct {
-	Prefix   string
-	Deadline time.Time
-}
-
 // statusTickMsg refreshes the status countdown.
 type statusTickMsg struct{}
 
-// RecentCompletedTTL is how long a freshly-completed task stays pinned at
-// the top of the truncated task tree before sinking to the bottom group.
-const RecentCompletedTTL = 30 * time.Second
-
-// taskRecencyTickMsg fires when a recently-completed task crosses the
-// RecentCompletedTTL boundary so the task tree re-renders even while idle
-// (no spinner ticks driving the redraw).
-type taskRecencyTickMsg struct{}
-
-// BtwResultMsg carries the result of a /btw side question back to the overlay.
-type BtwResultMsg struct {
-	Answer string
-	Err    error
+// ApplyMsg runs Apply on the TUI's goroutine: a command folds the result of
+// its background work into its state with it, and may return a follow-up.
+type ApplyMsg struct {
+	Apply func() tea.Cmd
 }
+
+// OpenedMsg says Conversation replaced the open one.
+type OpenedMsg struct {
+	Conversation *app.Conversation
+}
+
+// ModeMsg says the permission mode changed.
+type ModeMsg struct {
+	Mode interact.Mode
+}
+
+// StatusChangedMsg carries the conversation's new status.
+type StatusChangedMsg struct {
+	Status app.Status
+}
+
+// RunStartedMsg says the conversation started a run.
+type RunStartedMsg struct{}
+
+// IdleMsg says the conversation has nothing left to run.
+type IdleMsg struct{}

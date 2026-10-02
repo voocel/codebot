@@ -3,7 +3,6 @@ package tui
 // Tool rendering primitives:
 //   - Header: display name + short summary from tool args.
 //   - Output: tree-connector list, path-token highlighting, streaming tail.
-//   - Progress: structured ProgressPayload formatting (used by subagent updates).
 //
 // Per-tool result renderers (edit/write/ls/read/subagent) live in render_tool_results.go.
 
@@ -14,37 +13,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/agentcore"
+	"github.com/charmbracelet/x/ansi"
 )
-
-// IsHiddenTool reports whether a tool's invocation should be omitted from
-// the visible TUI stream (live events and session restore alike).
-//
-// task_* tools manage shared coordination state for the agent's own
-// bookkeeping, not work the user wants to follow turn-by-turn. SubAgent
-// dispatch and other execution-unit tools stay visible because they signal
-// real progress.
-func IsHiddenTool(tool string) bool {
-	switch tool {
-	case "task_create", "task_update", "task_get", "task_list":
-		return true
-	}
-	return false
-}
-
-// IsHiddenToolCall extends tool-level hiding with call-specific internal
-// filesystem paths. Auto-memory reads are system context hydration, like
-// AGENTS.md loading, so their ENOENT/success output should not enter the user
-// transcript.
-func IsHiddenToolCall(tool string, args json.RawMessage) bool {
-	if IsHiddenTool(tool) {
-		return true
-	}
-	if tool != "read" {
-		return false
-	}
-	return isAutoMemoryPath(extractPathArg(args))
-}
 
 func extractPathArg(args json.RawMessage) string {
 	if len(args) == 0 {
@@ -59,15 +29,6 @@ func extractPathArg(args json.RawMessage) string {
 	}
 	path, _ := obj["path"].(string)
 	return path
-}
-
-func isAutoMemoryPath(path string) bool {
-	if path == "" {
-		return false
-	}
-	clean := filepath.ToSlash(filepath.Clean(path))
-	return strings.Contains(clean, "/memory/") &&
-		(strings.Contains(clean, "/.codebot/projects/") || strings.HasPrefix(clean, "~/.codebot/projects/"))
 }
 
 // ---------------------------------------------------------------------------
@@ -122,26 +83,6 @@ func extractToolSummary(tool string, args json.RawMessage) string {
 		if v, ok := obj["command"].(string); ok && v != "" {
 			return v
 		}
-	case "task_create":
-		if v, ok := obj["subject"].(string); ok && v != "" {
-			return v
-		}
-	case "task_get":
-		if v, ok := obj["taskId"].(string); ok && v != "" {
-			return "#" + v
-		}
-	case "task_update":
-		var parts []string
-		if v, ok := obj["taskId"].(string); ok && v != "" {
-			parts = append(parts, "#"+v)
-		}
-		if v, ok := obj["status"].(string); ok && v != "" {
-			parts = append(parts, v)
-		}
-		if v, ok := obj["subject"].(string); ok && v != "" {
-			parts = append(parts, v)
-		}
-		return strings.Join(parts, " ")
 	case "read", "edit", "write":
 		if v, ok := obj["file_path"].(string); ok && v != "" {
 			return ShortenPath(v)
@@ -180,7 +121,7 @@ func RenderToolHeader(tool string, args json.RawMessage) string {
 	if summary == "" {
 		return ToolNameStyle.Render(name)
 	}
-	return ToolNameStyle.Render(name) + ToolArgsStyle.Render("("+truncateRunes(summary, 60)+")")
+	return ToolNameStyle.Render(name) + ToolArgsStyle.Render("("+ansi.Truncate(summary, 60, "…")+")")
 }
 
 // ---------------------------------------------------------------------------
@@ -302,44 +243,17 @@ func looksLikePathToken(token string) bool {
 	return false
 }
 
-// FormatToolResult extracts displayable text from a tool result.
-// Truncation is handled by the caller (FormatToolOutput).
-func FormatToolResult(result json.RawMessage, isError bool) string {
+// FormatToolResult is the text of a tool result for display. Truncation is
+// handled by the caller (FormatToolOutput).
+func FormatToolResult(result string, isError bool) string {
 	prefix := ""
 	if isError {
 		prefix = "error: "
 	}
-	if len(result) == 0 {
+	if strings.TrimSpace(result) == "" {
 		return prefix + "(no output)"
 	}
-
-	// Extract "message" or "output" from JSON objects for cleaner display.
-	var obj map[string]any
-	if json.Unmarshal(result, &obj) == nil {
-		if msg, ok := obj["message"].(string); ok && msg != "" {
-			return prefix + strings.TrimSpace(msg)
-		}
-		if out, ok := obj["output"].(string); ok && out != "" {
-			return prefix + strings.TrimSpace(out)
-		}
-	}
-
-	// Try plain JSON string (e.g. "file1\nfile2").
-	var str string
-	if json.Unmarshal(result, &str) == nil {
-		return prefix + strings.TrimSpace(str)
-	}
-
-	return prefix + strings.TrimSpace(string(result))
-}
-
-// TruncateLines truncates text to maxLines, appending "..." if truncated.
-func TruncateLines(s string, maxLines int) string {
-	lines := strings.SplitN(s, "\n", maxLines+1)
-	if len(lines) > maxLines {
-		return strings.Join(lines[:maxLines], "\n") + "..."
-	}
-	return s
+	return prefix + strings.TrimSpace(result)
 }
 
 // RenderStreamingOutput shows the last N lines of streaming tool output
@@ -367,60 +281,6 @@ func RenderStreamingOutput(full string, maxLines int) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// ---------------------------------------------------------------------------
-// Progress (structured subagent updates)
-// ---------------------------------------------------------------------------
-
-// FormatProgressLine formats a structured tool progress update for display.
-func FormatProgressLine(progress *agentcore.ProgressPayload) string {
-	if progress == nil {
-		return ""
-	}
-	switch progress.Kind {
-	case agentcore.ProgressToolStart, agentcore.ProgressTurnCounter, agentcore.ProgressToolError:
-		return formatSubagentProgress(progress.Tool, progress.Args, progress.Turn, progress.IsError)
-	case agentcore.ProgressRetry:
-		if progress.Attempt > 0 && progress.MaxRetries > 0 {
-			return MutedStyle.Render(fmt.Sprintf("retry %d/%d", progress.Attempt, progress.MaxRetries))
-		}
-		if progress.Message != "" {
-			return truncateRunes(progress.Message, 200)
-		}
-	case agentcore.ProgressSummary:
-		if progress.Summary != "" {
-			return truncateRunes(progress.Summary, 200)
-		}
-	}
-	if progress.Summary != "" {
-		return truncateRunes(progress.Summary, 200)
-	}
-	if progress.Message != "" {
-		return truncateRunes(progress.Message, 200)
-	}
-	if progress.Tool != "" {
-		return formatSubagentProgress(progress.Tool, progress.Args, progress.Turn, progress.IsError)
-	}
-	return ""
-}
-
-// formatSubagentProgress renders a structured subagent progress line.
-func formatSubagentProgress(tool string, args json.RawMessage, turn int, isError bool) string {
-	if turn > 0 {
-		return MutedStyle.Render(fmt.Sprintf("turn %d completed", turn))
-	}
-	if isError {
-		return ToolNameStyle.Render(tool) + MutedStyle.Render(" failed")
-	}
-	if tool != "" {
-		line := ToolNameStyle.Render(tool)
-		if hint := toolArgHint(args); hint != "" {
-			line += MutedStyle.Render(" " + hint)
-		}
-		return line
-	}
-	return ""
-}
-
 // toolArgHint extracts a short hint from tool args for display.
 func toolArgHint(args json.RawMessage) string {
 	if len(args) == 0 {
@@ -438,7 +298,7 @@ func toolArgHint(args json.RawMessage) string {
 		}
 		var s string
 		if json.Unmarshal(raw, &s) == nil && s != "" {
-			return truncateRunes(s, 60)
+			return ansi.Truncate(s, 60, "…")
 		}
 	}
 	return ""

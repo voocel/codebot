@@ -3,28 +3,23 @@ package storage
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/voocel/agentcore"
 )
 
-// EntryKind identifies the type of a JSONL entry.
-type EntryKind string
+// entryKind identifies the type of a JSONL entry.
+type entryKind string
 
 const (
-	EntryHeader                EntryKind = "header"
-	EntryMessage               EntryKind = "message"
-	EntryModelChange           EntryKind = "model_change"
-	EntryCompaction            EntryKind = "compaction"
-	EntryReasoningEffortChange EntryKind = "reasoning_effort_change"
-	EntrySessionInfo           EntryKind = "session_info"
-	EntryPlanState             EntryKind = "plan_state"
-	EntryGoalState             EntryKind = "goal_state"
-	EntryLLMCall               EntryKind = "llm_call"
+	entryHeader     entryKind = "header"
+	entryMessage    entryKind = "message"    // appends a message to the history
+	entryCompaction entryKind = "compaction" // replaces the whole history
+	entryModel      entryKind = "model"      // records the model the session runs on
 )
 
-// Entry is a single JSONL line in the session file.
-type Entry struct {
-	Kind      EntryKind       `json:"kind"`
-	ID        string          `json:"id"`
-	ParentID  string          `json:"parent_id,omitempty"`
+// entry is a single JSONL line in the session file.
+type entry struct {
+	Kind      entryKind       `json:"kind"`
 	Timestamp time.Time       `json:"timestamp"`
 	Data      json.RawMessage `json:"data"`
 }
@@ -33,106 +28,39 @@ type Entry struct {
 type Header struct {
 	Version   int       `json:"version"`
 	SessionID string    `json:"session_id"`
-	Name      string    `json:"name,omitempty"`
 	Cwd       string    `json:"cwd"`
 	Created   time.Time `json:"created"`
 }
 
-// ModelChange records a model switch event.
-type ModelChange struct {
+// Model is a model selection as recorded in the log.
+type Model struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	Effort   string `json:"effort,omitempty"`
 }
 
-// ReasoningEffortChange records a reasoning effort switch event.
-type ReasoningEffortChange struct {
-	Level string `json:"level"`
+// compaction is the data of a compaction entry.
+type compaction struct {
+	Messages []agentcore.Message `json:"messages"`
 }
 
-// Compaction stores a compaction summary and optionally kept messages.
-type Compaction struct {
-	Summary  string            `json:"summary"`
-	Messages []json.RawMessage `json:"messages,omitempty"`
-}
-
-// PlanStateEntry records a plan-mode phase transition.
-type PlanStateEntry struct {
-	Phase   string `json:"phase"`
-	Slug    string `json:"slug,omitempty"`
-	PreMode string `json:"pre_mode,omitempty"`
-}
-
-// GoalStateEntry records the explicit /goal state for session resume.
-type GoalStateEntry struct {
-	ID                       string    `json:"id,omitempty"`
-	Objective                string    `json:"objective,omitempty"`
-	Status                   string    `json:"status"`
-	CreatedAt                time.Time `json:"created_at,omitempty"`
-	UpdatedAt                time.Time `json:"updated_at,omitempty"`
-	CompletedAt              time.Time `json:"completed_at,omitempty"`
-	BlockedAt                time.Time `json:"blocked_at,omitempty"`
-	BudgetLimitedAt          time.Time `json:"budget_limited_at,omitempty"`
-	UsageLimitedAt           time.Time `json:"usage_limited_at,omitempty"`
-	Reason                   string    `json:"reason,omitempty"`
-	BlockedReason            string    `json:"blocked_reason,omitempty"`
-	BlockedCount             int       `json:"blocked_count,omitempty"`
-	BlockedAttemptTokenTotal int       `json:"blocked_attempt_token_total,omitempty"`
-	BudgetLimitReported      bool      `json:"budget_limit_reported,omitempty"`
-	TokenBudget              int       `json:"token_budget,omitempty"`
-	TokensUsed               int       `json:"tokens_used,omitempty"`
-	TokenTotalAtLastAccount  int       `json:"token_total_at_last_account,omitempty"`
-}
-
-// LLMCallEntry is a per-turn observability record for a single LLM response.
-// Emitted once per assistant message_end, independent of the message itself
-// so that downstream can diagnose cache hits, latency, and provider without
-// re-parsing the message payload.
-type LLMCallEntry struct {
-	Provider            string          `json:"provider"`
-	Model               string          `json:"model"`
-	InputTokens         int             `json:"input_tokens"`
-	OutputTokens        int             `json:"output_tokens"`
-	CacheReadTokens     int             `json:"cache_read_tokens,omitempty"`
-	CacheCreationTokens int             `json:"cache_creation_tokens,omitempty"`
-	TotalTokens         int             `json:"total_tokens,omitempty"`
-	LatencyMs           int64           `json:"latency_ms,omitempty"`
-	StopReason          string          `json:"stop_reason,omitempty"`
-	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
-	CacheBreak          *CacheBreakInfo `json:"cache_break,omitempty"`
-}
-
-// CacheBreakInfo is attached to an LLMCallEntry when the prompt cache hit
-// rate unexpectedly dropped relative to the previous turn. It captures why
-// the cache likely invalidated so the session can be diagnosed after-the-
-// fact without replaying the full request.
-type CacheBreakInfo struct {
-	PrevCacheReadTokens int     `json:"prev_cache_read_tokens"`
-	CurrCacheReadTokens int     `json:"curr_cache_read_tokens"`
-	DropAbsolute        int     `json:"drop_absolute"`
-	DropFraction        float64 `json:"drop_fraction"`
-	// SystemChanged is true when either the frozen prefix or the dynamic
-	// tail of the system blocks changed. Kept for backwards compatibility
-	// with existing JSONL — prefer the finer-grained fields below.
-	SystemChanged  bool `json:"system_changed,omitempty"`
-	FrozenChanged  bool `json:"frozen_system_changed,omitempty"`
-	DynamicChanged bool `json:"dynamic_system_changed,omitempty"`
-	ToolsChanged   bool `json:"tools_changed,omitempty"`
-	// Expected marks a drop we caused ourselves by rewriting the prompt —
-	// compaction clearing tool results, say. Recorded rather than dropped: it
-	// is the only place the cost of a rewrite shows up, and without it the
-	// drop reads as an unexplained provider-side miss.
-	Expected bool   `json:"expected,omitempty"`
-	Note     string `json:"note,omitempty"`
+// State is what a session log replays to.
+type State struct {
+	Messages []agentcore.Message
+	// Model is the last recorded model selection; zero when none was recorded.
+	Model Model
+	// Usage sums every recorded response, including those a compaction later
+	// replaced.
+	Usage agentcore.Usage
 }
 
 // SessionInfo is a summary of a session for listing.
 type SessionInfo struct {
 	ID           string
-	Name         string
 	Path         string
 	Cwd          string
 	Created      time.Time
 	Updated      time.Time
 	MessageCount int
-	FirstMessage string // first user message, truncated to 80 chars
+	FirstMessage string // first user message, truncated to 80 runes
 }

@@ -7,14 +7,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // DiffCommand drives /diff — an interactive overlay listing the files the last
 // turn changed (what /undo would roll back), with per-file added/removed counts.
 type DiffCommand struct {
-	session *agent.Session
+	app     *app.App
 	overlay OverlayController
 	state   *diffListState
 }
@@ -32,8 +32,8 @@ type diffListState struct {
 }
 
 // Diff constructs the /diff command.
-func Diff(session *agent.Session, overlay OverlayController) *DiffCommand {
-	return &DiffCommand{session: session, overlay: overlay}
+func Diff(a *app.App, overlay OverlayController) *DiffCommand {
+	return &DiffCommand{app: a, overlay: overlay}
 }
 
 func (c *DiffCommand) Spec() Spec {
@@ -41,17 +41,13 @@ func (c *DiffCommand) Spec() Spec {
 		Name:        "diff",
 		Usage:       "/diff",
 		Description: "Preview the file changes /undo would roll back",
-		Category:    "session",
 		NeedsIdle:   true,
 		Kind:        KindBuiltin,
 	}
 }
 
 func (c *DiffCommand) Run(_ Invocation) tea.Cmd {
-	if notice := snapshotUnavailable(c.session); notice != nil {
-		return notice
-	}
-	numstat, err := c.session.Diff()
+	numstat, err := c.app.Current().Diff()
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Diff failed: " + err.Error()))
 	}
@@ -65,9 +61,8 @@ func (c *DiffCommand) Run(_ Invocation) tea.Cmd {
 	return nil
 }
 
-func (c *DiffCommand) Active() bool  { return c.state != nil }
-func (c *DiffCommand) IsModal() bool { return true }
-func (c *DiffCommand) Dismiss()      { c.state = nil }
+func (c *DiffCommand) Active() bool { return c.state != nil }
+func (c *DiffCommand) Dismiss()     { c.state = nil }
 
 func (c *DiffCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if c.state == nil {

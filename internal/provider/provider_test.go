@@ -3,84 +3,87 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"testing"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/catalog"
+	"github.com/voocel/litellm/gateway"
+	"github.com/voocel/litellm/litellmtest"
 	llmprovider "github.com/voocel/litellm/provider"
 )
 
-type stubModel struct{}
-
-func (m *stubModel) Generate(
-	_ context.Context,
-	_ []agentcore.Message,
-	_ []agentcore.ToolSpec,
-	_ ...agentcore.CallOption,
-) (*agentcore.LLMResponse, error) {
-	return &agentcore.LLMResponse{}, nil
+// capsProvider is a test provider stating caps.
+type capsProvider struct {
+	*litellmtest.Provider
+	caps litellm.Capabilities
 }
 
-func (m *stubModel) GenerateStream(
-	_ context.Context,
-	_ []agentcore.Message,
-	_ []agentcore.ToolSpec,
-	_ ...agentcore.CallOption,
-) (<-chan agentcore.StreamEvent, error) {
-	ch := make(chan agentcore.StreamEvent)
-	close(ch)
-	return ch, nil
+func (p capsProvider) Capabilities() litellm.Capabilities { return p.caps }
+
+func modelWith(t *testing.T, caps *litellm.Capabilities) agentcore.Model {
+	t.Helper()
+	var p litellm.Provider = litellmtest.New()
+	if caps != nil {
+		p = capsProvider{litellmtest.New(), *caps}
+	}
+	client, err := litellm.New(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agentcore.Model{Client: client, Request: litellm.Request{Model: "m"}}
 }
 
-func (m *stubModel) SupportsTools() bool { return true }
-
-type thinkingCapsModel struct {
-	stubModel
-	effort bool
-}
-
-func (m *thinkingCapsModel) Capabilities() (llm.Capabilities, bool) {
-	return llm.Capabilities{Thinking: true, DisableThinking: true, ThinkingEffort: m.effort}, true
-}
-
-func TestReasoningEffortMinimalIsNotUserSelectable(t *testing.T) {
+func TestEfforts(t *testing.T) {
 	t.Parallel()
 
-	if IsValidThinkingLevel("minimal") {
-		t.Fatal("minimal should not be accepted as a user-selectable reasoning effort")
-	}
-	if IsValidThinkingLevel("auto") {
-		t.Fatal("auto should not be accepted as a user-selectable reasoning effort")
-	}
-	if IsValidThinkingLevel("High") || IsValidThinkingLevel(" high ") {
-		t.Fatal("reasoning effort values must match exactly")
-	}
-}
-
-func TestThinkingLevelsForModelFiltersMinimal(t *testing.T) {
-	t.Parallel()
-
-	model := &thinkingCapsModel{effort: true}
-	levels := ThinkingLevelsForModel(model)
-	if slices.Contains(levels, "minimal") {
-		t.Fatalf("thinking levels contain minimal: %v", levels)
-	}
-	for _, want := range []string{"", "off", "low", "high"} {
-		if !slices.Contains(levels, want) {
-			t.Fatalf("thinking levels missing %q: %v", want, levels)
+	for _, effort := range []string{"minimal", "auto", "High", " high "} {
+		if ValidEffort(effort) {
+			t.Errorf("%q accepted as a reasoning effort", effort)
 		}
 	}
-
-	if got, ok := ResolveThinkingLevel(model, "minimal"); ok || got != "" {
-		t.Fatalf("ResolveThinkingLevel(minimal) = %q, %v; want auto, false", got, ok)
+	all := []string{"", "off", "low", "medium", "high", "xhigh", "max"}
+	for reasoning, want := range map[*bool][]string{nil: all, new(true): all, new(false): {""}} {
+		if got := ThinkingLevels(nil, reasoning); !slices.Equal(got, want) {
+			t.Errorf("reasoning %v: levels %q, want %q", reasoning, got, want)
+		}
 	}
-	if got, ok := ResolveThinkingLevel(model, "auto"); ok || got != "" {
-		t.Fatalf("ResolveThinkingLevel(auto) = %q, %v; want auto, false", got, ok)
+	// A provider offers only the settings it can send: MiniMax takes no
+	// effort, Grok cannot turn thinking off.
+	for name, want := range map[string][]string{"deepseek": all, "minimax": {"", "off"}, "grok": {"", "low", "medium", "high", "xhigh", "max"}} {
+		p, err := llmprovider.New(name, llmprovider.Config{APIKey: "k"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client, err := litellm.New(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ThinkingLevels(client, new(true)); !slices.Equal(got, want) {
+			t.Errorf("%s: levels %q, want %q", name, got, want)
+		}
+	}
+	if Thinking("") != nil || !Thinking("off").Disabled || Thinking("high").Effort != "high" {
+		t.Fatal("efforts map to the wrong request settings")
+	}
+}
+
+// The cache key goes only where the provider takes one, and never into the
+// model it was given.
+func TestWithCacheKey(t *testing.T) {
+	t.Parallel()
+
+	m := modelWith(t, &litellm.Capabilities{ProviderOptions: []string{"prompt_cache_key"}})
+	m.Request.ProviderOptions = litellm.ProviderOptions{"user": json.RawMessage(`"u"`)}
+	keyed := WithCacheKey(m, "s1")
+	if string(keyed.Request.ProviderOptions["prompt_cache_key"]) != `"s1"` || len(m.Request.ProviderOptions) != 1 {
+		t.Fatalf("keyed %v, original %v", keyed.Request.ProviderOptions, m.Request.ProviderOptions)
+	}
+	if plain := WithCacheKey(modelWith(t, &litellm.Capabilities{}), "s1"); plain.Request.ProviderOptions != nil {
+		t.Fatalf("a provider without the option got %v", plain.Request.ProviderOptions)
 	}
 }
 
@@ -122,15 +125,12 @@ func TestNewModelsLoadsSnapshot(t *testing.T) {
 }
 
 // Anthropic models carry the listed output cap, or a fallback for unlisted
-// ones, since Anthropic rejects requests without one; listed prices cost
-// each call.
+// ones, since Anthropic rejects requests without one, and the listed prices.
 func TestModelFactoryAnthropic(t *testing.T) {
-	var (
-		body struct {
-			MaxTokens int `json:"max_tokens"`
-		}
-		beta string
-	)
+	var body struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	var beta string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		beta = r.Header.Get("Anthropic-Beta")
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -154,31 +154,63 @@ func TestModelFactoryAnthropic(t *testing.T) {
 	}
 	factory := NewModelFactory(models)
 	conn := llmprovider.Config{APIKey: "test-key", BaseURL: server.URL, Headers: map[string]string{"anthropic-beta": "beta-a"}}
-	generate := func(model string) *agentcore.Usage {
+	call := func(name string) agentcore.Model {
 		t.Helper()
-		m, err := factory(ModelSpec{Provider: "anthropic", Type: "anthropic", Model: model, Conn: conn})
+		m, err := factory(ModelSpec{Provider: "anthropic", Type: "anthropic", Model: name, Conn: conn})
 		if err != nil {
 			t.Fatalf("factory: %v", err)
 		}
-		resp, err := m.Generate(context.Background(), []agentcore.Message{
-			{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.TextBlock("hi")}},
-		}, nil)
-		if err != nil {
-			t.Fatalf("Generate: %v", err)
+		req := m.Request
+		req.Messages = []litellm.Message{litellm.UserText("hi")}
+		if _, err := m.Client.Chat(context.Background(), req); err != nil {
+			t.Fatalf("Chat: %v", err)
 		}
-		return resp.Message.Usage
+		return m
 	}
 
-	usage := generate("claude-x")
-	if body.MaxTokens != 64000 || beta != "beta-a" {
-		t.Fatalf("max_tokens = %d, anthropic-beta = %q; want 64000, beta-a", body.MaxTokens, beta)
+	if m := call("claude-x"); body.MaxTokens != 64000 || beta != "beta-a" || m.Pricing == nil || *m.Pricing != *pricing {
+		t.Fatalf("max_tokens = %d, anthropic-beta = %q, pricing %+v", body.MaxTokens, beta, m.Pricing)
 	}
-	if usage.Cost == nil || math.Abs(usage.Cost.Total-60e-6) > 1e-12 {
-		t.Fatalf("cost = %+v, want total 6e-5", usage.Cost)
+	if m := call("claude-unlisted"); body.MaxTokens != fallbackMaxTokens || m.Pricing != nil {
+		t.Fatalf("unlisted model: max_tokens = %d, pricing = %+v", body.MaxTokens, m.Pricing)
+	}
+}
+
+// A gateway provider runs the model on the gateway, which knows codebot by
+// its API key.
+func TestModelFactoryGateway(t *testing.T) {
+	var auth string
+	var got *litellm.Request
+	srv := httptest.NewServer(&gateway.Server{Route: func(r *http.Request, req *litellm.Request) (*litellm.Client, error) {
+		auth, got = r.Header.Get("Authorization"), req
+		return litellm.New(litellmtest.New(litellmtest.Text("ok")))
+	}})
+	defer srv.Close()
+
+	if !IsSupportedType("gateway") {
+		t.Fatal("the gateway type must be supported")
+	}
+	m, err := NewModelFactory(NewModels())(ModelSpec{
+		Provider: "corp",
+		Type:     "gateway",
+		Model:    "claude-sonnet-4-6",
+		Conn:     llmprovider.Config{APIKey: "sandbox-token", BaseURL: srv.URL},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := m.Request
+	req.Messages = []litellm.Message{litellm.UserText("hi")}
+	req.Thinking = Thinking("high")
+	resp, err := m.Client.Chat(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Text() != "ok" || auth != "Bearer sandbox-token" || got.Model != "claude-sonnet-4-6" || got.Thinking.Effort != "high" {
+		t.Fatalf("reply %q, auth %q, request %+v", resp.Text(), auth, got)
 	}
 
-	usage = generate("claude-unlisted")
-	if body.MaxTokens != fallbackMaxTokens || usage.Cost != nil {
-		t.Fatalf("unlisted model: max_tokens = %d, cost = %+v", body.MaxTokens, usage.Cost)
+	if _, err := NewModelFactory(NewModels())(ModelSpec{Provider: "corp", Type: "gateway", Model: "m"}); err == nil {
+		t.Fatal("a gateway without a base URL must be refused")
 	}
 }

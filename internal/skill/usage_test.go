@@ -16,9 +16,7 @@ func TestUsageTrackerPersistsAndDecaysScores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewUsageTracker: %v", err)
 	}
-	tracker.now = func() time.Time { return base }
-
-	if err := tracker.Record("Review", base); err != nil {
+	if err := tracker.Record("review", base); err != nil {
 		t.Fatalf("Record review: %v", err)
 	}
 	if err := tracker.Record("review", base.Add(2*time.Hour)); err != nil {

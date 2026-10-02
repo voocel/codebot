@@ -1,0 +1,22 @@
+[
+  {
+    "llm_calls": 11,
+    "input": 173310,
+    "output": 9006,
+    "cache_read": 62848,
+    "cache_write": 0,
+    "turns": 11,
+    "tool_calls": 34,
+    "tool_errors": 0,
+    "runs": 1,
+    "end_reason": "stop",
+    "cost_usd": 0.0443,
+    "id": "longdoc",
+    "ok": true,
+    "detail": "353 lines, terms 8/8",
+    "rc": 0,
+    "timed_out": false,
+    "seconds": 129.5,
+    "compactions": 7
+  }
+]

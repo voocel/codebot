@@ -1,7 +1,7 @@
 // Package worktree manages ephemeral git worktrees used as isolated sandboxes:
 // the agent works inside one, and changes are reviewed and merged or discarded
 // on exit. It is a thin, stateless wrapper over `git worktree` — lifecycle and
-// session wiring live in the caller (bootstrap.Runtime).
+// session wiring live in the caller (app.Conversation).
 package worktree
 
 import (
@@ -21,8 +21,7 @@ const branchPrefix = "codebot/"
 
 // DefaultIncludes are the gitignored files copied into a fresh worktree so it
 // can actually run: a clean checkout omits everything git ignores, and a
-// missing .env is the most common reason a sandboxed build/test fails. Shared
-// by the leader-side /worktree command and teammate isolation.
+// missing .env is the most common reason a sandboxed build/test fails.
 var DefaultIncludes = []string{".env", ".env.local"}
 
 // Info is one entry from `git worktree list`.
@@ -44,22 +43,19 @@ func Slug(name string) string {
 	return s
 }
 
-// Dir returns the worktree's working directory: <repoRoot>/.codebot/worktrees/<slug>.
-// It lives under .codebot/ (already gitignored), so the checkout never pollutes
-// the user's status.
-func Dir(repoRoot, slug string) string {
-	return filepath.Join(repoRoot, config.ConfigDir, "worktrees", slug)
+// Root is the directory the worktrees live in: <repoRoot>/.codebot/worktrees.
+// It lives under .codebot/ (already gitignored), so the checkouts never
+// pollute the user's status.
+func Root(repoRoot string) string {
+	return filepath.Join(repoRoot, config.ConfigDir, "worktrees")
 }
 
-// Branch returns the namespaced branch name for a slug.
-func Branch(slug string) string { return branchPrefix + slug }
-
-// Create adds a worktree at Dir(repoRoot, slug) on a new branch codebot/<slug>,
+// Create adds a worktree at <Root>/<slug> on a new branch codebot/<slug>,
 // based on the repo's current HEAD. It fails if the slug is already in use so
 // the caller can ask for a different name.
 func Create(repoRoot, slug string) (dir, branch string, err error) {
-	dir = Dir(repoRoot, slug)
-	branch = Branch(slug)
+	dir = filepath.Join(Root(repoRoot), slug)
+	branch = branchPrefix + slug
 	if _, statErr := os.Stat(dir); statErr == nil {
 		return "", "", fmt.Errorf("worktree %q already exists", slug)
 	}
@@ -78,54 +74,6 @@ func Create(repoRoot, slug string) (dir, branch string, err error) {
 	return dir, branch, nil
 }
 
-// CreateOrReuse returns the worktree for slug, creating it when absent and
-// reusing the existing checkout when a previous run left one behind — e.g. a
-// teammate that kept uncommitted changes on exit and is later woken to reclaim
-// its sandbox. Unlike Create it does not fail on an existing directory, but it
-// reuses one ONLY after confirming it is the registered worktree for branch:
-// a leftover plain directory (from a half-failed create) is not a sandbox, and
-// pointing tools at it would let `git` walk up to the parent repo and corrupt
-// cleanup decisions. A mismatch is an error, not a silent reuse.
-func CreateOrReuse(repoRoot, slug string) (dir, branch string, err error) {
-	dir = Dir(repoRoot, slug)
-	branch = Branch(slug)
-	if _, statErr := os.Stat(dir); statErr == nil {
-		ok, lerr := isRegisteredWorktree(repoRoot, dir, branch)
-		if lerr != nil {
-			return "", "", lerr
-		}
-		if !ok {
-			return "", "", fmt.Errorf("path %s exists but is not the %q worktree; remove it and retry", dir, branch)
-		}
-		// Normalize to match `git worktree list` output (macOS /var -> /private/var).
-		if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
-			dir = resolved
-		}
-		return dir, branch, nil
-	}
-	return Create(repoRoot, slug)
-}
-
-// isRegisteredWorktree reports whether dir is a live git worktree checked out on
-// branch, per `git worktree list`. Both path (symlink-resolved) and branch must
-// match — existence on disk alone is not enough.
-func isRegisteredWorktree(repoRoot, dir, branch string) (bool, error) {
-	infos, err := List(repoRoot)
-	if err != nil {
-		return false, err
-	}
-	want := dir
-	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
-		want = resolved
-	}
-	for _, info := range infos {
-		if info.Path == want && info.Branch == "refs/heads/"+branch {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 // HasChanges reports whether the worktree has any uncommitted changes (tracked
 // or untracked).
 func HasChanges(dir string) (bool, error) {
@@ -134,32 +82,6 @@ func HasChanges(dir string) (bool, error) {
 		return false, fmt.Errorf("git status: %s", out)
 	}
 	return strings.TrimSpace(out) != "", nil
-}
-
-// Diff returns the worktree's changes for review. It diffs against HEAD so both
-// staged and unstaged edits show (a plain `git diff` would miss staged work and
-// diverge from HasChanges, which also counts staged + untracked), then appends
-// untracked filenames so a clean-tree-with-new-files sandbox doesn't render as
-// an empty diff.
-func Diff(dir string) (string, error) {
-	out, err := git(dir, "diff", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("git diff: %s", out)
-	}
-	if untracked, uerr := git(dir, "ls-files", "--others", "--exclude-standard"); uerr == nil {
-		if u := strings.TrimSpace(untracked); u != "" {
-			var b strings.Builder
-			b.WriteString(out)
-			b.WriteString("\n# Untracked files:\n")
-			for f := range strings.SplitSeq(u, "\n") {
-				b.WriteString("#\t")
-				b.WriteString(f)
-				b.WriteString("\n")
-			}
-			out = b.String()
-		}
-	}
-	return out, nil
 }
 
 // Remove deletes the worktree and its branch. With force it discards everything
@@ -214,7 +136,7 @@ func List(repoRoot string) ([]Info, error) {
 			flush()
 			// git prints forward slashes even on Windows; normalize to the
 			// OS-native form so Path compares equal to filepath-built paths
-			// (isRegisteredWorktree, CleanWorktreeOrphans).
+			// (CleanWorktreeOrphans).
 			cur.Path = filepath.FromSlash(strings.TrimPrefix(line, "worktree "))
 		case strings.HasPrefix(line, "branch "):
 			cur.Branch = strings.TrimPrefix(line, "branch ")
@@ -234,9 +156,6 @@ func List(repoRoot string) ([]Info, error) {
 // for the lookup itself failing. A file absent from the source is simply not
 // listed, never a failure.
 func CopyIncludes(repoRoot, dir string, patterns []string) (failed []string, err error) {
-	if len(patterns) == 0 {
-		return nil, nil
-	}
 	args := append([]string{"ls-files", "--others", "--ignored", "--exclude-standard", "--"}, patterns...)
 	out, lerr := git(repoRoot, args...)
 	if lerr != nil {
@@ -263,6 +182,22 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0o644)
+}
+
+// IsRepo reports whether dir is inside a git working tree.
+func IsRepo(dir string) bool {
+	out, err := git(dir, "rev-parse", "--is-inside-work-tree")
+	return err == nil && out == "true"
+}
+
+// CurrentBranch returns the branch checked out in dir, "" outside a
+// repository.
+func CurrentBranch(dir string) string {
+	out, err := git(dir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return out
 }
 
 // git runs a git command in dir and returns combined output trimmed.

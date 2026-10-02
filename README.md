@@ -10,7 +10,7 @@ Terminal-native AI coding agent. Built on [agentcore](https://github.com/voocel/
 
 ## Why
 
-Most AI coding tools are either bloated frameworks or thin API wrappers. Codebot sits in between: a **complete agent** with session management, security policies, and a polished TUI — in under 3000 lines of application code.
+Most AI coding tools are either bloated frameworks or thin API wrappers. Codebot sits in between: a **complete agent** with session management, security policies, and a polished TUI.
 
 The trick: **agentcore handles execution, codebot handles coordination.**
 
@@ -19,7 +19,7 @@ Each layer has one job. No layer knows about the layers above it.
 In architecture terms, codebot now acts as a **terminal-native harness** on top of `agentcore`:
 
 - `agentcore` is the execution kernel: agent loop, tools, events, message state
-- `codebot` is the harness/runtime layer: prompt composition, session persistence, approval flow, context compaction, runtime reminders, and TUI orchestration
+- `codebot` is the harness/runtime layer: prompt composition, session persistence, approval flow, and the TUI, print, and ACP frontends
 
 This split matters. The agent loop stays small and reusable, while long-running terminal concerns live in the harness where they belong.
 
@@ -27,8 +27,8 @@ This split matters. The agent loop stays small and reusable, while long-running 
 
 **Agent**
 - Streaming responses with configurable reasoning effort (off → xhigh)
-- Tool execution: read, write, edit, bash, grep, find, ls, web_search, web_fetch
-- Task management: task_create, task_get, task_update, task_list (SubAgent coordination)
+- Tool execution: read, write, edit, bash, grep, glob, ls, web_search, web_fetch
+- Todo list: `todo_write` keeps a visible checklist for multi-step work
 - SubAgent delegation with parallel/chain execution
 - Automatic context compaction when window fills up
 - Multi-provider: Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek
@@ -36,27 +36,29 @@ This split matters. The agent loop stays small and reusable, while long-running 
 
 **Sessions**
 - Append-only JSONL persistence — crash-safe, human-readable
-- Resume (`-c` last, `-r` pick), fork at any point, replay
+- Resume (`-c` last, `-r` pick)
 - Model and reasoning effort restored per session
+- Sessions saved by versions before the session-format change (format 3) can't be resumed and are left out of `-r`; delete them from `~/.codebot/projects/*/` if you no longer need them
 
 **Security**
-- Four permission modes: `strict` / `balanced` / `accept-edits` / `trust`
-- Dangerous command blocking (rm -rf, sudo, dd, ...)
+- Four permission modes: `strict` / `balanced` / `accept-edits` / `trust` (Shift+Tab cycles)
+- Destructive commands (rm -rf, git reset --hard, ...) flagged in the approval prompt
+- Touching credentials, or changing shell startup files or git hooks, is confirmed every time, in every mode
 - Workspace-scoped file access
 - JSON audit log for every tool decision
 
 **Interface**
 - Interactive TUI with real-time streaming and markdown rendering
-- Plan mode: agent proposes changes, user reviews and approves
 - AskUser: structured multi-choice questions from agent to user
 - Image paste (Ctrl+V) with selection (↑) and deletion (Delete)
-- Task progress display: progress bar + status icons above input
+- Todo list shown above the input
 - Non-interactive print mode for pipes and scripts (`-p`)
-- Slash commands: `/model`, `/compact`, `/plan`, `/resume`, `/copy`, ...
+- Slash commands: `/model`, `/compact`, `/resume`, `/copy`, ...; every skill is also a `/` command
 
 **Extensibility**
 - Plugin-first architecture with project and user plugin scopes
-- Plugin contributions: skills, commands, MCP servers
+- Plugin contributions: skills and MCP servers
+- Custom slash commands are skills: add `disable-model-invocation: true` to keep one user-only
 - `/plugins create`, `/plugins install`, and `/plugins remove` for local plugin lifecycle
 - Trust / enable / disable governance with runtime reload
 
@@ -138,8 +140,8 @@ codebot --mode strict
 Codebot follows a layered coding-agent architecture:
 
 - **Execution kernel (`agentcore`)**: model calls, tool execution, event stream, message lifecycle
-- **Harness layer (`codebot`)**: session control, runtime policy, approval routing, prompt assembly, context engineering, recovery, and UX
-- **Application surface**: TUI, print mode, slash commands, session resume/fork, configuration
+- **Harness layer (`codebot`)**: session control, approval routing, prompt assembly, hooks, and UX
+- **Application surface**: TUI, print mode, ACP, slash commands, session resume, configuration
 
 This means codebot is not just "an agent with tools". It is an agent plus a harness for long-running terminal workflows.
 
@@ -154,6 +156,8 @@ Provider entries support `extra` for connection settings sent as HTTP/client con
 Context windows, output caps, and prices come from LiteLLM's model list: a snapshot built into codebot, refreshed daily into `~/.codebot/litellm-models.json`.
 
 OpenAI-protocol providers also support `api: "chat"` (default) or `api: "responses"` to choose between `/v1/chat/completions` and `/v1/responses`.
+
+A provider of `type: "gateway"` is a [LiteLLM gateway](https://github.com/voocel/litellm#gateway): codebot runs the agent, say in a sandbox, while the gateway at `base_url` holds the provider keys, makes the model calls and bills them; `api_key` is codebot's token for the gateway. Reasoning effort, prompt caching and retries work as with a direct provider.
 
 Plugin authoring guide: [docs/plugins.md](docs/plugins.md). Real example plugins live under `docs/examples/plugins/`, including `review-assistant`, `release-ops`, and `docs-context`.
 

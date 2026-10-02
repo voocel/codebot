@@ -69,10 +69,10 @@ func TestMiddleClamp(t *testing.T) {
 func TestRenderWelcomeExtremeChipsKeepFrame(t *testing.T) {
 	m := &Model{}
 	m.Width = 78
-	m.Version = "dev"
-	m.Provider = "openrouter"
-	m.ModelName = "some-vendor/an-extremely-long-experimental-model-identifier-v2-preview-0631"
-	m.ContextWindow = 1000000
+	m.version = "dev"
+	m.Status.Provider = "openrouter"
+	m.Status.Model = "some-vendor/an-extremely-long-experimental-model-identifier-v2-preview-0631"
+	m.Status.Window = 1000000
 	m.Cwd = "E:\\very\\deep\\workspace\\monorepo\\services\\billing\\internal\\adapters\\my-project"
 	m.GitBranch = "feature/very-long-branch-name-for-testing"
 
@@ -104,11 +104,11 @@ func TestRenderWelcomeExtremeChipsKeepFrame(t *testing.T) {
 func TestRenderWelcomeLongChipsKeepFrame(t *testing.T) {
 	m := &Model{}
 	m.Width = 78
-	m.Version = "dev"
-	m.Provider = "deepseek"
-	m.ModelName = "deepseek-v4-flash"
-	m.ReasoningEffort = "high"
-	m.ContextWindow = 128000
+	m.version = "dev"
+	m.Status.Provider = "deepseek"
+	m.Status.Model = "deepseek-v4-flash"
+	m.Status.Effort = "high"
+	m.Status.Window = 128000
 	m.Cwd = "E:\\project\\me\\codebot"
 	m.GitBranch = "main"
 
@@ -142,15 +142,15 @@ func TestRenderWelcomeLongChipsKeepFrame(t *testing.T) {
 	}
 }
 
-// TestRenderWelcomeThinkingChipVisibility locks the display convention:
-// "auto" (provider default on a reasoning model) shows, "off" and "" hide.
+// TestRenderWelcomeThinkingChipVisibility: an explicit level shows; off, and
+// the provider's default, hide.
 func TestRenderWelcomeThinkingChipVisibility(t *testing.T) {
-	for effort, want := range map[string]bool{"auto": true, "high": true, "off": false, "": false} {
+	for effort, want := range map[string]bool{"high": true, "off": false, "": false} {
 		m := &Model{}
 		m.Width = 78
-		m.Provider = "deepseek"
-		m.ModelName = "deepseek-v4-flash"
-		m.ReasoningEffort = effort
+		m.Status.Provider = "deepseek"
+		m.Status.Model = "deepseek-v4-flash"
+		m.Status.Effort = effort
 		if got := strings.Contains(m.renderWelcome(), "thinking"); got != want {
 			t.Fatalf("effort %q: thinking chip shown = %v, want %v", effort, got, want)
 		}

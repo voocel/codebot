@@ -5,259 +5,271 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/catalog"
 )
 
-func TestAppendAfterCloseReturnsError(t *testing.T) {
-	t.Parallel()
-
+func newStore(t *testing.T) *Store {
+	t.Helper()
 	dir := t.TempDir()
 	s, err := create(dir, dir)
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
-	}
-
-	err = s.AppendMessage(agentcore.Message{
-		Role:    agentcore.RoleUser,
-		Content: []agentcore.ContentBlock{agentcore.TextBlock("hello")},
-	})
-	if err == nil {
-		t.Fatalf("expected append on closed store to fail")
-	}
-	if !strings.Contains(err.Error(), "session store is closed") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	t.Cleanup(func() { s.Close() })
+	return s
 }
 
-func TestBuildSnapshotReadsMessageLargerThanScannerLimit(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	s, err := create(dir, dir)
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	defer s.Close()
-
-	large := strings.Repeat("x", 2*1024*1024)
-	if err := s.AppendMessage(agentcore.UserMsg(large)); err != nil {
-		t.Fatalf("append large message: %v", err)
-	}
-	if err := s.AppendMessage(agentcore.UserMsg("after large message")); err != nil {
-		t.Fatalf("append following message: %v", err)
-	}
-
-	snapshot, err := s.BuildSnapshot()
-	if err != nil {
-		t.Fatalf("build snapshot: %v", err)
-	}
-	if len(snapshot.Messages) != 2 {
-		t.Fatalf("messages len = %d, want 2", len(snapshot.Messages))
-	}
-	if got := snapshot.Messages[0].TextContent(); got != large {
-		t.Fatalf("large message length = %d, want %d", len(got), len(large))
-	}
-	if got := snapshot.Messages[1].TextContent(); got != "after large message" {
-		t.Fatalf("following message = %q", got)
-	}
-}
-
-func TestOpenIgnoresCrashTornFinalLine(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	s, err := create(dir, dir)
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	if err := s.AppendMessage(agentcore.UserMsg("before crash")); err != nil {
-		t.Fatalf("append message: %v", err)
-	}
-	path := s.Path()
-	if err := s.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
-	}
-
+func appendRaw(t *testing.T, path, text string) {
+	t.Helper()
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		t.Fatalf("open session tail: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := f.WriteString(`{"kind":"message","id":"torn"`); err != nil {
-		_ = f.Close()
-		t.Fatalf("write torn tail: %v", err)
+	defer f.Close()
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatal(err)
 	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close torn tail: %v", err)
+}
+
+func texts(msgs []agentcore.Message) []string {
+	out := make([]string, len(msgs))
+	for i, m := range msgs {
+		out[i] = m.Text()
+	}
+	return out
+}
+
+func TestReplayAppliesEveryEntryKind(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	answer := agentcore.Message{
+		Role:   litellm.RoleAssistant,
+		Blocks: []litellm.Block{litellm.Text("a1")},
+		Usage:  &agentcore.Usage{Input: 10, Output: 2, Cost: &catalog.Cost{Total: 0.5}},
+	}
+	summary := agentcore.SummaryMessage("checkpoint")
+	steps := []func() error{
+		func() error { return s.AppendModel(Model{Provider: "p", Model: "m1"}) },
+		func() error { return s.Append(agentcore.UserText("u1")) },
+		func() error { return s.Append(answer) },
+		func() error { return s.AppendCompaction([]agentcore.Message{summary, answer}) },
+		func() error { return s.Append(agentcore.UserText("u2")) },
+		func() error { return s.Append(answer) },
+		func() error { return s.AppendModel(Model{Provider: "p", Model: "m2", Effort: "high"}) },
+	}
+	for _, step := range steps {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	resumed, err := open(path)
+	state, err := Replay(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(texts(state.Messages[1:]), ","), "a1,u2,a1"; got != want {
+		t.Fatalf("messages = %s, want %s", got, want)
+	}
+	if got := state.Messages[0]; got.Kind != agentcore.KindSummary || agentcore.SummaryText(got) != "checkpoint" {
+		t.Fatalf("summary did not round-trip: %#v", got)
+	}
+	if state.Model != (Model{Provider: "p", Model: "m2", Effort: "high"}) {
+		t.Fatalf("model = %+v", state.Model)
+	}
+	// Usage counts every recorded response, the replaced one included.
+	if state.Usage.Input != 20 || state.Usage.Cost.Total != 1 {
+		t.Fatalf("usage = %+v", state.Usage)
+	}
+}
+
+func TestReplayKeepsFullThinking(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	block := litellm.ReasoningBlock{Text: strings.Repeat("x", 10_000), State: &litellm.ProviderState{Provider: "anthropic", Data: json.RawMessage(`{"signature":"s"}`)}}
+	if err := s.Append(agentcore.Message{Role: litellm.RoleAssistant, Blocks: []litellm.Block{block}}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := Replay(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := state.Messages[0].Blocks[0].(litellm.ReasoningBlock)
+	if !ok || got.Text != block.Text || got.State == nil || string(got.State.Data) != `{"signature":"s"}` {
+		t.Fatal("thinking must be stored verbatim so a resumed request matches the live one")
+	}
+}
+
+func TestAppendAfterCloseFails(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	s.Close()
+	if err := s.Append(agentcore.UserText("hello")); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("err = %v, want closed store error", err)
+	}
+}
+
+func TestReplayReadsLinesLargerThanScannerLimit(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	large := strings.Repeat("x", 2*1024*1024)
+	for _, text := range []string{large, "after"} {
+		if err := s.Append(agentcore.UserText(text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := Replay(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Messages) != 2 || state.Messages[0].Text() != large || state.Messages[1].Text() != "after" {
+		t.Fatalf("unexpected messages: %d", len(state.Messages))
+	}
+}
+
+func TestOpenCutsCrashTornFinalLine(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	if err := s.Append(agentcore.UserText("before crash")); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	appendRaw(t, s.Path(), `{"kind":"message","data":{"mess`)
+
+	resumed, state, err := open(s.Path())
 	if err != nil {
 		t.Fatalf("open after torn tail: %v", err)
 	}
-	defer resumed.Close()
-	snapshot, err := resumed.BuildSnapshot()
-	if err != nil {
-		t.Fatalf("build snapshot: %v", err)
+	if got := texts(state.Messages); len(got) != 1 || got[0] != "before crash" {
+		t.Fatalf("recovered messages = %q", got)
 	}
-	if len(snapshot.Messages) != 1 || snapshot.Messages[0].TextContent() != "before crash" {
-		t.Fatalf("unexpected recovered messages: %+v", snapshot.Messages)
+	if err := resumed.Append(agentcore.UserText("after recovery")); err != nil {
+		t.Fatal(err)
 	}
-	if err := resumed.AppendMessage(agentcore.UserMsg("after recovery")); err != nil {
-		t.Fatalf("append after recovery: %v", err)
-	}
-	if err := resumed.Close(); err != nil {
-		t.Fatalf("close resumed store: %v", err)
-	}
+	resumed.Close()
 
-	reopened, err := open(path)
+	state, err = Replay(s.Path())
 	if err != nil {
-		t.Fatalf("reopen after recovery append: %v", err)
+		t.Fatalf("replay after recovery append: %v", err)
 	}
-	defer reopened.Close()
-	snapshot, err = reopened.BuildSnapshot()
-	if err != nil {
-		t.Fatalf("build reopened snapshot: %v", err)
-	}
-	if len(snapshot.Messages) != 2 || snapshot.Messages[1].TextContent() != "after recovery" {
-		t.Fatalf("unexpected messages after recovery append: %+v", snapshot.Messages)
+	if got := texts(state.Messages); len(got) != 2 || got[1] != "after recovery" {
+		t.Fatalf("messages after recovery = %q", got)
 	}
 }
 
-func TestOpenRejectsMalformedCompleteLine(t *testing.T) {
+func TestOpenTerminatesValidFinalLine(t *testing.T) {
 	t.Parallel()
+	s := newStore(t)
+	if err := s.Append(agentcore.UserText("complete without newline")); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	info, err := os.Stat(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(s.Path(), info.Size()-1); err != nil {
+		t.Fatal(err)
+	}
 
+	resumed, _, err := open(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resumed.Append(agentcore.UserText("next")); err != nil {
+		t.Fatal(err)
+	}
+	resumed.Close()
+
+	state, err := Replay(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(state.Messages))
+	}
+}
+
+func TestOpenRejectsCorruption(t *testing.T) {
+	t.Parallel()
+	for name, line := range map[string]string{
+		"malformed line": "not-json\n",
+		"unknown kind":   `{"kind":"llm_call","data":{}}` + "\n",
+		"second header":  `{"kind":"header","data":{}}` + "\n",
+		"empty message":  `{"kind":"message","data":{}}` + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newStore(t)
+			s.Close()
+			appendRaw(t, s.Path(), line)
+			if _, _, err := open(s.Path()); err == nil {
+				t.Fatal("expected corruption in durable history to be reported")
+			}
+		})
+	}
+}
+
+func TestOpenRejectsOtherVersions(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir() + "/old.jsonl"
+	if err := os.WriteFile(path, []byte(`{"kind":"header","id":"h0","data":{"version":3}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := open(path); err == nil || !strings.Contains(err.Error(), "version") {
+		t.Fatalf("err = %v, want version error", err)
+	}
+}
+
+func TestManagerListsSessions(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	s, err := create(dir, dir)
+	m := NewManager(dir)
+
+	older, err := m.Create("/work")
 	if err != nil {
-		t.Fatalf("create store: %v", err)
+		t.Fatal(err)
 	}
-	path := s.Path()
-	if err := s.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
+	reminder := agentcore.UserText("<system-reminder>x</system-reminder>")
+	reminder.Kind = "reminder"
+	for _, msg := range []agentcore.Message{reminder, agentcore.UserText("fix the bug"), agentcore.UserText("thanks")} {
+		if err := older.Append(msg); err != nil {
+			t.Fatal(err)
+		}
 	}
-
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	older.Close()
+	time.Sleep(10 * time.Millisecond)
+	newer, err := m.Create("/work")
 	if err != nil {
-		t.Fatalf("open session tail: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := f.WriteString("not-json\n"); err != nil {
-		_ = f.Close()
-		t.Fatalf("write malformed line: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close malformed line: %v", err)
+	newer.Close()
+	if err := os.WriteFile(dir+"/stale.jsonl", []byte(`{"kind":"header","data":{"version":3}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	_, err = open(path)
-	if err == nil {
-		t.Fatal("expected malformed complete line to fail")
-	}
-	if !strings.Contains(err.Error(), "decode JSONL line 2") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestOpenTerminatesValidFinalLineBeforeAppending(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	s, err := create(dir, dir)
+	list, err := m.List()
 	if err != nil {
-		t.Fatalf("create store: %v", err)
+		t.Fatal(err)
 	}
-	if err := s.AppendMessage(agentcore.UserMsg("complete without newline")); err != nil {
-		t.Fatalf("append message: %v", err)
+	if len(list) != 2 || list[0].ID != newer.Header().SessionID {
+		t.Fatalf("list = %+v", list)
 	}
-	path := s.Path()
-	if err := s.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
+	if got := list[1]; got.MessageCount != 3 || got.FirstMessage != "fix the bug" || got.Cwd != "/work" {
+		t.Fatalf("info = %+v", got)
 	}
-	info, err := os.Stat(path)
+
+	store, state, err := m.Open(older.Header().SessionID)
 	if err != nil {
-		t.Fatalf("stat session: %v", err)
+		t.Fatal(err)
 	}
-	if err := os.Truncate(path, info.Size()-1); err != nil {
-		t.Fatalf("remove final newline: %v", err)
-	}
-
-	resumed, err := open(path)
-	if err != nil {
-		t.Fatalf("open unterminated valid line: %v", err)
-	}
-	if err := resumed.AppendMessage(agentcore.UserMsg("next message")); err != nil {
-		_ = resumed.Close()
-		t.Fatalf("append after unterminated line: %v", err)
-	}
-	if err := resumed.Close(); err != nil {
-		t.Fatalf("close resumed store: %v", err)
-	}
-
-	reopened, err := open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	defer reopened.Close()
-	snapshot, err := reopened.BuildSnapshot()
-	if err != nil {
-		t.Fatalf("build snapshot: %v", err)
-	}
-	if len(snapshot.Messages) != 2 {
-		t.Fatalf("messages len = %d, want 2", len(snapshot.Messages))
-	}
-}
-
-func TestTrimThinkingForStorage(t *testing.T) {
-	t.Parallel()
-
-	long := strings.Repeat("x", maxStoredThinkingRunes+50)
-	signed := agentcore.ThinkingBlock(long)
-	signed.State = &agentcore.ProviderState{Provider: "anthropic", Data: json.RawMessage(`{"type":"thinking","signature":"s"}`)}
-	in := agentcore.Message{
-		Role: agentcore.RoleAssistant,
-		Content: []agentcore.ContentBlock{
-			signed,
-			agentcore.TextBlock("visible answer"),
-		},
-	}
-	out := trimThinkingForStorage(in)
-
-	if &out.Content[0] == &in.Content[0] {
-		t.Fatalf("expected a cloned content slice when trimming occurs")
-	}
-	if got := []rune(out.Content[0].Thinking); len(got) != maxStoredThinkingRunes {
-		t.Fatalf("thinking length = %d, want %d", len(got), maxStoredThinkingRunes)
-	}
-	if !strings.HasSuffix(out.Content[0].Thinking, "…") {
-		t.Fatalf("trimmed thinking should end with ellipsis, got %q", out.Content[0].Thinking)
-	}
-	// The signature no longer matches the shortened text.
-	if out.Content[0].State != nil || in.Content[0].State == nil {
-		t.Fatalf("trimmed thinking must drop only its stored state")
-	}
-	if out.Content[1].Text != "visible answer" {
-		t.Fatalf("non-thinking blocks must not be modified, got %q", out.Content[1].Text)
-	}
-	// Input must remain untouched.
-	if len(in.Content[0].Thinking) != len(long) {
-		t.Fatalf("input thinking was mutated")
-	}
-}
-
-func TestTrimThinkingForStorageShortUnchanged(t *testing.T) {
-	t.Parallel()
-
-	in := agentcore.Message{
-		Role: agentcore.RoleAssistant,
-		Content: []agentcore.ContentBlock{
-			agentcore.ThinkingBlock("short thought"),
-		},
-	}
-	out := trimThinkingForStorage(in)
-	if &out.Content[0] != &in.Content[0] {
-		t.Fatalf("expected no-op to return input content slice as-is")
+	defer store.Close()
+	if len(state.Messages) != 3 {
+		t.Fatalf("messages = %d", len(state.Messages))
 	}
 }

@@ -77,7 +77,7 @@ var (
 	RoleUser      = lipgloss.AdaptiveColor{Light: "31", Dark: "#9CC2F9"}
 	RoleAssistant = lipgloss.AdaptiveColor{Light: "#3A6F6B", Dark: "#B8E1DD"}
 	RoleShell     = lipgloss.AdaptiveColor{Light: "#A04870", Dark: "#D16D9E"}
-	RoleTeammate  = lipgloss.AdaptiveColor{Light: "#7A4D9C", Dark: "#C5A3E5"}
+	RoleSubagent  = lipgloss.AdaptiveColor{Light: "#7A4D9C", Dark: "#C5A3E5"}
 )
 
 // Highlights.

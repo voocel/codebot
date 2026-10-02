@@ -1,12 +1,13 @@
 package tui
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/voocel/codebot/internal/interact"
 )
 
 // pinTrueColor forces lipgloss to emit SGR escapes inside this test even
@@ -21,7 +22,7 @@ func pinTrueColor(t *testing.T) {
 }
 
 func TestWrapTextBreaksLongTokens(t *testing.T) {
-	m := Model{State: State{Width: 20, Ready: true}}
+	m := Model{Width: 20, Ready: true}
 
 	input := strings.Repeat("x", 50)
 	out := m.wrapTextForIndent(input, 0)
@@ -37,15 +38,14 @@ func TestWrapTextBreaksLongTokens(t *testing.T) {
 }
 
 func TestRenderContextBarShowsModeIndicator(t *testing.T) {
-	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
-		StatusMode: func(*Model) string { return "◇ plan mode" },
-	})
+	m := testModel("anthropic/claude-sonnet-4.6")
+	m.Mode = interact.ModeAcceptEdits
 	m.Ready = true
 	m.Width = 100
 	m.Cwd = "/tmp/project"
 
 	bar := m.RenderContextBar()
-	if !strings.Contains(bar, "◇ plan mode") {
+	if !strings.Contains(bar, "⏵⏵ accept edits") {
 		t.Fatalf("expected mode indicator in context bar, got %q", bar)
 	}
 	if !strings.Contains(bar, "project") {
@@ -54,7 +54,7 @@ func TestRenderContextBarShowsModeIndicator(t *testing.T) {
 }
 
 func TestRenderInputPanelHighlightsShellMode(t *testing.T) {
-	m := New(nil, "anthropic/claude-sonnet-4.6")
+	m := testModel("anthropic/claude-sonnet-4.6")
 	m.Ready = true
 	m.Width = 80
 	m.Input.SetValue("!git status")
@@ -65,7 +65,7 @@ func TestRenderInputPanelHighlightsShellMode(t *testing.T) {
 }
 
 func TestRenderInputPanelUsesDefaultStyleWithoutShellPrefix(t *testing.T) {
-	m := New(nil, "anthropic/claude-sonnet-4.6")
+	m := testModel("anthropic/claude-sonnet-4.6")
 	m.Ready = true
 	m.Width = 80
 	m.Input.SetValue("git status")
@@ -88,7 +88,7 @@ func TestRenderInputPanelUsesDefaultStyleWithoutShellPrefix(t *testing.T) {
 //     number sits on the same background as the code
 //   - apply foreground only to the gutter and pad the body to width so the
 //     band reaches the right edge instead of stopping at the last code char
-func TestRenderEditResultDiffColoring(t *testing.T) {
+func TestRenderDiffDiffColoring(t *testing.T) {
 	pinTrueColor(t)
 	diff := strings.Join([]string{
 		" 1 unchanged context",
@@ -96,9 +96,7 @@ func TestRenderEditResultDiffColoring(t *testing.T) {
 		"+2 new line",
 		" 3 trailing context",
 	}, "\n")
-	payload, _ := json.Marshal(map[string]any{"diff": diff})
-
-	out := RenderEditResult(payload, "", 40)
+	out := RenderDiff(diff, "", 40)
 	lines := strings.Split(out, "\n")
 	if len(lines) < 5 {
 		t.Fatalf("expected stats + 4 diff lines, got %d:\n%s", len(lines), out)
@@ -145,15 +143,13 @@ func TestRenderEditResultDiffColoring(t *testing.T) {
 }
 
 // Context lines must carry chroma fg but never diff bg.
-func TestRenderEditResultContextHasHighlightNoBg(t *testing.T) {
+func TestRenderDiffContextHasHighlightNoBg(t *testing.T) {
 	pinTrueColor(t)
 	diff := " 1 package main\n" +
 		"-2 old\n" +
 		"+2 new\n" +
 		" 3 import \"fmt\"\n"
-	payload, _ := json.Marshal(map[string]any{"diff": diff})
-
-	out := RenderEditResult(payload, "main.go", 50)
+	out := RenderDiff(diff, "main.go", 50)
 	lines := strings.Split(out, "\n")
 	if len(lines) < 5 {
 		t.Fatalf("expected stats + 4 rows, got %d:\n%s", len(lines), out)
@@ -173,15 +169,13 @@ func TestRenderEditResultContextHasHighlightNoBg(t *testing.T) {
 
 // Highlighted rows must still pad to width — guards ANSI-nesting bugs
 // where a chroma reset would expose a gap between code and padding.
-func TestRenderEditResultHighlightedKeepsBgIntact(t *testing.T) {
+func TestRenderDiffHighlightedKeepsBgIntact(t *testing.T) {
 	pinTrueColor(t)
 	diff := strings.Join([]string{
 		"-1 func old() {}",
 		"+1 func renamed() {}",
 	}, "\n")
-	payload, _ := json.Marshal(map[string]any{"diff": diff})
-
-	out := RenderEditResult(payload, "main.go", 60)
+	out := RenderDiff(diff, "main.go", 60)
 	lines := strings.Split(out, "\n")
 	if len(lines) < 3 {
 		t.Fatalf("expected stats + 2 diff lines, got %d:\n%s", len(lines), out)

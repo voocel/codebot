@@ -2,213 +2,193 @@ package acp
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	acp "github.com/coder/acp-go-sdk"
 	agentcore "github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/agent"
-	"github.com/voocel/codebot/internal/approval"
-	"github.com/voocel/codebot/internal/bootstrap"
+	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/interact"
 )
 
-// acpAgent adapts a codebot agent.Session to the acp.Agent interface.
-//
-// MVP scope: one connection serves the single session created at boot. cwd is
-// fixed by Boot; session/load, multi-session, and fs/terminal callbacks are
-// out of scope (see tasks/acp-frontend.md).
-type acpAgent struct {
-	rt      *bootstrap.Runtime
-	sess    *agent.Session
+// Server adapts the App to the acp.Agent interface. One connection serves the
+// conversation opened at boot; session/load and multiple sessions are out of
+// scope.
+type Server struct {
 	version string
+	app     *app.App
+	fs      *EditorFS
 
-	// conn is set once by setConnection after NewAgentSideConnection has
-	// already started its inbound reader goroutine, so it is written on one
-	// goroutine and read (during a prompt turn) on others. atomic.Pointer
-	// gives that publication a happens-before edge without a mutex on the hot
-	// event path. sid is set in newAgent before the reader goroutine starts,
-	// so it needs no synchronisation.
+	// conn is set by Serve after the connection has started reading, so it
+	// is read on other goroutines.
 	conn atomic.Pointer[acp.AgentSideConnection]
-	sid  acp.SessionId
-	fs   *WorkspaceFS // editor-backed file backend; nil when not injected
 
 	mu           sync.Mutex
-	turn         chan turnResult // completion sink for the in-flight prompt turn
-	subscribed   bool
-	unsub        func()
-	pendingEdits map[acp.ToolCallId]editSnapshot // mu-guarded: pre-exec file snapshots for native diffs
+	runErr       error                           // the last run error since the prompt began
+	pendingEdits map[acp.ToolCallId]editSnapshot // pre-exec file snapshots for native diffs
 }
 
-var _ acp.Agent = (*acpAgent)(nil)
+var _ acp.Agent = (*Server)(nil)
 
-func newAgent(rt *bootstrap.Runtime, version string, fs *WorkspaceFS) *acpAgent {
-	a := &acpAgent{
-		rt:           rt,
-		sess:         rt.Session,
-		version:      version,
-		sid:          acp.SessionId(rt.Session.SessionID()),
-		fs:           fs,
-		pendingEdits: make(map[acp.ToolCallId]editSnapshot),
-	}
-	if fs != nil {
-		fs.setSession(a.sid)
-	}
-	return a
-}
+func (s *Server) sessionID() acp.SessionId { return acp.SessionId(s.app.Current().ID()) }
 
-func (a *acpAgent) setConnection(c *acp.AgentSideConnection) {
-	a.conn.Store(c)
-	if a.fs != nil {
-		a.fs.bindConn(c)
-	}
-}
-
-func (a *acpAgent) Initialize(_ context.Context, req acp.InitializeRequest) (acp.InitializeResponse, error) {
+func (s *Server) Initialize(_ context.Context, req acp.InitializeRequest) (acp.InitializeResponse, error) {
 	// Route file reads/writes through the editor only for the capabilities it
 	// advertises; the backend falls back to the local filesystem otherwise.
-	if a.fs != nil {
-		a.fs.setCaps(req.ClientCapabilities.Fs.ReadTextFile, req.ClientCapabilities.Fs.WriteTextFile)
-	}
+	s.fs.setCaps(req.ClientCapabilities.Fs.ReadTextFile, req.ClientCapabilities.Fs.WriteTextFile)
 	return acp.InitializeResponse{
 		ProtocolVersion:   acp.ProtocolVersionNumber,
-		AgentCapabilities: acp.AgentCapabilities{LoadSession: false}, // session/load: stage 2
-		AuthMethods:       []acp.AuthMethod{},                        // keys via env, no auth
-		AgentInfo:         &acp.Implementation{Name: "codebot", Version: a.version},
+		AgentCapabilities: acp.AgentCapabilities{LoadSession: false},
+		AuthMethods:       []acp.AuthMethod{}, // credentials come from settings.json
+		AgentInfo:         &acp.Implementation{Name: "codebot", Version: s.version},
 	}, nil
 }
 
-func (a *acpAgent) Authenticate(context.Context, acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
+func (s *Server) Authenticate(context.Context, acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
 	return acp.AuthenticateResponse{}, nil
 }
 
-func (a *acpAgent) NewSession(_ context.Context, req acp.NewSessionRequest) (acp.NewSessionResponse, error) {
-	if err := sameDir(req.Cwd, a.rt.Cwd); err != nil {
+func (s *Server) NewSession(_ context.Context, req acp.NewSessionRequest) (acp.NewSessionResponse, error) {
+	if err := sameDir(req.Cwd, s.app.Cwd()); err != nil {
 		return acp.NewSessionResponse{}, err
 	}
-	// MVP: codebot's MCP servers come from its own settings.json; the editor's
-	// req.McpServers are not wired in yet (stage 2).
-	a.bind()
-	return acp.NewSessionResponse{SessionId: a.sid}, nil
+	// MCP servers come from codebot's own settings; the editor's
+	// req.McpServers are not wired in.
+	return acp.NewSessionResponse{SessionId: s.sessionID(), Modes: s.sessionModes()}, nil
 }
 
-// bind subscribes to session events and installs the editor-backed approver.
-// Idempotent so repeated NewSession calls are harmless.
-func (a *acpAgent) bind() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.subscribed {
-		return
+// modeDescriptions explains each permission mode in the editor's picker.
+var modeDescriptions = map[interact.Mode]string{
+	interact.ModeStrict:      "Ask before edits; block commands",
+	interact.ModeBalanced:    "Ask before edits and commands",
+	interact.ModeAcceptEdits: "Edit freely; ask before commands",
+	interact.ModeTrust:       "Run everything without asking",
+}
+
+// sessionModes advertises the permission modes as ACP session modes; mode
+// ids are the interact.Mode values.
+func (s *Server) sessionModes() *acp.SessionModeState {
+	modes := make([]acp.SessionMode, 0, len(interact.Modes))
+	for _, m := range interact.Modes {
+		modes = append(modes, acp.SessionMode{
+			Id:          acp.SessionModeId(m),
+			Name:        string(m),
+			Description: acp.Ptr(modeDescriptions[m]),
+		})
 	}
-	a.rt.ApprovalEngine.SetApprover(a.approve)
-	a.unsub = a.sess.Subscribe(a.onSessionEvent)
-	a.subscribed = true
+	return &acp.SessionModeState{AvailableModes: modes, CurrentModeId: acp.SessionModeId(s.app.Mode())}
 }
 
-func (a *acpAgent) Prompt(ctx context.Context, req acp.PromptRequest) (acp.PromptResponse, error) {
-	ch := make(chan turnResult, 1)
-	a.mu.Lock()
-	a.turn = ch
-	a.mu.Unlock()
-
-	if err := a.dispatchPrompt(req.Prompt); err != nil {
-		a.clearTurn()
+// Prompt submits the user's message and answers once the conversation is idle
+// again, after every update of the turn has been sent.
+func (s *Server) Prompt(ctx context.Context, req acp.PromptRequest) (acp.PromptResponse, error) {
+	blocks, err := promptBlocks(req.Prompt)
+	if err != nil {
 		return acp.PromptResponse{}, err
 	}
-
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			return acp.PromptResponse{}, r.err // ACP has no error stop reason → JSON-RPC error
+	conv := s.app.Current()
+	s.mu.Lock()
+	s.runErr = nil
+	s.mu.Unlock()
+	if err := conv.Submit(ctx, blocks); err != nil {
+		return acp.PromptResponse{}, err
+	}
+	if err := conv.Wait(ctx); err != nil {
+		if ctx.Err() != nil {
+			conv.Cancel()
+			return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
 		}
-		return acp.PromptResponse{StopReason: r.stop}, nil
-	case <-ctx.Done():
-		a.sess.Abort()
-		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+		return acp.PromptResponse{}, err
 	}
+	s.mu.Lock()
+	runErr := s.runErr
+	s.mu.Unlock()
+	return turnResult(conv.Status().LastRun, runErr)
 }
 
-func (a *acpAgent) clearTurn() {
-	a.mu.Lock()
-	a.turn = nil
-	a.mu.Unlock()
-}
-
-// dispatchPrompt sends the user message into the session. A lone text block
-// goes through Session.Prompt to preserve UserPromptSubmit hook parity;
-// anything richer (images, multiple blocks) goes through PromptWithBlocks,
-// which does not run that hook.
-func (a *acpAgent) dispatchPrompt(blocks []acp.ContentBlock) error {
-	if len(blocks) == 1 && blocks[0].Text != nil {
-		return a.sess.Prompt(blocks[0].Text.Text)
-	}
-	out := make([]agentcore.ContentBlock, 0, len(blocks))
+// promptBlocks converts the prompt's text and image blocks.
+func promptBlocks(blocks []acp.ContentBlock) ([]litellm.Block, error) {
+	out := make([]litellm.Block, 0, len(blocks))
 	for _, b := range blocks {
 		switch {
 		case b.Text != nil:
-			out = append(out, agentcore.TextBlock(b.Text.Text))
+			out = append(out, litellm.Text(b.Text.Text))
 		case b.Image != nil:
-			out = append(out, agentcore.ImageBlock(b.Image.Data, b.Image.MimeType))
+			data, err := base64.StdEncoding.DecodeString(b.Image.Data)
+			if err != nil {
+				return nil, fmt.Errorf("acp: image: %w", err)
+			}
+			out = append(out, litellm.ImageBlock{Data: data, MIME: b.Image.MimeType})
 		}
 	}
 	if len(out) == 0 {
-		return fmt.Errorf("acp: prompt has no supported content blocks")
+		return nil, errors.New("acp: prompt has no supported content blocks")
 	}
-	return a.sess.PromptWithBlocks(out)
+	return out, nil
 }
 
-func (a *acpAgent) Cancel(context.Context, acp.CancelNotification) error {
-	a.sess.Abort()
+// turnResult maps how the last run ended to the prompt's response. ACP has
+// no error stop reason, so a failed run is a JSON-RPC error.
+func turnResult(run *agentcore.RunEnd, runErr error) (acp.PromptResponse, error) {
+	if run == nil {
+		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	}
+	switch run.Reason {
+	case agentcore.EndMaxTurns:
+		return acp.PromptResponse{StopReason: acp.StopReasonMaxTurnRequests}, nil
+	case agentcore.EndAborted:
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+	case agentcore.EndError:
+		if runErr == nil {
+			runErr = errors.New("agent run ended with an error")
+		}
+		return acp.PromptResponse{}, fmt.Errorf("acp: %w", runErr)
+	default:
+		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	}
+}
+
+func (s *Server) Cancel(context.Context, acp.CancelNotification) error {
+	s.app.Current().Cancel()
 	return nil
 }
 
-func (a *acpAgent) SetSessionMode(_ context.Context, req acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
-	eng := a.rt.ApprovalEngine
-	switch strings.ToLower(string(req.ModeId)) {
-	case "plan":
-		eng.SetPlanMode(true)
-	case "strict":
-		eng.SetPlanMode(false)
-		eng.SetMode(approval.ModeStrict)
-	case "balanced", "default":
-		eng.SetPlanMode(false)
-		eng.SetMode(approval.ModeBalanced)
-	case "auto", "accept-edits", "acceptedits":
-		eng.SetPlanMode(false)
-		eng.SetMode(approval.ModeAuto)
-	case "trust", "bypass":
-		eng.SetPlanMode(false)
-		eng.SetMode(approval.ModeTrust)
-	default:
-		return acp.SetSessionModeResponse{}, fmt.Errorf("acp: unknown session mode %q", req.ModeId)
+func (s *Server) SetSessionMode(_ context.Context, req acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
+	mode, err := interact.ParseMode(string(req.ModeId))
+	if err != nil {
+		return acp.SetSessionModeResponse{}, fmt.Errorf("acp: %w", err)
 	}
+	s.app.SetMode(mode)
 	return acp.SetSessionModeResponse{}, nil
 }
 
-// Methods below are not supported in the MVP. They are not advertised via
-// capabilities, so a conforming client should not call them; we return
-// MethodNotFound rather than a silent no-op.
+// Methods below are not supported. They are not advertised via capabilities,
+// so a conforming client should not call them; we return MethodNotFound
+// rather than a silent no-op.
 
-func (a *acpAgent) Logout(context.Context, acp.LogoutRequest) (acp.LogoutResponse, error) {
+func (s *Server) Logout(context.Context, acp.LogoutRequest) (acp.LogoutResponse, error) {
 	return acp.LogoutResponse{}, acp.NewMethodNotFound("logout")
 }
 
-func (a *acpAgent) CloseSession(context.Context, acp.CloseSessionRequest) (acp.CloseSessionResponse, error) {
+func (s *Server) CloseSession(context.Context, acp.CloseSessionRequest) (acp.CloseSessionResponse, error) {
 	return acp.CloseSessionResponse{}, acp.NewMethodNotFound("session/close")
 }
 
-func (a *acpAgent) ListSessions(context.Context, acp.ListSessionsRequest) (acp.ListSessionsResponse, error) {
+func (s *Server) ListSessions(context.Context, acp.ListSessionsRequest) (acp.ListSessionsResponse, error) {
 	return acp.ListSessionsResponse{}, acp.NewMethodNotFound("session/list")
 }
 
-func (a *acpAgent) ResumeSession(context.Context, acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
+func (s *Server) ResumeSession(context.Context, acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
 	return acp.ResumeSessionResponse{}, acp.NewMethodNotFound("session/resume")
 }
 
-func (a *acpAgent) SetSessionConfigOption(context.Context, acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
+func (s *Server) SetSessionConfigOption(context.Context, acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
 	return acp.SetSessionConfigOptionResponse{}, acp.NewMethodNotFound("session/set_config_option")
 }
 

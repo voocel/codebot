@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/voocel/codebot/internal/config"
 	"net/http"
 	"os"
 	"os/exec"
@@ -29,9 +30,9 @@ type Client struct {
 	onChange     func() // called when server sends notifications/tools/list_changed
 }
 
-// Connect establishes an MCP connection using the transport specified in cfg.
+// connect establishes an MCP connection using the transport specified in cfg.
 // onChange is called when the server sends a tools/list_changed notification.
-func Connect(ctx context.Context, name string, cfg ServerConfig, onChange func()) (*Client, error) {
+func connect(ctx context.Context, name string, cfg config.MCPServer, onChange func()) (*Client, error) {
 	tr, err := buildTransport(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s: %w", name, err)
@@ -95,25 +96,25 @@ func Connect(ctx context.Context, name string, cfg ServerConfig, onChange func()
 	}
 }
 
-func buildTransport(cfg ServerConfig) (transport.Transport, error) {
+func buildTransport(cfg config.MCPServer) (transport.Transport, error) {
 	if cfg.Type == "http" {
 		return buildHTTPTransport(cfg), nil
 	}
 	return buildStdioTransport(cfg)
 }
 
-func buildStdioTransport(cfg ServerConfig) (*stdio.Command, error) {
+func buildStdioTransport(cfg config.MCPServer) (*stdio.Command, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	if len(cfg.Env) > 0 {
-		cmd.Env = ExpandEnv(cfg.Env)
+		cmd.Env = expandEnv(cfg.Env)
 	}
 	return stdio.NewCommand(cmd, nil)
 }
 
-func buildHTTPTransport(cfg ServerConfig) *streamhttp.Transport {
+func buildHTTPTransport(cfg config.MCPServer) *streamhttp.Transport {
 	var opts *streamhttp.TransportOptions
 	if len(cfg.Headers) > 0 {
-		expanded := ExpandHeaders(cfg.Headers)
+		expanded := expandHeaders(cfg.Headers)
 		opts = &streamhttp.TransportOptions{
 			HTTPClient: &http.Client{Transport: &headerTransport{
 				headers: expanded,

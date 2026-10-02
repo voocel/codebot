@@ -34,10 +34,10 @@ func (f fakeConn) WriteTextFile(_ context.Context, p acp.WriteTextFileRequest) (
 
 // A failed editor write must surface the error, never silently fall back to
 // disk — otherwise the on-disk file and the editor buffer desync.
-func TestWorkspaceFS_WriteFailsHardOnEditorError(t *testing.T) {
+func TestEditorFS_WriteFailsHardOnEditorError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.go")
-	ws := &WorkspaceFS{
+	ws := &EditorFS{
 		conn:     fakeConn{write: func(string, string) error { return errors.New("editor boom") }},
 		sid:      "s1",
 		canWrite: true,
@@ -50,7 +50,7 @@ func TestWorkspaceFS_WriteFailsHardOnEditorError(t *testing.T) {
 	}
 }
 
-func TestWorkspaceFS_TextForDiff(t *testing.T) {
+func TestEditorFS_TextForDiff(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
@@ -60,9 +60,9 @@ func TestWorkspaceFS_TextForDiff(t *testing.T) {
 	}
 	missing := filepath.Join(dir, "missing.go")
 
-	editorOK := &WorkspaceFS{conn: fakeConn{read: func(string) (string, error) { return "buffer", nil }}, sid: "s", canRead: true}
-	editorErr := &WorkspaceFS{conn: fakeConn{read: func(string) (string, error) { return "", errors.New("not text") }}, sid: "s", canRead: true}
-	unbound := &WorkspaceFS{}
+	editorOK := &EditorFS{conn: fakeConn{read: func(string) (string, error) { return "buffer", nil }}, sid: "s", canRead: true}
+	editorErr := &EditorFS{conn: fakeConn{read: func(string) (string, error) { return "", errors.New("not text") }}, sid: "s", canRead: true}
+	unbound := &EditorFS{}
 
 	t.Run("editor read success is reliable buffer", func(t *testing.T) {
 		s := editorOK.textForDiff(ctx, onDisk)

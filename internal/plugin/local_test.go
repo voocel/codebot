@@ -19,6 +19,7 @@ func TestInstallLocalProjectPlugin(t *testing.T) {
 	result, err := InstallLocal(InstallInput{
 		Cwd:        cwd,
 		SourcePath: src,
+		Scope:      ScopeProject,
 	})
 	if err != nil {
 		t.Fatalf("InstallLocal: %v", err)

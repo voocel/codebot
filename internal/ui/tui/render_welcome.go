@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/reflow/truncate"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -123,7 +123,7 @@ func frameCard(titleTag string, body []string, width int) string {
 	framed = append(framed, bc.Render("╭─ ")+titleTag+" "+bc.Render(strings.Repeat("─", topDash)+"╮"))
 	for _, line := range body {
 		if lipgloss.Width(line) > innerW {
-			line = truncate.StringWithTail(line, uint(innerW), "…")
+			line = ansi.Truncate(line, innerW, "…")
 		}
 		pad := max(innerW-lipgloss.Width(line), 0)
 		framed = append(framed, bc.Render("│ ")+line+strings.Repeat(" ", pad)+bc.Render(" │"))
@@ -176,7 +176,7 @@ func (m *Model) renderWelcome() string {
 		width = min(max(m.Width-4, 52), 68)
 	}
 
-	ver := m.Version
+	ver := m.version
 	if ver == "" {
 		ver = "dev"
 	}
@@ -236,12 +236,12 @@ func (m *Model) renderWelcome() string {
 		}
 	}
 	var modelChip, pathChip, branchChip string
-	if m.ModelName != "" {
+	if m.Status.Model != "" {
 		modelChip = m.formatModelChip()
 		// Thinking level rides on the model chip — same muted style, and
 		// pairClamp keeps the tail visible when the model id runs long.
-		if m.ReasoningEffort != "" && m.ReasoningEffort != "off" {
-			modelChip += " · thinking " + m.ReasoningEffort
+		if effort := m.Status.Effort; effort != "" && effort != "off" {
+			modelChip += " · thinking " + string(effort)
 		}
 	}
 	if m.Cwd != "" {
@@ -250,7 +250,7 @@ func (m *Model) renderWelcome() string {
 	if m.GitBranch != "" {
 		branchChip = "branch " + m.GitBranch
 	}
-	appendPair(m.Provider, modelChip, ContextChipAccentStyle, ContextChipStyle)
+	appendPair(m.Status.Provider, modelChip, ContextChipAccentStyle, ContextChipStyle)
 	appendPair(pathChip, branchChip, ContextChipStyle, ContextChipStyle)
 
 	// --- assemble ---
@@ -268,9 +268,5 @@ func (m *Model) renderWelcome() string {
 	body = append(body, "")
 
 	titleTag := WelcomeKickerStyle.Render("codebot") + " " + ContextChipAccentStyle.Render(ver)
-	result := "\n" + frameCard(titleTag, body, width)
-	if m.MCPLoading {
-		result += "\n" + InputHintStyle.Render("  ") + m.ToolSpinner.View() + InputHintStyle.Render(" MCP servers connecting...")
-	}
-	return result
+	return "\n" + frameCard(titleTag, body, width)
 }

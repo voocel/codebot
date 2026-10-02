@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -9,80 +10,41 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/storage"
-	cbteam "github.com/voocel/codebot/internal/team"
+	"github.com/voocel/agentcore/task"
+	"github.com/voocel/litellm"
+
+	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/session"
+	"github.com/voocel/codebot/internal/todo"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 
-// Config provides hooks for extending the base TUI behavior.
-type Config struct {
-	Placeholder          string
-	Version              string
-	Provider             string
-	ReasoningEffort      string // current thinking level shown on the welcome card
-	ContextWindow        int
-	Cwd                  string
-	PlansDir             string // absolute path to the plan files directory; enables hidden rendering for write/edit on plan files
-	GitBranch            string
-	History              *storage.History         // input history (Up/Down navigation)
-	InitialTasks         *storage.TaskSnapshot    // initial task snapshot restored before first render
-	RestoredMessages     []agentcore.AgentMessage // messages restored from a previous session (rendered on Init)
-	OnKey                func(m *Model, msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
-	OnEvent              func(m *Model, ev agentcore.Event) tea.Cmd
-	OnPaste              func(m *Model) tea.Cmd              // Ctrl+V: read clipboard image, return ImageAttachedMsg
-	OnDrop               func(m *Model, text string) tea.Cmd // Drag-drop: if text is image path, return cmd; else nil
-	OnHideCompletedTasks func(snap storage.TaskSnapshot) tea.Cmd
-	StatusRight          func(m *Model) string
-	StatusMode           func(m *Model) string                // mode indicator for context bar (e.g. "⏵⏵ trust")
-	StatusTeam           func(m *Model) string                // active-team indicator for context bar (e.g. "△ alpha · 2 idle")
-	StatusGoal           func(m *Model) string                // explicit-goal indicator for context bar
-	Overlay              func(m *Model) *OverlayState         // interactive command overlay
-	Completions          func(prefix string) []CompletionItem // slash command completions
-	OnBtwResult          func(msg BtwResultMsg)               // called when /btw side question completes
-
-	// TeammateEvents is the optional fan-out hub for teammate AgentLoop
-	// events. When non-nil the Ctrl+T modal subscribes to it to render a
-	// teammate's live transcript. nil disables the modal entirely.
-	TeammateEvents *cbteam.EventHub
-
-	// FleetAgentStat returns how long the agent backing a fleet-list row (keyed
-	// by hub display name) has been running, when a live backing task is found.
-	// Used to annotate rows with elapsed time. nil disables the annotation.
-	FleetAgentStat func(name string) (elapsed time.Duration, ok bool)
-	// StopAgent stops the running task backing a fleet agent by hub display
-	// name. nil disables x-to-stop in the fleet list.
-	StopAgent func(name string)
-	// StopAllAgents stops every running background task. nil disables the
-	// stop-all key in the fleet list.
-	StopAllAgents func()
+// Commands runs slash commands; package commands implements it.
+type Commands interface {
+	// Run runs a "/name args" line.
+	Run(line string) tea.Cmd
+	// Complete lists the commands whose names start with prefix.
+	Complete(prefix string) []CompletionItem
+	// Overlay is the interactive command on screen, or nil.
+	Overlay() *OverlayState
 }
 
 // CompletionItem is a single command completion candidate.
 type CompletionItem struct {
 	Name        string // command name without "/" (e.g. "model")
 	Description string
-	Usage       string
 	Kind        string
-	Category    string
-	NeedsIdle   bool
-	Source      string
 	Aliases     []string
 	AutoExecute bool
 }
 
-// OverlayState bridges an interactive command overlay to the TUI.
+// OverlayState bridges an interactive command overlay to the TUI. It
+// replaces the input area while open.
 type OverlayState struct {
-	HandleKey     func(msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
-	View          func(width, height int) string
-	ReplacesInput bool // when true, overlay replaces the input area instead of appearing below it
-}
-
-// Driver defines the minimal conversation operations required by the TUI.
-type Driver interface {
-	Prompt(text string) error
-	PromptWithBlocks(blocks []agentcore.ContentBlock) error
-	Steer(text string)
-	Abort()
+	HandleKey func(msg tea.KeyMsg) (handled bool, cmd tea.Cmd)
+	View      func(width, height int) string
 }
 
 // runStats tracks per-run statistics displayed after agent completion.
@@ -99,19 +61,14 @@ type runStats struct {
 	DisplayOutput int
 }
 
-// Deps holds external dependencies and static configuration for the TUI.
-type Deps struct {
-	Driver          Driver
-	ModelName       string
-	ContextWindow   int
-	Provider        string
-	ReasoningEffort string // welcome-chip display; "" or "off" hides it
-	Version         string
-	config          Config
-}
+// Model is the bubbletea Model for the agent TUI.
+// Completed content is printed to terminal scrollback via tea.Println;
+// View() only renders the live area (status + streaming + input).
+type Model struct {
+	app      *app.App
+	commands Commands
+	version  string
 
-// State holds mutable runtime state for the TUI.
-type State struct {
 	Input   textarea.Model
 	Spinner spinner.Model
 
@@ -120,32 +77,37 @@ type State struct {
 	Streaming *strings.Builder
 	Thinking  *strings.Builder
 	IsStream  bool
-	// SuppressNextAssistantText avoids double-printing when an in-flight
-	// assistant stream is flushed manually before a terminal tool aborts the
-	// run, but a late MessageEnd still arrives with the same content.
-	SuppressNextAssistantText string
+
+	// conv is the open conversation, agents and tasks its background work.
+	conv   *app.Conversation
+	agents *app.AgentHub
+	tasks  *task.Runtime
+	// restored is the history to replay into scrollback once the terminal's
+	// size is known.
+	restored []agentcore.Message
+
+	Mode interact.Mode // permission mode, shown in the context bar
+	// Status is the conversation's latest: its model, usage and the like.
+	Status session.Status
 
 	Running         bool
-	TurnCount       int
-	PendingTools    map[string]string           // toolID -> display label (== "Plan" marks a plan-file write/edit)
+	PendingTools    map[string]string           // toolID -> display label
 	HiddenToolCalls map[string]struct{}         // toolID -> internal call hidden from UI
 	ToolHeaders     map[string]string           // toolID -> formatted header (printed at end)
 	ToolOutputBuf   map[string]*strings.Builder // toolID -> streaming output
-	ToolDeltaBuf    map[string]*strings.Builder // toolID -> accumulated subagent delta text
-	ToolThinkingBuf map[string]*strings.Builder // toolID -> accumulated subagent thinking text
+	SubagentUsage   map[string]*subagentUsage   // toolID -> what its sub-agent runs used
 
 	Width  int
 	Height int
 	Ready  bool
 
 	Cwd         string
-	PlansDir    string
 	GitBranch   string
 	ShowWelcome bool
 	RunStats    runStats
-	Images      []agentcore.ContentBlock // attached images (from Ctrl+V clipboard paste)
-	ImageCursor int                      // -1 = not selecting; 0+ = selected image index
-	Pasting     int                      // number of async image reads in progress (clipboard paste or drag-drop)
+	Images      []litellm.Block // attached images (from Ctrl+V clipboard paste)
+	ImageCursor int             // -1 = not selecting; 0+ = selected image index
+	Pasting     int             // number of async image reads in progress (clipboard paste or drag-drop)
 	// Pasted holds oversized paste bodies keyed by the id in their reference.
 	// Kept for the whole session, not cleared on submit, so a prompt recalled
 	// from history still expands. See paste.go.
@@ -154,19 +116,17 @@ type State struct {
 
 	Markdown *markdown.Renderer
 
-	Dialogs dialogQueue // modal "waiting on user" cards: permission / plan / ask_user
+	Dialogs dialogQueue // modal "waiting on user" cards: permission / ask_user
 
-	Tasks *storage.TaskSnapshot // non-nil when task items exist; displayed above input
+	Todos []todo.Item // current todo_write list; displayed above input
 
-	taskHideVersion uint64
+	todoHideVersion uint64
 
 	QueuedMsgs []string // messages queued while agent is running (display only)
 
 	// StatusDeadline enables an optional countdown.
 	StatusPrefix   string
 	StatusDeadline time.Time
-
-	MCPLoading bool // true while MCP servers are connecting in background
 
 	// Scrollback mirrors the stream of pre-formatted bodies sent to
 	// tea.Println. It exists solely to cure the terminal-resize ghost /
@@ -208,16 +168,16 @@ type State struct {
 
 	QuitPending bool // true after first Ctrl+C, waiting for second to quit
 
-	history   *storage.History // input history store (nil = disabled)
-	histIdx   int              // -1 = not browsing; 0+ = current position (0 = most recent)
-	histDraft string           // stashed input before history navigation
+	history   *inputHistory // input history store
+	histIdx   int           // -1 = not browsing; 0+ = current position (0 = most recent)
+	histDraft string        // stashed input before history navigation
 
-	// TranscriptModal renders the live transcript of a teammate when the
-	// user opens the popup (Ctrl+T). nil = closed; non-nil = open and
-	// full-screen, taking over all keyboard input except Esc / Ctrl+T /
+	// TranscriptModal renders the live transcript of a sub-agent when the
+	// user opens the popup (Ctrl+O). nil = closed; non-nil = open and
+	// full-screen, taking over all keyboard input except Esc / Ctrl+O /
 	// Ctrl+C and the scroll keys.
 	TranscriptModal *TranscriptView
-	// TranscriptAgent is the teammate currently shown in the modal.
+	// TranscriptAgent is the agent currently shown in the modal.
 	TranscriptAgent string
 	// transcriptUnsubscribe drops the hub subscription that feeds the
 	// modal; nil when no modal is open.
@@ -231,31 +191,32 @@ type State struct {
 	FleetCursor int
 }
 
-// Model is the bubbletea Model for the agent TUI.
-// Completed content is printed to terminal scrollback via tea.Println;
-// View() only renders the live area (status + streaming + input).
-type Model struct {
-	Deps
-	State
+// New creates the TUI for a's open conversation.
+func New(a *app.App, cmds Commands, version string) *Model {
+	m := newModel()
+	m.app, m.commands, m.version = a, cmds, version
+	m.Mode = a.Mode()
+	m.open(a.Current())
+	return m
 }
 
-// New creates a Model with the given agent, model name, and optional config.
-func New(driver Driver, modelName string, cfg ...Config) *Model {
-	var c Config
-	if len(cfg) > 0 {
-		c = cfg[0]
-	}
+// open shows conv: its status, background work, and history to replay.
+func (m *Model) open(conv *app.Conversation) {
+	m.conv, m.agents, m.tasks = conv, conv.Agents(), conv.Tasks()
+	m.history = newInputHistory(filepath.Join(config.UserConfigDir(), "history.jsonl"), m.app.Cwd(), conv.ID())
+	m.histIdx = -1
+	m.applyStatus(conv.Status())
+	m.GitBranch = conv.GitBranch()
+	m.restored = conv.History()
+}
 
-	var initialTasks *storage.TaskSnapshot
-	var taskHideVersion uint64
-	if c.InitialTasks != nil && c.InitialTasks.Total > 0 {
-		snap := *c.InitialTasks
-		initialTasks = &snap
-		if tasksFullyCompleted(snap) {
-			taskHideVersion = 1
-		}
-	}
+// applyStatus takes in the conversation's status.
+func (m *Model) applyStatus(cs app.Status) {
+	m.Status, m.Cwd = cs.Status, cs.Cwd
+}
 
+// newModel creates a Model bound to nothing.
+func newModel() *Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Spinner{
 		Frames: []string{"·", "✢", "✶", "✽", "✶", "✢", "·"},
@@ -271,11 +232,7 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 	tsp.Style = lipgloss.NewStyle().Foreground(Accent)
 
 	ta := textarea.New()
-	placeholder := defaultPlaceholder
-	if c.Placeholder != "" {
-		placeholder = c.Placeholder
-	}
-	ta.Placeholder = placeholder
+	ta.Placeholder = defaultPlaceholder
 	ta.SetPromptFunc(2, func(lineIdx int) string {
 		if lineIdx == 0 {
 			return "❯ "
@@ -293,37 +250,19 @@ func New(driver Driver, modelName string, cfg ...Config) *Model {
 	ta.CharLimit = 0
 
 	return &Model{
-		Deps: Deps{
-			Driver:          driver,
-			ModelName:       modelName,
-			ContextWindow:   c.ContextWindow,
-			Provider:        c.Provider,
-			ReasoningEffort: c.ReasoningEffort,
-			Version:         c.Version,
-			config:          c,
-		},
-		State: State{
-			Spinner:         sp,
-			ToolSpinner:     tsp,
-			Input:           ta,
-			Streaming:       &strings.Builder{},
-			Thinking:        &strings.Builder{},
-			PendingTools:    make(map[string]string),
-			HiddenToolCalls: make(map[string]struct{}),
-			ToolHeaders:     make(map[string]string),
-			ToolOutputBuf:   make(map[string]*strings.Builder),
-			ToolDeltaBuf:    make(map[string]*strings.Builder),
-			ToolThinkingBuf: make(map[string]*strings.Builder),
-			Cwd:             c.Cwd,
-			PlansDir:        c.PlansDir,
-			GitBranch:       c.GitBranch,
-			ShowWelcome:     true,
-			ImageCursor:     -1,
-			Markdown:        markdown.NewRenderer(80),
-			Tasks:           initialTasks,
-			taskHideVersion: taskHideVersion,
-			history:         c.History,
-			histIdx:         -1,
-		},
+		Spinner:         sp,
+		ToolSpinner:     tsp,
+		Input:           ta,
+		Streaming:       &strings.Builder{},
+		Thinking:        &strings.Builder{},
+		PendingTools:    make(map[string]string),
+		HiddenToolCalls: make(map[string]struct{}),
+		ToolHeaders:     make(map[string]string),
+		ToolOutputBuf:   make(map[string]*strings.Builder),
+		SubagentUsage:   make(map[string]*subagentUsage),
+		ShowWelcome:     true,
+		ImageCursor:     -1,
+		Markdown:        markdown.NewRenderer(80),
+		histIdx:         -1,
 	}
 }

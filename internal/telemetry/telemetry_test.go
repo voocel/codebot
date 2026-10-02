@@ -74,7 +74,7 @@ func TestSetupEnabledReturnsHook(t *testing.T) {
 	if tracer == nil {
 		t.Fatal("enabled telemetry must return a tracer")
 	}
-	tracer.BindSession(func() string { return "sess-42" })
+	tracer.SetSession("sess-42")
 	if shutdown == nil {
 		t.Fatal("shutdown must be non-nil")
 	}

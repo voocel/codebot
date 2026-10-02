@@ -1,13 +1,16 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/agentcore"
-	cbteam "github.com/voocel/codebot/internal/team"
+	"github.com/voocel/agentcore/task"
+
+	"github.com/voocel/codebot/internal/app"
 )
 
 func down() tea.KeyMsg  { return tea.KeyMsg{Type: tea.KeyDown} }
@@ -20,7 +23,7 @@ func rune_(r rune) tea.KeyMsg {
 
 func TestFleet_DownEntersFocusUpExits(t *testing.T) {
 	m, hub := modalTestModel(t)
-	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.Publish("researcher", agentcore.MessageStart{})
 
 	if _, _, handled := m.handleDownKey(); !handled {
 		t.Fatal("↓ at last line with a live agent should be handled")
@@ -68,8 +71,8 @@ func TestFleet_DownNoAgentsDoesNotFocus(t *testing.T) {
 
 func TestFleet_NavigateAndSelectOpensTranscript(t *testing.T) {
 	m, hub := modalTestModel(t)
-	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
-	hub.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.Publish("alice", agentcore.MessageStart{})
+	hub.Publish("bob", agentcore.MessageStart{})
 
 	m.handleDownKey() // enter focus, cursor 1 = alice (row 0 is main)
 
@@ -103,8 +106,8 @@ func TestFleet_NavigateAndSelectOpensTranscript(t *testing.T) {
 // upper area is the conversation or a transcript.
 func TestFleet_PreviewKeepsListAndSwitches(t *testing.T) {
 	m, hub := modalTestModel(t)
-	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
-	hub.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.Publish("alice", agentcore.MessageStart{})
+	hub.Publish("bob", agentcore.MessageStart{})
 
 	m.handleDownKey()         // focus, cursor 1 = alice (list-only)
 	m.handleFleetKey(enter()) // confirm → preview alice (split)
@@ -142,7 +145,7 @@ func TestFleet_PreviewKeepsListAndSwitches(t *testing.T) {
 // between the preview pane and the list, with the confirmed agent shown above.
 func TestFleet_SplitRendersDivider(t *testing.T) {
 	m, hub := modalTestModel(t)
-	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.Publish("alice", agentcore.MessageStart{})
 
 	m.handleDownKey()         // cursor 1 = alice
 	m.handleFleetKey(enter()) // confirm → split preview
@@ -158,7 +161,7 @@ func TestFleet_SplitRendersDivider(t *testing.T) {
 
 func TestFleet_TypingJumpsBackToInput(t *testing.T) {
 	m, hub := modalTestModel(t)
-	hub.Publish("researcher", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.Publish("researcher", agentcore.MessageStart{})
 	m.handleDownKey() // focus drops into the list (input blurred)
 
 	// handleFleetKey hands a printable key back (handled=false) and re-focuses
@@ -187,23 +190,44 @@ func TestFleet_TypingJumpsBackToInput(t *testing.T) {
 	}
 }
 
-func TestFleet_XStopsSelectedAgent(t *testing.T) {
-	hub := cbteam.NewEventHub()
-	var stopped string
-	m := New(nil, "test-model", Config{
-		TeammateEvents: hub,
-		StopAgent:      func(name string) { stopped = name },
+// runningAgent starts a sub-agent task on rt, started at started, that runs
+// until stopped, and returns whether it was.
+func runningAgent(t *testing.T, rt *task.Runtime, agent string, started time.Time) (stopped func() bool) {
+	t.Helper()
+	ready := make(chan struct{})
+	e, err := rt.Start(context.Background(), task.Entry{Type: task.TypeSubAgent, Agent: agent}, func(ctx context.Context, tk *task.Task) error {
+		tk.Update(func(e *task.Entry) { e.StartedAt = started })
+		close(ready)
+		<-ctx.Done()
+		return ctx.Err()
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ready
+	return func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		ended, err := rt.WaitFor(ctx, e.ID)
+		return err == nil && ended.Status == task.Killed
+	}
+}
+
+func TestFleet_XStopsSelectedAgent(t *testing.T) {
+	m := testModel("test-model")
+	m.agents, m.tasks = app.NewAgentHub(), task.NewRuntime(t.TempDir(), nil)
 	m.Ready, m.Width, m.Height = true, 100, 30
-	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
-	hub.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
+	aliceStopped := runningAgent(t, m.tasks, "alice", time.Now())
+	bobStopped := runningAgent(t, m.tasks, "bob", time.Now())
+	m.agents.Publish("alice", agentcore.MessageStart{})
+	m.agents.Publish("bob", agentcore.MessageStart{})
 
 	m.handleDownKey()            // focus, cursor 1 = alice (row 0 is main)
 	m.handleFleetKey(down())     // cursor 2 = bob
 	m.handleFleetKey(rune_('x')) // stop bob
 
-	if stopped != "bob" {
-		t.Fatalf("StopAgent called with %q, want bob", stopped)
+	if !bobStopped() || aliceStopped() {
+		t.Fatalf("stopped: alice %v, bob %v; want only bob", aliceStopped(), bobStopped())
 	}
 	if !m.FleetFocus {
 		t.Error("x should keep focus in the list to stop others")
@@ -211,31 +235,27 @@ func TestFleet_XStopsSelectedAgent(t *testing.T) {
 }
 
 func TestFleet_CtrlFStopsAll(t *testing.T) {
-	hub := cbteam.NewEventHub()
-	called := false
-	m := New(nil, "test-model", Config{
-		TeammateEvents: hub,
-		StopAllAgents:  func() { called = true },
-	})
+	m := testModel("test-model")
+	m.agents, m.tasks = app.NewAgentHub(), task.NewRuntime(t.TempDir(), nil)
 	m.Ready, m.Width, m.Height = true, 100, 30
-	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+	aliceStopped := runningAgent(t, m.tasks, "alice", time.Now())
+	bobStopped := runningAgent(t, m.tasks, "bob", time.Now())
+	m.agents.Publish("alice", agentcore.MessageStart{})
 
 	m.handleDownKey()
 	m.handleFleetKey(ctrlF())
 
-	if !called {
-		t.Error("ctrl+f should invoke StopAllAgents")
+	if !aliceStopped() || !bobStopped() {
+		t.Error("ctrl+f should stop every background task")
 	}
 }
 
 func TestFleet_RenderShowsElapsedForActive(t *testing.T) {
-	hub := cbteam.NewEventHub()
-	m := New(nil, "test-model", Config{
-		TeammateEvents: hub,
-		FleetAgentStat: func(string) (time.Duration, bool) { return 63 * time.Second, true },
-	})
+	m := testModel("test-model")
+	m.agents, m.tasks = app.NewAgentHub(), task.NewRuntime(t.TempDir(), nil)
 	m.Ready, m.Width, m.Height = true, 100, 30
-	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
+	runningAgent(t, m.tasks, "alice", time.Now().Add(-63*time.Second))
+	m.agents.Publish("alice", agentcore.MessageStart{})
 
 	out := m.renderFleetList()
 	if want := formatDuration(63 * time.Second); !strings.Contains(out, want) {
@@ -245,8 +265,8 @@ func TestFleet_RenderShowsElapsedForActive(t *testing.T) {
 
 func TestFleet_RenderListsAgentsWithStatus(t *testing.T) {
 	m, hub := modalTestModel(t)
-	hub.Publish("alice", agentcore.Event{Type: agentcore.EventAgentStart})
-	hub.Publish("bob", agentcore.Event{Type: agentcore.EventAgentStart})
+	hub.Publish("alice", agentcore.MessageStart{})
+	hub.Publish("bob", agentcore.MessageStart{})
 	hub.MarkStopped("bob")
 
 	out := m.renderFleetList()

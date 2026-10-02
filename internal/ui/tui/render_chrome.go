@@ -1,6 +1,6 @@
 package tui
 
-// UI chrome around the input area: status/plan/context bars above and below,
+// UI chrome around the input area: status/context bars above and below,
 // slash-command palette, per-run summary, queued messages, task progress card.
 
 import (
@@ -10,12 +10,15 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/truncate"
-	"github.com/voocel/codebot/internal/storage"
+
+	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/todo"
 )
 
 // ---------------------------------------------------------------------------
-// Status / plan / context bars
+// Status / context bars
 // ---------------------------------------------------------------------------
 
 // RenderStatusBar renders the live status block pinned above the input:
@@ -40,7 +43,7 @@ func (m *Model) RenderStatusBar() string {
 		}
 	}
 
-	tasksTree := m.renderTaskTree()
+	tasksTree := m.renderTodoTree()
 
 	switch {
 	case runningLine != "" && tasksTree != "":
@@ -63,29 +66,15 @@ func (m *Model) RenderContextBar() string {
 		return ContextChipWarnStyle.Render("bash mode")
 	}
 	var chips []string
-	if m.config.StatusMode != nil {
-		if mode := m.config.StatusMode(m); mode != "" {
-			chips = append(chips, ContextChipAccentStyle.Render(mode))
-		}
-	}
-	if m.config.StatusTeam != nil {
-		if t := m.config.StatusTeam(m); t != "" {
-			chips = append(chips, ContextChipTeamStyle.Render(t))
-		}
-	}
-	if m.config.StatusGoal != nil {
-		if goal := m.config.StatusGoal(m); goal != "" {
-			chips = append(chips, ContextChipAccentStyle.Render(goal))
-		}
+	if mode := modeChip(m.Mode); mode != "" {
+		chips = append(chips, ContextChipAccentStyle.Render(mode))
 	}
 	if m.Cwd != "" {
 		chips = append(chips, ContextChipPathStyle.Render(filepath.Base(m.Cwd)))
 	}
 	chips = append(chips, ContextChipStyle.Render(m.formatModelChip()))
-	if m.config.StatusRight != nil {
-		if extra := m.config.StatusRight(m); extra != "" {
-			chips = append(chips, ContextChipStyle.Render(extra))
-		}
+	if usage := m.usageChip(); usage != "" {
+		chips = append(chips, ContextChipStyle.Render(usage))
 	}
 	// Join chips with a dim vertical bar so adjacent ones don't visually
 	// merge — previously each chip prefixed itself with "· " which read as
@@ -99,10 +88,43 @@ func (m *Model) RenderContextBar() string {
 	return line
 }
 
+// modeChip names the permission modes that change what runs unasked.
+func modeChip(mode interact.Mode) string {
+	switch mode {
+	case interact.ModeStrict:
+		return "◆ strict"
+	case interact.ModeAcceptEdits:
+		return "⏵⏵ accept edits"
+	case interact.ModeTrust:
+		return "⏵⏵ trust"
+	default:
+		return ""
+	}
+}
+
+// usageChip shows how full the context is, the tokens spent and the cost.
+func (m *Model) usageChip() string {
+	st := m.Status
+	var parts []string
+	if st.Window > 0 && st.Context > 0 {
+		parts = append(parts, fmt.Sprintf("ctx: %.0f%%", float64(st.Context)*100/float64(st.Window)))
+	}
+	if st.Usage.Input+st.Usage.Output > 0 {
+		parts = append(parts, fmt.Sprintf("↑%s ↓%s", FormatTokens(st.Usage.Input), FormatTokens(st.Usage.Output)))
+	}
+	if st.Usage.Cost != nil && st.Usage.Cost.Total > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", st.Usage.Cost.Total))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return TokenStyle.Render(strings.Join(parts, " · "))
+}
+
 func (m *Model) formatModelChip() string {
-	s := m.ModelName
-	if m.ContextWindow > 0 {
-		s += " (" + FormatTokens(m.ContextWindow) + ")"
+	s := m.Status.Model
+	if m.Status.Window > 0 {
+		s += " (" + FormatTokens(m.Status.Window) + ")"
 	}
 	return s
 }
@@ -172,7 +194,7 @@ func renderCommandPaletteRow(item CompletionItem, width int, selected bool) stri
 	// Truncate description by display width to prevent line wrapping.
 	// 4 = marker(1) + space(1) + gap(1) + safety(1)
 	descMaxWidth := max(width-nameWidth-4-paletteTagSlotWidth, 10)
-	desc := truncateByWidth(item.Description, descMaxWidth)
+	desc := ansi.Truncate(item.Description, descMaxWidth, "…")
 	// Pad desc so the trailing tag column lines up across rows.
 	descText := desc + strings.Repeat(" ", max(descMaxWidth-lipgloss.Width(desc), 0))
 
@@ -194,32 +216,9 @@ func paletteKindTag(kind string) string {
 	switch kind {
 	case "skill":
 		return "[skill]"
-	case "custom":
-		return "[custom]"
 	default:
 		return ""
 	}
-}
-
-// truncateByWidth truncates s to fit within maxWidth display columns.
-func truncateByWidth(s string, maxWidth int) string {
-	if lipgloss.Width(s) <= maxWidth {
-		return s
-	}
-	tail := "…"
-	limit := maxWidth - lipgloss.Width(tail)
-	var b strings.Builder
-	w := 0
-	for _, r := range s {
-		rw := lipgloss.Width(string(r))
-		if w+rw > limit {
-			break
-		}
-		b.WriteRune(r)
-		w += rw
-	}
-	b.WriteString(tail)
-	return b.String()
 }
 
 // renderCommandPaletteFooter is shown only when there is real metadata to
@@ -240,7 +239,7 @@ func renderCommandPaletteFooter(item CompletionItem, remaining, width int) strin
 	if len(parts) == 0 {
 		return ""
 	}
-	return MutedStyle.Render(truncateByWidth(strings.Join(parts, " · "), width))
+	return MutedStyle.Render(ansi.Truncate(strings.Join(parts, " · "), width, "…"))
 }
 
 func commandPaletteWindow(total, cursor, limit int) (start, end int) {
@@ -278,102 +277,65 @@ func (m *Model) renderRunSummary() string {
 func (m *Model) renderQueuedMsgs() string {
 	var b strings.Builder
 	for _, msg := range m.QueuedMsgs {
-		text := truncateRunes(msg, 80)
+		text := ansi.Truncate(msg, 80, "…")
 		b.WriteString(QueuedMsgStyle.Render("  ↳ " + text))
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// taskTreeMaxVisible caps the number of task rows shown in the live tree.
-// Both the renderer and the recency-tick scheduler key off this cap, so it
-// must be a single source of truth — if they ever disagree, scheduleRecencyTick
-// might skip arming a re-render that the renderer is actually depending on.
-const taskTreeMaxVisible = 5
+// todoTreeMaxVisible caps the number of todo rows shown in the live tree.
+const todoTreeMaxVisible = 5
 
-// renderTaskTree renders the compact task tree pinned just below the
-// Running line. Two layouts:
+// renderTodoTree renders the compact todo tree pinned just below the Running
+// line. Two layouts:
 //
 //	nested (agent running, hangs off the Running spinner):
-//	  ⎿  ☐ pending subject
-//	     ▣ in-progress active form
-//	     ✓ completed subject              (strikethrough)
+//	  ⎿  ☐ pending item
+//	     ▣ in-progress item
+//	     ✓ completed item                 (strikethrough)
 //	     … +N pending, M completed
 //
 //	standalone (agent idle, no parent line above):
-//	  7 tasks (3 done, 1 in progress, 3 open)
-//	  ☐ pending subject
+//	  7 todos (3 done, 1 in progress, 3 open)
+//	  ☐ pending item
 //	  …
 //
-// Pending and in-progress tasks always show. Completed tasks are capped
-// (most recent few) with a roll-up line; this keeps the live area compact
-// during long runs without losing momentum signal.
-func (m *Model) renderTaskTree() string {
-	snap := m.Tasks
-	if snap == nil || snap.Total == 0 {
+// A list that fits keeps the model's order. A longer one shows the item in
+// progress and the open ones first, completed last, with a roll-up line for
+// what does not fit.
+func (m *Model) renderTodoTree() string {
+	items := m.Todos
+	if len(items) == 0 {
 		return ""
 	}
 
-	// When the list fits, keep creation order untouched. When truncation kicks
-	// in, priority groups apply: tasks completed within the last
-	// RecentCompletedTTL get pinned to the top (visual celebration), older
-	// completes sink to the bottom.
-	items := snap.Items
-	var visible, hiddenItems []storage.Task
-	if len(items) <= taskTreeMaxVisible {
-		visible = items
-	} else {
-		now := time.Now()
-		var recentCompleted, olderCompleted, inProgress, pending, unknown []storage.Task
-		for _, t := range items {
-			switch t.Status {
-			case storage.TaskInProgress:
-				inProgress = append(inProgress, t)
-			case storage.TaskPending:
-				pending = append(pending, t)
-			case storage.TaskCompleted:
-				if t.CompletedAt != nil && now.Sub(*t.CompletedAt) < RecentCompletedTTL {
-					recentCompleted = append(recentCompleted, t)
-				} else {
-					olderCompleted = append(olderCompleted, t)
+	visible, hidden := items, []todo.Item(nil)
+	if len(items) > todoTreeMaxVisible {
+		prioritized := make([]todo.Item, 0, len(items))
+		for _, status := range []todo.Status{todo.InProgress, todo.Pending, todo.Completed} {
+			for _, it := range items {
+				if it.Status == status {
+					prioritized = append(prioritized, it)
 				}
-			default:
-				// Unknown status (forward-compat): keep it visible so the
-				// user isn't confused by a phantom overflow line hiding
-				// items we can't classify. Sorted to the very bottom.
-				unknown = append(unknown, t)
 			}
 		}
-		prioritized := make([]storage.Task, 0, len(items))
-		prioritized = append(prioritized, recentCompleted...)
-		prioritized = append(prioritized, inProgress...)
-		prioritized = append(prioritized, pending...)
-		prioritized = append(prioritized, olderCompleted...)
-		prioritized = append(prioritized, unknown...)
-		cut := min(taskTreeMaxVisible, len(prioritized))
-		visible = prioritized[:cut]
-		hiddenItems = prioritized[cut:]
+		visible, hidden = prioritized[:todoTreeMaxVisible], prioritized[todoTreeMaxVisible:]
 	}
 
 	if m.Running {
-		return renderTaskTreeNested(visible, hiddenItems)
+		return renderTodoTreeNested(visible, hidden)
 	}
-	return renderTaskTreeStandalone(snap, visible, hiddenItems)
+	return renderTodoTreeStandalone(items, visible, hidden)
 }
 
-// renderTaskTreeNested formats the tree as a child of the Running spinner
-// line — connector pulls the eye down from the parent into the checklist.
-// The connector hangs off the first task line so the tree visually attaches
-// to the Running parent without a redundant "Tasks N/M" header row.
-func renderTaskTreeNested(visible, hiddenItems []storage.Task) string {
-	if len(visible) == 0 {
-		return ""
-	}
-
+// renderTodoTreeNested formats the tree as a child of the Running spinner
+// line. The connector hangs off the first line so the tree visually attaches
+// to the Running parent without a redundant header row.
+func renderTodoTreeNested(visible, hidden []todo.Item) string {
 	var b strings.Builder
-
 	const indent = "     " // 2 (margin) + 3 (TreeConnector width)
-	for i, t := range visible {
+	for i, it := range visible {
 		if i == 0 {
 			b.WriteString("  ")
 			b.WriteString(ConnectorStyle.Render(TreeConnector))
@@ -381,9 +343,9 @@ func renderTaskTreeNested(visible, hiddenItems []storage.Task) string {
 			b.WriteByte('\n')
 			b.WriteString(indent)
 		}
-		b.WriteString(renderTaskTreeLine(t))
+		b.WriteString(renderTodoLine(it))
 	}
-	if summary := taskOverflowSummary(hiddenItems); summary != "" {
+	if summary := todoOverflowSummary(hidden); summary != "" {
 		b.WriteByte('\n')
 		b.WriteString(indent)
 		b.WriteString(MutedStyle.Render(summary))
@@ -391,22 +353,19 @@ func renderTaskTreeNested(visible, hiddenItems []storage.Task) string {
 	return b.String()
 }
 
-// renderTaskTreeStandalone formats the tree as a self-contained block (no
-// parent line above): muted prose header with bold counts, marginLeft=2 for
-// the whole box.
-func renderTaskTreeStandalone(snap *storage.TaskSnapshot, visible, hiddenItems []storage.Task) string {
+// renderTodoTreeStandalone formats the tree as a self-contained block (no
+// parent line above): muted prose header with bold counts, marginLeft=2.
+func renderTodoTreeStandalone(items, visible, hidden []todo.Item) string {
 	var b strings.Builder
-
-	const indent = "  " // marginLeft: 2
+	const indent = "  "
 	b.WriteString(indent)
-	b.WriteString(renderStandaloneHeader(snap))
-
-	for _, t := range visible {
+	b.WriteString(renderTodoHeader(items))
+	for _, it := range visible {
 		b.WriteByte('\n')
 		b.WriteString(indent)
-		b.WriteString(renderTaskTreeLine(t))
+		b.WriteString(renderTodoLine(it))
 	}
-	if summary := taskOverflowSummary(hiddenItems); summary != "" {
+	if summary := todoOverflowSummary(hidden); summary != "" {
 		b.WriteByte('\n')
 		b.WriteString(indent)
 		b.WriteString(MutedStyle.Render(summary))
@@ -414,45 +373,32 @@ func renderTaskTreeStandalone(snap *storage.TaskSnapshot, visible, hiddenItems [
 	return b.String()
 }
 
-// renderStandaloneHeader builds the "N tasks (X done, Y in progress, Z open)"
-// line. Whole line is rendered in the Muted color so it matches the overflow
-// summary below it; numbers carry bold to keep counts scannable against the
-// surrounding prose.
-func renderStandaloneHeader(snap *storage.TaskSnapshot) string {
+// renderTodoHeader builds the "N todos (X done, Y in progress, Z open)" line.
+func renderTodoHeader(items []todo.Item) string {
+	pending, inProgress, completed := todo.Counts(items)
 	num := MutedStyle.Bold(true)
 
 	var b strings.Builder
-	b.WriteString(num.Render(fmt.Sprintf("%d", snap.Total)))
-	b.WriteString(MutedStyle.Render(" tasks ("))
-	b.WriteString(num.Render(fmt.Sprintf("%d", snap.Completed)))
+	b.WriteString(num.Render(fmt.Sprintf("%d", len(items))))
+	b.WriteString(MutedStyle.Render(" todos ("))
+	b.WriteString(num.Render(fmt.Sprintf("%d", completed)))
 	b.WriteString(MutedStyle.Render(" done, "))
-	if snap.InProgress > 0 {
-		b.WriteString(num.Render(fmt.Sprintf("%d", snap.InProgress)))
+	if inProgress > 0 {
+		b.WriteString(num.Render(fmt.Sprintf("%d", inProgress)))
 		b.WriteString(MutedStyle.Render(" in progress, "))
 	}
-	b.WriteString(num.Render(fmt.Sprintf("%d", snap.Pending)))
+	b.WriteString(num.Render(fmt.Sprintf("%d", pending)))
 	b.WriteString(MutedStyle.Render(" open)"))
 	return b.String()
 }
 
-// taskOverflowSummary breaks down hidden tasks by status: empty if none,
+// todoOverflowSummary breaks down hidden items by status: empty if none,
 // otherwise something like "… +1 in progress, 3 pending, 2 completed".
-// Order: in_progress → pending → completed.
-func taskOverflowSummary(hidden []storage.Task) string {
+func todoOverflowSummary(hidden []todo.Item) string {
 	if len(hidden) == 0 {
 		return ""
 	}
-	var pending, inProgress, completed int
-	for _, t := range hidden {
-		switch t.Status {
-		case storage.TaskPending:
-			pending++
-		case storage.TaskInProgress:
-			inProgress++
-		case storage.TaskCompleted:
-			completed++
-		}
-	}
+	pending, inProgress, completed := todo.Counts(hidden)
 	parts := make([]string, 0, 3)
 	if inProgress > 0 {
 		parts = append(parts, fmt.Sprintf("%d in progress", inProgress))
@@ -463,52 +409,27 @@ func taskOverflowSummary(hidden []storage.Task) string {
 	if completed > 0 {
 		parts = append(parts, fmt.Sprintf("%d completed", completed))
 	}
-	if len(parts) == 0 {
-		// Only "unknown" items hidden — fall back to a generic count so we
-		// still show the user that something was elided.
-		return fmt.Sprintf("… +%d more", len(hidden))
-	}
 	return "… +" + strings.Join(parts, ", ")
 }
 
-// renderTaskTreeLine renders a single task as "<icon> <subject>" with
-// status-appropriate styling. Completed tasks render strikethrough so the
-// eye lands on what's still open.
-func renderTaskTreeLine(t storage.Task) string {
-	text := t.Subject
-	if t.Status == storage.TaskInProgress && t.ActiveForm != "" {
-		text = t.ActiveForm
-	}
-
-	var icon string
-	var iconStyle lipgloss.Style
-	var renderedText string
-
-	switch t.Status {
-	case storage.TaskPending:
-		icon = "☐"
-		iconStyle = MutedStyle
-		// No foreground — let the terminal's default text color through so
-		// the user's color scheme owns the look. Only the icon is muted.
-		renderedText = text
-	case storage.TaskInProgress:
-		icon = "▣"
-		iconStyle = lipgloss.NewStyle().Foreground(Accent)
-		renderedText = lipgloss.NewStyle().Foreground(Text).Bold(true).Render(text)
-	case storage.TaskCompleted:
-		icon = "✓"
-		iconStyle = lipgloss.NewStyle().Foreground(Success)
+// renderTodoLine renders one item as "<icon> <content>" with status-specific
+// styling. Completed items render strikethrough so the eye lands on what's
+// still open.
+func renderTodoLine(it todo.Item) string {
+	switch it.Status {
+	case todo.InProgress:
+		return lipgloss.NewStyle().Foreground(Accent).Render("▣") + " " +
+			lipgloss.NewStyle().Foreground(Text).Bold(true).Render(it.Content)
+	case todo.Completed:
 		// Emit a single SGR block (`ESC[2;9m … ESC[0m`) for dim+strikethrough
 		// instead of going through lipgloss's styled renderer: lipgloss wraps
 		// each rune in its own open/close pair when strikethrough is enabled
 		// (per-char `ESC[0m` resets), and many terminals fail to draw a
 		// continuous overstrike line across those resets.
-		renderedText = "\x1b[2;9m" + text + "\x1b[0m"
+		return lipgloss.NewStyle().Foreground(Success).Render("✓") + " \x1b[2;9m" + it.Content + "\x1b[0m"
 	default:
-		icon = "○"
-		iconStyle = MutedStyle
-		renderedText = lipgloss.NewStyle().Foreground(Muted).Render(text)
+		// No foreground on the text — the terminal's default color owns the
+		// look. Only the icon is muted.
+		return MutedStyle.Render("☐") + " " + it.Content
 	}
-
-	return iconStyle.Render(icon) + " " + renderedText
 }

@@ -1,10 +1,8 @@
 package config
 
 import (
+	"errors"
 	"fmt"
-	"path/filepath"
-
-	"github.com/voocel/codebot/internal/diag"
 )
 
 // setup.go — first-run configuration logic. The interactive wizard itself
@@ -31,7 +29,7 @@ type SetupOutcome struct {
 // Credentials come exclusively from settings.json, so a missing file means
 // the interactive frontend must run onboarding before booting the runtime.
 func NeedsSetup(cwd string) bool {
-	return !GlobalConfigExists() && !ProjectConfigExists(cwd)
+	return !globalConfigExists() && !projectConfigExists(cwd)
 }
 
 // ApplySetup persists the choice into ~/.codebot/settings.json. It patches
@@ -39,15 +37,15 @@ func NeedsSetup(cwd string) bool {
 // re-run (codebot -setup).
 func ApplySetup(c SetupChoice) (SetupOutcome, error) {
 	if c.Provider == "" {
-		return SetupOutcome{}, fmt.Errorf("provider is required: %w", diag.ErrConfig)
+		return SetupOutcome{}, errors.New("provider is required")
 	}
 	if c.APIKey == "" {
-		return SetupOutcome{}, fmt.Errorf("API key is required: %w", diag.ErrConfig)
+		return SetupOutcome{}, errors.New("API key is required")
 	}
 	if c.Model == "" {
-		return SetupOutcome{}, fmt.Errorf("model is required: %w", diag.ErrConfig)
+		return SetupOutcome{}, errors.New("model is required")
 	}
-	if _, err := ResolveProviderType(c.Provider, c.Type); err != nil {
+	if _, err := resolveProviderType(c.Provider, c.Type); err != nil {
 		return SetupOutcome{}, err
 	}
 
@@ -63,12 +61,12 @@ func ApplySetup(c SetupChoice) (SetupOutcome, error) {
 		Model:     &c.Model,
 		Providers: map[string]*ProviderConfig{c.Provider: pc},
 	}
-	if err := PatchGlobalSettings(patch); err != nil {
+	if err := patchSettingsFile(globalSettingsPath(), patch); err != nil {
 		return SetupOutcome{}, fmt.Errorf("save settings: %w", err)
 	}
 	return SetupOutcome{
 		Provider: c.Provider,
 		Model:    c.Model,
-		Path:     filepath.Join(UserConfigDir(), "settings.json"),
+		Path:     globalSettingsPath(),
 	}, nil
 }

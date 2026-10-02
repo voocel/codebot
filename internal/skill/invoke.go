@@ -3,6 +3,7 @@ package skill
 import (
 	"context"
 	"errors"
+	"strings"
 )
 
 var (
@@ -11,64 +12,65 @@ var (
 	ErrUserInvocationDenied  = errors.New("skill cannot be invoked by the user")
 )
 
+// Invoker is who invokes a skill.
+type Invoker int
+
+const (
+	ByModel Invoker = iota
+	ByUser
+)
+
 type InvokeInput struct {
-	Name      string
-	Args      string
+	Name string
+	Args string
+	// Cwd is the workspace the skill runs in, which decides whether it is
+	// active.
+	Cwd       string
 	SessionID string
-	Source    InvocationSource
+	By        Invoker
 }
 
-func ProcessInvocation(ctx context.Context, catalog *Catalog, in InvokeInput) (*InvocationResult, error) {
-	if catalog == nil {
-		return nil, ErrNotFound
-	}
-	spec, ok := catalog.Get(in.Name)
+// Invocation is a skill ready to run.
+type Invocation struct {
+	Spec Spec
+	// Prompt is the skill rendered with the invocation's arguments.
+	Prompt string
+	// Fork runs the skill in a sub-agent, Agent, instead of the conversation.
+	Fork  bool
+	Agent string
+	// AllowedTools and Model are the skill's, if its source is trusted.
+	AllowedTools []string
+	Model        string
+}
+
+// Invoke renders the named skill for an invocation.
+func (c *Catalog) Invoke(ctx context.Context, in InvokeInput) (*Invocation, error) {
+	spec, ok := c.Get(in.Name, in.Cwd)
 	if !ok {
 		return nil, ErrNotFound
 	}
-
-	switch in.Source {
-	case SourceModel:
-		if spec.DisableModelInvocation {
-			return nil, ErrModelInvocationDenied
-		}
-	case SourceUser:
-		if spec.DisableUserInvocation {
-			return nil, ErrUserInvocationDenied
-		}
+	if in.By == ByModel && spec.DisableModelInvocation {
+		return nil, ErrModelInvocationDenied
+	}
+	if in.By == ByUser && spec.DisableUserInvocation {
+		return nil, ErrUserInvocationDenied
 	}
 
-	promptText, err := spec.GetPrompt(ctx, in.Args, in.SessionID)
+	prompt, err := spec.prompt(ctx, in.Args, in.SessionID)
 	if err != nil {
 		return nil, err
 	}
-
-	mode := ModeInline
-	if spec.Context == "fork" {
-		mode = ModeFork
+	inv := &Invocation{
+		Spec:   spec,
+		Prompt: prompt,
+		Fork:   spec.Context == "fork",
+		Agent:  strings.TrimSpace(spec.Agent),
 	}
-
-	allowedTools := append([]string(nil), spec.AllowedTools...)
-	modelOverride := spec.Model
-	effort := spec.Effort
-	paths := append([]string(nil), spec.Paths...)
-	if !SourceAllowsPrivilegedFields(spec.Source) {
-		allowedTools = nil
-		modelOverride = ""
-		effort = ""
-		paths = nil
+	if inv.Agent == "" {
+		inv.Agent = "general-purpose"
 	}
-
-	return &InvocationResult{
-		Spec:       spec,
-		Mode:       mode,
-		PromptText: promptText,
-		Agent:      NormalizeAgentType(spec.Agent),
-		Delta: Delta{
-			AllowedTools:  allowedTools,
-			ModelOverride: modelOverride,
-			Effort:        effort,
-			Paths:         paths,
-		},
-	}, nil
+	if spec.trusted() {
+		inv.AllowedTools, inv.Model = spec.AllowedTools, spec.Model
+	}
+	return inv, nil
 }

@@ -5,18 +5,19 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/voocel/agentcore/permission"
+	"github.com/voocel/codebot/internal/interact"
 )
 
-// approve is installed as the approval.Engine Approver: it forwards each
-// permission decision to the editor via session/request_permission. For
-// dangerous paths (p.OutsideRoots) it offers only one-time allow / reject —
-// never a persistent allow — matching the engine's force-ask policy.
-func (a *acpAgent) approve(ctx context.Context, p permission.Prompt) (permission.Choice, error) {
+var _ interact.UI = (*Server)(nil)
+
+// Approve forwards a permission decision to the editor via
+// session/request_permission. A OnceOnly approval offers only one-time allow
+// and reject, never a persistent allow.
+func (s *Server) Approve(ctx context.Context, p interact.Approval) (interact.Choice, error) {
 	opts := []acp.PermissionOption{
 		{Kind: acp.PermissionOptionKindAllowOnce, Name: "Allow", OptionId: "allow_once"},
 	}
-	if !p.OutsideRoots {
+	if !p.OnceOnly {
 		opts = append(opts, acp.PermissionOption{
 			Kind: acp.PermissionOptionKindAllowAlways, Name: "Always allow", OptionId: "allow_always",
 		})
@@ -29,27 +30,39 @@ func (a *acpAgent) approve(ctx context.Context, p permission.Prompt) (permission
 	if title == "" {
 		title = p.Tool
 	}
-	resp, err := a.conn.Load().RequestPermission(ctx, acp.RequestPermissionRequest{
-		SessionId: a.sid,
+	// The editor already shows the tool call the approval is for; a hook
+	// command has none, so it is named by the tool.
+	id := p.ToolID
+	if id == "" {
+		id = p.Tool
+	}
+	resp, err := s.conn.Load().RequestPermission(ctx, acp.RequestPermissionRequest{
+		SessionId: s.sessionID(),
 		Options:   opts,
 		ToolCall: acp.ToolCallUpdate{
-			ToolCallId: acp.ToolCallId(p.Tool),
+			ToolCallId: acp.ToolCallId(id),
 			Title:      acp.Ptr(title),
 			Kind:       acp.Ptr(toolKind(p.Tool)),
 		},
 	})
 	if err != nil {
-		return permission.ChoiceDeny, err
+		return interact.Deny, err
 	}
 	if resp.Outcome.Selected == nil { // cancelled or no selection
-		return permission.ChoiceDeny, nil
+		return interact.Deny, nil
 	}
 	switch resp.Outcome.Selected.OptionId {
 	case "allow_once":
-		return permission.ChoiceAllowOnce, nil
+		return interact.AllowOnce, nil
 	case "allow_always":
-		return permission.ChoiceAllowAlways, nil
+		return interact.AllowAlways, nil
 	default:
-		return permission.ChoiceDeny, nil
+		return interact.Deny, nil
 	}
+}
+
+// Ask is unsupported: ACP has no way to pose questions, so the App runs
+// without ask_user.
+func (s *Server) Ask(context.Context, []interact.Question) (interact.Answers, error) {
+	return interact.Answers{}, interact.ErrUnsupported
 }

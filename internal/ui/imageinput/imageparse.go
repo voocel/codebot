@@ -1,16 +1,15 @@
 // Package imageinput handles image input from clipboard paste and file drag-drop,
-// converting raw data to agentcore ContentBlocks.
+// converting raw data to image blocks.
 package imageinput
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
 )
 
 // maxImageSize is the upper limit for a single image (20 MB).
@@ -24,18 +23,17 @@ var supportedMIME = map[string]bool{
 	"image/webp": true,
 }
 
-// FromBytes validates raw image data and returns an ImageBlock.
+// FromBytes validates raw image data and returns an image block.
 // Checks size limit and MIME type.
-func FromBytes(data []byte) (agentcore.ContentBlock, error) {
+func FromBytes(data []byte) (litellm.ImageBlock, error) {
 	if int64(len(data)) > maxImageSize {
-		return agentcore.ContentBlock{}, fmt.Errorf("image too large (%d bytes, max %d)", len(data), maxImageSize)
+		return litellm.ImageBlock{}, fmt.Errorf("image too large (%d bytes, max %d)", len(data), maxImageSize)
 	}
 	mime := http.DetectContentType(data)
 	if !supportedMIME[mime] {
-		return agentcore.ContentBlock{}, fmt.Errorf("unsupported image type: %s", mime)
+		return litellm.ImageBlock{}, fmt.Errorf("unsupported image type: %s", mime)
 	}
-	b64 := base64.StdEncoding.EncodeToString(data)
-	return agentcore.ImageBlock(b64, mime), nil
+	return litellm.ImageBlock{Data: data, MIME: mime}, nil
 }
 
 // imageExts lists file extensions recognized as images for drag-drop.
@@ -76,11 +74,11 @@ func ParseDroppedPath(text string) string {
 	return p
 }
 
-// LoadFile reads an image file and returns a validated ContentBlock.
-func LoadFile(path string) (agentcore.ContentBlock, error) {
+// LoadFile reads an image file and returns a validated image block.
+func LoadFile(path string) (litellm.ImageBlock, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return agentcore.ContentBlock{}, err
+		return litellm.ImageBlock{}, err
 	}
 	return FromBytes(data)
 }

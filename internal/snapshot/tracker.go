@@ -24,7 +24,7 @@ import (
 // background gc pruned it (objects older than the prune window are unreachable
 // and get collected). The undo point is unrecoverable; callers report it and
 // move on. The expired hash is already dropped from the stack.
-var ErrSnapshotExpired = errors.New("snapshot expired or unavailable")
+var ErrSnapshotExpired = errors.New("the checkpoint has expired (checkpoints are reclaimed after 7 days) and can no longer be restored")
 
 // ErrTrackerClosed means a snapshot operation was attempted after Close.
 var ErrTrackerClosed = errors.New("snapshot tracker closed")
@@ -52,7 +52,7 @@ type Tracker struct {
 	mu          sync.Mutex
 	stack       []string // undo stack: pre-turn tree hashes, persisted to statePath
 	redoStack   []string // redo stack: pre-undo workspace hashes, memory-only
-	statePath   string   // sidecar persisting the undo stack across restarts; "" = memory only
+	statePath   string   // sidecar persisting the undo stack across restarts
 	initialized bool
 	gcOnce      sync.Once // guards the once-per-process background gc
 	gcDone      chan struct{}
@@ -60,8 +60,8 @@ type Tracker struct {
 }
 
 // New returns a Tracker writing snapshots to gitDir for the given workspace.
-// statePath persists the undo stack so it survives a restart/resume; pass "" to
-// keep the stack in memory only. An existing statePath is loaded immediately.
+// statePath persists the undo stack so it survives a restart/resume; an
+// existing one is loaded immediately.
 func New(gitDir, workTree, statePath string) *Tracker {
 	t := &Tracker{git: gitRunner{gitDir: gitDir, workTree: workTree}, statePath: statePath}
 	t.load()
@@ -85,12 +85,9 @@ func (t *Tracker) Close() {
 
 // load replaces the in-memory stack with the persisted one. Best-effort: a
 // missing or corrupt sidecar yields an empty stack (New has no error return).
-// Caller holds t.mu, except the New/Rebind paths which own the Tracker.
+// Caller holds t.mu, except New, which owns the Tracker.
 func (t *Tracker) load() {
 	t.stack = nil
-	if t.statePath == "" {
-		return
-	}
 	data, err := os.ReadFile(t.statePath)
 	if err != nil {
 		return
@@ -106,9 +103,6 @@ func (t *Tracker) load() {
 // writer. Best-effort: every error is swallowed (Track/Undo callers ignore
 // snapshot failures; a lost stack must never break a turn). Caller holds t.mu.
 func (t *Tracker) persist() {
-	if t.statePath == "" {
-		return
-	}
 	data, err := json.Marshal(t.stack)
 	if err != nil {
 		return
@@ -245,27 +239,12 @@ func (t *Tracker) DiffTop() (string, error) {
 	return t.git.run("diff", "--cached", "--numstat", "--no-renames", hash)
 }
 
-// Rebind repoints the tracker at a new session's sidecar: it drops the current
-// in-memory stack and loads whatever was persisted for statePath (empty when
-// that session has none yet). Called on session switch/new, where the prior
-// session's undo points no longer apply. Shadow objects stay on disk.
-func (t *Tracker) Rebind(statePath string) {
-	t.mu.Lock()
-	t.statePath = statePath
-	t.redoStack = nil
-	t.load()
-	t.mu.Unlock()
-}
-
-// RebindWorkspace repoints the tracker at a different workspace — both the
-// shadow gitDir and the workTree — along with its sidecar, then reloads the
-// persisted stack. Unlike Rebind (which only swaps statePath for a same-cwd
-// session switch), this is for worktree enter/exit where the whole workspace
-// moves. The instance is reused so callers needn't juggle Close on the old one;
-// initialized is cleared so the next Track lazily inits the new shadow repo.
-// The new shadow repo is not background-gc'd (gcOnce already fired) — worktree
-// shadow repos are short-lived and removed with the worktree, so that's fine.
-func (t *Tracker) RebindWorkspace(gitDir, workTree, statePath string) {
+// Rebind repoints the tracker at another workspace — its shadow gitDir, its
+// workTree and its sidecar — as the conversation enters or leaves a worktree,
+// and loads that workspace's stack. The next Track inits the new shadow repo.
+// It is not background-gc'd (gcOnce already fired): worktree shadow repos are
+// short-lived and removed with the worktree.
+func (t *Tracker) Rebind(gitDir, workTree, statePath string) {
 	t.mu.Lock()
 	t.git = gitRunner{gitDir: gitDir, workTree: workTree}
 	t.initialized = false

@@ -8,87 +8,75 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	agentcore "github.com/voocel/agentcore"
 	agentcoretools "github.com/voocel/agentcore/tools"
+	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/session"
 )
 
 // editSnapshot pairs a write/edit target's path with its pre-execution
 // snapshot, so the call can be rendered as a native ACP diff once it completes.
-// Captured at EventToolExecStart (which fires before the tool runs) and consumed
-// at EventToolExecEnd.
+// Captured at ToolStart (which comes before the tool runs) and consumed at
+// ToolEnd.
 type editSnapshot struct {
 	path string
 	old  diffSnapshot
 }
 
-// turnResult carries the outcome of one prompt turn back to Prompt. err is set
-// for EndReasonError / SEError (ACP has no error stop reason).
-type turnResult struct {
-	stop acp.StopReason
-	err  error
-}
-
-// onSessionEvent translates codebot session events into ACP session/update
-// notifications and signals turn completion. Field names follow
-// agentcore/event.go (Delta + DeltaKind, Result, IsError, Summary.EndReason).
-func (a *acpAgent) onSessionEvent(ev agent.SessionEvent) {
-	switch ev.Type {
-	case agent.SEAgentEvent:
-		if ev.AgentEvent != nil {
-			a.onAgentEvent(ev.AgentEvent)
+// onEvent translates App events into ACP session/update notifications.
+func (s *Server) onEvent(ev app.Event) {
+	switch ev.Kind {
+	case app.ModeChanged:
+		s.send(acp.SessionUpdate{CurrentModeUpdate: &acp.SessionCurrentModeUpdate{CurrentModeId: acp.SessionModeId(ev.Mode)}})
+	case app.SessionEvent:
+		if ev.Session.Kind == session.Agent {
+			s.onAgentEvent(ev.Session.Agent)
 		}
-	case agent.SEError:
-		err := ev.Error
-		if err == nil {
-			err = errors.New("acp: session error")
-		}
-		a.finishTurn(turnResult{err: err})
 	}
 }
 
-func (a *acpAgent) onAgentEvent(ev *agentcore.Event) {
-	switch ev.Type {
-	case agentcore.EventMessageUpdate:
-		switch ev.DeltaKind {
-		case agentcore.DeltaThinking:
-			if ev.Delta != "" {
-				a.send(acp.UpdateAgentThoughtText(ev.Delta))
-			}
-		case agentcore.DeltaToolCall:
-			// Tool-argument delta stream; StartToolCall already carries the
-			// full raw input, so nothing to forward here.
-		default: // DeltaText
-			if ev.Delta != "" {
-				a.send(acp.UpdateAgentMessageText(ev.Delta))
-			}
+func (s *Server) onAgentEvent(ev agentcore.Event) {
+	switch e := ev.(type) {
+	case agentcore.MessageDelta:
+		// Tool argument deltas are not forwarded: StartToolCall carries the
+		// whole input.
+		switch d := e.Event.(type) {
+		case litellm.ReasoningDelta:
+			s.send(acp.UpdateAgentThoughtText(d.Text))
+		case litellm.TextDelta:
+			s.send(acp.UpdateAgentMessageText(d.Text))
 		}
-	case agentcore.EventToolExecStart:
-		title := ev.ToolLabel
-		if title == "" {
-			title = ev.Tool
+	case agentcore.ToolStart:
+		title := e.Call.Name
+		if e.Call.Tool != nil && e.Call.Tool.Label != "" {
+			title = e.Call.Tool.Label
 		}
-		a.send(acp.StartToolCall(
-			acp.ToolCallId(ev.ToolID), title,
-			acp.WithStartKind(toolKind(ev.Tool)),
+		s.send(acp.StartToolCall(
+			acp.ToolCallId(e.Call.ID), title,
+			acp.WithStartKind(toolKind(e.Call.Name)),
 			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(rawJSON(ev.Args)),
+			acp.WithStartRawInput(rawJSON(e.Call.Args)),
 		))
-		a.snapshotForDiff(ev)
-	case agentcore.EventToolExecEnd:
+		s.snapshotForDiff(e.Call, s.app.Current().Cwd())
+	case agentcore.ToolEnd:
 		status := acp.ToolCallStatusCompleted
-		if ev.IsError {
+		if e.Result.IsError {
 			status = acp.ToolCallStatusFailed
 		}
 		opts := []acp.ToolCallUpdateOpt{
 			acp.WithUpdateStatus(status),
-			acp.WithUpdateRawOutput(rawJSON(ev.Result)),
+			acp.WithUpdateRawOutput(e.Result.Text()),
 		}
-		if content, ok := a.diffContent(ev); ok {
+		if content, ok := s.diffContent(e); ok {
 			opts = append(opts, acp.WithUpdateContent(content))
 		}
-		a.send(acp.UpdateToolCall(acp.ToolCallId(ev.ToolID), opts...))
-	case agentcore.EventAgentEnd:
-		a.finishTurn(endReasonResult(ev.Summary))
+		s.send(acp.UpdateToolCall(acp.ToolCallId(e.Call.ID), opts...))
+	case agentcore.RunEnd:
+		if e.Err != nil && !errors.Is(e.Err, context.Canceled) {
+			s.mu.Lock()
+			s.runErr = e.Err
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -97,18 +85,18 @@ func (a *acpAgent) onAgentEvent(ev *agentcore.Event) {
 // (not ReadFile) so a disk copy is never mistaken for the editor buffer: an
 // unreliable snapshot later suppresses the diff rather than rendering a
 // misleading one.
-func (a *acpAgent) snapshotForDiff(ev *agentcore.Event) {
-	if a.fs == nil || (ev.Tool != "write" && ev.Tool != "edit") {
+func (s *Server) snapshotForDiff(call agentcore.ToolCall, cwd string) {
+	if call.Name != "write" && call.Name != "edit" {
 		return
 	}
-	path := a.editPath(ev.Args)
+	path := editPath(call.Args, cwd)
 	if path == "" {
 		return
 	}
-	snap := editSnapshot{path: path, old: a.fs.textForDiff(context.Background(), path)}
-	a.mu.Lock()
-	a.pendingEdits[acp.ToolCallId(ev.ToolID)] = snap
-	a.mu.Unlock()
+	snap := editSnapshot{path: path, old: s.fs.textForDiff(context.Background(), path)}
+	s.mu.Lock()
+	s.pendingEdits[acp.ToolCallId(call.ID)] = snap
+	s.mu.Unlock()
 }
 
 // diffContent builds the native diff for a completed write/edit by pairing the
@@ -117,19 +105,19 @@ func (a *acpAgent) snapshotForDiff(ev *agentcore.Event) {
 // snapshot, file gone, no change).
 //
 // The delete here is the only cleanup pendingEdits needs: agentcore emits a
-// ToolExecEnd for every ToolExecStart (executeSingleToolCall covers each path,
-// cancellation included), so every snapshot is reclaimed by its own end event —
-// no turn-level sweep, which would risk dropping a still-in-flight snapshot.
-func (a *acpAgent) diffContent(ev *agentcore.Event) ([]acp.ToolCallContent, bool) {
-	id := acp.ToolCallId(ev.ToolID)
-	a.mu.Lock()
-	snap, ok := a.pendingEdits[id]
-	delete(a.pendingEdits, id)
-	a.mu.Unlock()
-	if !ok || ev.IsError || a.fs == nil {
+// ToolEnd for every ToolStart, cancellation included, so every snapshot is
+// reclaimed by its own end event — no turn-level sweep, which would risk
+// dropping a still-in-flight snapshot.
+func (s *Server) diffContent(ev agentcore.ToolEnd) ([]acp.ToolCallContent, bool) {
+	id := acp.ToolCallId(ev.Call.ID)
+	s.mu.Lock()
+	snap, ok := s.pendingEdits[id]
+	delete(s.pendingEdits, id)
+	s.mu.Unlock()
+	if !ok || ev.Result.IsError {
 		return nil, false
 	}
-	cur := a.fs.textForDiff(context.Background(), snap.path)
+	cur := s.fs.textForDiff(context.Background(), snap.path)
 	return buildDiff(snap.path, snap.old, cur)
 }
 
@@ -152,52 +140,21 @@ func buildDiff(path string, old, cur diffSnapshot) ([]acp.ToolCallContent, bool)
 
 // editPath resolves a tool call's file_path argument to an absolute path using
 // the same rule the tools use, or "" when there is no usable path.
-func (a *acpAgent) editPath(args json.RawMessage) string {
+func editPath(args json.RawMessage, cwd string) string {
 	var p struct {
 		FilePath string `json:"file_path"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil || p.FilePath == "" {
 		return ""
 	}
-	return agentcoretools.ResolvePath(a.rt.Cwd, p.FilePath)
+	return agentcoretools.ResolvePath(cwd, p.FilePath)
 }
 
-func (a *acpAgent) send(u acp.SessionUpdate) {
-	_ = a.conn.Load().SessionUpdate(context.Background(), acp.SessionNotification{
-		SessionId: a.sid,
+func (s *Server) send(u acp.SessionUpdate) {
+	_ = s.conn.Load().SessionUpdate(context.Background(), acp.SessionNotification{
+		SessionId: s.sessionID(),
 		Update:    u,
 	})
-}
-
-// finishTurn delivers a turn outcome to the waiting Prompt, if any. Non-blocking
-// so a late/duplicate end event cannot stall the event loop.
-func (a *acpAgent) finishTurn(r turnResult) {
-	a.mu.Lock()
-	ch := a.turn
-	a.turn = nil
-	a.mu.Unlock()
-	if ch != nil {
-		select {
-		case ch <- r:
-		default:
-		}
-	}
-}
-
-func endReasonResult(s *agentcore.RunSummary) turnResult {
-	if s == nil {
-		return turnResult{stop: acp.StopReasonEndTurn}
-	}
-	switch s.EndReason {
-	case agentcore.EndReasonMaxTurns:
-		return turnResult{stop: acp.StopReasonMaxTurnRequests}
-	case agentcore.EndReasonAborted:
-		return turnResult{stop: acp.StopReasonCancelled}
-	case agentcore.EndReasonError:
-		return turnResult{err: errors.New("acp: agent run ended with error")}
-	default: // EndReasonStop
-		return turnResult{stop: acp.StopReasonEndTurn}
-	}
 }
 
 func toolKind(name string) acp.ToolKind {
@@ -208,7 +165,7 @@ func toolKind(name string) acp.ToolKind {
 		return acp.ToolKindEdit
 	case "bash":
 		return acp.ToolKindExecute
-	case "grep", "glob", "ls", "find":
+	case "grep", "glob", "ls":
 		return acp.ToolKindSearch
 	case "web_search", "web_fetch":
 		return acp.ToolKindFetch
@@ -217,8 +174,8 @@ func toolKind(name string) acp.ToolKind {
 	}
 }
 
-// rawJSON forwards agentcore's json.RawMessage (tool args/result) as the ACP
-// rawInput/rawOutput value, or nil when empty.
+// rawJSON forwards a tool call's arguments as the ACP rawInput value, or nil
+// when empty.
 func rawJSON(r json.RawMessage) any {
 	if len(r) == 0 {
 		return nil

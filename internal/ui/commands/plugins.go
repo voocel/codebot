@@ -1,35 +1,21 @@
 package commands
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/codebot/internal/agent"
-	"github.com/voocel/codebot/internal/plugin"
+
+	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// MCPReloadResult is the subset of MCP runtime status that plugin mutations
-// surface back to the user. The host fills it in after rebuilding the MCP
-// pool following a plugin enable/disable/trust/install/remove.
-type MCPReloadResult struct {
-	Connected int
-	Failed    int
-	Tools     int
-	Errors    []string
-}
-
 // PluginsCommand drives /plugins — a multi-subcommand entry that inspects
-// and mutates the plugin catalog. The fields below are the host hooks the
-// mutating paths need; construct with a struct literal at registration time.
+// and mutates the plugin catalog.
 type PluginsCommand struct {
-	Catalog        *plugin.Catalog
-	Session        *agent.Session
-	Cwd            string
-	ReloadState    func() error
-	RefreshRuntime func() (MCPReloadResult, error)
+	app   *app.App
+	table *Table
 }
 
 func (p *PluginsCommand) Spec() Spec {
@@ -37,7 +23,6 @@ func (p *PluginsCommand) Spec() Spec {
 		Name:        "plugins",
 		Usage:       "/plugins [list|show|validate|create|install|remove|enable|disable|trust] ...",
 		Description: "Inspect or manage plugins",
-		Category:    "info",
 		Kind:        KindBuiltin,
 	}
 }
@@ -68,11 +53,7 @@ func (p *PluginsCommand) Run(inv Invocation) tea.Cmd {
 }
 
 func (p *PluginsCommand) list() tea.Cmd {
-	if p.Catalog == nil {
-		return tui.SendCommandResult(tui.CommandStyle.Render("Plugins\n\nNo plugin catalog loaded."))
-	}
-
-	plugins := p.Catalog.Plugins()
+	plugins := p.app.Plugins()
 	if len(plugins) == 0 {
 		return tui.SendCommandResult(tui.CommandStyle.Render("Plugins\n\nNo plugins loaded."))
 	}
@@ -90,7 +71,6 @@ func (p *PluginsCommand) list() tea.Cmd {
 		fmt.Fprintf(&sb, "  status:  %s\n", status)
 		fmt.Fprintf(&sb, "  trust:   %s\n", pl.State.Trust)
 		fmt.Fprintf(&sb, "  skills:  %d\n", pl.SkillCount())
-		fmt.Fprintf(&sb, "  commands:%d\n", pl.CommandCount())
 		fmt.Fprintf(&sb, "  mcp:     %d\n", pl.MCPCount())
 		if desc := strings.TrimSpace(pl.Manifest.Description); desc != "" {
 			fmt.Fprintf(&sb, "  about:   %s\n", desc)
@@ -105,7 +85,7 @@ func (p *PluginsCommand) show(args []string) tea.Cmd {
 	if len(args) < 1 {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins show <plugin-id>"))
 	}
-	loaded, ok := p.find(args[0])
+	loaded, ok := p.app.Plugin(args[0])
 	if !ok {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + strings.TrimSpace(args[0])))
 	}
@@ -126,7 +106,6 @@ func (p *PluginsCommand) show(args []string) tea.Cmd {
 		fmt.Fprintf(&sb, "root:     %s\n", loaded.RootDir)
 	}
 	fmt.Fprintf(&sb, "skills:   %d\n", loaded.SkillCount())
-	fmt.Fprintf(&sb, "commands: %d\n", loaded.CommandCount())
 	fmt.Fprintf(&sb, "mcp:      %d\n", loaded.MCPCount())
 	if desc := strings.TrimSpace(loaded.Manifest.Description); desc != "" {
 		fmt.Fprintf(&sb, "about:    %s\n", desc)
@@ -141,41 +120,25 @@ func (p *PluginsCommand) mutate(args []string) tea.Cmd {
 	if len(args) < 2 {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins [enable|disable|trust] ..."))
 	}
-	if p.Catalog == nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin catalog not loaded."))
-	}
 	if msg := p.guardRunning(); msg != "" {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
 	}
 
 	action := strings.ToLower(strings.TrimSpace(args[0]))
 	id := strings.TrimSpace(args[1])
-	enable := false
-	switch action {
-	case "enable":
-		enable = true
-	case "disable":
-		enable = false
-	case "trust":
+	if action == "trust" {
 		return p.trust(id, args[2:])
-	default:
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins [enable|disable|trust] ..."))
 	}
-
-	loaded, ok := p.find(id)
+	enable := action == "enable"
+	loaded, ok := p.app.Plugin(id)
 	if !ok {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + id))
 	}
-	if err := plugin.SetEnabled(p.Cwd, loaded, enable); err != nil {
+	report, err := p.app.SetPluginEnabled(context.Background(), id, enable)
+	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin update failed: " + err.Error()))
 	}
-	if err := p.ReloadState(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
-	}
-	mcpResult, err := p.RefreshRuntime()
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
-	}
+	p.table.Rebuild()
 
 	status := "disabled"
 	if enable {
@@ -183,92 +146,71 @@ func (p *PluginsCommand) mutate(args []string) tea.Cmd {
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Plugin %s %s.", loaded.Manifest.ID, status)
-	if loaded.MCPCount() > 0 || len(mcpResult.Errors) > 0 {
-		fmt.Fprintf(&sb, " MCP runtime reloaded: %d connected, %d failed, %d tools.",
-			mcpResult.Connected, mcpResult.Failed, mcpResult.Tools)
+	if loaded.MCPCount() > 0 || len(report.MCP.Errors) > 0 {
+		sb.WriteString(" " + formatMCPReload(report.MCP))
 	}
 	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
 }
 
 func (p *PluginsCommand) trust(id string, args []string) tea.Cmd {
+	usage := "Usage: /plugins trust <plugin-id> <trusted|untrusted>"
 	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins trust <plugin-id> <trusted|untrusted>"))
+		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
 	}
-	if msg := p.guardRunning(); msg != "" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
+	var trusted bool
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "trusted":
+		trusted = true
+	case "untrusted":
+	default:
+		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
 	}
-	loaded, ok := p.find(id)
+	loaded, ok := p.app.Plugin(id)
 	if !ok {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + id))
 	}
-	trust := strings.ToLower(strings.TrimSpace(args[0]))
-	switch trust {
-	case plugin.TrustTrusted, plugin.TrustUntrusted:
-	default:
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins trust <plugin-id> <trusted|untrusted>"))
-	}
-	if err := plugin.SetTrust(p.Cwd, loaded, trust); err != nil {
+	report, err := p.app.SetPluginTrusted(context.Background(), id, trusted)
+	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin trust update failed: " + err.Error()))
 	}
-	if err := p.ReloadState(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
-	}
-	mcpResult, err := p.RefreshRuntime()
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
-	}
+	p.table.Rebuild()
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Plugin %s trust set to %s.", loaded.Manifest.ID, trust)
-	if trust == plugin.TrustUntrusted {
-		sb.WriteString(" MCP contributions are disabled and skill privileged fields are stripped.")
-	} else if loaded.MCPCount() > 0 || len(mcpResult.Errors) > 0 {
-		fmt.Fprintf(&sb, " MCP runtime reloaded: %d connected, %d failed, %d tools.",
-			mcpResult.Connected, mcpResult.Failed, mcpResult.Tools)
+	if trusted {
+		fmt.Fprintf(&sb, "Plugin %s trust set to trusted.", loaded.Manifest.ID)
+		if loaded.MCPCount() > 0 || len(report.MCP.Errors) > 0 {
+			sb.WriteString(" " + formatMCPReload(report.MCP))
+		}
+	} else {
+		fmt.Fprintf(&sb, "Plugin %s trust set to untrusted. MCP contributions are disabled and skill privileged fields are stripped.", loaded.Manifest.ID)
 	}
 	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
 }
 
 func (p *PluginsCommand) create(args []string) tea.Cmd {
+	usage := "Usage: /plugins create <plugin-id> [project|user|--project|--user]"
 	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins create <plugin-id> [project|user|--project|--user]"))
+		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
 	}
 	if msg := p.guardRunning(); msg != "" {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
 	}
-
-	scope := plugin.ScopeProject
-	if len(args) > 1 {
-		switch strings.ToLower(strings.TrimSpace(args[1])) {
-		case "project", "--project":
-			scope = plugin.ScopeProject
-		case "user", "--user":
-			scope = plugin.ScopeUser
-		default:
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins create <plugin-id> [project|user|--project|--user]"))
-		}
+	user, ok := parseScope(args[1:])
+	if !ok {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
 	}
 
-	created, err := plugin.Scaffold(plugin.ScaffoldInput{
-		Cwd:   p.Cwd,
-		ID:    args[0],
-		Scope: scope,
-	})
+	created, _, err := p.app.CreatePlugin(context.Background(), args[0], user)
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin scaffold failed: " + err.Error()))
 	}
-	if err := p.ReloadState(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
-	}
-	if _, err := p.RefreshRuntime(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
-	}
+	p.table.Rebuild()
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Plugin scaffold created: %s (%s).\n", created.ID, created.Scope)
 	fmt.Fprintf(&sb, "root: %s\n", created.RootDir)
 	fmt.Fprintf(&sb, "manifest: %s\n", created.ManifestPath)
-	sb.WriteString("next: edit plugin.json, add files under skills/ or commands/, then run /reload.")
+	sb.WriteString("next: edit plugin.json, add skills under skills/, then run /reload.")
 	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
 }
 
@@ -276,20 +218,7 @@ func (p *PluginsCommand) validate(args []string) tea.Cmd {
 	if len(args) < 1 {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins validate <plugin-id|path>"))
 	}
-
-	target := strings.TrimSpace(args[0])
-	var report *plugin.ValidationReport
-	var err error
-
-	if _, statErr := os.Stat(target); statErr == nil {
-		report, err = plugin.ValidatePath(target, "external")
-	} else {
-		loaded, ok := p.find(target)
-		if !ok {
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin or path: " + target))
-		}
-		report, err = plugin.ValidateLoaded(loaded)
-	}
+	report, err := p.app.ValidatePlugin(strings.TrimSpace(args[0]))
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin validation failed: " + err.Error()))
 	}
@@ -310,7 +239,6 @@ func (p *PluginsCommand) validate(args []string) tea.Cmd {
 		fmt.Fprintf(&sb, "trust:     %s\n", report.State.Trust)
 	}
 	fmt.Fprintf(&sb, "skills:    %d\n", report.SkillCount)
-	fmt.Fprintf(&sb, "commands:  %d\n", report.CommandCount)
 	fmt.Fprintf(&sb, "mcp:       %d\n", report.MCPCount)
 	fmt.Fprintf(&sb, "summary:   %s\n", report.Summary())
 	if len(report.Warnings) > 0 {
@@ -329,39 +257,23 @@ func (p *PluginsCommand) validate(args []string) tea.Cmd {
 }
 
 func (p *PluginsCommand) install(args []string) tea.Cmd {
+	usage := "Usage: /plugins install <path> [project|user|--project|--user]"
 	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins install <path> [project|user|--project|--user]"))
+		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
 	}
 	if msg := p.guardRunning(); msg != "" {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
 	}
-
-	scope := plugin.ScopeProject
-	if len(args) > 1 {
-		switch strings.ToLower(strings.TrimSpace(args[1])) {
-		case "project", "--project":
-			scope = plugin.ScopeProject
-		case "user", "--user":
-			scope = plugin.ScopeUser
-		default:
-			return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins install <path> [project|user|--project|--user]"))
-		}
+	user, ok := parseScope(args[1:])
+	if !ok {
+		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
 	}
 
-	installed, err := plugin.InstallLocal(plugin.InstallInput{
-		Cwd:        p.Cwd,
-		SourcePath: args[0],
-		Scope:      scope,
-	})
+	installed, _, err := p.app.InstallPlugin(context.Background(), args[0], user)
 	if err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin install failed: " + err.Error()))
 	}
-	if err := p.ReloadState(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
-	}
-	if _, err := p.RefreshRuntime(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
-	}
+	p.table.Rebuild()
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Plugin installed: %s (%s).\n", installed.ID, installed.Scope)
@@ -377,45 +289,38 @@ func (p *PluginsCommand) remove(args []string) tea.Cmd {
 	if msg := p.guardRunning(); msg != "" {
 		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
 	}
-
-	loaded, ok := p.find(args[0])
-	if !ok {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + strings.TrimSpace(args[0])))
-	}
-	if loaded.Scope == "builtin" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Builtin plugins cannot be removed."))
-	}
-	if err := plugin.Remove(p.Cwd, loaded); err != nil {
+	id := strings.TrimSpace(args[0])
+	if _, err := p.app.RemovePlugin(context.Background(), id); err != nil {
 		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin remove failed: " + err.Error()))
 	}
-	if err := p.ReloadState(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin reload failed: " + err.Error()))
-	}
-	if _, err := p.RefreshRuntime(); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Runtime reload failed: " + err.Error()))
-	}
-
-	return tui.SendCommandResult(tui.SystemMsgStyle.Render("Plugin " + loaded.Manifest.ID + " removed."))
+	p.table.Rebuild()
+	return tui.SendCommandResult(tui.SystemMsgStyle.Render("Plugin " + id + " removed."))
 }
 
-func (p *PluginsCommand) find(id string) (plugin.Loaded, bool) {
-	if p.Catalog == nil {
-		return plugin.Loaded{}, false
-	}
-	id = strings.ToLower(strings.TrimSpace(id))
-	for _, loaded := range p.Catalog.Plugins() {
-		if strings.ToLower(loaded.Manifest.ID) == id {
-			return loaded, true
-		}
-	}
-	return plugin.Loaded{}, false
-}
-
-// guardRunning returns a non-empty error message when a session is currently
-// running, blocking mutating plugin operations until the user aborts.
+// guardRunning returns a non-empty error message while the agent runs,
+// blocking mutating plugin operations until the user aborts.
 func (p *PluginsCommand) guardRunning() string {
-	if p.Session != nil && p.Session.IsRunning() {
+	if p.app.Current().Status().Running {
 		return "agent is running; press Esc to abort first"
 	}
 	return ""
+}
+
+// parseScope reads an optional project/user scope argument; user reports
+// the user scope.
+func parseScope(args []string) (user, ok bool) {
+	if len(args) == 0 {
+		return false, true
+	}
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "project", "--project":
+		return false, true
+	case "user", "--user":
+		return true, true
+	}
+	return false, false
+}
+
+func formatMCPReload(r app.MCPReport) string {
+	return fmt.Sprintf("MCP runtime reloaded: %d connected, %d failed, %d tools.", r.Connected, len(r.Errors), r.Tools)
 }

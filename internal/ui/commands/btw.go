@@ -7,16 +7,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/codebot/internal/agent"
+	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/ui/tui"
 )
 
 // BtwCommand drives /btw — an ephemeral side-chain Q&A that consults the
 // current conversation context but never mutates history or invokes tools.
-// It is exported so the host can route the async tui.BtwResultMsg back to
-// the active overlay via SetResult.
 type BtwCommand struct {
-	session *agent.Session
+	app     *app.App
 	overlay OverlayController
 
 	active   bool
@@ -28,8 +26,8 @@ type BtwCommand struct {
 
 // Btw constructs the /btw command. overlay is used to install and dismiss
 // the question/answer modal.
-func Btw(session *agent.Session, overlay OverlayController) *BtwCommand {
-	return &BtwCommand{session: session, overlay: overlay}
+func Btw(a *app.App, overlay OverlayController) *BtwCommand {
+	return &BtwCommand{app: a, overlay: overlay}
 }
 
 func (c *BtwCommand) Spec() Spec {
@@ -37,7 +35,6 @@ func (c *BtwCommand) Spec() Spec {
 		Name:        "btw",
 		Usage:       "/btw <question>",
 		Description: "Ask a quick side question (ephemeral, no history)",
-		Category:    "info",
 		Kind:        KindBuiltin,
 	}
 }
@@ -55,14 +52,18 @@ func (c *BtwCommand) Run(inv Invocation) tea.Cmd {
 	c.active = true
 	c.overlay.SetOverlay(c)
 
+	conv := c.app.Current()
 	return func() tea.Msg {
-		answer, err := c.session.SideQuestion(context.Background(), question)
-		return tui.BtwResultMsg{Answer: answer, Err: err}
+		answer, err := conv.Query(context.Background(), question)
+		return tui.ApplyMsg{Apply: func() tea.Cmd {
+			c.loading = false
+			c.answer, c.err = answer, err
+			return nil
+		}}
 	}
 }
 
-func (c *BtwCommand) Active() bool  { return c.active }
-func (c *BtwCommand) IsModal() bool { return true }
+func (c *BtwCommand) Active() bool { return c.active }
 
 func (c *BtwCommand) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
@@ -104,15 +105,4 @@ func (c *BtwCommand) View(width, _ int) string {
 func (c *BtwCommand) Dismiss() {
 	c.active = false
 	c.loading = false
-}
-
-// SetResult updates the overlay with the side question response. The host
-// invokes this from its OnBtwResult hook.
-func (c *BtwCommand) SetResult(msg tui.BtwResultMsg) {
-	c.loading = false
-	if msg.Err != nil {
-		c.err = msg.Err
-	} else {
-		c.answer = msg.Answer
-	}
 }

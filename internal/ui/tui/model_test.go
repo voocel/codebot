@@ -6,7 +6,14 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/task"
+	"github.com/voocel/litellm"
+
+	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/session"
+	"github.com/voocel/codebot/internal/todo"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -24,19 +31,8 @@ func mustModel(t *testing.T, tm tea.Model) *Model {
 	return model
 }
 
-func useImmediateHideCompletedTasksTick(t *testing.T) {
-	t.Helper()
-	orig := hideCompletedTasksTick
-	hideCompletedTasksTick = func(version uint64) tea.Cmd {
-		return func() tea.Msg { return HideCompletedTasksMsg{Version: version} }
-	}
-	t.Cleanup(func() {
-		hideCompletedTasksTick = orig
-	})
-}
-
 func TestViewShowsLiveThinkingWhenStreaming(t *testing.T) {
-	m := New(nil, "test-model")
+	m := testModel("test-model")
 	m.Ready = true
 	m.Width = 80
 	m.IsStream = true
@@ -53,22 +49,15 @@ func TestViewShowsLiveThinkingWhenStreaming(t *testing.T) {
 }
 
 func TestRenderCompletionsShowsCommandPalette(t *testing.T) {
-	m := New(nil, "test-model", Config{
-		Completions: func(prefix string) []CompletionItem {
-			return []CompletionItem{
-				{
-					Name:        "model",
-					Description: "Switch current model",
-					Usage:       "/model [name]",
-					Kind:        "builtin",
-					Category:    "config",
-					NeedsIdle:   true,
-					Aliases:     []string{"m"},
-					AutoExecute: false,
-				},
-			}
-		},
-	})
+	m := testModel("test-model")
+	m.commands = fakeCommands{complete: func(string) []CompletionItem {
+		return []CompletionItem{{
+			Name:        "model",
+			Description: "Switch current model",
+			Kind:        "builtin",
+			Aliases:     []string{"m"},
+		}}
+	}}
 	m.Ready = true
 	m.Width = 100
 	m.Input.SetValue("/mo")
@@ -92,12 +81,11 @@ func TestEnterOnCommandCompletion(t *testing.T) {
 		{
 			name: "arg command fills input",
 			item: CompletionItem{
-				Name:        "plan",
-				Description: "Enter plan mode",
-				Usage:       "/plan [cancel|<task>]",
+				Name:        "model",
+				Description: "Switch the model",
 				AutoExecute: false,
 			},
-			wantInput:  "/plan ",
+			wantInput:  "/model ",
 			wantHasCmd: false,
 		},
 		{
@@ -105,7 +93,6 @@ func TestEnterOnCommandCompletion(t *testing.T) {
 			item: CompletionItem{
 				Name:        "help",
 				Description: "Show help",
-				Usage:       "/help",
 				AutoExecute: true,
 			},
 			wantInput:  "",
@@ -115,7 +102,8 @@ func TestEnterOnCommandCompletion(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := New(nil, "test-model")
+			m := testModel("test-model")
+			m.commands = fakeCommands{}
 			m.compItems = []CompletionItem{tc.item}
 			m.compActive = true
 			m.compIdx = 0
@@ -133,7 +121,7 @@ func TestEnterOnCommandCompletion(t *testing.T) {
 }
 
 func TestCommandPaletteReplacesBottomContextArea(t *testing.T) {
-	m := New(nil, "anthropic/claude-sonnet-4.6")
+	m := testModel("anthropic/claude-sonnet-4.6")
 	m.Ready = true
 	m.Width = 100
 	m.Cwd = "/tmp/project"
@@ -141,9 +129,7 @@ func TestCommandPaletteReplacesBottomContextArea(t *testing.T) {
 	m.compItems = []CompletionItem{{
 		Name:        "help",
 		Description: "Show help",
-		Usage:       "/help",
 		Kind:        "builtin",
-		Category:    "info",
 		AutoExecute: true,
 	}}
 	m.compActive = true
@@ -157,20 +143,22 @@ func TestCommandPaletteReplacesBottomContextArea(t *testing.T) {
 	}
 }
 
-func TestHandleCommandResultUpdatesProviderAndModel(t *testing.T) {
-	m := New(nil, "gpt-4.1")
-	m.Provider = "openai"
+// The status carries what the conversation changed: its model, and where it
+// works, which moves into and out of a worktree.
+func TestStatusChangeUpdatesModelAndCwd(t *testing.T) {
+	m := testModel("gpt-4.1")
+	m.Status.Provider, m.Cwd = "openai", "/tmp/project"
 
-	nextModel, _ := m.handleCommandResult(CommandResultMsg{
-		NewProvider: "openrouter",
-		NewModel:    "openai/gpt-5",
-	})
+	nextModel, _ := m.Update(StatusChangedMsg{Status: app.Status{
+		Status: session.Status{Provider: "openrouter", Model: "openai/gpt-5", Window: 400_000},
+		Cwd:    "/tmp/project/.codebot/worktrees/fix",
+	}})
 	next := mustModel(t, nextModel)
-	if next.Provider != "openrouter" {
-		t.Fatalf("provider = %q, want %q", next.Provider, "openrouter")
+	if st := next.Status; st.Provider != "openrouter" || st.Model != "openai/gpt-5" || st.Window != 400_000 {
+		t.Fatalf("provider, model, window = %q, %q, %d", st.Provider, st.Model, st.Window)
 	}
-	if next.ModelName != "openai/gpt-5" {
-		t.Fatalf("model = %q, want %q", next.ModelName, "openai/gpt-5")
+	if next.Cwd != "/tmp/project/.codebot/worktrees/fix" {
+		t.Fatalf("cwd = %q", next.Cwd)
 	}
 }
 
@@ -198,160 +186,129 @@ func TestFormatScrollbackBlock(t *testing.T) {
 	}
 }
 
-func TestOverlayAppearsBelowInput(t *testing.T) {
-	m := New(nil, "anthropic/claude-sonnet-4.6", Config{
-		Overlay: func(*Model) *OverlayState {
-			return &OverlayState{
-				View: func(width, height int) string {
-					return "overlay-body"
-				},
-			}
-		},
-	})
+// An overlay takes the input's place; a dialog, which takes the keys first,
+// shows over it.
+func TestOverlayReplacesInputAndDialogsShowOverIt(t *testing.T) {
+	m := testModel("anthropic/claude-sonnet-4.6")
+	m.commands = fakeCommands{overlay: &OverlayState{
+		View: func(width, height int) string { return "overlay-body" },
+	}}
 	m.Ready = true
 	m.Width = 100
-	m.Cwd = "/tmp/project"
 	m.Input.SetValue("/model")
 
 	view := m.View()
-	inputIdx := strings.Index(view, "/model")
-	overlayIdx := strings.Index(view, "overlay-body")
-	if inputIdx < 0 || overlayIdx < 0 {
-		t.Fatalf("expected both input and overlay to render, got: %q", view)
+	if !strings.Contains(view, "overlay-body") || strings.Contains(view, "/model") {
+		t.Fatalf("expected the overlay in place of the input, got: %q", view)
 	}
-	if inputIdx > overlayIdx {
-		t.Fatalf("expected overlay below input, got: %q", view)
-	}
-	if strings.Contains(view, "project · anthropic/claude-sonnet-4.6") {
-		t.Fatalf("expected context bar to stay hidden while overlay is active, got: %q", view)
+
+	m.Update(PermissionMsg{Approval: interact.Approval{Tool: "bash", Summary: "make deploy"}, RespCh: make(chan interact.Choice, 1)})
+	view = m.View()
+	if !strings.Contains(view, "make deploy") || strings.Contains(view, "overlay-body") {
+		t.Fatalf("expected the dialog over the overlay, got: %q", view)
 	}
 }
 
-func TestTaskListUpdateSchedulesHideWhenAllCompleted(t *testing.T) {
-	useImmediateHideCompletedTasksTick(t)
-
-	m := New(nil, "test-model")
-	nextModel, cmd := m.Update(TaskListUpdateMsg{
-		Snapshot: storage.TaskSnapshot{
-			Completed: 1,
-			Total:     1,
-		},
-	})
-	next := mustModel(t, nextModel)
-
-	if next.Tasks == nil || next.Tasks.Total != 1 || next.Tasks.Completed != 1 {
-		t.Fatalf("expected completed task snapshot to be kept before hiding, got %#v", next.Tasks)
+func useImmediateHideCompletedTodosTick(t *testing.T) {
+	t.Helper()
+	orig := hideCompletedTodosTick
+	hideCompletedTodosTick = func(version uint64) tea.Cmd {
+		return func() tea.Msg { return hideCompletedTodosMsg{Version: version} }
 	}
-	if next.taskHideVersion != 1 {
-		t.Fatalf("taskHideVersion = %d, want 1", next.taskHideVersion)
+	t.Cleanup(func() { hideCompletedTodosTick = orig })
+}
+
+func todoEvents(id, args string, isError bool) (agentcore.Event, agentcore.Event) {
+	c := call(id, todo.ToolName, args)
+	res := agentcore.TextResult("ok")
+	res.IsError = isError
+	return agentcore.ToolStart{Call: c}, agentcore.ToolEnd{Call: c, Result: res}
+}
+
+// The list follows todo_write calls the tool accepted; a rejected call leaves
+// the previous list on screen.
+func TestTodoWriteEventsDriveTheList(t *testing.T) {
+	m := testModel("test-model")
+	start, end := todoEvents("1", `{"todos":[{"content":"read","status":"in_progress"}]}`, false)
+	m.HandleAgentEvent(start)
+	m.HandleAgentEvent(end)
+	if len(m.Todos) != 1 || m.Todos[0].Content != "read" {
+		t.Fatalf("Todos = %+v, want the accepted list", m.Todos)
 	}
+
+	start, end = todoEvents("2", `{"todos":[{"content":"x","status":"in_progress"},{"content":"y","status":"in_progress"}]}`, true)
+	m.HandleAgentEvent(start)
+	m.HandleAgentEvent(end)
+	if len(m.Todos) != 1 || m.Todos[0].Content != "read" {
+		t.Fatalf("Todos = %+v, rejected call must not replace the list", m.Todos)
+	}
+}
+
+func TestCompletedTodosHideAfterDelay(t *testing.T) {
+	useImmediateHideCompletedTodosTick(t)
+
+	m := testModel("test-model")
+	cmd := m.setTodos([]todo.Item{{Content: "a", Status: todo.Completed}})
 	if cmd == nil {
-		t.Fatal("expected hide command for fully completed tasks")
+		t.Fatal("expected a hide command for a fully completed list")
 	}
-	hideMsg, ok := cmd().(HideCompletedTasksMsg)
-	if !ok {
-		t.Fatalf("expected HideCompletedTasksMsg, got %T", cmd())
-	}
-	if hideMsg.Version != 1 {
-		t.Fatalf("hide version = %d, want 1", hideMsg.Version)
+	nextModel, _ := m.Update(cmd())
+	if next := mustModel(t, nextModel); next.Todos != nil {
+		t.Fatalf("expected the completed list to be hidden, got %+v", next.Todos)
 	}
 }
 
-func TestHideCompletedTasksMsgRunsHideCallback(t *testing.T) {
-	m := New(nil, "test-model", Config{
-		OnHideCompletedTasks: func(snap storage.TaskSnapshot) tea.Cmd {
-			return func() tea.Msg {
-				if snap.Total != 1 || snap.Completed != 1 {
-					t.Fatalf("unexpected snapshot passed to hide callback: %#v", snap)
-				}
-				return CommandResultMsg{Text: "hidden"}
-			}
-		},
-	})
-	snap := storage.TaskSnapshot{
-		Completed: 1,
-		Total:     1,
-	}
-	m.Tasks = &snap
-	m.taskHideVersion = 1
+func TestStaleHideDoesNotClearNewOpenTodos(t *testing.T) {
+	useImmediateHideCompletedTodosTick(t)
 
-	nextModel, cmd := m.Update(HideCompletedTasksMsg{Version: 1})
-	next := mustModel(t, nextModel)
-	if next.Tasks != nil {
-		t.Fatalf("expected tasks to be hidden, got %#v", next.Tasks)
-	}
-	if cmd == nil {
-		t.Fatal("expected hide callback command")
-	}
-	msg := cmd()
-	if _, ok := msg.(CommandResultMsg); !ok {
-		t.Fatalf("expected CommandResultMsg from hide callback, got %T", msg)
+	m := testModel("test-model")
+	staleHide := m.setTodos([]todo.Item{{Content: "a", Status: todo.Completed}})()
+	m.setTodos([]todo.Item{{Content: "b", Status: todo.Pending}})
+
+	nextModel, _ := m.Update(staleHide)
+	if next := mustModel(t, nextModel); len(next.Todos) != 1 || next.Todos[0].Content != "b" {
+		t.Fatalf("stale hide must be ignored, got %+v", next.Todos)
 	}
 }
 
-func TestHideCompletedTasksMsgDoesNotClearNewOpenTasks(t *testing.T) {
-	useImmediateHideCompletedTasksTick(t)
+func TestRestoreSchedulesHideForCompletedTodos(t *testing.T) {
+	useImmediateHideCompletedTodosTick(t)
 
-	m := New(nil, "test-model")
-	nextModel, cmd := m.Update(TaskListUpdateMsg{
-		Snapshot: storage.TaskSnapshot{
-			Completed: 1,
-			Total:     1,
-		},
-	})
-	staleHide := cmd().(HideCompletedTasksMsg)
-	next := mustModel(t, nextModel)
-
-	nextModel, _ = next.Update(TaskListUpdateMsg{
-		Snapshot: storage.TaskSnapshot{
-			Pending: 1,
-			Total:   1,
-		},
-	})
-	next = mustModel(t, nextModel)
-	if next.taskHideVersion != 2 {
-		t.Fatalf("taskHideVersion = %d, want 2 after new snapshot", next.taskHideVersion)
+	m := testModel("test-model")
+	args := `{"todos":[{"content":"a","status":"completed"},{"content":"b","status":"completed"}]}`
+	m.restored = []agentcore.Message{
+		{Role: litellm.RoleAssistant, Blocks: []litellm.Block{litellm.ToolUseBlock{ID: "t1", Name: todo.ToolName, Arguments: args}}},
+		agentcore.ToolResult("t1", agentcore.TextResult("ok")),
 	}
-
-	nextModel, _ = next.Update(staleHide)
-	next = mustModel(t, nextModel)
-	if next.Tasks == nil {
-		t.Fatal("expected stale hide message to be ignored")
-	}
-	if next.Tasks.Pending != 1 || next.Tasks.Total != 1 {
-		t.Fatalf("expected new pending task snapshot to stay visible, got %#v", next.Tasks)
+	_, cmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	if len(m.Todos) != 2 || cmd == nil {
+		t.Fatalf("todos = %+v, want the restored list with its hide scheduled", m.Todos)
 	}
 }
 
-func TestInitSchedulesHideForInitiallyCompletedTasks(t *testing.T) {
-	useImmediateHideCompletedTasksTick(t)
-
-	snap := storage.TaskSnapshot{
-		Completed: 2,
-		Total:     2,
-	}
-	m := New(nil, "test-model", Config{InitialTasks: &snap})
-
-	if m.taskHideVersion != 1 {
-		t.Fatalf("taskHideVersion = %d, want 1 for initial completed snapshot", m.taskHideVersion)
-	}
-	cmd := m.Init()
-	if cmd == nil {
-		t.Fatal("expected init command batch")
-	}
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("expected tea.BatchMsg from Init, got %T", cmd())
-	}
-	if len(batch) == 0 {
-		t.Fatal("expected init batch to include commands")
-	}
-	msg := batch[len(batch)-1]()
-	hideMsg, ok := msg.(HideCompletedTasksMsg)
-	if !ok {
-		t.Fatalf("expected final init command to schedule HideCompletedTasksMsg, got %T", msg)
-	}
-	if hideMsg.Version != 1 {
-		t.Fatalf("hide version = %d, want 1", hideMsg.Version)
-	}
+// testModel is a Model with no conversation open, showing modelName.
+func testModel(modelName string) *Model {
+	m := newModel()
+	m.commands = fakeCommands{}
+	m.agents, m.tasks = app.NewAgentHub(), task.NewRuntime("", nil)
+	m.history = &inputHistory{}
+	m.Status.Model = modelName
+	return m
 }
+
+// fakeCommands offers fixed completions and overlay.
+type fakeCommands struct {
+	complete func(prefix string) []CompletionItem
+	overlay  *OverlayState
+}
+
+func (fakeCommands) Run(string) tea.Cmd { return nil }
+
+func (f fakeCommands) Complete(prefix string) []CompletionItem {
+	if f.complete == nil {
+		return nil
+	}
+	return f.complete(prefix)
+}
+
+func (f fakeCommands) Overlay() *OverlayState { return f.overlay }

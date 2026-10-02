@@ -3,7 +3,7 @@ package tui
 // Per-tool result renderers:
 //   - Edit: diff formatting with intra-line highlighting for single-line changes.
 //   - Filesystem: write preview, ls tree, read with line numbers.
-//   - Subagent: header parsing, amber card, output+usage footer.
+//   - Subagent: header parsing, amber card.
 
 import (
 	"encoding/json"
@@ -20,32 +20,18 @@ import (
 // Edit
 // ---------------------------------------------------------------------------
 
-// RenderEditResult renders the edit tool result with colored diff output.
-// Single-line changes get intra-line highlighting (only the changed
-// portion uses a deeper bg). filePath selects the chroma lexer; width is
-// the body cells available for right-padding so the bg band reaches the
-// edge instead of stopping at the last code character.
-func RenderEditResult(result json.RawMessage, filePath string, width int) string {
+// RenderDiff renders a diff of the edit and write tools in color, under a
+// line counting its changes. Single-line changes get intra-line highlighting
+// (only the changed portion uses a deeper bg). filePath selects the chroma
+// lexer; width is the body cells available for right-padding so the bg band
+// reaches the edge instead of stopping at the last code character.
+func RenderDiff(diff string, filePath string, width int) string {
 	connector := ConnectorStyle.Render(TreeConnector)
-	if len(result) == 0 {
-		return connector + MutedStyle.Render("(edit completed)")
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal(result, &parsed); err != nil {
-		return connector + TruncateLines(string(result), 10)
-	}
-
-	msg, _ := parsed["message"].(string)
-	diff, _ := parsed["diff"].(string)
 	if diff == "" {
-		if msg == "" {
-			msg = "(edit completed)"
-		}
-		return connector + MutedStyle.Render(msg)
+		return connector + MutedStyle.Render("(no changes)")
 	}
 
-	lines := normalizeTerminalEmptyDiffRows(strings.Split(diff, "\n"))
+	lines := strings.Split(strings.TrimSuffix(diff, "\n"), "\n")
 	added, removed := countDiffLines(lines)
 	stats := fmt.Sprintf("Added %d lines, removed %d lines", added, removed)
 
@@ -97,95 +83,6 @@ func RenderEditResult(result json.RawMessage, filePath string, width int) string
 		i++
 	}
 	return strings.TrimRight(sb.String(), "\n")
-}
-
-// normalizeTerminalEmptyDiffRows drops the synthetic empty line produced by
-// strings.Split(fileContent, "\n") for a final newline. agentcore's compact
-// diff format numbers that sentinel as the last old/new line, but displaying it
-// looks like an extra blank line was edited.
-func normalizeTerminalEmptyDiffRows(lines []string) []string {
-	maxOld, maxNew := 0, 0
-	type parsedRow struct {
-		ok      bool
-		sign    byte
-		lineNum int
-		content string
-	}
-	parsed := make([]parsedRow, len(lines))
-	for i, line := range lines {
-		sign, lineNum, content, ok := parseNumberedDiffRow(line)
-		if !ok {
-			continue
-		}
-		parsed[i] = parsedRow{ok: true, sign: sign, lineNum: lineNum, content: content}
-		switch sign {
-		case '+':
-			maxNew = max(maxNew, lineNum)
-		case '-', ' ':
-			maxOld = max(maxOld, lineNum)
-		}
-	}
-
-	hasTerminalRemoved := false
-	hasTerminalAdded := false
-	for _, row := range parsed {
-		if !row.ok || row.content != "" {
-			continue
-		}
-		if row.sign == '-' && row.lineNum == maxOld {
-			hasTerminalRemoved = true
-		}
-		if row.sign == '+' && row.lineNum == maxNew {
-			hasTerminalAdded = true
-		}
-	}
-
-	out := lines[:0]
-	for i, line := range lines {
-		row := parsed[i]
-		if row.ok && row.content == "" {
-			switch row.sign {
-			case '+':
-				if row.lineNum == maxNew && hasTerminalRemoved {
-					continue
-				}
-			case '-', ' ':
-				if row.sign == '-' && row.lineNum == maxOld && hasTerminalAdded {
-					continue
-				}
-				if row.sign == ' ' && row.lineNum == maxOld {
-					continue
-				}
-			}
-		}
-		out = append(out, line)
-	}
-	return out
-}
-
-func parseNumberedDiffRow(line string) (sign byte, lineNum int, content string, ok bool) {
-	if len(line) == 0 {
-		return 0, 0, "", false
-	}
-	sign = line[0]
-	if sign != '+' && sign != '-' && sign != ' ' {
-		return 0, 0, "", false
-	}
-	i := 1
-	for i < len(line) && line[i] == ' ' {
-		i++
-	}
-	if i >= len(line) || line[i] < '0' || line[i] > '9' {
-		return 0, 0, "", false
-	}
-	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
-		lineNum = lineNum*10 + int(line[i]-'0')
-		i++
-	}
-	if i >= len(line) || line[i] != ' ' {
-		return 0, 0, "", false
-	}
-	return sign, lineNum, line[i+1:], true
 }
 
 // renderContextLine renders an unchanged diff line: muted gutter + highlighted
@@ -362,25 +259,10 @@ func expandTabs(s string) string {
 // Filesystem (write / ls / read)
 // ---------------------------------------------------------------------------
 
-// RenderWriteResult renders the write completion as a summary. The content
-// preview is already emitted during the preview update, so repeating it here
-// duplicates the same file body in scrollback.
-func RenderWriteResult(result json.RawMessage) string {
-	prefix := ToolIconStyle.Render("✓  ")
-	if len(result) == 0 {
-		return prefix + MutedStyle.Render("(file written)")
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal(result, &parsed); err != nil {
-		return prefix + TruncateLines(string(result), 10)
-	}
-
-	msg, _ := parsed["message"].(string)
-	if msg == "" {
-		msg = "(file written)"
-	}
-	return prefix + MutedStyle.Render(msg)
+// RenderWriteResult renders what the write tool reports. Its diff was shown
+// with the call's preview.
+func RenderWriteResult(result string) string {
+	return ToolIconStyle.Render("✓  ") + MutedStyle.Render(result)
 }
 
 // countDiffLines counts +/- prefixed lines in a diff, ignoring +++ and ---
@@ -401,7 +283,7 @@ func countDiffLines(lines []string) (added, removed int) {
 
 // RenderLsResult renders ls tool results with tree structure.
 // Returns the directory path (for header update) and the formatted body.
-func RenderLsResult(result json.RawMessage) (dirPath string, body string) {
+func RenderLsResult(result string) (dirPath string, body string) {
 	text := FormatToolResult(result, false)
 	if text == "" {
 		return "", "(no output)"
@@ -447,7 +329,7 @@ func RenderLsResult(result json.RawMessage) (dirPath string, body string) {
 
 // RenderReadSummary renders a one-line summary for the read tool ("Read N lines"),
 // avoiding dumping file contents into the log.
-func RenderReadSummary(result json.RawMessage) string {
+func RenderReadSummary(result string) string {
 	connector := ConnectorStyle.Render(TreeConnector)
 	text := FormatToolResult(result, false)
 	if text == "" {
@@ -461,9 +343,9 @@ func RenderReadSummary(result json.RawMessage) string {
 	return connector + MutedStyle.Render(fmt.Sprintf("Read %d %s", n, noun))
 }
 
-// RenderReadResult renders glob tool results as a path list with colored line numbers.
-// Handles both numbered lines ("  123\tcontent") and plain path lists.
-func RenderReadResult(result json.RawMessage) string {
+// RenderGlobResult renders glob results: a path list, its line numbers
+// colored when it has any ("  123\tcontent").
+func RenderGlobResult(result string) string {
 	text := FormatToolResult(result, false)
 	if text == "" {
 		return "(no output)"
@@ -553,45 +435,4 @@ func (m *Model) renderSubagentCard(content string) string {
 	wrapped = MutedStyle.Render(wrapped)
 
 	return SubagentCardStyle.Width(w - 4).Render(wrapped)
-}
-
-// FormatSubagentOutput extracts the full output from a subagent result,
-// appending usage stats as a footer. Returns content for card display.
-func FormatSubagentOutput(result json.RawMessage) string {
-	if len(result) == 0 {
-		return "(no output)"
-	}
-
-	var obj struct {
-		Output string `json:"output"`
-		Error  string `json:"error"`
-		Usage  *struct {
-			Input  int     `json:"input"`
-			Output int     `json:"output"`
-			Turns  int     `json:"turns"`
-			Tools  int     `json:"tools"`
-			Cost   float64 `json:"cost"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(result, &obj); err != nil {
-		return FormatToolResult(result, false)
-	}
-
-	if obj.Error != "" {
-		return "error: " + obj.Error
-	}
-
-	output := strings.TrimSpace(obj.Output)
-	if output == "" {
-		// No "output" field — parallel result, background ack, etc.
-		return FormatToolResult(result, false)
-	}
-
-	// Append usage stats footer.
-	if u := obj.Usage; u != nil {
-		stats := fmt.Sprintf("%d turns · %d tools · ↑%s ↓%s tokens",
-			u.Turns, u.Tools, FormatTokens(u.Input), FormatTokens(u.Output))
-		output += "\n\n" + MutedStyle.Render(stats)
-	}
-	return output
 }

@@ -175,14 +175,13 @@ var (
 )
 
 // ---------------------------------------------------------------------------
-// Context bar / plan / permission / tasks
+// Context bar / permission / tasks
 // ---------------------------------------------------------------------------
 
 var (
 	ContextChipStyle       = lipgloss.NewStyle().Foreground(Muted)
 	ContextChipAccentStyle = lipgloss.NewStyle().Foreground(Brand)
 	ContextChipPathStyle   = lipgloss.NewStyle().Foreground(BrandSoft)
-	ContextChipTeamStyle   = lipgloss.NewStyle().Foreground(RoleTeammate)
 	// contextChipSeparatorStyle paints the vertical bar between chips. Dim
 	// foreground keeps the bar present but not loud — it should feel like
 	// negative space, not another chip.
@@ -193,21 +192,18 @@ var (
 
 	SubagentCardStyle = card(Accent)
 
-	// TranscriptTitleStyle is the header row of the teammate-transcript
-	// modal. Painted with RoleTeammate (purple — the same token used for
-	// teammate chips elsewhere) over SurfaceAccent (the same low-contrast
+	// TranscriptTitleStyle is the header row of the agent-transcript modal.
+	// Painted with RoleSubagent over SurfaceAccent (the same low-contrast
 	// strip the user-echo row uses) so the title reads as "you are now
-	// observing a teammate" at a glance without shouting. Padding adds a
+	// observing another agent" at a glance without shouting. Padding adds a
 	// single-column gutter inside the band; the caller fills .Width(...)
 	// before Render so the strip stretches edge to edge.
 	TranscriptTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(RoleTeammate).
+				Foreground(RoleSubagent).
 				Background(SurfaceAccent).
 				Padding(0, 1)
 
 	PermissionTitleStyle = lipgloss.NewStyle().Foreground(Accent).Bold(true)
 	AskCardStyle         = card(BrandSoft)
-
-	TagSubtleStyle = lipgloss.NewStyle().Foreground(Text)
 )

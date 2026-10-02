@@ -59,7 +59,7 @@ func TestDestructiveCommandWarning(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := DestructiveCommandWarning(tc.cmd)
+			got := destructiveCommandWarning(tc.cmd)
 			if (got != "") != tc.wantWarning {
 				t.Fatalf("warning=%q wantWarning=%v", got, tc.wantWarning)
 			}

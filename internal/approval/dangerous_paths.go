@@ -4,15 +4,15 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/voocel/agentcore/permission"
+	"github.com/voocel/codebot/internal/permission"
 )
 
-// CheckDangerousPath classifies a permission request's target path:
+// checkDangerousPath classifies a permission request's target path:
 //
-//	reason != ""  → force-ask. Mode auto-pass and stored approvals are
-//	                bypassed; the approver is invoked with the "restricted"
-//	                option set (Allow Once / Deny only). Two flavours of
-//	                path qualify:
+//	reason != ""  → confirm every call (Classification.Confirm): the mode
+//	                and stored approvals are bypassed and only Allow Once /
+//	                Deny are offered; deny rules still apply. Two flavours
+//	                of path qualify:
 //
 //	                  leak-class (read or write): SSH keys, AWS / gcloud
 //	                  credentials, .netrc, .pgpass — auto-allowing once
@@ -43,7 +43,7 @@ import (
 //	project/innocent → /etc/passwd  (attacker):
 //	  raw would miss;
 //	  resolved catches the real target.
-func CheckDangerousPath(workspace string, req permission.Request) string {
+func checkDangerousPath(workspace string, req permission.Request) string {
 	// bash needs special handling: paths are embedded in the command string,
 	// not exposed as a structured argument. Without this, `bash cat ~/.ssh/id_rsa`
 	// would bypass the read-side checks entirely (cat is on the readonly
@@ -172,17 +172,19 @@ func matchSensitiveWrite(p string) string {
 		return reason
 	}
 
-	// codebot self-config: settings.json / settings.local.json carry the
-	// PreToolUse hook config (settings.example.jsonc:63-79). The model writing
-	// here is literally arming itself with arbitrary shell commands. Note we
-	// don't force-ask all of .codebot/ — memory/plans/sessions are harness-
-	// managed (InternalWritable in bootstrap/services.go); they're fine.
-	if parent == ".codebot" && (base == "settings.json" || base == "settings.local.json") {
-		return "codebot settings (hooks live here)"
-	}
+	// codebot's own configuration decides what runs unasked: settings carry
+	// hooks, MCP servers and permission rules; plugins carry MCP servers and
+	// skills whose allowed-tools pre-approve tools; then sub-agent
+	// definitions and stored approvals. The harness-managed data beside them
+	// (sessions, memory, snapshots, worktrees) is not configuration.
 	lower := strings.ToLower(filepath.ToSlash(p))
-	if strings.Contains(lower, "/.codebot/commands/") {
-		return "codebot slash command"
+	if parent == ".codebot" && (base == "settings.json" || base == "plugins-state.json") {
+		return "codebot settings"
+	}
+	for _, dir := range []string{"plugins", "agents", "approvals"} {
+		if strings.Contains(lower, "/.codebot/"+dir+"/") {
+			return "codebot " + dir
+		}
 	}
 
 	// Whole-subtree force-ask: identity / credentials parent dirs +

@@ -74,36 +74,6 @@ func TestRemoveKeepsCommittedWork(t *testing.T) {
 	}
 }
 
-// TestCreateOrReuseReclaimsWorktree confirms a real existing worktree is reused
-// (the wake-reclaim path), returning the same dir and branch.
-func TestCreateOrReuseReclaimsWorktree(t *testing.T) {
-	repo := initRepo(t)
-	dir1, br1, err := Create(repo, "feat")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	dir2, br2, err := CreateOrReuse(repo, "feat")
-	if err != nil {
-		t.Fatalf("CreateOrReuse should reclaim an existing worktree: %v", err)
-	}
-	if dir2 != dir1 || br2 != br1 {
-		t.Errorf("reclaim mismatch: got (%s,%s), want (%s,%s)", dir2, br2, dir1, br1)
-	}
-}
-
-// TestCreateOrReuseRejectsNonWorktree confirms a leftover plain directory (e.g.
-// from a half-failed create) is not silently treated as a sandbox.
-func TestCreateOrReuseRejectsNonWorktree(t *testing.T) {
-	repo := initRepo(t)
-	ghost := Dir(repo, "ghost")
-	if err := os.MkdirAll(ghost, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := CreateOrReuse(repo, "ghost"); err == nil {
-		t.Error("CreateOrReuse must reject a directory that is not a registered worktree")
-	}
-}
-
 func TestSlug(t *testing.T) {
 	cases := map[string]string{
 		"Feature X": "feature-x",

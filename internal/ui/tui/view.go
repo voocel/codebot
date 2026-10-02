@@ -35,7 +35,7 @@ func (m *Model) View() string {
 	}
 
 	var parts []string
-	overlay, overlayReplacesInput := m.overlayView()
+	overlay := m.overlayView()
 	appendInputArea := func() {
 		parts = append(parts, m.renderInputPanel())
 	}
@@ -68,17 +68,6 @@ func (m *Model) View() string {
 			output := RenderStreamingOutput(buf.String(), ToolStreamTailLines)
 			line += "\n" + indentBlock(m.wrapTextForIndent(output, 2), 2)
 		}
-		if tbuf, ok := m.ToolThinkingBuf[id]; ok && tbuf.Len() > 0 {
-			text := strings.TrimSpace(tbuf.String())
-			if idx := strings.LastIndex(text, "\n"); idx >= 0 {
-				text = text[idx+1:]
-			}
-			line += "\n" + indentBlock(ThinkingBodyStyle.Render("thinking "+truncateRunes(text, 71)), 4)
-		}
-		if dbuf, ok := m.ToolDeltaBuf[id]; ok && dbuf.Len() > 0 {
-			text := strings.ReplaceAll(strings.TrimSpace(dbuf.String()), "\n", " ")
-			line += "\n" + indentBlock(ReplyLabelStyle.Render("reply ")+truncateRunes(text, 74), 4)
-		}
 		parts = append(parts, "", line)
 	}
 
@@ -88,16 +77,11 @@ func (m *Model) View() string {
 
 	parts = append(parts, "")
 
-	if overlay != "" && overlayReplacesInput {
-		parts = append(parts, overlay)
-	} else if overlay != "" {
-		if statusBar := m.RenderStatusBar(); statusBar != "" {
-			parts = append(parts, statusBar, "")
-		}
-		appendInputArea()
-		parts = append(parts, overlay)
-	} else if card := m.Dialogs.active(); card != nil {
+	// A dialog takes the keys first, so it shows first, over an overlay.
+	if card := m.Dialogs.active(); card != nil {
 		parts = append(parts, card.render(m))
+	} else if overlay != "" {
+		parts = append(parts, overlay)
 	} else {
 		if statusBar := m.RenderStatusBar(); statusBar != "" {
 			parts = append(parts, statusBar, "")

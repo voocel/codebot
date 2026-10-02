@@ -200,7 +200,7 @@ func hasUnquotedRedirect(cmd string) bool {
 }
 
 // splitBashSegments splits a shell command on unquoted &&, ||, ;, | into
-// individual segments. Mirrors agentcore/permission/rules.go:splitShellSegments
+// individual segments. Mirrors permission/rules.go:splitShellSegments
 // (kept private there); duplicated here to avoid widening that package's API
 // surface for a single caller.
 func splitBashSegments(cmd string) []string {

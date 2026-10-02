@@ -10,19 +10,12 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	reflowwrap "github.com/muesli/reflow/wrap"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // wrapTextForIndent wraps content to fit terminal width after indentation.
 func (m *Model) wrapTextForIndent(content string, indent int) string {
-	if content == "" {
-		return ""
-	}
-	width := m.Width - indent - 1
-	if width <= 1 {
-		width = 79
-	}
-	return strings.TrimRight(reflowwrap.String(content, width), "\n")
+	return wrapTextWidth(content, m.Width-indent-1)
 }
 
 // diffBodyWidth returns the cell budget for diff body rendering. Every
@@ -77,30 +70,6 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh %dm", h, m)
 }
 
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max-3]) + "..."
-}
-
-// truncateToWidth truncates a string to fit within maxWidth visual cells.
-func truncateToWidth(s string, maxWidth int) string {
-	var b strings.Builder
-	w := 0
-	for _, r := range s {
-		rw := lipgloss.Width(string(r))
-		if w+rw > maxWidth {
-			b.WriteString("…")
-			break
-		}
-		b.WriteRune(r)
-		w += rw
-	}
-	return b.String()
-}
-
 // DrawBox draws a rounded border box with fixed height and gray border.
 // innerWidth is the content width; fixedRows is the exact number of content rows
 // (short content is padded with empty lines to keep view height stable).
@@ -119,7 +88,7 @@ func DrawBox(lines []string, innerWidth, fixedRows int) string {
 			line := lines[i]
 			vis := lipgloss.Width(line)
 			if vis > innerWidth {
-				line = truncateToWidth(line, innerWidth)
+				line = ansi.Truncate(line, innerWidth, "…")
 				vis = lipgloss.Width(line)
 			}
 			pad := max(innerWidth-vis, 0)

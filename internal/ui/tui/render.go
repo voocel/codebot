@@ -28,16 +28,13 @@ func (m *Model) shellInputActive() bool {
 	return strings.HasPrefix(strings.TrimSpace(m.Input.Value()), "!")
 }
 
-// overlayView returns the rendered overlay content and whether it replaces the input area.
-func (m *Model) overlayView() (string, bool) {
-	if m.config.Overlay == nil {
-		return "", false
-	}
-	ov := m.config.Overlay(m)
+// overlayView returns the rendered overlay, or "".
+func (m *Model) overlayView() string {
+	ov := m.overlay()
 	if ov == nil {
-		return "", false
+		return ""
 	}
-	return ov.View(m.Width, m.Height), ov.ReplacesInput
+	return ov.View(m.Width, m.Height)
 }
 
 // renderCompletions renders the completion menu.
@@ -140,29 +137,12 @@ func (m *Model) renderUserMessage(text string) string {
 	return strings.Join(out, "\n")
 }
 
-// renderTeammateMessage renders a message that came from a teammate (injected
-// by the leader-inbox pump) as a distinct block — purple icon + bold sender
-// header above the body — so users can tell at a glance "this came from
-// another agent, not from me".
-//
-// The model still sees the raw `<teammate-message>` XML in its history;
-// rendering only changes what the human sees in scrollback.
-func (m *Model) renderTeammateMessage(from, body string) string {
-	headerStyle := lipgloss.NewStyle().Foreground(RoleTeammate).Bold(true)
-	bodyText := m.RenderMarkdownBlock(body, 2)
-	bodyTrimmed := strings.TrimPrefix(bodyText, "  ")
-	return headerStyle.Render("◆ "+from) + "\n  " + bodyTrimmed
-}
-
 // ---------------------------------------------------------------------------
 // Markdown helpers
 // ---------------------------------------------------------------------------
 
 // RenderMarkdown renders a lightweight terminal-friendly markdown subset.
 func (m *Model) RenderMarkdown(content string) string {
-	if m.Markdown == nil || content == "" {
-		return content
-	}
 	return m.Markdown.RenderFinal(content)
 }
 
@@ -171,9 +151,6 @@ func (m *Model) RenderMarkdown(content string) string {
 func (m *Model) RenderMarkdownBlock(content string, indent int) string {
 	if content == "" {
 		return ""
-	}
-	if m.Markdown == nil {
-		return indentBlock(m.wrapTextForIndent(content, indent), indent)
 	}
 	return indentBlock(m.RenderMarkdown(content), indent)
 }

@@ -2,23 +2,24 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
-	"github.com/voocel/agentcore/permission"
 	sdkmcp "github.com/voocel/mcp-sdk-go/protocol"
 	sdkserver "github.com/voocel/mcp-sdk-go/server"
 	sdkhttp "github.com/voocel/mcp-sdk-go/transport/streamhttp"
+
+	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/permission"
 )
 
 func TestExpandEnv(t *testing.T) {
 	t.Setenv("TEST_MCP_VAR", "hello")
 
-	result := ExpandEnv(map[string]string{
+	result := expandEnv(map[string]string{
 		"KEY":  "${TEST_MCP_VAR}_world",
 		"MISS": "${NONEXISTENT_MCP_TEST_VAR}",
 	})
@@ -32,57 +33,6 @@ func TestExpandEnv(t *testing.T) {
 	}
 }
 
-func TestLoadMCPServers(t *testing.T) {
-	t.Run("stdio", func(t *testing.T) {
-		t.Parallel()
-		dir := writeMCPConfig(t, `{
-			"mcp_servers": {
-				"test": {
-					"command": "echo",
-					"args": ["hello"],
-					"env": {"FOO": "bar"}
-				}
-			}
-		}`)
-
-		servers := LoadAllMCPServers(dir)
-		srv, ok := servers["test"]
-		if !ok {
-			t.Fatal("missing test server")
-		}
-		if srv.Command != "echo" || len(srv.Args) != 1 || srv.Args[0] != "hello" {
-			t.Errorf("got command=%q args=%v", srv.Command, srv.Args)
-		}
-		if srv.Env["FOO"] != "bar" {
-			t.Errorf("env FOO = %q", srv.Env["FOO"])
-		}
-	})
-
-	t.Run("http", func(t *testing.T) {
-		t.Parallel()
-		dir := writeMCPConfig(t, `{
-			"mcp_servers": {
-				"remote": {
-					"type": "http",
-					"url": "https://mcp.example.com/mcp",
-					"headers": {"Authorization": "Bearer test123"}
-				}
-			}
-		}`)
-
-		srv := LoadAllMCPServers(dir)["remote"]
-		if srv.Type != "http" {
-			t.Errorf("type = %q", srv.Type)
-		}
-		if srv.URL != "https://mcp.example.com/mcp" {
-			t.Errorf("url = %q", srv.URL)
-		}
-		if srv.Headers["Authorization"] != "Bearer test123" {
-			t.Errorf("headers = %v", srv.Headers)
-		}
-	})
-}
-
 func TestMCPToolAdapter(t *testing.T) {
 	t.Parallel()
 	c := &Client{name: "srv"}
@@ -93,19 +43,10 @@ func TestMCPToolAdapter(t *testing.T) {
 			Name: "my-tool", Description: "A test tool",
 			InputSchema: map[string]any{"type": "object"},
 		}
-		tool := NewMCPTool(c, &mt)
+		tool := newTool(c, &mt)
 
-		if tool.Name() != "mcp__srv__my-tool" {
-			t.Errorf("Name() = %q", tool.Name())
-		}
-		if tool.Label() != "my-tool" {
-			t.Errorf("Label() = %q", tool.Label())
-		}
-		if tool.Description() != "A test tool" {
-			t.Errorf("Description() = %q", tool.Description())
-		}
-		if tool.Schema()["type"] != "object" {
-			t.Errorf("Schema() = %v", tool.Schema())
+		if tool.Name != "mcp__srv__my-tool" || tool.Label != "my-tool" || tool.Description != "A test tool" || tool.Schema["type"] != "object" {
+			t.Errorf("tool = %+v", tool)
 		}
 	})
 
@@ -115,18 +56,16 @@ func TestMCPToolAdapter(t *testing.T) {
 			Name: "x", Title: "Display Name", Description: "d",
 			InputSchema: map[string]any{"type": "object"},
 		}
-		tool := NewMCPTool(c, &mt)
-		if tool.Label() != "Display Name" {
-			t.Errorf("Label() = %q", tool.Label())
+		if tool := newTool(c, &mt); tool.Label != "Display Name" {
+			t.Errorf("Label = %q", tool.Label)
 		}
 	})
 
 	t.Run("nil_schema_fallback", func(t *testing.T) {
 		t.Parallel()
 		mt := sdkmcp.Tool{Name: "x", Description: "d"}
-		tool := NewMCPTool(c, &mt)
-		if tool.Schema()["type"] != "object" {
-			t.Errorf("Schema() = %v", tool.Schema())
+		if tool := newTool(c, &mt); tool.Schema["type"] != "object" {
+			t.Errorf("Schema = %v", tool.Schema)
 		}
 	})
 
@@ -137,9 +76,8 @@ func TestMCPToolAdapter(t *testing.T) {
 			Description: "Read data from remote source",
 			Annotations: &sdkmcp.ToolAnnotations{ReadOnlyHint: boolPtr(true)},
 		}
-		tool := NewMCPTool(c, &mt)
-		meta := tool.PermissionMetadata()
-		if meta.Capability != permission.CapabilityRead {
+		meta := permissionOf(&mt)
+		if meta.Capability != permission.CapabilityRead || meta.SummaryHint != "lookup" || meta.KeyPrefix != "mcp" {
 			t.Fatalf("capability = %q, want %q", meta.Capability, permission.CapabilityRead)
 		}
 	})
@@ -150,9 +88,8 @@ func TestMCPToolAdapter(t *testing.T) {
 			Name:        "web-search",
 			Description: "Search the web",
 		}
-		tool := NewMCPTool(c, &mt)
-		meta := tool.PermissionMetadata()
-		if meta.Capability != permission.CapabilityNetwork {
+		meta := permissionOf(&mt)
+		if meta.Capability != permission.CapabilityNetwork || meta.Reason == "" {
 			t.Fatalf("capability = %q, want %q", meta.Capability, permission.CapabilityNetwork)
 		}
 	})
@@ -177,7 +114,7 @@ func TestClientUsesStatelessSDK(t *testing.T) {
 
 	changed := make(chan struct{}, 1)
 	connectCtx, cancelConnect := context.WithCancel(t.Context())
-	client, err := Connect(connectCtx, "test", ServerConfig{Type: "http", URL: httpServer.URL}, func() {
+	client, err := connect(connectCtx, "test", config.MCPServer{Type: "http", URL: httpServer.URL}, func() {
 		changed <- struct{}{}
 	})
 	if err != nil {
@@ -201,11 +138,11 @@ func TestClientUsesStatelessSDK(t *testing.T) {
 	if got := []string{tools[0].Name, tools[1].Name}; !slices.Equal(got, []string{"alpha", "beta"}) {
 		t.Fatalf("tools = %v", got)
 	}
-	result, err := client.CallTool(t.Context(), "alpha", nil)
+	res, err := newTool(client, tools[0]).Run(t.Context(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("call tool: %v", err)
 	}
-	if got := extractText(result); got != "ok" {
+	if got := res.Text(); got != "ok" {
 		t.Fatalf("tool result = %q", got)
 	}
 
@@ -217,35 +154,10 @@ func TestClientUsesStatelessSDK(t *testing.T) {
 	}
 }
 
-func TestManagerDirtyFlag(t *testing.T) {
+func TestManagerReconfigureClearsFailures(t *testing.T) {
 	t.Parallel()
 
-	m := NewManager()
-	defer m.Close()
-
-	// Initially not dirty.
-	if _, ok := m.RefreshIfDirty(t.Context()); ok {
-		t.Error("expected not dirty initially")
-	}
-
-	// Simulate a list_changed notification.
-	m.dirty.Store(true)
-
-	// First check consumes the flag.
-	if _, ok := m.RefreshIfDirty(t.Context()); !ok {
-		t.Error("expected dirty after Store(true)")
-	}
-
-	// Second check: already consumed.
-	if _, ok := m.RefreshIfDirty(t.Context()); ok {
-		t.Error("expected not dirty after consume")
-	}
-}
-
-func TestManagerReconfigureClearsFailuresAndMarksDirty(t *testing.T) {
-	t.Parallel()
-
-	m := NewManager()
+	m := NewManager(nil)
 	defer m.Close()
 
 	m.failures["broken"] = "boom"
@@ -257,27 +169,15 @@ func TestManagerReconfigureClearsFailuresAndMarksDirty(t *testing.T) {
 	if len(m.failures) != 0 {
 		t.Fatalf("expected failures to be cleared, got %v", m.failures)
 	}
-	if _, ok := m.RefreshIfDirty(t.Context()); !ok {
-		t.Fatal("expected reconfigure to mark manager dirty")
-	}
 }
 
 // --- helpers ---
-
-func writeMCPConfig(t *testing.T, data string) string {
-	t.Helper()
-	dir := t.TempDir()
-	configDir := filepath.Join(dir, ".codebot")
-	os.MkdirAll(configDir, 0o755)
-	os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(data), 0o644)
-	return dir
-}
 
 // TestSortedClientsDeterministic guards the prompt-cache invariant: tools and
 // instructions must serialize in the same byte order across refreshes, so
 // client iteration must not depend on map order.
 func TestSortedClientsDeterministic(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	for _, name := range []string{"zeta", "alpha", "mid", "beta"} {
 		m.clients[name] = &Client{name: name}
 	}

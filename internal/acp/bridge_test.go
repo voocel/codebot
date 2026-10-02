@@ -9,8 +9,6 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	agentcore "github.com/voocel/agentcore"
-
-	"github.com/voocel/codebot/internal/bootstrap"
 )
 
 func reliable(s string) diffSnapshot   { return diffSnapshot{text: s, exists: true, reliable: true} }
@@ -64,7 +62,7 @@ func TestDiffContent_EmitsNativeDiff(t *testing.T) {
 	dir := t.TempDir()
 	bufs := []string{"old-buffer", "new-buffer"} // snapshot read, then post-exec read
 	i := 0
-	ws := &WorkspaceFS{
+	ws := &EditorFS{
 		conn: fakeConn{read: func(string) (string, error) {
 			r := bufs[i]
 			i++
@@ -73,34 +71,17 @@ func TestDiffContent_EmitsNativeDiff(t *testing.T) {
 		sid:     "s",
 		canRead: true,
 	}
-	a := &acpAgent{
-		rt:           &bootstrap.Runtime{Cwd: dir},
-		fs:           ws,
-		pendingEdits: make(map[acp.ToolCallId]editSnapshot),
-	}
+	s := &Server{fs: ws, pendingEdits: make(map[acp.ToolCallId]editSnapshot)}
 	args := json.RawMessage(`{"file_path":"f.go","content":"new-buffer"}`)
-	a.snapshotForDiff(&agentcore.Event{Tool: "write", ToolID: "t1", Args: args})
+	s.snapshotForDiff(agentcore.ToolCall{ID: "t1", Name: "write", Args: args}, dir)
 
-	content, ok := a.diffContent(&agentcore.Event{Tool: "write", ToolID: "t1", Args: args})
+	content, ok := s.diffContent(agentcore.ToolEnd{Call: agentcore.ToolCall{ID: "t1", Name: "write", Args: args}})
 	if !ok || len(content) != 1 || content[0].Diff == nil {
 		t.Fatalf("expected a native diff, got ok=%v content=%+v", ok, content)
 	}
 	d := content[0].Diff
 	if d.OldText == nil || *d.OldText != "old-buffer" || d.NewText != "new-buffer" {
 		t.Fatalf("diff old/new mismatch: old=%v new=%q", d.OldText, d.NewText)
-	}
-}
-
-// A background SEError (an async worker failing a turn later) routes through
-// finishTurn. finishTurn must not drop snapshots for tool calls still in
-// flight — each is reclaimed by its own ToolExecEnd, not a sweep.
-func TestFinishTurn_KeepsPendingEdits(t *testing.T) {
-	a := &acpAgent{pendingEdits: map[acp.ToolCallId]editSnapshot{
-		"t1": {path: "/x.go", old: reliable("a")},
-	}}
-	a.finishTurn(turnResult{stop: acp.StopReasonEndTurn})
-	if _, ok := a.pendingEdits["t1"]; !ok {
-		t.Fatal("finishTurn must not drop in-flight snapshots")
 	}
 }
 
@@ -111,19 +92,15 @@ func TestDiffContent_SkipsWhenSnapshotUnreliable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte("disk-content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ws := &WorkspaceFS{
+	ws := &EditorFS{
 		conn:    fakeConn{read: func(string) (string, error) { return "", errors.New("editor error") }},
 		sid:     "s",
 		canRead: true,
 	}
-	a := &acpAgent{
-		rt:           &bootstrap.Runtime{Cwd: dir},
-		fs:           ws,
-		pendingEdits: make(map[acp.ToolCallId]editSnapshot),
-	}
+	s := &Server{fs: ws, pendingEdits: make(map[acp.ToolCallId]editSnapshot)}
 	args := json.RawMessage(`{"file_path":"f.go","content":"x"}`)
-	a.snapshotForDiff(&agentcore.Event{Tool: "write", ToolID: "t1", Args: args})
-	if _, ok := a.diffContent(&agentcore.Event{Tool: "write", ToolID: "t1", Args: args}); ok {
+	s.snapshotForDiff(agentcore.ToolCall{ID: "t1", Name: "write", Args: args}, dir)
+	if _, ok := s.diffContent(agentcore.ToolEnd{Call: agentcore.ToolCall{ID: "t1", Name: "write", Args: args}}); ok {
 		t.Fatal("unreliable snapshot must suppress the diff")
 	}
 }

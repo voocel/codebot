@@ -32,7 +32,8 @@ func newTestTracker(t *testing.T, gitDir, workTree, statePath string) *Tracker {
 
 func newTempTracker(t *testing.T, workTree string) *Tracker {
 	t.Helper()
-	return newTestTracker(t, filepath.Join(t.TempDir(), "shadow"), workTree, "")
+	dir := t.TempDir()
+	return newTestTracker(t, filepath.Join(dir, "shadow"), workTree, filepath.Join(dir, "undo.json"))
 }
 
 func readFile(t *testing.T, dir, name string) string {
@@ -226,34 +227,34 @@ func TestPersistAndReload(t *testing.T) {
 	}
 }
 
-// TestRebindIsolation verifies Rebind swaps to another session's sidecar:
-// the old stack is dropped and the target sidecar's stack loaded.
+// TestRebindIsolation verifies Rebind moves the tracker to another workspace
+// and its stack, and back.
 func TestRebindIsolation(t *testing.T) {
 	requireGit(t)
-	work := t.TempDir()
-	shadow := filepath.Join(t.TempDir(), "shadow")
+	workA, workB := t.TempDir(), t.TempDir()
+	shadowA, shadowB := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
 	stateA := filepath.Join(t.TempDir(), "a.json")
 	stateB := filepath.Join(t.TempDir(), "b.json")
 
-	tr := newTestTracker(t, shadow, work, stateA)
-	writeFile(t, work, "f.txt", "A1")
+	tr := newTestTracker(t, shadowA, workA, stateA)
+	writeFile(t, workA, "f.txt", "A1")
 	if _, err := tr.Track(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Rebind to a fresh session's (nonexistent) sidecar → empty stack.
-	tr.Rebind(stateB)
+	// Into a workspace with no checkpoints yet → nothing to undo.
+	tr.Rebind(shadowB, workB, stateB)
 	if _, ok, _ := tr.Undo(); ok {
-		t.Fatal("after Rebind to empty sidecar, undo should report nothing")
+		t.Fatal("after Rebind to a fresh workspace, undo should report nothing")
 	}
 
-	// Rebind back to A → its persisted stack reloads.
-	tr.Rebind(stateA)
-	writeFile(t, work, "f.txt", "A2")
+	// Back to A → its persisted stack reloads.
+	tr.Rebind(shadowA, workA, stateA)
+	writeFile(t, workA, "f.txt", "A2")
 	if _, ok, err := tr.Undo(); err != nil || !ok {
 		t.Fatalf("undo after rebind back: ok=%v err=%v", ok, err)
 	}
-	if got := readFile(t, work, "f.txt"); got != "A1" {
+	if got := readFile(t, workA, "f.txt"); got != "A1" {
 		t.Fatalf("f.txt = %q, want A1", got)
 	}
 }
@@ -375,7 +376,8 @@ func TestNewTrackClearsRedo(t *testing.T) {
 	}
 }
 
-// TestRebindClearsRedo verifies switching sessions drops the redo stack.
+// TestRebindClearsRedo verifies moving to another workspace drops the redo
+// stack.
 func TestRebindClearsRedo(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
@@ -390,7 +392,8 @@ func TestRebindClearsRedo(t *testing.T) {
 		t.Fatalf("undo: ok=%v err=%v", ok, err)
 	}
 
-	tr.Rebind("")
+	other := t.TempDir()
+	tr.Rebind(filepath.Join(other, "shadow"), t.TempDir(), filepath.Join(other, "undo.json"))
 	if _, ok, _ := tr.Redo(); ok {
 		t.Fatal("Rebind must clear the redo stack")
 	}

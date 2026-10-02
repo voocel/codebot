@@ -1,28 +1,32 @@
 package storage
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
 )
 
 // Manager manages session files in a directory.
 type Manager struct {
-	Dir string
+	dir string
 }
 
 // NewManager creates a Manager for the given sessions directory.
 func NewManager(dir string) *Manager {
-	return &Manager{Dir: dir}
+	return &Manager{dir: dir}
 }
 
-// List returns all sessions sorted by updated time (newest first).
+// List returns all sessions sorted by updated time (newest first). Files
+// that are not readable sessions of the current version are skipped.
 func (m *Manager) List() ([]SessionInfo, error) {
-	entries, err := os.ReadDir(m.Dir)
+	entries, err := os.ReadDir(m.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -35,56 +39,36 @@ func (m *Manager) List() ([]SessionInfo, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
 		}
-		path := filepath.Join(m.Dir, e.Name())
-		info, err := readSessionInfo(path)
+		info, err := readSessionInfo(filepath.Join(m.dir, e.Name()))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[session] skip %s: %v\n", e.Name(), err)
 			continue
 		}
 		sessions = append(sessions, info)
 	}
-
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].Updated.After(sessions[j].Updated)
 	})
 	return sessions, nil
 }
 
-// MostRecent returns the most recently updated session.
-func (m *Manager) MostRecent() (*SessionInfo, error) {
-	sessions, err := m.List()
+// Open opens an existing session by ID and replays it.
+func (m *Manager) Open(id string) (*Store, State, error) {
+	entries, err := os.ReadDir(m.dir)
 	if err != nil {
-		return nil, err
-	}
-	if len(sessions) == 0 {
-		return nil, nil
-	}
-	return &sessions[0], nil
-}
-
-// Open opens an existing session by ID.
-func (m *Manager) Open(id string) (*Store, error) {
-	entries, err := os.ReadDir(m.Dir)
-	if err != nil {
-		return nil, fmt.Errorf("open session: %w", err)
+		return nil, State{}, fmt.Errorf("open session: %w", err)
 	}
 	suffix := "_" + id + ".jsonl"
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), suffix) {
-			return open(filepath.Join(m.Dir, e.Name()))
+			return open(filepath.Join(m.dir, e.Name()))
 		}
 	}
-	return nil, fmt.Errorf("session %q not found", id)
-}
-
-// OpenPath opens a session by file path.
-func (m *Manager) OpenPath(path string) (*Store, error) {
-	return open(path)
+	return nil, State{}, fmt.Errorf("session %q not found", id)
 }
 
 // Create creates a new session.
 func (m *Manager) Create(cwd string) (*Store, error) {
-	return create(m.Dir, cwd)
+	return create(m.dir, cwd)
 }
 
 func readSessionInfo(path string) (SessionInfo, error) {
@@ -94,93 +78,60 @@ func readSessionInfo(path string) (SessionInfo, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	if !scanner.Scan() {
-		return SessionInfo{}, fmt.Errorf("empty file")
-	}
-
-	var entry Entry
-	if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-		return SessionInfo{}, err
-	}
-	if entry.Kind != EntryHeader {
-		return SessionInfo{}, fmt.Errorf("not a session file")
-	}
-
-	var h Header
-	if err := json.Unmarshal(entry.Data, &h); err != nil {
-		return SessionInfo{}, err
-	}
-	if h.Version != currentVersion {
-		return SessionInfo{}, fmt.Errorf("unsupported version: %d", h.Version)
-	}
-
-	// Scan all entries for name, message count, first user message, and latest timestamp.
-	name := h.Name
-	var messageCount int
-	var firstMessage string
-	// Seed with header entry's timestamp (so even header-only sessions get a valid Updated).
-	lastTimestamp := entry.Timestamp
-	if lastTimestamp.IsZero() {
-		lastTimestamp = h.Created
-	}
-
-	for scanner.Scan() {
-		var e Entry
-		if json.Unmarshal(scanner.Bytes(), &e) != nil {
-			continue
+	info := SessionInfo{Path: path}
+	first := true
+	_, err = scanJSONLines(f, func(line []byte) error {
+		var e entry
+		if err := json.Unmarshal(line, &e); err != nil {
+			return err
 		}
-
-		if !e.Timestamp.IsZero() && e.Timestamp.After(lastTimestamp) {
-			lastTimestamp = e.Timestamp
-		}
-
-		switch e.Kind {
-		case EntrySessionInfo:
-			var info map[string]string
-			if json.Unmarshal(e.Data, &info) == nil {
-				if n, ok := info["name"]; ok {
-					name = n
-				}
+		if first {
+			first = false
+			var h Header
+			if e.Kind != entryHeader || json.Unmarshal(e.Data, &h) != nil {
+				return errors.New("not a session file")
 			}
-		case EntryMessage:
-			messageCount++
-			if firstMessage == "" {
-				var msg struct {
-					Role    string `json:"role"`
-					Content []struct {
-						Text string `json:"text"`
-					} `json:"content"`
-					Metadata map[string]any `json:"metadata,omitempty"`
-				}
-				if json.Unmarshal(e.Data, &msg) == nil && msg.Role == "user" && msg.Metadata["injected"] != true {
-					// Take the last text block: reminders are prepended,
-					// the user's actual input is always the final text block.
-					for _, c := range msg.Content {
-						if c.Text != "" {
-							firstMessage = c.Text
-						}
-					}
-					if len(firstMessage) > 80 {
-						firstMessage = firstMessage[:77] + "..."
-					}
-				}
+			if h.Version != currentVersion {
+				return fmt.Errorf("unsupported session version %d", h.Version)
 			}
+			info.ID, info.Cwd, info.Created, info.Updated = h.SessionID, h.Cwd, h.Created, h.Created
+		}
+		if e.Timestamp.After(info.Updated) {
+			info.Updated = e.Timestamp
+		}
+		if e.Kind != entryMessage {
+			return nil
+		}
+		info.MessageCount++
+		if info.FirstMessage == "" {
+			info.FirstMessage = userText(e.Data)
+		}
+		return nil
+	})
+	if err == nil && first {
+		err = errors.New("empty file")
+	}
+	return info, err
+}
+
+// userText returns the text a user typed in a message entry, truncated for
+// listing; "" for other messages and for messages the harness injected,
+// which carry a Kind.
+func userText(data json.RawMessage) string {
+	var msg agentcore.Message
+	if json.Unmarshal(data, &msg) != nil || msg.Role != litellm.RoleUser || msg.Kind != "" {
+		return ""
+	}
+	// Take the last text block: reminders are prepended, the user's actual
+	// input is always the final text block.
+	var text string
+	for _, b := range msg.Blocks {
+		if t, ok := b.(litellm.TextBlock); ok && t.Text != "" {
+			text = t.Text
 		}
 	}
-
-	info := SessionInfo{
-		ID:           h.SessionID,
-		Name:         name,
-		Path:         path,
-		Cwd:          h.Cwd,
-		Created:      h.Created,
-		MessageCount: messageCount,
-		FirstMessage: firstMessage,
+	if r := []rune(text); len(r) > 80 {
+		text = string(r[:77]) + "..."
 	}
-	if !lastTimestamp.IsZero() {
-		info.Updated = lastTimestamp
-	}
-	return info, nil
+	return text
 }

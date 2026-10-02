@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/voocel/agentcore/permission"
+	"github.com/voocel/codebot/internal/permission"
 )
 
 func mkReq(tool, key, path string) permission.Request {
@@ -55,7 +55,7 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if reason := CheckDangerousPath(home, tc.req); reason == "" {
+			if reason := checkDangerousPath(home, tc.req); reason == "" {
 				t.Fatalf("expected force-ask, got allow")
 			}
 		})
@@ -81,7 +81,7 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if reason := CheckDangerousPath(home, tc.req); reason != "" {
+			if reason := checkDangerousPath(home, tc.req); reason != "" {
 				t.Fatalf("expected allow, got reason=%q", reason)
 			}
 		})
@@ -96,7 +96,7 @@ func TestCheckDangerousPath_CaseInsensitive(t *testing.T) {
 	for _, name := range tests {
 		t.Run(name, func(t *testing.T) {
 			req := mkReq("write", "file_path", filepath.Join(home, name))
-			if reason := CheckDangerousPath(home, req); reason == "" {
+			if reason := checkDangerousPath(home, req); reason == "" {
 				t.Fatalf("case-variant %q should still match force-ask", name)
 			}
 		})
@@ -107,7 +107,7 @@ func TestCheckDangerousPath_RelativeResolvedAgainstWorkspace(t *testing.T) {
 	ws := t.TempDir()
 	req := mkReq("write", "file_path", ".bashrc")
 
-	if reason := CheckDangerousPath(ws, req); reason == "" {
+	if reason := checkDangerousPath(ws, req); reason == "" {
 		t.Fatalf("relative .bashrc under workspace should match, got allow")
 	}
 }
@@ -134,7 +134,7 @@ func TestCheckDangerousPath_SymlinkDotfilesPattern(t *testing.T) {
 	}
 
 	req := mkReq("write", "file_path", link)
-	if reason := CheckDangerousPath(home, req); reason == "" {
+	if reason := checkDangerousPath(home, req); reason == "" {
 		t.Fatalf("symlinked ~/.bashrc → ~/dotfiles/bashrc must still match force-ask")
 	}
 }
@@ -163,7 +163,7 @@ func TestCheckDangerousPath_BashCommandReferencesSSHKey(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := mkReq("bash", "command", tc.cmd)
-			reason := CheckDangerousPath(home, req)
+			reason := checkDangerousPath(home, req)
 			gotHit := reason != ""
 			if gotHit != tc.wantHit {
 				t.Fatalf("hit=%v want=%v reason=%q", gotHit, tc.wantHit, reason)
@@ -185,34 +185,37 @@ func TestCheckDangerousPath_IDEAndAgentLoaderDirs(t *testing.T) {
 		{"vscode settings.json", filepath.Join(home, "proj", ".vscode", "settings.json")},
 		{"idea runConfig", filepath.Join(home, "proj", ".idea", "runConfigurations", "x.xml")},
 		{"claude hooks", filepath.Join(home, "proj", ".claude", "hooks.json")},
-		// codebot self-config: only the hooks-bearing files, not memory/plans.
+		// codebot's own configuration, not its data.
 		{"codebot settings", filepath.Join(home, "proj", ".codebot", "settings.json")},
-		{"codebot settings.local", filepath.Join(home, "proj", ".codebot", "settings.local.json")},
-		{"codebot command def", filepath.Join(home, "proj", ".codebot", "commands", "deploy.md")},
+		{"codebot plugin state", filepath.Join(home, ".codebot", "plugins-state.json")},
+		{"codebot plugin manifest", filepath.Join(home, "proj", ".codebot", "plugins", "x", "plugin.json")},
+		{"codebot plugin skill", filepath.Join(home, ".codebot", "plugins", "x", "skills", "deploy.md")},
+		{"codebot agent", filepath.Join(home, "proj", ".codebot", "agents", "reviewer.md")},
+		{"codebot approvals", filepath.Join(home, ".codebot", "approvals", "p1.json")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := mkReq("write", "file_path", tc.path)
-			if reason := CheckDangerousPath(home, req); reason == "" {
+			if reason := checkDangerousPath(home, req); reason == "" {
 				t.Fatalf("expected force-ask, got allow")
 			}
 		})
 	}
 }
 
-func TestCheckDangerousPath_CodebotMemoryAndPlansAreNotForceAsk(t *testing.T) {
-	// memory/plans/sessions are harness-managed; they get force-ask only if
-	// we screw up. Guard against accidentally over-matching .codebot/.
+func TestCheckDangerousPath_CodebotMemoryAndSessionsAreNotForceAsk(t *testing.T) {
+	// memory/sessions are harness-managed; they get force-ask only if we
+	// screw up. Guard against accidentally over-matching .codebot/.
 	home := t.TempDir()
 	cases := []string{
 		filepath.Join(home, ".codebot", "memory", "user.md"),
-		filepath.Join(home, ".codebot", "plans", "x.md"),
 		filepath.Join(home, ".codebot", "projects", "p1", "session.jsonl"),
+		filepath.Join(home, "proj", ".codebot", "worktrees", "fix", "main.go"),
 	}
 	for _, p := range cases {
 		t.Run(filepath.Base(filepath.Dir(p)), func(t *testing.T) {
 			req := mkReq("write", "file_path", p)
-			if reason := CheckDangerousPath(home, req); reason != "" {
+			if reason := checkDangerousPath(home, req); reason != "" {
 				t.Fatalf("harness-managed %q should not match dangerous-path (reason=%q)", p, reason)
 			}
 		})
@@ -240,7 +243,7 @@ func TestCheckDangerousPath_SymlinkAttackPattern(t *testing.T) {
 	}
 
 	req := mkReq("read", "file_path", innocent)
-	if reason := CheckDangerousPath(home, req); reason == "" {
+	if reason := checkDangerousPath(home, req); reason == "" {
 		t.Fatalf("symlink to SSH private key must be caught via resolved form")
 	}
 }

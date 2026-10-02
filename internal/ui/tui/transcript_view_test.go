@@ -2,60 +2,73 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
 )
 
 // asstMsg builds an assistant message with the given plain text. Used by
-// tests as a shorthand — TranscriptView itself only reads Role and
-// TextContent / ThinkingContent.
+// tests as a shorthand — TranscriptView itself only reads Role, Text and
+// Reasoning.
 func asstMsg(text string) agentcore.Message {
-	return agentcore.Message{
-		Role:    agentcore.RoleAssistant,
-		Content: []agentcore.ContentBlock{{Type: agentcore.ContentText, Text: text}},
-	}
+	return agentcore.Message{Role: litellm.RoleAssistant, Blocks: []litellm.Block{litellm.Text(text)}}
 }
 
 func TestTranscriptView_AssistantMessageEndAppendsBlock(t *testing.T) {
-	v := NewTranscriptView("teammate: alice")
+	v := NewTranscriptView("agent: alice")
 	v.SetSize(80, 20)
 
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageStart, Message: asstMsg("")})
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageEnd, Message: asstMsg("hello world")})
+	v.HandleEvent(agentcore.MessageStart{})
+	v.HandleEvent(agentcore.MessageEnd{Message: asstMsg("hello world")})
 
 	got := v.View()
 	if !strings.Contains(got, "hello world") {
 		t.Errorf("expected 'hello world' in view, got:\n%s", got)
 	}
 	// Title shows
-	if !strings.Contains(got, "teammate: alice") {
+	if !strings.Contains(got, "agent: alice") {
 		t.Errorf("expected title in view, got:\n%s", got)
 	}
 }
 
 // While a message is streaming, the live text must already appear in View()
-// before EventMessageEnd — that's the whole point of a live transcript.
+// before MessageEnd — that's the whole point of a live transcript.
 func TestTranscriptView_StreamingTextIsVisibleBeforeEnd(t *testing.T) {
 	v := NewTranscriptView("")
 	v.SetSize(80, 20)
 
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageStart, Message: asstMsg("")})
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageUpdate, Delta: "partial"})
+	v.HandleEvent(agentcore.MessageStart{})
+	v.HandleEvent(agentcore.MessageDelta{Event: litellm.ReasoningDelta{Text: "mulling"}})
+	v.HandleEvent(agentcore.MessageDelta{Event: litellm.TextDelta{Text: "part"}})
+	v.HandleEvent(agentcore.MessageDelta{Event: litellm.TextDelta{Text: "ial"}})
 
 	got := v.View()
-	if !strings.Contains(got, "partial") {
-		t.Errorf("expected streaming delta in view, got:\n%s", got)
+	if !strings.Contains(got, "partial") || !strings.Contains(got, "mulling") {
+		t.Errorf("expected streamed text and thinking in view, got:\n%s", got)
 	}
 
 	// After end the streaming buffer clears but the final text persists.
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageEnd, Message: asstMsg("partial-final")})
+	v.HandleEvent(agentcore.MessageEnd{Message: asstMsg("partial-final")})
 	got = v.View()
 	if !strings.Contains(got, "partial-final") {
 		t.Errorf("expected final text in view, got:\n%s", got)
+	}
+}
+
+// A retry discards the response streamed so far.
+func TestTranscriptView_RetryDiscardsStream(t *testing.T) {
+	v := NewTranscriptView("")
+	v.SetSize(80, 20)
+
+	v.HandleEvent(agentcore.MessageStart{})
+	v.HandleEvent(agentcore.MessageDelta{Event: litellm.TextDelta{Text: "doomed"}})
+	v.HandleEvent(agentcore.Retry{Attempt: 1, MaxRetries: 3})
+
+	if got := v.View(); strings.Contains(got, "doomed") {
+		t.Errorf("retry kept the failed response, got:\n%s", got)
 	}
 }
 
@@ -63,25 +76,14 @@ func TestTranscriptView_ToolExecRendersHeaderAndResult(t *testing.T) {
 	v := NewTranscriptView("")
 	v.SetSize(80, 20)
 
-	toolID := "t1"
-	args := json.RawMessage(`{"path":"/tmp/x"}`)
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecStart,
-		Tool:   "read",
-		ToolID: toolID,
-		Args:   args,
-	})
+	read := call("t1", "read", `{"path":"/tmp/x"}`)
+	v.HandleEvent(agentcore.ToolStart{Call: read})
 	// Header should appear immediately as a provisional block.
 	if got := v.View(); !strings.Contains(got, "Read") {
 		t.Errorf("expected tool header 'Read' in view after Start, got:\n%s", got)
 	}
 
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecEnd,
-		Tool:   "read",
-		ToolID: toolID,
-		Result: json.RawMessage(`"file contents here"`),
-	})
+	v.HandleEvent(agentcore.ToolEnd{Call: read, Result: agentcore.TextResult("file contents here")})
 	got := v.View()
 	if !strings.Contains(got, "Read") {
 		t.Errorf("expected tool header in view after End, got:\n%s", got)
@@ -95,24 +97,15 @@ func TestTranscriptView_ToolErrorRecolorsBullet(t *testing.T) {
 	v := NewTranscriptView("")
 	v.SetSize(80, 20)
 
-	toolID := "t1"
-	args := json.RawMessage(`{}`)
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecStart,
-		Tool:   "bash",
-		ToolID: toolID,
-		Args:   args,
-	})
-	v.HandleEvent(agentcore.Event{
-		Type:    agentcore.EventToolExecEnd,
-		Tool:    "bash",
-		ToolID:  toolID,
-		Result:  json.RawMessage(`"command not found"`),
-		IsError: true,
-	})
+	bash := call("t1", "bash", `{}`)
+	v.HandleEvent(agentcore.ToolStart{Call: bash})
+	v.HandleEvent(agentcore.ToolEnd{Call: bash, Result: agentcore.ErrorResult("command not found")})
 	got := v.View()
 	if !strings.Contains(got, "command not found") {
 		t.Errorf("expected error result in view, got:\n%s", got)
+	}
+	if !strings.Contains(got, ErrorIconStyle.Render("● ")) {
+		t.Errorf("expected the failed call's bullet in the error style, got:\n%s", got)
 	}
 }
 
@@ -120,21 +113,12 @@ func TestTranscriptView_HiddenToolIsSilent(t *testing.T) {
 	v := NewTranscriptView("")
 	v.SetSize(80, 20)
 
-	// task_* tools are filtered out — see IsHiddenToolCall.
-	args := json.RawMessage(`{"title":"x"}`)
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecStart,
-		Tool:   "task_create",
-		ToolID: "h1",
-		Args:   args,
-	})
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecEnd,
-		Tool:   "task_create",
-		ToolID: "h1",
-	})
+	// todo_write is filtered out — see app.HiddenToolCall.
+	todo := call("h1", "todo_write", `{"todos":[]}`)
+	v.HandleEvent(agentcore.ToolStart{Call: todo})
+	v.HandleEvent(agentcore.ToolEnd{Call: todo, Result: agentcore.TextResult("ok")})
 	got := v.View()
-	if strings.Contains(got, "task_create") || strings.Contains(got, "Task_create") {
+	if strings.Contains(got, "todo_write") || strings.Contains(got, "Update Todos") {
 		t.Errorf("hidden tool leaked into view:\n%s", got)
 	}
 }
@@ -143,10 +127,7 @@ func TestTranscriptView_ErrorEventAppendsBlock(t *testing.T) {
 	v := NewTranscriptView("")
 	v.SetSize(80, 20)
 
-	v.HandleEvent(agentcore.Event{
-		Type: agentcore.EventError,
-		Err:  errors.New("boom"),
-	})
+	v.HandleEvent(agentcore.RunEnd{Reason: agentcore.EndError, Err: errors.New("boom")})
 	got := v.View()
 	if !strings.Contains(got, "boom") {
 		t.Errorf("expected error in view, got:\n%s", got)
@@ -159,10 +140,7 @@ func TestTranscriptView_ErrorEventSuppressesCancellation(t *testing.T) {
 	v := NewTranscriptView("")
 	v.SetSize(80, 20)
 
-	v.HandleEvent(agentcore.Event{
-		Type: agentcore.EventError,
-		Err:  context.Canceled,
-	})
+	v.HandleEvent(agentcore.RunEnd{Reason: agentcore.EndAborted, Err: context.Canceled})
 	got := v.View()
 	if strings.Contains(got, "context canceled") || strings.Contains(got, "error:") {
 		t.Errorf("cancellation should be silent, got:\n%s", got)
@@ -174,8 +152,8 @@ func TestTranscriptView_EmptyMessageEndIsNoop(t *testing.T) {
 	v.SetSize(80, 20)
 
 	// Whitespace-only message — render path should skip empty content.
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageStart, Message: asstMsg("")})
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageEnd, Message: asstMsg("   ")})
+	v.HandleEvent(agentcore.MessageStart{})
+	v.HandleEvent(agentcore.MessageEnd{Message: asstMsg("   ")})
 
 	got := v.View()
 	// Title + viewport: only the viewport's empty area should show up.
@@ -188,26 +166,21 @@ func TestTranscriptView_UserMessageIgnored(t *testing.T) {
 	v := NewTranscriptView("")
 	v.SetSize(80, 20)
 
-	userMsg := agentcore.Message{
-		Role:    agentcore.RoleUser,
-		Content: []agentcore.ContentBlock{{Type: agentcore.ContentText, Text: "hi from user"}},
-	}
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageEnd, Message: userMsg})
+	v.HandleEvent(agentcore.MessageEnd{Message: agentcore.UserText("hi from user")})
 
 	got := v.View()
 	if strings.Contains(got, "hi from user") {
-		t.Errorf("user message leaked into teammate transcript:\n%s", got)
+		t.Errorf("user message leaked into agent transcript:\n%s", got)
 	}
 }
 
-func TestTranscriptView_StatusAndTitleSettable(t *testing.T) {
-	v := NewTranscriptView("initial")
+func TestTranscriptView_StatusAndTitleShown(t *testing.T) {
+	v := NewTranscriptView("agent: researcher")
 	v.SetSize(80, 20)
-	v.SetTitle("updated title")
 	v.SetStatus("● running")
 
 	got := v.View()
-	if !strings.Contains(got, "updated title") {
+	if !strings.Contains(got, "agent: researcher") {
 		t.Errorf("title not reflected, got:\n%s", got)
 	}
 	if !strings.Contains(got, "running") {
@@ -237,7 +210,7 @@ func TestTranscriptView_SetStatusAfterSetSizeKeepsRoom(t *testing.T) {
 func TestTranscriptView_NoSizeRendersEmpty(t *testing.T) {
 	v := NewTranscriptView("x")
 	// SetSize never called.
-	v.HandleEvent(agentcore.Event{Type: agentcore.EventMessageEnd, Message: asstMsg("hi")})
+	v.HandleEvent(agentcore.MessageEnd{Message: asstMsg("hi")})
 
 	if got := v.View(); got != "" {
 		t.Errorf("expected empty view before SetSize, got: %q", got)
@@ -251,30 +224,11 @@ func TestTranscriptView_ParallelToolCalls(t *testing.T) {
 	v := NewTranscriptView("")
 	v.SetSize(80, 30)
 
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecStart,
-		Tool:   "read",
-		ToolID: "a",
-		Args:   json.RawMessage(`{"path":"/a"}`),
-	})
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecStart,
-		Tool:   "bash",
-		ToolID: "b",
-		Args:   json.RawMessage(`{"command":"ls"}`),
-	})
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecEnd,
-		Tool:   "bash",
-		ToolID: "b",
-		Result: json.RawMessage(`"file1\nfile2"`),
-	})
-	v.HandleEvent(agentcore.Event{
-		Type:   agentcore.EventToolExecEnd,
-		Tool:   "read",
-		ToolID: "a",
-		Result: json.RawMessage(`"hello"`),
-	})
+	read, bash := call("a", "read", `{"path":"/a"}`), call("b", "bash", `{"command":"ls"}`)
+	v.HandleEvent(agentcore.ToolStart{Call: read})
+	v.HandleEvent(agentcore.ToolStart{Call: bash})
+	v.HandleEvent(agentcore.ToolEnd{Call: bash, Result: agentcore.TextResult("file1\nfile2")})
+	v.HandleEvent(agentcore.ToolEnd{Call: read, Result: agentcore.TextResult("hello")})
 
 	got := v.View()
 	// Both tools should be visible with their results.

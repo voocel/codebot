@@ -3,7 +3,6 @@ package skill
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -45,231 +44,113 @@ func TestStripFrontmatter(t *testing.T) {
 		{"unclosed frontmatter", "---\nname: test\nno closing", "---\nname: test\nno closing"},
 	}
 	for _, tc := range tests {
-		if got := StripFrontmatter(tc.input); got != tc.want {
+		if got := stripFrontmatter(tc.input); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }
 
-func TestRenderListing(t *testing.T) {
-	t.Parallel()
-
-	skills := []Spec{
-		{Name: "commit", Description: "Git commit helper", FilePath: "/skills/commit.md"},
-		{Name: "hidden", Description: "Hidden skill", FilePath: "/skills/hidden.md", DisableModelInvocation: true},
-		{Name: "review", Description: "Code reviewer", FilePath: "/skills/review.md"},
-		{Name: "conventions", Description: "API conventions", FilePath: "/skills/conventions.md", DisableUserInvocation: true},
-	}
-
-	result := RenderListing(skills, DefaultListingOptions())
-
-	if result == "" {
-		t.Fatal("expected non-empty result")
-	}
-	if !strings.Contains(result, "- commit: Git commit helper") {
-		t.Error("missing commit skill entry")
-	}
-	if !strings.Contains(result, "- review: Code reviewer") {
-		t.Error("missing review skill entry")
-	}
-	if !strings.Contains(result, "- conventions: API conventions") {
-		t.Error("user-invocable=false skill should still appear in prompt for LLM")
-	}
-	if strings.Contains(result, "hidden") {
-		t.Error("disabled skill should be excluded")
-	}
-	if !strings.Contains(result, "Skill tool") {
-		t.Error("should reference the Skill tool")
-	}
-}
-
-func TestRenderListingSpecialChars(t *testing.T) {
-	t.Parallel()
-
-	result := RenderListing([]Spec{
-		{Name: "test", Description: "Uses <tags> & stuff", FilePath: "/path/to/test.md"},
-	}, DefaultListingOptions())
-	if !strings.Contains(result, "Uses <tags> & stuff") {
-		t.Error("description should appear in output")
-	}
-}
-
-func TestRenderListingEmpty(t *testing.T) {
-	t.Parallel()
-
-	if result := RenderListing(nil, DefaultListingOptions()); result != "" {
-		t.Errorf("expected empty, got %q", result)
-	}
-	if result := RenderListing([]Spec{{Name: "x", DisableModelInvocation: true}}, DefaultListingOptions()); result != "" {
-		t.Errorf("expected empty when all disabled, got %q", result)
-	}
-}
-
-func TestLoadFromDir(t *testing.T) {
+func TestLoadDir(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
+	writeSkillFile(t, filepath.Join(dir, "commit.md"), "---\ndescription: Commit helper\nallowed-tools: [bash, read]\n---\nDo the commit")
+	writeSkillFile(t, filepath.Join(dir, "review", "SKILL.md"), "---\ndescription: Code review\ncontext: fork\n---\nReview code")
+	writeSkillFile(t, filepath.Join(dir, "deploy", "src", "SKILL.md"), "Deploy stuff")
+	writeSkillFile(t, filepath.Join(dir, "Code_Review.md"), "---\nuser-invocable: false\n---\nReview")
 
-	writeSkillFile(t, filepath.Join(dir, "commit.md"), "---\ndescription: Commit helper\n---\nDo the commit")
-
-	reviewDir := filepath.Join(dir, "review")
-	if err := os.MkdirAll(reviewDir, 0o755); err != nil {
-		t.Fatal(err)
+	specs, errs := LoadDir(dir)
+	if len(errs) > 0 {
+		t.Fatalf("LoadDir errors: %v", errs)
 	}
-	writeSkillFile(t, filepath.Join(reviewDir, "SKILL.md"), "---\ndescription: Code review\n---\nReview code")
-
-	nestedDir := filepath.Join(dir, "deploy", "src")
-	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeSkillFile(t, filepath.Join(nestedDir, "SKILL.md"), "---\ndescription: Deploy helper\n---\nDeploy stuff")
-
-	writeSkillFile(t, filepath.Join(dir, "Code_Review.md"), "---\ndescription: Uppercase test\n---\nReview")
-
-	skills := LoadFromDir(dir, "test")
-	if len(skills) != 4 {
-		t.Fatalf("expected 4 skills, got %d", len(skills))
-	}
-
-	byName := make(map[string]Spec, len(skills))
-	for _, spec := range skills {
+	byName := make(map[string]Spec, len(specs))
+	for _, spec := range specs {
 		byName[spec.Name] = spec
 	}
-	if spec, ok := byName["commit"]; !ok {
-		t.Error("missing commit skill")
-	} else if spec.Description != "Commit helper" {
-		t.Errorf("commit description = %q", spec.Description)
+	if len(byName) != 4 {
+		t.Fatalf("expected 4 skills, got %v", byName)
 	}
-	if spec, ok := byName["review"]; !ok {
-		t.Error("missing review skill")
-	} else if spec.Description != "Code review" {
-		t.Errorf("review description = %q", spec.Description)
+	if s := byName["commit"]; s.Description != "Commit helper" || len(s.AllowedTools) != 2 || s.Context != "inline" {
+		t.Errorf("commit = %+v", s)
 	}
-	if spec, ok := byName["deploy"]; !ok {
-		t.Error("missing deploy skill from nested dir")
-	} else if spec.Description != "Deploy helper" {
-		t.Errorf("deploy description = %q", spec.Description)
+	if s := byName["review"]; s.Description != "Code review" || s.Context != "fork" || s.BaseDir != filepath.Join(dir, "review") {
+		t.Errorf("review = %+v", s)
 	}
-	if spec, ok := byName["code_review"]; !ok {
-		t.Error("missing code_review skill (from Code_Review.md)")
-	} else if spec.Description != "Uppercase test" {
-		t.Errorf("code_review description = %q", spec.Description)
+	if s := byName["deploy"]; s.Description != "Deploy stuff" {
+		t.Errorf("deploy from a nested dir, described by its first line = %+v", s)
+	}
+	if s := byName["code_review"]; !s.DisableUserInvocation {
+		t.Errorf("code_review = %+v", s)
 	}
 }
 
-func TestValidateDirReportsInvalidSkill(t *testing.T) {
+func TestLoadDirReportsInvalidSkill(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	writeSkillFile(t, filepath.Join(dir, "Bad Skill.md"), "---\ndescription: bad\n---\nbody")
+	writeSkillFile(t, filepath.Join(dir, "empty", "notes.txt"), "no skill here")
 
-	specs, errs := ValidateDir(dir, "test")
-	if len(specs) != 0 {
-		t.Fatalf("expected no valid specs, got %d", len(specs))
-	}
-	if len(errs) == 0 {
-		t.Fatal("expected validation errors")
+	specs, errs := LoadDir(dir)
+	if len(specs) != 0 || len(errs) != 2 {
+		t.Fatalf("expected no skills and two errors, got %d skills, errors %v", len(specs), errs)
 	}
 }
 
-func TestDeduplicateSpecsPrefersLaterSourceForSameName(t *testing.T) {
+// Of two skills with one name, the more trusted source wins, whichever came
+// first; among equals, the later one.
+func TestCatalogPrefersTheMoreTrustedSource(t *testing.T) {
 	t.Parallel()
 
-	specs := deduplicateSpecs([]Spec{
-		{Name: "review", Description: "bundled", Source: "bundled", FilePath: "/tmp/bundled-review.md"},
-		{Name: "review", Description: "project", Source: "project", FilePath: "/tmp/project-review.md"},
-	})
-	if len(specs) != 1 {
-		t.Fatalf("expected 1 skill after dedupe, got %d", len(specs))
-	}
-	if specs[0].Description != "project" {
-		t.Fatalf("expected later source to win, got %#v", specs[0])
+	for _, order := range [][]Spec{
+		{{Name: "review", Source: "bundled"}, {Name: "review", Source: "project"}},
+		{{Name: "review", Source: "project"}, {Name: "review", Source: "remote"}},
+		{{Name: "review", Source: "project", Description: "first"}, {Name: "review", Source: "project", Description: "later"}},
+	} {
+		spec, _ := NewCatalog(order).Get("review", "")
+		want := order[1]
+		if order[1].Source == "remote" {
+			want = order[0]
+		}
+		if spec.Source != want.Source || spec.Description != want.Description {
+			t.Errorf("from %+v got %+v", order, spec)
+		}
 	}
 }
 
-func TestDeduplicateSpecsUsesResolvedPath(t *testing.T) {
+// A skill gated on Paths is active only in a workspace holding a match, so a
+// conversation that moves into a worktree sees the skills of the worktree.
+func TestCatalogActivationFollowsTheWorkspace(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	target := filepath.Join(dir, "review.md")
-	link := filepath.Join(dir, "alias.md")
-	writeSkillFile(t, target, "review")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
+	withMarker, withoutMarker := t.TempDir(), t.TempDir()
+	writeSkillFile(t, filepath.Join(withMarker, "web", "app", "index.ts"), "")
 
-	specs := deduplicateSpecs([]Spec{
-		{Name: "review", Description: "original", FilePath: target},
-		{Name: "review-link", Description: "linked", FilePath: link},
-	})
-	if len(specs) != 1 {
-		t.Fatalf("expected 1 skill after file-identity dedupe, got %d", len(specs))
-	}
-	if specs[0].Name != "review-link" {
-		t.Fatalf("expected later duplicate file to replace earlier one, got %#v", specs[0])
-	}
-}
-
-func TestCatalogFiltersInactivePathScopedSkills(t *testing.T) {
-	t.Parallel()
-
-	cwd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cwd, "internal", "skill"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	catalog := &Catalog{cwd: cwd}
-	catalog.setSpecs([]Spec{
+	c := NewCatalog([]Spec{
 		{Name: "always-on"},
-		{Name: "review", Paths: []string{"internal/skill/**"}},
 		{Name: "frontend", Paths: []string{"web/**"}},
 	})
 
-	list := catalog.List()
-	if len(list) != 2 {
-		t.Fatalf("expected 2 active skills, got %#v", list)
+	if got := c.List(withoutMarker); len(got) != 1 || got[0].Name != "always-on" {
+		t.Fatalf("frontend must be inactive without a match, got %+v", got)
 	}
-	if _, ok := catalog.Get("review"); !ok {
-		t.Fatal("expected matching path-scoped skill to be active")
+	if _, ok := c.Get("frontend", withoutMarker); ok {
+		t.Fatal("Get must respect the same activation check as List")
 	}
-	if _, ok := catalog.Get("frontend"); ok {
-		t.Fatal("expected non-matching path-scoped skill to stay inactive")
+	if got := c.List(withMarker); len(got) != 2 {
+		t.Fatalf("frontend must be active in the workspace holding a match, got %+v", got)
+	}
+	if _, ok := c.Get("Frontend", withMarker); !ok {
+		t.Fatal("Get must find the skill where it is active, ignoring case")
 	}
 }
 
 func writeSkillFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// A worktree enter/exit moves the workspace root, and Spec.Paths is resolved
-// against it — keeping the boot cwd would keep deciding which skills apply
-// from the workspace the session has left.
-func TestCatalogRetargetMovesActivationRoot(t *testing.T) {
-	t.Parallel()
-
-	withMarker, withoutMarker := t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(withMarker, "go.mod"), []byte("module x\n"), 0o644); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-
-	gated := Spec{Name: "go-only", Description: "gated on go.mod", Paths: []string{"go.mod"}}
-	c := NewCatalog(withoutMarker, []Spec{gated})
-
-	if len(c.List()) != 0 {
-		t.Fatalf("skill must be inactive without its marker file, got %+v", c.List())
-	}
-	if _, ok := c.Get("go-only"); ok {
-		t.Fatal("Get must respect the same activation check as List")
-	}
-
-	c.Retarget(withMarker)
-
-	if got := c.List(); len(got) != 1 || got[0].Name != "go-only" {
-		t.Fatalf("skill must activate after retargeting to the workspace holding its marker, got %+v", got)
-	}
-	if _, ok := c.Get("go-only"); !ok {
-		t.Fatal("Get must activate after retarget too")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

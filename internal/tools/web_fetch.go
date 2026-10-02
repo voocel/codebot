@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,57 +12,43 @@ import (
 	"strings"
 	"time"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/schema"
-	"github.com/voocel/codebot/internal/diag"
 )
 
-const (
-	fetchTimeout = 30 * time.Second
-	fetchMaxRead = 5 * 1024 * 1024 // 5MB max download
-	fetchMaxOut  = 50 * 1024       // 50KB output limit
-	jinaReadURL  = "https://r.jina.ai/"
-)
+const fetchMaxRead = 5 << 20 // bytes downloaded at most
 
-// FetchProvider performs web page content extraction.
-type FetchProvider interface {
-	Fetch(ctx context.Context, targetURL string) (string, error)
+// webClient makes the web tools' requests.
+var webClient = &http.Client{Timeout: 30 * time.Second}
+
+// webNotConfigured is what the web tools answer without the API key their
+// provider needs.
+const webNotConfigured = "Web search and fetch are not configured: tavily needs an API key (search_api_key in the settings, or TAVILY_API_KEY), or set search_provider to jina."
+
+type fetcher interface {
+	fetch(ctx context.Context, targetURL string) (string, error)
 }
 
-// WebFetchTool fetches web content and returns markdown.
-type WebFetchTool struct {
-	provider     FetchProvider
-	providerName string
-}
-
-// NewWebFetch creates a WebFetchTool for the configured provider.
-// Supported providers: tavily, jina.
-func NewWebFetch(providerName, apiKey string) *WebFetchTool {
-	name := strings.ToLower(strings.TrimSpace(providerName))
-	switch name {
-	case "tavily":
-		var provider FetchProvider
-		if apiKey != "" {
-			provider = &TavilyFetchProvider{APIKey: apiKey}
-		}
-		return &WebFetchTool{provider: provider, providerName: "tavily"}
-	default:
-		return &WebFetchTool{
-			provider:     &JinaFetchProvider{APIKey: apiKey},
-			providerName: "jina",
-		}
+// NewWebFetch returns the web_fetch tool, which fetches a web page as
+// markdown through provider, "tavily" or "jina". Jina works without a key,
+// tavily does not.
+func NewWebFetch(provider, apiKey string) agentcore.Tool {
+	var f fetcher // nil without the API key the provider needs
+	switch {
+	case provider == "jina":
+		f = jinaFetcher{apiKey}
+	case apiKey != "":
+		f = tavilyFetcher{apiKey}
 	}
-}
-
-func (t *WebFetchTool) Name() string  { return "web_fetch" }
-func (t *WebFetchTool) Label() string { return "Fetch Web Page" }
-func (t *WebFetchTool) Description() string {
-	return "Fetch a web page and return markdown content. Output is truncated to 50KB."
-}
-func (t *WebFetchTool) Schema() map[string]any {
-	return schema.Object(
-		schema.Property("url", schema.String("The URL to fetch (http/https)")).Required(),
-		schema.Property("prompt", schema.String("Optional: what information to extract (included as context in output)")),
+	tool := agentcore.NewTool("web_fetch", "Fetch a web page and return markdown content.",
+		schema.Object(
+			schema.Property("url", schema.String("The URL to fetch (http/https)")).Required(),
+			schema.Property("prompt", schema.String("Optional: what information to extract (included as context in output)")),
+		),
+		func(ctx context.Context, a webFetchArgs) (agentcore.Result, error) { return webFetch(ctx, f, a) },
 	)
+	tool.Label = "Fetch Web Page"
+	return tool
 }
 
 type webFetchArgs struct {
@@ -69,167 +56,97 @@ type webFetchArgs struct {
 	Prompt string `json:"prompt"`
 }
 
-func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-	var a webFetchArgs
-	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("invalid args: %w: %w", diag.ErrToolInput, err)
-	}
+func webFetch(ctx context.Context, f fetcher, a webFetchArgs) (agentcore.Result, error) {
 	if a.URL == "" {
-		return nil, fmt.Errorf("url is required: %w", diag.ErrToolInput)
+		return agentcore.Result{}, errors.New("url is required")
 	}
-
 	targetURL, err := url.Parse(strings.TrimSpace(a.URL))
 	if err != nil {
-		return nil, fmt.Errorf("invalid url: %w: %w", diag.ErrToolInput, err)
+		return agentcore.Result{}, fmt.Errorf("invalid url: %w", err)
 	}
-	switch strings.ToLower(targetURL.Scheme) {
-	case "http", "https":
-	default:
-		return nil, fmt.Errorf("only http/https URLs are supported: %w", diag.ErrToolInput)
+	if scheme := strings.ToLower(targetURL.Scheme); scheme != "http" && scheme != "https" {
+		return agentcore.Result{}, errors.New("only http/https URLs are supported")
 	}
-
-	if t.provider == nil {
-		if t.providerName != "" {
-			return json.Marshal(fmt.Sprintf("Web fetch provider %q is not configured. Supported providers: tavily, jina.", t.providerName))
-		}
-		return json.Marshal("Web fetch is not configured. Set search_provider to tavily/jina and configure search_api_key, TAVILY_API_KEY, or JINA_API_KEY as appropriate.")
+	if f == nil {
+		return agentcore.TextResult(webNotConfigured), nil
 	}
 
-	content, err := t.provider.Fetch(ctx, targetURL.String())
+	content, err := f.fetch(ctx, targetURL.String())
 	if err != nil {
-		return nil, fmt.Errorf("fetch failed: %w: %w", diag.ErrToolExec, err)
+		return agentcore.Result{}, fmt.Errorf("fetch failed: %w", err)
 	}
-
-	var sb strings.Builder
 	if a.Prompt != "" {
-		fmt.Fprintf(&sb, "> Extraction focus: %s\n\n", a.Prompt)
+		content = fmt.Sprintf("> Extraction focus: %s\n\n%s", a.Prompt, content)
 	}
-	sb.WriteString(content)
-
-	result := sb.String()
-	if len(result) > fetchMaxOut {
-		result = result[:fetchMaxOut] + "\n\n[Content truncated at 50KB]"
-	}
-
-	return json.Marshal(result)
+	return agentcore.TextResult(content), nil
 }
 
-// ---------------------------------------------------------------------------
-// Tavily fetch provider (POST https://api.tavily.com/extract)
-// ---------------------------------------------------------------------------
-
-type TavilyFetchProvider struct {
-	APIKey string
-	Client *http.Client
-}
-
-type tavilyExtractRequest struct {
-	URLs   []string `json:"urls"`
-	Format string   `json:"format,omitempty"`
-}
+// tavilyFetcher extracts pages with POST https://api.tavily.com/extract.
+type tavilyFetcher struct{ apiKey string }
 
 type tavilyExtractResponse struct {
 	Results []struct {
-		URL        string `json:"url"`
 		RawContent string `json:"raw_content"`
 	} `json:"results"`
 	FailedResults []struct {
-		URL   string `json:"url"`
 		Error string `json:"error"`
 	} `json:"failed_results"`
 }
 
-func (p *TavilyFetchProvider) Fetch(ctx context.Context, targetURL string) (string, error) {
-	body, err := json.Marshal(tavilyExtractRequest{
-		URLs:   []string{targetURL},
-		Format: "markdown",
-	})
+func (p tavilyFetcher) fetch(ctx context.Context, targetURL string) (string, error) {
+	body, err := json.Marshal(map[string]any{"urls": []string{targetURL}, "format": "markdown"})
 	if err != nil {
 		return "", err
 	}
-
-	client := p.Client
-	if client == nil {
-		client = &http.Client{Timeout: fetchTimeout}
-	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.tavily.com/extract", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	resp, err := client.Do(req)
+	resp, err := webClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", fmt.Errorf("tavily extract API error (HTTP %d): %s", resp.StatusCode, string(errBody))
 	}
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, fetchMaxRead))
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-
 	var tr tavilyExtractResponse
-	if err := json.Unmarshal(respBody, &tr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, fetchMaxRead)).Decode(&tr); err != nil {
 		return "", fmt.Errorf("decode response: %w", err)
 	}
-
 	if len(tr.Results) == 0 {
 		if len(tr.FailedResults) > 0 {
 			return "", fmt.Errorf("tavily extract failed: %s", tr.FailedResults[0].Error)
 		}
-		return "", fmt.Errorf("no content extracted")
+		return "", errors.New("no content extracted")
 	}
 	return tr.Results[0].RawContent, nil
 }
 
-// ---------------------------------------------------------------------------
-// Jina fetch provider (GET https://r.jina.ai/{url})
-// ---------------------------------------------------------------------------
+// jinaFetcher reads pages with GET https://r.jina.ai/{url}.
+type jinaFetcher struct{ apiKey string }
 
-type JinaFetchProvider struct {
-	APIKey  string
-	Client  *http.Client
-	BaseURL string
-}
-
-func (p *JinaFetchProvider) Fetch(ctx context.Context, targetURL string) (string, error) {
-	baseURL := strings.TrimSpace(p.BaseURL)
-	if baseURL == "" {
-		baseURL = jinaReadURL
-	}
-	if !strings.HasSuffix(baseURL, "/") {
-		baseURL += "/"
-	}
-
-	client := p.Client
-	if client == nil {
-		client = &http.Client{Timeout: fetchTimeout}
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+targetURL, nil)
+func (p jinaFetcher) fetch(ctx context.Context, targetURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://r.jina.ai/"+targetURL, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Accept", "text/markdown")
 	req.Header.Set("X-Respond-With", "markdown")
-	if strings.TrimSpace(p.APIKey) != "" {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(p.APIKey))
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := webClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch via jina reader: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", fmt.Errorf("jina reader API error (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(errBody)))

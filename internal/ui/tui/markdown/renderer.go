@@ -45,9 +45,6 @@ func (r *Renderer) RenderFinal(content string) string {
 	if content == "" {
 		return ""
 	}
-	if r == nil {
-		return strings.TrimSpace(content)
-	}
 
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 	var out []string
@@ -61,7 +58,7 @@ func (r *Renderer) RenderFinal(content string) string {
 			continue
 		}
 		if inCodeBlock {
-			out = append(out, renderCodeBlock(line))
+			out = append(out, line)
 			continue
 		}
 		if trimmed == "" {
@@ -82,11 +79,11 @@ func (r *Renderer) RenderFinal(content string) string {
 			continue
 		}
 		if m := unorderedRE.FindStringSubmatch(line); m != nil {
-			out = append(out, m[1]+renderListMarker("-")+" "+formatInline(m[2]))
+			out = append(out, m[1]+"-"+" "+formatInline(m[2]))
 			continue
 		}
 		if m := orderedRE.FindStringSubmatch(line); m != nil {
-			out = append(out, m[1]+renderListMarker(m[2]+".")+" "+formatInline(m[3]))
+			out = append(out, m[1]+m[2]+"."+" "+formatInline(m[3]))
 			continue
 		}
 		if isTableHeaderStart(lines, i) {
@@ -103,14 +100,6 @@ func (r *Renderer) RenderFinal(content string) string {
 	}
 
 	return strings.TrimSpace(strings.Join(out, "\n"))
-}
-
-// Width reports the current renderer width.
-func (r *Renderer) Width() int {
-	if r == nil {
-		return 0
-	}
-	return r.width
 }
 
 func isFence(line string) bool {
@@ -130,7 +119,7 @@ func formatTableLine(line string) string {
 			continue
 		}
 		if isTableSeparator(trimmed) {
-			parts[i] = renderSeparator(trimmed)
+			parts[i] = trimmed
 			continue
 		}
 		prefix := leadingWhitespace(part)
@@ -183,7 +172,7 @@ func formatTableBlock(lines []string, width int) []string {
 			widths = append(widths, make([]int, len(row)-len(widths))...)
 		}
 		for col, cell := range row {
-			widths[col] = max(widths[col], textWidth(cell))
+			widths[col] = max(widths[col], lipgloss.Width(cell))
 		}
 	}
 
@@ -411,7 +400,7 @@ func formatTableRow(row []string, widths []int, aligns []string, header bool) st
 		}
 		cells[i] = padAlignedVisible(cell, widths[i], align)
 	}
-	sep := renderSeparator("│")
+	sep := "│"
 	return sep + " " + strings.Join(cells, " "+sep+" ") + " " + sep
 }
 
@@ -427,7 +416,7 @@ func formatTableBorder(kind string, widths []int) string {
 	for i, width := range widths {
 		segments[i] = strings.Repeat("─", max(width+2, 3))
 	}
-	return renderSeparator(left + strings.Join(segments, mid) + right)
+	return left + strings.Join(segments, mid) + right
 }
 
 func formatVerticalTable(header []string, rows [][]string) []string {
@@ -438,7 +427,7 @@ func formatVerticalTable(header []string, rows [][]string) []string {
 	var out []string
 	for rowIndex, row := range rows {
 		if rowIndex > 0 {
-			out = append(out, renderSeparator(strings.Repeat("─", 24)))
+			out = append(out, strings.Repeat("─", 24))
 		}
 		for colIndex, label := range headers {
 			if label == "" {
@@ -486,14 +475,6 @@ func stripANSI(text string) string {
 	return ansiRE.ReplaceAllString(text, "")
 }
 
-func textWidth(text string) int {
-	return lipgloss.Width(stripANSI(text))
-}
-
-func renderCodeBlock(text string) string {
-	return text
-}
-
 func renderCodeSpan(text string) string {
 	return ansiWrap(ansiColorPrefix("26", "111"), text)
 }
@@ -510,21 +491,6 @@ func renderQuoteBar(text string) string {
 	return ansiWrap(ansiPrefix("2"), text)
 }
 
-func renderListMarker(text string) string {
-	return text
-}
-
-func renderSeparator(text string) string {
-	return text
-}
-
 func renderLink(text string) string {
 	return ansiWrap(ansiColorPrefix("26", "111"), text)
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

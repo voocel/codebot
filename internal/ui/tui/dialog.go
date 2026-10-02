@@ -2,8 +2,8 @@ package tui
 
 import tea "github.com/charmbracelet/bubbletea"
 
-// dialogCard is a modal "waiting on user" surface: permission consent, plan
-// approval, or ask_user questions. All of them block a tool-gate goroutine on
+// dialogCard is a modal "waiting on user" surface: permission consent or
+// ask_user questions. All of them block a tool-gate goroutine on
 // a response channel; the queue below owns their shared lifecycle so parallel
 // tool calls can raise several without racing over the screen.
 type dialogCard interface {

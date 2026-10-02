@@ -9,7 +9,6 @@ package telemetry
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"sync/atomic"
 
@@ -29,17 +28,16 @@ import (
 // Tracer creates codebot-level spans that share the same tracer provider as the
 // litellm observer. It is nil when telemetry is disabled.
 type Tracer struct {
-	tracer          trace.Tracer
-	sessionProvider atomic.Pointer[func() string]
+	tracer    trace.Tracer
+	sessionID atomic.Pointer[string]
 }
 
-// Run holds an open agent-run span. End must be called when the agent emits
-// EventAgentEnd; Prompt/Continue return before the background run finishes.
+// Run holds an open agent-run span; End closes it when the run ends.
 type Run struct {
 	span trace.Span
 }
 
-// StartRun starts an agent-run span and returns the child context for Agent.Prompt/Continue.
+// StartRun starts an agent-run span and returns the context the run uses.
 func (t *Tracer) StartRun(ctx context.Context, name string) (context.Context, *Run) {
 	if t == nil {
 		return ctx, nil
@@ -51,7 +49,7 @@ func (t *Tracer) StartRun(ctx context.Context, name string) (context.Context, *R
 
 // End finishes the agent-run span and records err when present.
 func (r *Run) End(err error) {
-	if r == nil || r.span == nil {
+	if r == nil {
 		return
 	}
 	if err != nil {
@@ -59,7 +57,6 @@ func (r *Run) End(err error) {
 		r.span.SetStatus(codes.Error, err.Error())
 	}
 	r.span.End()
-	r.span = nil
 }
 
 // ToolMiddleware emits one child span per tool execution.
@@ -67,43 +64,39 @@ func (t *Tracer) ToolMiddleware() agentcore.ToolMiddleware {
 	if t == nil {
 		return nil
 	}
-	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolExecuteFunc) (json.RawMessage, error) {
-		name := call.Name
-		if name == "" {
-			name = "tool"
-		}
-		ctx, span := t.tracer.Start(ctx, "tool "+name)
+	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
+		ctx, span := t.tracer.Start(ctx, "tool "+call.Name)
 		span.SetAttributes(append(t.sessionAttributes(),
 			attribute.String("tool.name", call.Name),
 			attribute.String("tool.call.id", call.ID),
 		)...)
 		defer span.End()
-		out, err := next(ctx, call.Args)
-		if err != nil {
+		res, err := next(ctx, call)
+		switch {
+		case err != nil:
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
+		case res.IsError:
+			span.SetStatus(codes.Error, res.Text())
 		}
-		return out, err
+		return res, err
 	}
 }
 
-// BindSession registers the provider that yields the current session id.
-func (t *Tracer) BindSession(provider func() string) {
+// SetSession tags the spans from now on with the session id.
+func (t *Tracer) SetSession(id string) {
 	if t == nil {
 		return
 	}
-	t.sessionProvider.Store(&provider)
+	t.sessionID.Store(&id)
 }
 
 func (t *Tracer) sessionAttributes() []attribute.KeyValue {
-	if t == nil {
+	id := t.sessionID.Load()
+	if id == nil {
 		return nil
 	}
-	p := t.sessionProvider.Load()
-	if p == nil {
-		return nil
-	}
-	return sessionSpanAttributes((*p)())
+	return sessionSpanAttributes(*id)
 }
 
 // Setup builds the trace pipeline for cfg and returns a litellm observer, a
@@ -142,9 +135,8 @@ func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Observer, *
 	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
 	otel.SetTracerProvider(tp)
 
-	// The session-id provider is bound after the session is constructed. The
-	// resolver reads it live on every call, so each generation/run/tool span
-	// carries the current session id and a mid-run SwitchSession follows.
+	// The resolver reads the session id on every call, so each generation,
+	// run and tool span carries the id of the session open at the time.
 	tracer := &Tracer{tracer: tp.Tracer("codebot")}
 	resolver := func(context.Context) []attribute.KeyValue {
 		return tracer.sessionAttributes()
