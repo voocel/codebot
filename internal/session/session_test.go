@@ -197,7 +197,7 @@ func spec(p litellm.Provider, tools ...agentcore.Tool) RunSpec {
 		Model:    "m1",
 		Window:   100_000,
 		Config: agentcore.Config{
-			Model:     agentcore.Model{Client: client, Request: litellm.Request{Model: "m1"}, Pricing: &catalog.Pricing{InputCostPerToken: 1e-4}},
+			Model:     agentcore.Model{Client: client, Request: litellm.Request{Model: "m1"}, Pricing: &catalog.Pricing{Rates: catalog.Rates{Input: 1e-4}}},
 			System:    []litellm.Block{litellm.Text("system")},
 			Tools:     tools,
 			Compactor: fakeCompactor{},
@@ -322,7 +322,7 @@ func TestPromptRunsToIdle(t *testing.T) {
 	if st.Running || st.LastRun == nil || st.LastRun.Reason != agentcore.EndDone {
 		t.Fatalf("status = %+v", st)
 	}
-	if st.Usage.Input != 100 || st.Usage.Cost.Total != 0.01 || st.Context == 0 {
+	if st.Usage.InputTokens != 100 || st.Usage.Cost.Total != 0.01 || st.Context == 0 {
 		t.Fatalf("usage = %+v, context = %d", st.Usage, st.Context)
 	}
 	h.checkReplay()
@@ -599,6 +599,41 @@ func TestLoopCompactionIsRecorded(t *testing.T) {
 	h.checkReplay()
 }
 
+// The context the spec tells goes ahead of the inputs of a run, and after
+// the history a compaction wrote.
+func TestContextIsTold(t *testing.T) {
+	t.Parallel()
+	sp := spec(script(say("a1"), say("a2"), say("a3")))
+	sp.Context = func(history []agentcore.Message) []agentcore.Message {
+		if slices.ContainsFunc(history, func(m agentcore.Message) bool { return m.Kind == "context" }) {
+			return nil
+		}
+		m := agentcore.UserText("context")
+		m.Kind = "context"
+		return []agentcore.Message{m}
+	}
+	h := start(t, sp)
+
+	h.post(User, "u1")
+	h.waitIdle(1)
+	h.post(User, "u2")
+	h.waitIdle(2)
+	if got := h.history(); got != "user:context user:u1 assistant:a1 user:u2 assistant:a2" {
+		t.Fatalf("history = %s", got)
+	}
+
+	if err := h.s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.waitIdle(3)
+	h.post(User, "u3")
+	h.waitIdle(4)
+	if got := h.history(); got != "summary:4 earlier assistant:a2 user:context user:u3 assistant:a3" {
+		t.Fatalf("history = %s", got)
+	}
+	h.checkReplay()
+}
+
 func TestConfigureAppliesToTheNextRun(t *testing.T) {
 	t.Parallel()
 	tool := newWaitTool()
@@ -687,7 +722,7 @@ func TestResumeContinuesTheLog(t *testing.T) {
 	}
 	model := script(say("a2"))
 	h = startOn(t, store, state, spec(model))
-	if st := h.s.Status(); st.Usage.Input != 100 {
+	if st := h.s.Status(); st.Usage.InputTokens != 100 {
 		t.Fatalf("resumed usage = %+v", st.Usage)
 	}
 	h.post(User, "u2")

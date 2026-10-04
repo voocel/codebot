@@ -39,9 +39,11 @@ type Model struct {
 	Effort   string `json:"effort,omitempty"`
 }
 
-// compaction is the data of a compaction entry.
+// compaction is the data of a compaction entry: the history that replaced
+// the one before, and what writing it used.
 type compaction struct {
 	Messages []agentcore.Message `json:"messages"`
+	Usage    *agentcore.Usage    `json:"usage,omitempty"`
 }
 
 // State is what a session log replays to.
@@ -50,7 +52,7 @@ type State struct {
 	// Model is the last recorded model selection; zero when none was recorded.
 	Model Model
 	// Usage sums every recorded response, including those a compaction later
-	// replaced.
+	// replaced, and every compaction.
 	Usage agentcore.Usage
 }
 
@@ -61,6 +63,6 @@ type SessionInfo struct {
 	Cwd          string
 	Created      time.Time
 	Updated      time.Time
-	MessageCount int
+	MessageCount int    // messages of the conversation, not those the harness added
 	FirstMessage string // first user message, truncated to 80 runes
 }

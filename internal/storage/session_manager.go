@@ -102,6 +102,10 @@ func readSessionInfo(path string) (SessionInfo, error) {
 		if e.Kind != entryMessage {
 			return nil
 		}
+		var m struct{ Kind string }
+		if json.Unmarshal(e.Data, &m) != nil || m.Kind != "" {
+			return nil // the harness's own
+		}
 		info.MessageCount++
 		if info.FirstMessage == "" {
 			info.FirstMessage = userText(e.Data)
@@ -115,11 +119,10 @@ func readSessionInfo(path string) (SessionInfo, error) {
 }
 
 // userText returns the text a user typed in a message entry, truncated for
-// listing; "" for other messages and for messages the harness injected,
-// which carry a Kind.
+// listing; "" for other messages.
 func userText(data json.RawMessage) string {
 	var msg agentcore.Message
-	if json.Unmarshal(data, &msg) != nil || msg.Role != litellm.RoleUser || msg.Kind != "" {
+	if json.Unmarshal(data, &msg) != nil || msg.Role != litellm.RoleUser {
 		return ""
 	}
 	// Take the last text block: reminders are prepended, the user's actual

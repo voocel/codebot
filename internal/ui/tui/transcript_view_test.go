@@ -65,7 +65,7 @@ func TestTranscriptView_RetryDiscardsStream(t *testing.T) {
 
 	v.HandleEvent(agentcore.MessageStart{})
 	v.HandleEvent(agentcore.MessageDelta{Event: litellm.TextDelta{Text: "doomed"}})
-	v.HandleEvent(agentcore.Retry{Attempt: 1, MaxRetries: 3})
+	v.HandleEvent(agentcore.Retry{Attempt: 2})
 
 	if got := v.View(); strings.Contains(got, "doomed") {
 		t.Errorf("retry kept the failed response, got:\n%s", got)

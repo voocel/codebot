@@ -3,13 +3,14 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/voocel/agentcore"
 	coresub "github.com/voocel/agentcore/subagent"
 	agentcoretools "github.com/voocel/agentcore/tools"
+	"github.com/voocel/litellm"
 
 	"github.com/voocel/codebot/internal/subagent"
 	"github.com/voocel/codebot/internal/tools"
@@ -57,7 +58,7 @@ func (c *Conversation) buildSubagents(pool []agentcore.Tool, ws agentcoretools.W
 		DefaultModel: model.model,
 		ResolveModel: func(name string) (agentcore.Model, error) { return a.resolveModelName(model.provider, name) },
 		CompactAt:    model.compactAt,
-		MaxRetries:   maxRetries,
+		Retry:        retryPolicy,
 		SessionID:    c.id,
 		// A sub-agent runs its own loop: the main loop's middleware does not
 		// reach it.
@@ -101,8 +102,8 @@ var coreToolNames = map[string]bool{
 
 // withToolSearch defers the non-core tools behind tool_search when the model
 // supports it.
-func withToolSearch(all []agentcore.Tool, provider, model string) []agentcore.Tool {
-	if !supportsToolSearch(provider, model) {
+func withToolSearch(all []agentcore.Tool, client *litellm.Client, model string) []agentcore.Tool {
+	if !supportsToolSearch(client, model) {
 		return all
 	}
 	var visible, deferred []agentcore.Tool
@@ -119,38 +120,40 @@ func withToolSearch(all []agentcore.Tool, provider, model string) []agentcore.To
 	return append(visible, agentcoretools.Defer(deferred)...)
 }
 
-// supportsToolSearch reports whether a model takes deferred tools. Only
-// Claude 4.5 and later (not Haiku) do in litellm today: the OpenAI providers
-// honor neither defer_loading nor tool_reference blocks, so activating a tool
-// there would re-add its schema mid-session and invalidate the prompt cache.
-func supportsToolSearch(provider, model string) bool {
-	p, m := strings.ToLower(provider), strings.ToLower(model)
-	if i := strings.LastIndex(m, "/"); i >= 0 {
-		m = m[i+1:]
-	}
-	if p != "anthropic" && !strings.HasPrefix(m, "claude") {
+// supportsToolSearch reports whether a model takes deferred tools: Claude
+// 4.5 and later, not Haiku, behind an adapter whose vendor defers them.
+// Elsewhere a tool search would add each tool it finds to the request
+// mid-session, which restarts the prompt cache and invalidates Claude's
+// thinking.
+func supportsToolSearch(client *litellm.Client, model string) bool {
+	if caps, _ := client.Capabilities(); !caps.DeferredTools {
 		return false
 	}
-	if strings.Contains(m, "haiku") {
+	// claude-<family>-<version>, as claude-sonnet-4-5 and claude-fable-5-1;
+	// names led by the version, as claude-3-5-sonnet, are older.
+	m := strings.ToLower(model)
+	family, version, _ := strings.Cut(strings.TrimPrefix(m, "claude-"), "-")
+	if !strings.HasPrefix(m, "claude-") || family == "haiku" || strings.ContainsAny(family, "0123456789") {
 		return false
 	}
-	m = strings.TrimPrefix(m, "claude-")
-	for _, family := range []string{"sonnet-", "opus-"} {
-		m = strings.TrimPrefix(m, family)
-	}
-	return versionAtLeast(m, 4, 5)
+	return versionAtLeast(version, 4, 5)
 }
 
+// versionAtLeast reports whether a version as model names write it, as 4-5,
+// 4.5 or 4, perhaps followed by the date of a snapshot, is at least
+// major.minor.
 func versionAtLeast(s string, major, minor int) bool {
-	var ma, mi int
-	if n, _ := fmt.Sscanf(s, "%d.%d", &ma, &mi); n == 2 {
-		return ma > major || (ma == major && mi >= minor)
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '-' || r == '.' })
+	if len(parts) == 0 {
+		return false
 	}
-	if n, _ := fmt.Sscanf(s, "%d-%d", &ma, &mi); n == 2 {
-		return ma > major || (ma == major && mi >= minor)
+	ma, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
 	}
-	if n, _ := fmt.Sscanf(s, "%d", &ma); n == 1 {
-		return ma > major
+	mi := 0
+	if len(parts) > 1 && len(parts[1]) <= 2 {
+		mi, _ = strconv.Atoi(parts[1])
 	}
-	return false
+	return ma > major || ma == major && mi >= minor
 }

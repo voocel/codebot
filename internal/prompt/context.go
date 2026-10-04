@@ -8,59 +8,18 @@ import (
 	"github.com/voocel/codebot/internal/config"
 )
 
-// ContextFiles holds the loaded context file contents.
-type ContextFiles struct {
-	// Agents is the concatenated content of all AGENTS.md files found
-	// from filesystem root down to cwd, separated by newlines.
-	Agents string
-
-	// SystemOverride is the content of SYSTEM.md if found in cwd.
-	// When non-empty, it replaces the default system prompt entirely.
-	SystemOverride string
-
-	// SystemAppend is the content of APPEND_SYSTEM.md if found in cwd.
-	// When non-empty, it is appended to the system prompt.
-	SystemAppend string
-
-	// Memory is the auto memory content (first 200 lines of MEMORY.md).
-	Memory string
-
-	// MemoryDir is the absolute path to the memory directory.
-	// Used by auto memory instructions to tell the LLM where to write.
-	MemoryDir string
-}
-
-// LoadContextFiles searches for context files from cwd upward to the filesystem root.
-//
-// Loading order (lowest to highest specificity):
-//  1. ~/.codebot/AGENTS.md (global user-level)
-//  2. AGENTS.md in each ancestor from root down to cwd
-//
-// CLAUDE.md is used as fallback when AGENTS.md is not found in a directory.
-// SYSTEM.md and APPEND_SYSTEM.md are only looked for in cwd.
-func LoadContextFiles(cwd string) ContextFiles {
-	var cf ContextFiles
-	var agentParts []string
-
-	// Global user-level AGENTS.md (lowest priority).
-	if content := readAgentFile(config.UserConfigDir()); content != "" {
-		agentParts = append(agentParts, content)
-	}
-
-	// Walk from root to cwd, collecting AGENTS.md (fallback: CLAUDE.md).
-	for _, dir := range parentChain(cwd) {
+// loadAgents returns the AGENTS.md files that apply in cwd, joined from the
+// least specific: ~/.codebot/AGENTS.md, then each directory from the
+// filesystem root down to cwd. CLAUDE.md stands in for a directory without
+// an AGENTS.md.
+func loadAgents(cwd string) string {
+	var parts []string
+	for _, dir := range append([]string{config.UserConfigDir()}, parentChain(cwd)...) {
 		if content := readAgentFile(dir); content != "" {
-			agentParts = append(agentParts, content)
+			parts = append(parts, content)
 		}
 	}
-
-	cf.Agents = strings.Join(agentParts, "\n\n---\n\n")
-
-	// SYSTEM.md and APPEND_SYSTEM.md only in cwd
-	cf.SystemOverride = readFileOr(filepath.Join(cwd, "SYSTEM.md"))
-	cf.SystemAppend = readFileOr(filepath.Join(cwd, "APPEND_SYSTEM.md"))
-
-	return cf
+	return strings.Join(parts, "\n\n---\n\n")
 }
 
 // parentChain returns directories from the root down to dir (inclusive).

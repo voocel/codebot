@@ -100,3 +100,11 @@ func TestValidateResolvedRejectsProviderAPIOnNonOpenAIProvider(t *testing.T) {
 		t.Fatal("non-OpenAI provider api should fail")
 	}
 }
+
+func TestValidateResolvedPromptCacheTTL(t *testing.T) {
+	for ttl, ok := range map[string]bool{"": true, "5m": true, "1h": true, "24h": false} {
+		if err := validateResolved(Resolved{PromptCacheTTL: ttl}); (err == nil) != ok {
+			t.Errorf("prompt_cache_ttl %q: %v", ttl, err)
+		}
+	}
+}

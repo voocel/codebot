@@ -91,12 +91,12 @@ func TestStreamedResponse(t *testing.T) {
 		t.Fatalf("thinking %q, streaming %q", m.Thinking.String(), m.Streaming.String())
 	}
 
-	m = handle(t, m, agentcore.Retry{Attempt: 1, MaxRetries: 3})
+	m = handle(t, m, agentcore.Retry{Attempt: 2})
 	if m.IsStream || m.Streaming.Len() != 0 || m.Thinking.Len() != 0 {
 		t.Fatal("a retry kept the failed response")
 	}
 
-	msg := agentcore.Message{Role: litellm.RoleAssistant, Blocks: []litellm.Block{litellm.ReasoningBlock{Text: "thought"}, litellm.Text("answer")}, Usage: &agentcore.Usage{Input: 10, Output: 5}}
+	msg := agentcore.Message{Role: litellm.RoleAssistant, Blocks: []litellm.Block{litellm.ReasoningBlock{Text: "thought"}, litellm.Text("answer")}, Usage: &agentcore.Usage{Usage: litellm.Usage{InputTokens: 10, OutputTokens: 5}}}
 	m = handle(t, m, agentcore.MessageStart{}, agentcore.MessageDelta{Event: litellm.TextDelta{Text: "answer"}}, agentcore.MessageEnd{Message: msg})
 	if m.IsStream || m.Streaming.Len() != 0 {
 		t.Fatal("MessageEnd left the stream open")
@@ -155,7 +155,7 @@ func TestToolProgress(t *testing.T) {
 	progress := func(ev agentcore.Event) agentcore.Event {
 		return agentcore.ToolUpdate{Call: sub, Progress: subagent.Progress{Spawn: subagent.Spawn{Agent: "explore", ID: "explore#1"}, Event: ev}}
 	}
-	reply := agentcore.Message{Role: litellm.RoleAssistant, Blocks: []litellm.Block{litellm.ReasoningBlock{Text: "let me\nsee"}, litellm.Text("reading")}, Usage: &agentcore.Usage{Input: 1200, Output: 30}}
+	reply := agentcore.Message{Role: litellm.RoleAssistant, Blocks: []litellm.Block{litellm.ReasoningBlock{Text: "let me\nsee"}, litellm.Text("reading")}, Usage: &agentcore.Usage{Usage: litellm.Usage{InputTokens: 1200, OutputTokens: 30}}}
 	m = handle(t, m,
 		agentcore.ToolStart{Call: sub},
 		progress(agentcore.MessageDelta{Event: litellm.TextDelta{Text: "rea"}}),

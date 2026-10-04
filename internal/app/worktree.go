@@ -116,15 +116,15 @@ func (c *Conversation) ExitWorktree(discard bool) (WorktreeExit, error) {
 }
 
 // moveLocked points the conversation at dir: tools, checkpoints and the
-// system prompt, which states the working directory. Callers hold c.mu.
+// workspace the model is told about. Callers hold c.mu.
 func (c *Conversation) moveLocked(dir string) {
 	c.cwd = dir
 	if c.snapshots != nil {
 		c.snapshots.Rebind(config.SnapshotDir(dir), dir, config.UndoStatePath(dir, c.id))
 	}
-	c.workspace = c.app.loadWorkspace(dir)
-	// Tools follow the cwd through the run's context at once; the prompt
-	// changes from the next run.
+	c.workspace = c.app.workspace(dir)
+	// Tools follow the cwd through the run's context at once; the model is
+	// told of the move as the next run starts.
 	c.configureLocked()
 }
 

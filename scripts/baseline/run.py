@@ -144,6 +144,16 @@ def verify_plan(repo, m, _env):
     return dirty == "" and planned, f"answer {len(m['answer'])} chars, worktree clean={dirty == ''}"
 
 
+def verify_multiturn(repo, m, _env):
+    dirty = sh("git status --porcelain", repo).stdout.strip()
+    answers = m["answers"]
+    named = len(answers) == 3 and "AppendCompaction" in answers[1] and answers[2].strip() != ""
+    # How much of each later prompt's first call the cache served: the
+    # conversation is sent again, by a new process, after a resume.
+    hits = [f"{c['cache_read'] / c['input']:.2f}" if c["input"] else "-" for c in m["first_calls"][1:]]
+    return dirty == "" and named, f"compaction named={named}, later turns' first-call cache hit {hits}, worktree clean={dirty == ''}"
+
+
 TASKS = [
     {
         "id": "qa",
@@ -185,6 +195,17 @@ TASKS = [
         "mode": "balanced",
         "prompt": "我想给 internal/storage 增加按会话名称模糊搜索会话的能力。先阅读相关代码，然后给出实现方案：要改哪些文件、新增哪些函数、怎么测试。",
         "verify": verify_plan,
+    },
+    {
+        "id": "multiturn",
+        # Each prompt runs in a process of its own that continues the
+        # session, as a person resuming it would.
+        "prompts": [
+            "只回答问题，不要修改任何文件。internal/storage 里的会话 JSONL 一共有哪些条目类型（列出 kind 的字符串值）？",
+            "这些条目类型里，哪一种代表上下文压缩？它由哪个函数写入？",
+            "恢复会话时，这种条目是怎么被重放的？用一两句话回答。",
+        ],
+        "verify": verify_multiturn,
     },
 ]
 
@@ -236,7 +257,7 @@ def prepare_fixture(root):
 def parse_events(path):
     m = {"llm_calls": 0, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost_usd": 0.0,
          "turns": 0, "tool_calls": 0, "tool_errors": 0, "runs": 0, "end_reason": "", "answer": "",
-         "tools": []}
+         "tools": [], "first_call": None}
     last_text = ""
     for line in open(path):
         line = line.strip()
@@ -247,15 +268,16 @@ def parse_events(path):
         except ValueError:
             continue
         t = ev.get("type")
+        if t == "compaction_end":
+            add_usage(m, ev.get("usage") or {})
         if t == "message_end":
             msg = ev.get("message") or {}
             if msg.get("role") == "assistant":
                 m["llm_calls"] += 1
                 u = msg.get("usage") or {}
-                for k in ("input", "output", "cache_read", "cache_write"):
-                    m[k] += u.get(k, 0) or 0
-                # Priced by codebot from the model list.
-                m["cost_usd"] += (u.get("cost") or {}).get("total", 0)
+                add_usage(m, u)
+                if m["first_call"] is None:
+                    m["first_call"] = {"input": u.get("input_tokens", 0), "cache_read": u.get("cache_read_tokens", 0)}
                 text = "".join(b.get("text", "") for b in (msg.get("blocks") or [])
                                if isinstance(b, dict) and b.get("type") == "text")
                 if text.strip():
@@ -271,6 +293,27 @@ def parse_events(path):
     m["answer"] = last_text
     m["cost_usd"] = round(m["cost_usd"], 4)
     return m
+
+
+def merge_runs(runs):
+    """Sums the processes of a task; answer and end_reason are the last's."""
+    m = dict(runs[-1])
+    for k in ("llm_calls", "input", "output", "cache_read", "cache_write", "cost_usd",
+              "turns", "tool_calls", "tool_errors", "runs"):
+        m[k] = sum(r[k] for r in runs)
+    m["cost_usd"] = round(m["cost_usd"], 4)
+    m["tools"] = list(dict.fromkeys(t for r in runs for t in r["tools"]))
+    m["answers"] = [r["answer"] for r in runs]
+    m["first_calls"] = [r["first_call"] or {"input": 0, "cache_read": 0} for r in runs]
+    m.pop("first_call")
+    return m
+
+
+def add_usage(m, u):
+    """Adds an agentcore usage, priced by codebot from the model list."""
+    for k in ("input", "output", "cache_read", "cache_write"):
+        m[k] += u.get(k + "_tokens", 0) or 0
+    m["cost_usd"] += (u.get("cost") or {}).get("total", 0)
 
 
 def count_compactions(home):
@@ -293,26 +336,28 @@ def run_task(binary, fixture, root, task):
         git_commit(repo, "task setup")
     write_settings(home, task.get("compact_window"))
 
-    events = os.path.join(tdir, "events.jsonl")
-    stderr = os.path.join(tdir, "stderr.log")
     start = time.time()
-    timed_out = False
-    with open(events, "w") as out, open(stderr, "w") as err:
-        try:
-            proc = subprocess.run([binary, "-json", "-mode", task.get("mode", "trust"), task["prompt"]],
-                                  cwd=repo, env=go_env(home), stdout=out, stderr=err,
-                                  timeout=TIMEOUT_S)
-            rc = proc.returncode
-        except subprocess.TimeoutExpired:
-            rc, timed_out = -1, True
+    rc, timed_out, runs = 0, False, []
+    for i, prompt in enumerate(task.get("prompts") or [task["prompt"]]):
+        events = os.path.join(tdir, f"events-{i}.jsonl")
+        args = [binary, "-json", "-mode", task.get("mode", "trust")] + (["-c"] if i else []) + [prompt]
+        with open(events, "w") as out, open(os.path.join(tdir, f"stderr-{i}.log"), "w") as err:
+            try:
+                rc = subprocess.run(args, cwd=repo, env=go_env(home), stdout=out, stderr=err,
+                                    timeout=TIMEOUT_S).returncode
+            except subprocess.TimeoutExpired:
+                rc, timed_out = -1, True
+        runs.append(parse_events(events))
+        if rc != 0:
+            break
     elapsed = round(time.time() - start, 1)
 
-    m = parse_events(events)
+    m = merge_runs(runs)
     ok, detail = task["verify"](repo, m, go_env(home))
     # Drop the key from disk as soon as the task is done.
     os.remove(os.path.join(home, ".codebot", "settings.json"))
-    m.pop("answer")
-    m.pop("tools")
+    for k in ("answer", "answers", "tools", "first_calls"):
+        m.pop(k)
     m.update({"id": task["id"], "ok": ok, "detail": detail, "rc": rc,
               "timed_out": timed_out, "seconds": elapsed,
               "compactions": count_compactions(home)})

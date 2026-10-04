@@ -112,7 +112,7 @@ func run(opts app.Options, printMode, acpMode, jsonMode bool) error {
 	switch {
 	case acpMode:
 		srv := acp.NewServer(version)
-		opts.UI, opts.FS = srv, srv.FS()
+		opts.UI, opts.FS, opts.CacheTTL = srv, srv.FS(), "1h"
 		a := boot(opts)
 		defer a.Close()
 		return srv.Serve(a)
@@ -123,7 +123,7 @@ func run(opts app.Options, printMode, acpMode, jsonMode bool) error {
 		return print.Run(a, flag.Args(), jsonMode)
 	default:
 		screen := &tui.UI{}
-		opts.UI, opts.Interactive = screen, true
+		opts.UI, opts.Interactive, opts.CacheTTL = screen, true, "1h"
 		a := boot(opts)
 		defer a.Close()
 		return tui.Run(a, screen, commands.New(a, version), version)

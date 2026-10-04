@@ -1,18 +1,17 @@
 package prompt
 
 import (
-	"fmt"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"time"
+
+	"github.com/voocel/codebot/internal/config"
 )
 
-// --- Shared prompt sections -------------------------------------------------
+// --- The system prompt --------------------------------------------------------
 //
-// Agent-agnostic guidance baked into the universal base block. Changing any of
-// them invalidates the prompt cache for the whole session — keep edits
-// intentional.
+// The system prompt holds nothing that changes while a conversation lasts:
+// what does is told in Parts (see part.go). Editing these sections changes
+// the prompt of every conversation from then on — keep edits intentional.
 
 const doingTasksInstructions = `## Doing tasks
 - Read the relevant code before changing it. Keep changes to what the task needs: no unrequested refactors, features, comments, or abstractions.
@@ -27,89 +26,32 @@ const usingToolsInstructions = `## Using tools
 - Put independent tool calls in the same response so they run in parallel; make calls one after another only when a call needs an earlier result.`
 
 const systemConventionsInstructions = `## System reminders
-Messages may contain <system-reminder> blocks. The harness adds them as context; they are not written by the user.`
+Messages may contain <system-reminder> blocks. The harness adds them as context; they are not written by the user. They tell you about your environment, the project and your tools, and are told again when that changes: a later reminder on a subject supersedes an earlier one.`
 
 const communicationInstructions = `## Communication
 Be concise and direct. Lead with the answer or the action, skip preamble and restating the request, and don't narrate routine steps. Spend words on decisions the user needs to make, blockers, and results.`
 
-// identityPreamble opens system block 1.
 const identityPreamble = `You are an expert coding assistant working in the user's terminal, with direct access to the filesystem and shell. Your replies are visible to the user.`
 
-// buildIdentityBlock returns system block 1: identity, environment, and the
-// shared conventions. Tools are described by their specs, never listed here.
-func buildIdentityBlock(cwd string) string {
-	var b strings.Builder
-	b.WriteString(identityPreamble)
-	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "## Environment\n- Working directory: %s\n- OS: %s/%s\n- Today's date: %s\n\n",
-		cwd, runtime.GOOS, runtime.GOARCH, time.Now().Format("2006-01-02"))
-	b.WriteString(doingTasksInstructions)
-	b.WriteString("\n\n")
-	b.WriteString(usingToolsInstructions)
-	b.WriteString("\n\n")
-	b.WriteString(systemConventionsInstructions)
-	b.WriteString("\n\n")
-	b.WriteString(communicationInstructions)
-	return b.String()
-}
-
-// buildInstructionsBlock returns system block 2: auto-memory hints and the
-// project-scoped context (skill listing, AGENTS.md, MEMORY.md,
-// APPEND_SYSTEM.md).
-func buildInstructionsBlock(ctx ContextFiles, skills string) string {
-	parts := []string{memoryInstructions(ctx.MemoryDir)}
-	parts = append(parts, buildProjectContext(ctx, skills)...)
-	return strings.Join(parts, "\n\n")
-}
-
-// buildProjectContext renders the workspace-scoped sections of block 2:
-// skill catalog, AGENTS.md, MEMORY.md, and APPEND_SYSTEM.md. Order is fixed so
-// the block's bytes depend only on content, never on call order.
-func buildProjectContext(ctx ContextFiles, skills string) []string {
-	var parts []string
-	if skills != "" {
-		parts = append(parts, "## Skills\n"+skills)
+// System returns the system prompt for a conversation in the workspace cwd:
+// SYSTEM.md there verbatim, or the built-in prompt, then APPEND_SYSTEM.md
+// there. Tools are described by their specs, never listed here.
+func System(cwd string) string {
+	system := readFileOr(filepath.Join(cwd, "SYSTEM.md"))
+	if system == "" {
+		system = strings.Join([]string{
+			identityPreamble,
+			doingTasksInstructions,
+			usingToolsInstructions,
+			systemConventionsInstructions,
+			communicationInstructions,
+			memoryInstructions(config.MemoryDir(cwd)),
+		}, "\n\n")
 	}
-	if ctx.Agents != "" {
-		parts = append(parts, "## Project Context\n"+ctx.Agents)
+	if extra := readFileOr(filepath.Join(cwd, "APPEND_SYSTEM.md")); extra != "" {
+		system += "\n\n" + extra
 	}
-	parts = append(parts, buildMemorySection(ctx))
-	if ctx.SystemAppend != "" {
-		parts = append(parts, ctx.SystemAppend)
-	}
-	return parts
-}
-
-func buildMemorySection(ctx ContextFiles) string {
-	body := ctx.Memory
-	if body == "" {
-		// The auto-memory instructions promise MEMORY.md is always in
-		// context. Without this placeholder the model sees the promise and
-		// tries to Read the file, which is ENOENT before anything is saved.
-		body = "Your MEMORY.md is currently empty. When you save new memories, they will appear here."
-	}
-	return "## Memory\nContents of " + filepath.Join(ctx.MemoryDir, "MEMORY.md") +
-		" (auto-memory, persists across conversations):\n\n" + body +
-		"\n\nMemories reflect what was true when they were written. Before relying on one, verify that the files, functions, or flags it mentions still exist — a memory saying X exists is not the same as X existing now."
-}
-
-// Identity returns system block 1. A SystemOverride replaces the whole
-// prompt, so there is no identity block to build.
-func Identity(cwd string, ctx ContextFiles) string {
-	if ctx.SystemOverride != "" {
-		return ""
-	}
-	return buildIdentityBlock(cwd)
-}
-
-// Instructions returns system block 2: the SYSTEM.md override verbatim when
-// present, otherwise the composed instructions block. skills is the rendered
-// skill listing.
-func Instructions(ctx ContextFiles, skills string) string {
-	if ctx.SystemOverride != "" {
-		return ctx.SystemOverride
-	}
-	return buildInstructionsBlock(ctx, skills)
+	return system
 }
 
 // Suggestion is the instruction appended as a user message to generate

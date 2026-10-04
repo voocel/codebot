@@ -109,8 +109,8 @@ func (m *Model) usageChip() string {
 	if st.Window > 0 && st.Context > 0 {
 		parts = append(parts, fmt.Sprintf("ctx: %.0f%%", float64(st.Context)*100/float64(st.Window)))
 	}
-	if st.Usage.Input+st.Usage.Output > 0 {
-		parts = append(parts, fmt.Sprintf("↑%s ↓%s", FormatTokens(st.Usage.Input), FormatTokens(st.Usage.Output)))
+	if st.Usage.InputTokens+st.Usage.OutputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("↑%s ↓%s", FormatTokens(st.Usage.InputTokens), FormatTokens(st.Usage.OutputTokens)))
 	}
 	if st.Usage.Cost != nil && st.Usage.Cost.Total > 0 {
 		parts = append(parts, fmt.Sprintf("$%.2f", st.Usage.Cost.Total))

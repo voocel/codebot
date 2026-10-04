@@ -222,7 +222,8 @@ func TestSkillCommandSubmitsAnInlineSkill(t *testing.T) {
 	if err := conv.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	history := conv.History()
+	// Leave out what the harness told the model.
+	history := slices.DeleteFunc(conv.History(), func(m agentcore.Message) bool { return m.Kind != "" })
 	if len(history) != 2 || !strings.Contains(history[0].Text(), "Say hello to world") {
 		t.Fatalf("history = %+v, want the skill prompt and a reply", history)
 	}

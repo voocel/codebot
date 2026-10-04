@@ -125,6 +125,7 @@ func (s *State) apply(e entry, h *Header) error {
 		if err := json.Unmarshal(e.Data, &c); err != nil {
 			return err
 		}
+		s.Usage.Add(c.Usage)
 		s.Messages = c.Messages
 	case entryModel:
 		return json.Unmarshal(e.Data, &s.Model)
@@ -139,9 +140,9 @@ func (s *Store) Append(m agentcore.Message) error {
 	return s.append(entryMessage, m)
 }
 
-// AppendCompaction records msgs replacing the whole history.
-func (s *Store) AppendCompaction(msgs []agentcore.Message) error {
-	return s.append(entryCompaction, compaction{Messages: msgs})
+// AppendCompaction records a compaction replacing the whole history.
+func (s *Store) AppendCompaction(c *agentcore.Compaction) error {
+	return s.append(entryCompaction, compaction{Messages: c.Messages, Usage: c.Usage})
 }
 
 // AppendModel records the model the session runs on from here on.

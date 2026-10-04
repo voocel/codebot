@@ -9,40 +9,17 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/compact"
 	agentcoretools "github.com/voocel/agentcore/tools"
-	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/retry"
 
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/prompt"
 	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/session"
-	"github.com/voocel/codebot/internal/skill"
 )
 
-// maxRetries is how often the agent and its sub-agents retry a model call
-// that failed transiently.
-const maxRetries = 5
-
-// workspace is the system prompt's fixed part for a working directory. It is
-// built when the conversation opens or moves and when the user reloads, never
-// per run: identical bytes keep the prompt cache.
-type workspace struct {
-	identity     string // block 1: identity, environment (with today's date), conventions
-	instructions string // block 2: memory, skills, project context
-	git          string // block 3: the repository's state at open
-}
-
-func (a *App) loadWorkspace(cwd string) workspace {
-	files := prompt.LoadContextFiles(cwd)
-	// Memory belongs to the project, not to the worktree the conversation
-	// may be in.
-	files.Memory, files.MemoryDir = prompt.LoadMemory(a.cwd)
-	skills := skill.Listing(a.skillCatalog().List(cwd), a.usage.Scores(time.Now()))
-	return workspace{
-		identity:     prompt.Identity(cwd, files),
-		instructions: prompt.Instructions(files, skills),
-		git:          prompt.GitSnapshot(cwd),
-	}
-}
+// retryPolicy paces the model calls the agent and its sub-agents make again
+// after a transient failure.
+var retryPolicy = retry.Policy{MaxAttempts: 6, InitialDelay: time.Second, MaxDelay: 30 * time.Second}
 
 // configure hands the session the spec for the conversation's current state;
 // it applies from the next run.
@@ -78,29 +55,33 @@ func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 }
 
 // specLocked builds the RunSpec for the conversation's current state. It is
-// the only place a run's configuration comes from. Callers hold c.mu.
+// the only place a run's configuration comes from, and where the MCP tools
+// the conversation has join it. Callers hold c.mu.
 func (c *Conversation) specLocked() session.RunSpec {
 	a := c.app
 	mcpTools, mcpInstructions := a.mcpSnapshot()
-	tools := withToolSearch(append(slices.Clone(c.tools), mcpTools...), c.model.provider, c.model.name)
+	c.mcpTools = growTools(c.mcpTools, mcpTools)
+	tools := withToolSearch(slices.Concat(c.tools, c.mcpTools), c.model.model.Client, c.model.name)
+	cwd := c.cwd
+	parts := append(slices.Clone(c.workspace), prompt.MCP(mcpInstructions), prompt.DeferredTools(deferredNames(tools)))
 
 	model := c.model.model
 	model.Request.Thinking = provider.Thinking(c.model.effort)
 	cfg := agentcore.Config{
 		// One conversation, one prompt-cache key.
 		Model:              provider.WithCacheKey(model, c.id),
-		System:             systemBlocks(c.workspace, mcpInstructions),
+		System:             c.system,
 		Tools:              tools,
 		Middleware:         c.middleware(),
 		MaxTurns:           a.settings.MaxTurns,
-		MaxRetries:         maxRetries,
+		Retry:              retryPolicy,
 		MaxToolErrors:      3,
 		MaxToolConcurrency: 4,
 		Compactor:          compact.Summarizer{},
 		CompactAt:          c.model.compactAt,
-		// One cache breakpoint on the freshest message, so each call in a
-		// tool loop reads the previous turn from the cache.
-		Cache: &litellm.CacheControl{},
+		// Breakpoints on the freshest message and where the call before
+		// ended, so each call reads the one before from the cache.
+		Cache: a.cache(),
 	}
 	if c.hooks != nil {
 		cfg.OnStop = c.validator.stop
@@ -112,6 +93,10 @@ func (c *Conversation) specLocked() session.RunSpec {
 		Window:   c.model.window,
 		Config:   cfg,
 		WrapRun:  c.wrapRun,
+		Context: func(history []agentcore.Message) []agentcore.Message {
+			// The date is the run's.
+			return contextMessages(append([]prompt.Part{prompt.Environment(cwd, time.Now())}, parts...), history)
+		},
 	}
 }
 
@@ -130,31 +115,6 @@ func (c *Conversation) wrapRun(ctx context.Context) (context.Context, func(error
 		c.grants = nil
 		c.mu.Unlock()
 	}
-}
-
-// systemBlocks orders the system prompt from most to least stable: the cache
-// is a strict prefix. Breakpoints go on the first and last static block — the
-// one on identity survives a reload that rewrites the instructions — and the
-// dynamic tail comes after them, so it never gets one.
-func systemBlocks(ws workspace, dynamic string) []litellm.Block {
-	var static []litellm.TextBlock
-	for _, text := range []string{ws.identity, ws.instructions, ws.git} {
-		if text != "" {
-			static = append(static, litellm.Text(text))
-		}
-	}
-	if n := len(static); n > 0 {
-		static[0].Cache = &litellm.CacheControl{}
-		static[n-1].Cache = &litellm.CacheControl{}
-	}
-	blocks := make([]litellm.Block, 0, len(static)+1)
-	for _, b := range static {
-		blocks = append(blocks, b)
-	}
-	if dynamic != "" {
-		blocks = append(blocks, litellm.Text(dynamic))
-	}
-	return blocks
 }
 
 // KindReminder marks a message the harness adds for the model, such as a

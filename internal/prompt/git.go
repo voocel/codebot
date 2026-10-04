@@ -6,13 +6,13 @@ import (
 	"strings"
 )
 
-// GitSnapshot runs git commands in cwd and returns a formatted
-// snapshot suitable for LLM system prompt injection. Returns empty
-// string when cwd is not a git repository.
-func GitSnapshot(cwd string) string {
+// Git tells the state of the repository cwd is in, as of now: nothing
+// outside a repository.
+func Git(cwd string) Part {
+	p := Part{Key: "git", Title: "Git"}
 	branch := gitExec(cwd, "rev-parse", "--abbrev-ref", "HEAD")
 	if branch == "" {
-		return ""
+		return p
 	}
 
 	mainBranch := detectMainBranch(cwd)
@@ -24,8 +24,7 @@ func GitSnapshot(cwd string) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "This is the git status at the start of the conversation. "+
-		"Note that this status is a snapshot in time, and will not update during the conversation.\n\n")
+	b.WriteString("This is the git status when this note was written. It is a snapshot: it does not update as the repository changes.\n\n")
 	fmt.Fprintf(&b, "Current branch: %s\n", branch)
 	if mainBranch != "" {
 		fmt.Fprintf(&b, "\nMain branch (you will usually use this for PRs): %s\n", mainBranch)
@@ -34,7 +33,8 @@ func GitSnapshot(cwd string) string {
 	if log != "" {
 		fmt.Fprintf(&b, "\nRecent commits:\n%s\n", log)
 	}
-	return b.String()
+	p.Body = strings.TrimSuffix(b.String(), "\n")
+	return p
 }
 
 // detectMainBranch tries to determine the main/default branch name.

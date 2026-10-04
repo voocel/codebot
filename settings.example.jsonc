@@ -4,6 +4,7 @@
   "model": "claude-sonnet-4-6",
   "reasoning_effort": "",   // "" = provider default; off | low | medium | high | xhigh | max
   "small_model": "claude-haiku-4-5",  // auto-filled from provider config or main model
+  "prompt_cache_ttl": "",   // "" = 1h in the TUI and ACP, vendor default (5m) in print mode; 5m | 1h
 
   // Per-provider credentials and model catalog.
   // Provider names are free-form; use "type" to specify the API protocol.

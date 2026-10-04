@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -27,9 +28,11 @@ const timeout = 10 * time.Second
 
 // call is what the model received in one call.
 type call struct {
-	system []string
-	msgs   []agentcore.Message
-	tools  []string
+	system   []string
+	msgs     []agentcore.Message
+	tools    []string
+	thinking *litellm.Thinking
+	cache    []string // the TTL of each cache breakpoint, in order
 }
 
 // fakeModel is a provider answering each call with the next scripted reply,
@@ -44,6 +47,12 @@ func script(replies ...litellmtest.Reply) *fakeModel { return &fakeModel{replies
 
 func (m *fakeModel) Name() string { return "fake" }
 
+// Capabilities has deferred tools loaded on reference and reasoning
+// efforts, as Anthropic does.
+func (m *fakeModel) Capabilities() litellm.Capabilities {
+	return litellm.Capabilities{DeferredTools: true, ThinkingEffort: true}
+}
+
 func (m *fakeModel) Chat(ctx context.Context, req *litellm.Request) (*litellm.Response, error) {
 	return litellmtest.New(m.next(req)).Chat(ctx, req)
 }
@@ -55,8 +64,20 @@ func (m *fakeModel) Stream(ctx context.Context, req *litellm.Request) (litellm.S
 func (m *fakeModel) next(req *litellm.Request) litellmtest.Reply {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var c call
+	c := call{thinking: req.Thinking}
 	for _, msg := range req.Messages {
+		for _, b := range msg.Blocks {
+			switch b := b.(type) {
+			case litellm.TextBlock:
+				if b.Cache != nil {
+					c.cache = append(c.cache, b.Cache.TTL)
+				}
+			case litellm.ToolResultBlock:
+				if b.Cache != nil {
+					c.cache = append(c.cache, b.Cache.TTL)
+				}
+			}
+		}
 		if msg.Role == litellm.RoleSystem {
 			for _, b := range msg.Blocks {
 				c.system = append(c.system, b.(litellm.TextBlock).Text)
@@ -65,7 +86,7 @@ func (m *fakeModel) next(req *litellm.Request) litellmtest.Reply {
 			c.msgs = append(c.msgs, agentcore.Message{Role: msg.Role, Blocks: msg.Blocks})
 		}
 	}
-	for _, t := range req.Tools {
+	for _, t := range req.OfferedTools() {
 		c.tools = append(c.tools, t.Name)
 	}
 	m.calls = append(m.calls, c)
@@ -147,6 +168,7 @@ type setup struct {
 	model    string // default claude-sonnet-4-5
 	settings map[string]any
 	git      bool
+	cacheTTL string // the frontend's, see Options.CacheTTL
 }
 
 // boot starts an App in a throwaway home and workspace, its models scripted.
@@ -187,6 +209,7 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 		Mode:        s.mode,
 		UI:          e.ui,
 		Interactive: true,
+		CacheTTL:    s.cacheTTL,
 		NewModel: func(spec provider.ModelSpec) (agentcore.Model, error) {
 			var p litellm.Provider = script()
 			if m, ok := models[spec.Model]; ok {
@@ -241,7 +264,8 @@ func (e *env) submit(text string) {
 }
 
 // texts renders the history: "user:hi", "assistant:done", "call:write",
-// "tool:w1" ("tool:w1!" for an error).
+// "tool:w1" ("tool:w1!" for an error). The messages telling the context are
+// left out; see told.
 func texts(msgs []agentcore.Message) []string {
 	var out []string
 	for _, m := range msgs {
@@ -254,6 +278,7 @@ func texts(msgs []agentcore.Message) []string {
 			continue
 		}
 		switch {
+		case strings.HasPrefix(m.Kind, kindContext):
 		case m.Kind == agentcore.KindSummary:
 			out = append(out, "summary")
 		case len(m.ToolCalls()) > 0:
@@ -265,18 +290,179 @@ func texts(msgs []agentcore.Message) []string {
 	return out
 }
 
+// told returns the keys of the context parts msgs tell, in order.
+func told(msgs []agentcore.Message) []string {
+	var keys []string
+	for _, m := range msgs {
+		if key, ok := strings.CutPrefix(m.Kind, kindContext); ok {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+// extends reports whether the call cur starts with the call prev: the same
+// system prompt, then prev's messages.
+func extends(cur, prev call) bool {
+	if !slices.Equal(cur.system, prev.system) || len(cur.msgs) < len(prev.msgs) {
+		return false
+	}
+	for i, m := range prev.msgs {
+		if cur.msgs[i].Role != m.Role || cur.msgs[i].Text() != m.Text() {
+			return false
+		}
+	}
+	return true
+}
+
 func TestSubmitRunsToIdle(t *testing.T) {
 	model := script(text("hello"))
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
 
 	e.submit("hi")
 
-	if got, want := texts(e.app.Current().History()), []string{"user:hi", "assistant:hello"}; !slices.Equal(got, want) {
+	history := e.app.Current().History()
+	if got, want := texts(history), []string{"user:hi", "assistant:hello"}; !slices.Equal(got, want) {
 		t.Fatalf("history = %q, want %q", got, want)
 	}
-	system := model.last().system
-	if len(system) == 0 || !strings.Contains(system[0], "Working directory: "+e.cwd) {
-		t.Fatalf("identity block does not state the workspace: %q", system)
+	// The context goes ahead of the first prompt.
+	if got, want := told(history), []string{"environment", "skills", "memory", "tools"}; !slices.Equal(got, want) {
+		t.Fatalf("told %q, want %q", got, want)
+	}
+	if !strings.Contains(history[0].Text(), "Working directory: "+e.cwd) {
+		t.Fatalf("the environment does not state the workspace: %q", history[0].Text())
+	}
+}
+
+// The context is told again only as it changes, after what was told
+// before: every request starts with the one before it.
+func TestContextChangesAreAppended(t *testing.T) {
+	model := script()
+	e := boot(t, setup{git: true}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	c := e.app.Current()
+
+	e.submit("one")
+	e.submit("two")
+	if got, want := told(c.History()), []string{"environment", "skills", "memory", "git", "tools"}; !slices.Equal(got, want) {
+		t.Fatalf("told %q, want %q", got, want)
+	}
+
+	if err := os.WriteFile(filepath.Join(e.cwd, "AGENTS.md"), []byte("project rule"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.app.ReloadPlugins(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.submit("three")
+	// The new file, and the git status that shows it.
+	if got := told(c.History())[5:]; !slices.Equal(got, []string{"project", "git"}) {
+		t.Fatalf("told after the reload %q", got)
+	}
+	for i := 1; i < model.count(); i++ {
+		if !extends(model.call(i), model.call(i-1)) {
+			t.Fatalf("call %d does not extend call %d", i, i-1)
+		}
+	}
+}
+
+// A resumed conversation has the requests it had, and is told what changed
+// since.
+func TestResumeTellsWhatChanged(t *testing.T) {
+	model := script()
+	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	e.submit("hi")
+	if err := os.WriteFile(filepath.Join(e.cwd, "AGENTS.md"), []byte("project rule"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, err := e.app.Open(e.app.Current().ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.submit("again")
+
+	if got, want := told(resumed.History()), []string{"environment", "skills", "memory", "tools", "project"}; !slices.Equal(got, want) {
+		t.Fatalf("told %q, want %q", got, want)
+	}
+	if !extends(model.call(1), model.call(0)) {
+		t.Fatal("the resumed conversation does not extend the request it made")
+	}
+}
+
+// A side question is asked as the conversation's calls are, thinking
+// included, so it reads the conversation from the prompt cache.
+func TestSideCallsExtendTheConversation(t *testing.T) {
+	model := script(text("hello"), text("an answer"), text("run the tests"))
+	e := boot(t, setup{settings: map[string]any{"reasoning_effort": "high"}}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	e.submit("hi")
+	c := e.app.Current()
+
+	if _, err := c.Query(context.Background(), "what?"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Suggest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	main := model.call(0)
+	if main.thinking == nil || main.thinking.Effort != "high" {
+		t.Fatalf("the conversation thinks with %+v", main.thinking)
+	}
+	for i := 1; i <= 2; i++ {
+		side := model.call(i)
+		if !reflect.DeepEqual(side.thinking, main.thinking) || !extends(side, main) {
+			t.Fatalf("side call %d does not extend the conversation: thinking %+v", i, side.thinking)
+		}
+	}
+}
+
+// Where a person paces the turns, the cache keeps the conversation for an
+// hour; the setting overrides the frontend.
+func TestCacheTTL(t *testing.T) {
+	for _, tc := range []struct {
+		frontend, setting string
+		want              []string
+	}{
+		{"", "", []string{"", ""}},
+		{"1h", "", []string{"1h", "1h"}},
+		{"1h", "5m", []string{"5m", "5m"}},
+	} {
+		model := script()
+		s := setup{cacheTTL: tc.frontend}
+		if tc.setting != "" {
+			s.settings = map[string]any{"prompt_cache_ttl": tc.setting}
+		}
+		e := boot(t, s, map[string]*fakeModel{"claude-sonnet-4-5": model})
+		e.submit("hi")
+		// The system prompt's breakpoint, then the prompt's.
+		if got := model.last().cache; !slices.Equal(got, tc.want) {
+			t.Errorf("frontend %q, setting %q: breakpoints %q, want %q", tc.frontend, tc.setting, got, tc.want)
+		}
+	}
+}
+
+// MCP tools join a conversation and stay: a tool its server stops offering
+// fails when called.
+func TestGrowTools(t *testing.T) {
+	tool := func(name, version string) agentcore.Tool {
+		return agentcore.Tool{Name: name, Description: version, Run: func(context.Context, json.RawMessage) (agentcore.Result, error) {
+			return agentcore.TextResult(version), nil
+		}}
+	}
+	tools := growTools(nil, []agentcore.Tool{tool("b", "1"), tool("c", "1")})
+	tools = growTools(tools, []agentcore.Tool{tool("a", "2"), tool("c", "2")})
+
+	var got []string
+	for _, t := range tools {
+		got = append(got, t.Name+t.Description)
+	}
+	if want := []string{"b1", "c2", "a2"}; !slices.Equal(got, want) {
+		t.Fatalf("tools = %q, want %q", got, want)
+	}
+	if _, err := tools[0].Run(context.Background(), nil); err == nil {
+		t.Fatal("a tool no longer offered ran")
+	}
+	if res, err := tools[1].Run(context.Background(), nil); err != nil || res.Text() != "2" {
+		t.Fatalf("the tool offered again runs %v, %v", res, err)
 	}
 }
 
@@ -301,9 +487,10 @@ func TestOpenResumesASession(t *testing.T) {
 		t.Fatalf("resumed history = %q", got)
 	}
 	// The replaced conversation is closed: its input goes nowhere.
+	n := len(resumed.History())
 	_ = first.Submit(context.Background(), []litellm.Block{litellm.Text("late")})
-	if n := len(resumed.History()); n != 2 {
-		t.Fatalf("closed conversation reached the open one: %d messages", n)
+	if got := len(resumed.History()); got != n {
+		t.Fatalf("closed conversation reached the open one: %d messages", got)
 	}
 }
 
@@ -552,6 +739,7 @@ func TestWorktreeMovesTheConversation(t *testing.T) {
 	model := script()
 	e := boot(t, setup{git: true}, map[string]*fakeModel{"claude-sonnet-4-5": model})
 	c := e.app.Current()
+	e.submit("hi")
 
 	dir, err := c.EnterWorktree("try")
 	if err != nil {
@@ -560,9 +748,17 @@ func TestWorktreeMovesTheConversation(t *testing.T) {
 	if c.Cwd() != dir || c.Worktree() != dir {
 		t.Fatalf("cwd = %q, worktree = %q, want %q", c.Cwd(), c.Worktree(), dir)
 	}
-	e.submit("hi")
-	if system := model.last().system; !strings.Contains(system[0], "Working directory: "+dir) {
-		t.Fatalf("identity block does not state the worktree: %q", system[0])
+	e.submit("again")
+	// The model is told of the move after what it was told before.
+	history := c.History()
+	if got := told(history)[5:]; !slices.Equal(got, []string{"environment", "git"}) {
+		t.Fatalf("told after the move %q", got)
+	}
+	if moved := history[len(history)-4].Text(); !strings.Contains(moved, "Working directory: "+dir) {
+		t.Fatalf("the environment does not state the worktree: %q", moved)
+	}
+	if !extends(model.call(1), model.call(0)) {
+		t.Fatal("the move changed the requests made before it")
 	}
 
 	res, err := c.ExitWorktree(false)
@@ -639,12 +835,35 @@ func TestQueryLeavesTheHistoryAlone(t *testing.T) {
 	model := script(text("hello"), text("an answer"))
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
 	e.submit("hi")
+	n := len(e.app.Current().History())
 
 	answer, err := e.app.Current().Query(context.Background(), "what?")
 	if err != nil || answer != "an answer" {
 		t.Fatalf("query = %q, %v", answer, err)
 	}
-	if n := len(e.app.Current().History()); n != 2 {
-		t.Fatalf("history has %d messages after a query", n)
+	if got := len(e.app.Current().History()); got != n {
+		t.Fatalf("history has %d messages after a query, %d before", got, n)
+	}
+}
+
+func TestSupportsToolSearch(t *testing.T) {
+	client, err := litellm.New(script())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for model, want := range map[string]bool{
+		"claude-sonnet-4-5": true, "claude-opus-4-5-20251101": true, "claude-fable-5-1": true, "claude-sonnet-5-5": true,
+		"claude-sonnet-4-20250514": false, "claude-3-5-sonnet-20241022": false, "claude-haiku-4-5": false, "gpt-6": false,
+	} {
+		if got := supportsToolSearch(client, model); got != want {
+			t.Errorf("%s: %v, want %v", model, got, want)
+		}
+	}
+	plain, err := litellm.New(litellmtest.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if supportsToolSearch(plain, "claude-sonnet-4-5") {
+		t.Error("a vendor that cannot defer tools got tool search")
 	}
 }

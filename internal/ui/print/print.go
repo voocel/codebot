@@ -173,7 +173,7 @@ func (p *printer) onAgentEvent(ev agentcore.Event) {
 			fmt.Fprintf(os.Stderr, "[tool] %s error\n", e.Call.Name)
 		}
 	case agentcore.Retry:
-		fmt.Fprintf(os.Stderr, "request failed, retrying (%d/%d) in %s...\n", e.Attempt, e.MaxRetries, e.Delay.Truncate(time.Millisecond))
+		fmt.Fprintf(os.Stderr, "request failed, retrying (attempt %d) in %s...\n", e.Attempt, e.Delay.Truncate(time.Millisecond))
 	case agentcore.CompactionEnd:
 		if e.Compaction != nil {
 			fmt.Fprintf(os.Stderr, "context compacted: %d messages summarized\n", e.Compaction.Replaced)
@@ -240,13 +240,16 @@ func jsonFor(ev agentcore.Event) map[string]any {
 	case agentcore.TurnEnd:
 		return map[string]any{"type": "turn_end"}
 	case agentcore.Retry:
-		return map[string]any{"type": "retry", "attempt": e.Attempt, "max_retries": e.MaxRetries, "delay_ms": e.Delay.Milliseconds(), "error": errText(e.Err)}
+		return map[string]any{"type": "retry", "attempt": e.Attempt, "delay_ms": e.Delay.Milliseconds(), "error": errText(e.Err)}
 	case agentcore.CompactionStart:
 		return map[string]any{"type": "compaction_start"}
 	case agentcore.CompactionEnd:
 		out := map[string]any{"type": "compaction_end", "error": errText(e.Err)}
 		if e.Compaction != nil {
 			out["replaced"] = e.Compaction.Replaced
+			if e.Compaction.Usage != nil {
+				out["usage"] = e.Compaction.Usage
+			}
 		}
 		return out
 	case agentcore.RunEnd:

@@ -167,17 +167,17 @@ func (c *StatusCommand) renderUsage(width int) string {
 	st := c.state.status
 	u := st.Usage
 	p := tui.NewInfoPanel(width)
-	p.Row("Tokens in", tui.FormatTokens(u.Input))
-	p.Row("Tokens out", tui.FormatTokens(u.Output))
+	p.Row("Tokens in", tui.FormatTokens(u.InputTokens))
+	p.Row("Tokens out", tui.FormatTokens(u.OutputTokens))
 	p.Row("Cost", formatCost(u))
 
-	if u.CacheRead+u.CacheWrite > 0 {
+	if u.CacheReadTokens+u.CacheWriteTokens > 0 {
 		p.Section("Cache")
-		if u.Input > 0 {
-			p.Row("Hit rate", fmt.Sprintf("%.1f%%", float64(u.CacheRead)*100/float64(u.Input)))
+		if u.InputTokens > 0 {
+			p.Row("Hit rate", fmt.Sprintf("%.1f%%", float64(u.CacheReadTokens)*100/float64(u.InputTokens)))
 		}
-		p.Row("Read", tui.FormatTokens(u.CacheRead))
-		p.Row("Written", tui.FormatTokens(u.CacheWrite))
+		p.Row("Read", tui.FormatTokens(u.CacheReadTokens))
+		p.Row("Written", tui.FormatTokens(u.CacheWriteTokens))
 	}
 
 	p.Section("Context")
@@ -299,14 +299,14 @@ func formatContext(used, window int) string {
 }
 
 func formatCost(u agentcore.Usage) string {
-	if u.Input+u.Output == 0 {
+	if u.InputTokens+u.OutputTokens == 0 {
 		return tui.MutedStyle.Render("(no usage yet)")
 	}
 	cost := 0.0
 	if u.Cost != nil {
 		cost = u.Cost.Total
 	}
-	return fmt.Sprintf("~$%.4f  (%s in · %s out)", cost, tui.FormatTokens(u.Input), tui.FormatTokens(u.Output))
+	return fmt.Sprintf("~$%.4f  (%s in · %s out)", cost, tui.FormatTokens(u.InputTokens), tui.FormatTokens(u.OutputTokens))
 }
 
 // formatAge formats a duration as "Nm", "Nh Nm", or "Nd Nh".

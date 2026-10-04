@@ -49,6 +49,11 @@ type Options struct {
 	// Interactive offers the model ask_user; headless frontends have no one
 	// to ask.
 	Interactive bool
+	// CacheTTL is how long the prompt cache keeps the conversation, as
+	// litellm.CacheControl.TTL: "1h" where turns wait on a person, who
+	// pauses longer than the vendors' default five minutes. The
+	// prompt_cache_ttl setting overrides it.
+	CacheTTL string
 	// FS is the file backend for read, write and edit; nil means the local
 	// filesystem.
 	FS agentcoretools.FS

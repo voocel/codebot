@@ -8,6 +8,7 @@ import (
 	coresub "github.com/voocel/agentcore/subagent"
 	"github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/retry"
 
 	"github.com/voocel/codebot/internal/provider"
 )
@@ -34,9 +35,9 @@ type BuildDeps struct {
 	// its history, matching the parent's threshold.
 	CompactAt int
 
-	// MaxRetries is how often a sub-agent retries a model call that failed
-	// transiently, as the parent does.
-	MaxRetries int
+	// Retry paces the model calls a sub-agent makes again after a transient
+	// failure, as the parent's does.
+	Retry retry.Policy
 
 	// SessionID is the parent session's identity, the base of each run's
 	// prompt-cache routing key.
@@ -72,14 +73,19 @@ func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 				}
 			}
 			cfg := agentcore.Config{
-				Model:      provider.WithCacheKey(m, deps.SessionID+"-"+s.ID),
-				System:     []litellm.Block{litellm.Text(d.SystemPrompt)},
+				Model: provider.WithCacheKey(m, deps.SessionID+"-"+s.ID),
+				// A breakpoint after the system prompt, so the spawns of an
+				// agent share its tools and prompt in the cache. A spawn's
+				// calls follow each other without waiting on a person: the
+				// vendor's default TTL serves them.
+				System:     []litellm.Block{litellm.TextBlock{Text: d.SystemPrompt, Cache: &litellm.CacheControl{}}},
 				Tools:      toolPool(deps, d),
 				Middleware: deps.Middleware,
 				MaxTurns:   d.MaxTurns,
-				MaxRetries: deps.MaxRetries,
-				// A breakpoint on the freshest message, so each call of a
-				// tool loop reads the one before from the cache.
+				Retry:      deps.Retry,
+				// Breakpoints on the freshest message and where the call
+				// before ended, so each call reads the one before from the
+				// cache.
 				Cache: &litellm.CacheControl{},
 			}
 			if deps.CompactAt > 0 {

@@ -177,6 +177,11 @@ type Settings struct {
 	SmallModel      *string                    `json:"small_model,omitempty"`      // sub-agent model; defaults to Model if empty
 	Providers       map[string]*ProviderConfig `json:"providers,omitempty"`
 
+	// PromptCacheTTL is how long the prompt cache keeps a conversation:
+	// "5m" or "1h". Unset, it is 1h in the TUI and ACP, where turns wait on
+	// a person, and the vendor default elsewhere.
+	PromptCacheTTL *string `json:"prompt_cache_ttl,omitempty"`
+
 	MaxTurns *int `json:"max_turns,omitempty"`
 
 	// CompactWindow caps the effective context window used for compaction.
@@ -222,6 +227,7 @@ type Resolved struct {
 	CompactWindow   int     // user-configured cap on effective window; 0 = disabled
 	CompactRatio    float64 // usage ratio that triggers compaction; 0 = unset
 	ReasoningEffort string
+	PromptCacheTTL  string // "" leaves it to the frontend
 	MaxTurns        int
 	SearchProvider  string
 	SearchAPIKey    string
@@ -271,6 +277,9 @@ func (s Settings) Resolve() Resolved {
 	if s.ReasoningEffort != nil {
 		r.ReasoningEffort = *s.ReasoningEffort
 	}
+	if s.PromptCacheTTL != nil {
+		r.PromptCacheTTL = *s.PromptCacheTTL
+	}
 	if s.MaxTurns != nil {
 		r.MaxTurns = *s.MaxTurns
 	}
@@ -310,6 +319,11 @@ func (s Settings) Resolve() Resolved {
 func validateResolved(r Resolved) error {
 	if !provider.ValidEffort(r.ReasoningEffort) {
 		return fmt.Errorf("configuration error: reasoning_effort=%q is unsupported; use empty string, off, low, medium, high, xhigh, or max", r.ReasoningEffort)
+	}
+	switch r.PromptCacheTTL {
+	case "", "5m", "1h":
+	default:
+		return fmt.Errorf("configuration error: prompt_cache_ttl=%q is unsupported; use 5m or 1h", r.PromptCacheTTL)
 	}
 	for name, pc := range r.Providers {
 		if err := validateProviderAPI(name, pc); err != nil {
@@ -486,6 +500,9 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.ReasoningEffort != nil {
 		base.ReasoningEffort = override.ReasoningEffort
+	}
+	if override.PromptCacheTTL != nil {
+		base.PromptCacheTTL = override.PromptCacheTTL
 	}
 	if override.MaxTurns != nil {
 		base.MaxTurns = override.MaxTurns

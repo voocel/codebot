@@ -150,8 +150,8 @@ func TestJSONEvents(t *testing.T) {
 		ev   agentcore.Event
 		want string
 	}{
-		{agentcore.Retry{Attempt: 1, MaxRetries: 5, Delay: time.Second, Err: errors.New("rate limited")},
-			`{"attempt":1,"delay_ms":1000,"error":"rate limited","max_retries":5,"type":"retry"}`},
+		{agentcore.Retry{Attempt: 2, Delay: time.Second, Err: errors.New("rate limited")},
+			`{"attempt":2,"delay_ms":1000,"error":"rate limited","type":"retry"}`},
 		{agentcore.MessageDelta{Event: litellm.TextDelta{Text: "hi"}},
 			`{"delta":"hi","index":0,"kind":"text","type":"message_delta"}`},
 		{agentcore.ToolUpdate{Call: agentcore.ToolCall{ID: "s1", Name: "subagent"}, Progress: subagent.Progress{Spawn: subagent.Spawn{ID: "explore#1"}, Event: agentcore.RunEnd{Reason: agentcore.EndError, Err: errors.New("down")}}},

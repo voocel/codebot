@@ -113,7 +113,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		m.IsStream = false
 		m.Streaming.Reset()
 		m.Thinking.Reset()
-		m.StatusPrefix = fmt.Sprintf("Request failed, retrying (%d/%d)", e.Attempt, e.MaxRetries)
+		m.StatusPrefix = fmt.Sprintf("Request failed, retrying (attempt %d)", e.Attempt)
 		m.StatusDeadline = time.Now().Add(e.Delay)
 		cmds = append(cmds, statusCountdownTick())
 
@@ -157,8 +157,8 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		m.Streaming.Reset()
 		m.Thinking.Reset()
 		if u := e.Message.Usage; u != nil {
-			m.RunStats.Input += u.Input
-			m.RunStats.Output += u.Output
+			m.RunStats.Input += u.InputTokens
+			m.RunStats.Output += u.OutputTokens
 		}
 		if reply := m.renderAssistantMessage(e.Message); reply != "" {
 			cmds = append(cmds, m.printBlock(reply))
@@ -263,8 +263,8 @@ func (m *Model) subagentProgress(id string, buf *strings.Builder, ev agentcore.E
 			break
 		}
 		if u := e.Message.Usage; u != nil {
-			usage.input += u.Input
-			usage.output += u.Output
+			usage.input += u.InputTokens
+			usage.output += u.OutputTokens
 		}
 		if text := oneLine(e.Message.Reasoning()); text != "" {
 			lines = append(lines, ThinkingBodyStyle.Render("thinking "+ansi.Truncate(text, 71, "…")))
@@ -283,7 +283,7 @@ func (m *Model) subagentProgress(id string, buf *strings.Builder, ev agentcore.E
 			lines = append(lines, ToolNameStyle.Render(e.Call.Name)+MutedStyle.Render(" failed"))
 		}
 	case agentcore.Retry:
-		lines = append(lines, MutedStyle.Render(fmt.Sprintf("retry %d/%d", e.Attempt, e.MaxRetries)))
+		lines = append(lines, MutedStyle.Render(fmt.Sprintf("retry, attempt %d", e.Attempt)))
 	case agentcore.RunEnd:
 		usage.turns += e.Turns
 		usage.tools += e.ToolCalls

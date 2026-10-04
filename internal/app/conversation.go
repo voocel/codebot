@@ -42,13 +42,16 @@ type Conversation struct {
 	limiter   *tools.OutputLimiter
 	validator *validation // nil without hooks
 
+	system []litellm.Block // the system prompt; see context.go
+
 	mu        sync.Mutex
 	cwd       string
 	worktree  *worktreeState
 	model     modelChoice
-	workspace workspace
+	workspace []prompt.Part
 	tools     []agentcore.Tool // built for the current model
 	subagents agentcore.Tool   // the subagent tool among them, for forked skills
+	mcpTools  []agentcore.Tool // every MCP tool the conversation had, see growTools
 	// grants are the tools the skills invoked in the current run allow; they
 	// go when it ends.
 	grants []approval.Rule
@@ -71,6 +74,7 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 		dir:    filepath.Join(config.SessionsDir(a.cwd), id),
 		agents: NewAgentHub(),
 		files:  agentcoretools.NewFileReadState(),
+		system: a.systemPrompt(),
 		cwd:    a.cwd,
 		model:  model,
 	}
@@ -83,7 +87,7 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 		c.validator = &validation{hooks: c.hooks}
 	}
 	config.EnsureMemoryDir(a.cwd)
-	c.workspace = a.loadWorkspace(a.cwd)
+	c.workspace = a.workspace(a.cwd)
 	c.tools = c.buildTools()
 
 	if c.session, err = session.Open(store, state, c.specLocked()); err != nil {
@@ -189,15 +193,16 @@ func (c *Conversation) Cancel() { c.session.Cancel() }
 func (c *Conversation) Compact(ctx context.Context) error { return c.session.Compact(ctx) }
 
 // Query answers a side question from the conversation's context without
-// adding to it.
+// adding to it. It thinks as the conversation does: a request that thinks
+// otherwise reads none of the conversation from the prompt cache.
 func (c *Conversation) Query(ctx context.Context, question string) (string, error) {
-	return c.session.Query(ctx, question, defaultThinking)
+	return c.session.Query(ctx, question, nil)
 }
 
-// Suggest predicts what the user may type next, or "" when nothing fits.
+// Suggest predicts what the user may type next, or "" when nothing fits. It
+// thinks as the conversation does, as Query.
 func (c *Conversation) Suggest(ctx context.Context) (string, error) {
 	text, err := c.session.Query(ctx, prompt.Suggestion, func(req *litellm.Request) {
-		defaultThinking(req)
 		req.MaxTokens = new(suggestionMaxTokens)
 	})
 	if err != nil {
@@ -270,20 +275,15 @@ func (c *Conversation) sideModel() agentcore.Model {
 	return c.model.model
 }
 
-// defaultThinking has a side question think as the provider does by
-// default rather than with the conversation's effort: whether a model can
-// turn thinking off is not known before the vendor answers.
-func defaultThinking(req *litellm.Request) { req.Thinking = nil }
-
 // suggestionMaxTokens bounds a suggestion's response, reasoning included.
 const suggestionMaxTokens = 2048
 
-// Reload re-reads the context files and skills, after the user edited
-// memory or reloaded plugins.
+// Reload re-reads the workspace the model is told about, after the user
+// reloaded plugins. The model is told what changed as the next run starts.
 func (c *Conversation) Reload() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.workspace = c.app.loadWorkspace(c.cwd)
+	c.workspace = c.app.workspace(c.cwd)
 	c.configureLocked()
 }
 

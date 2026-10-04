@@ -50,14 +50,16 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	answer := agentcore.Message{
 		Role:   litellm.RoleAssistant,
 		Blocks: []litellm.Block{litellm.Text("a1")},
-		Usage:  &agentcore.Usage{Input: 10, Output: 2, Cost: &catalog.Cost{Total: 0.5}},
+		Usage:  &agentcore.Usage{Usage: litellm.Usage{InputTokens: 10, OutputTokens: 2}, Cost: &catalog.Cost{Total: 0.5}},
 	}
 	summary := agentcore.SummaryMessage("checkpoint")
 	steps := []func() error{
 		func() error { return s.AppendModel(Model{Provider: "p", Model: "m1"}) },
 		func() error { return s.Append(agentcore.UserText("u1")) },
 		func() error { return s.Append(answer) },
-		func() error { return s.AppendCompaction([]agentcore.Message{summary, answer}) },
+		func() error {
+			return s.AppendCompaction(&agentcore.Compaction{Messages: []agentcore.Message{summary, answer}, Usage: &agentcore.Usage{Usage: litellm.Usage{InputTokens: 5}}})
+		},
 		func() error { return s.Append(agentcore.UserText("u2")) },
 		func() error { return s.Append(answer) },
 		func() error { return s.AppendModel(Model{Provider: "p", Model: "m2", Effort: "high"}) },
@@ -81,8 +83,9 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	if state.Model != (Model{Provider: "p", Model: "m2", Effort: "high"}) {
 		t.Fatalf("model = %+v", state.Model)
 	}
-	// Usage counts every recorded response, the replaced one included.
-	if state.Usage.Input != 20 || state.Usage.Cost.Total != 1 {
+	// Usage counts every recorded response, the replaced one included, and
+	// the compaction.
+	if state.Usage.InputTokens != 25 || state.Usage.Cost.Total != 1 {
 		t.Fatalf("usage = %+v", state.Usage)
 	}
 }
@@ -260,7 +263,8 @@ func TestManagerListsSessions(t *testing.T) {
 	if len(list) != 2 || list[0].ID != newer.Header().SessionID {
 		t.Fatalf("list = %+v", list)
 	}
-	if got := list[1]; got.MessageCount != 3 || got.FirstMessage != "fix the bug" || got.Cwd != "/work" {
+	// The harness's reminder is not the conversation's.
+	if got := list[1]; got.MessageCount != 2 || got.FirstMessage != "fix the bug" || got.Cwd != "/work" {
 		t.Fatalf("info = %+v", got)
 	}
 

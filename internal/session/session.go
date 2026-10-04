@@ -59,6 +59,11 @@ type RunSpec struct {
 	// WrapRun, when set, is called as each run starts and returns the run's
 	// context and a function called with the run's error when it ends.
 	WrapRun func(ctx context.Context) (context.Context, func(err error))
+	// Context, when set, returns the messages that tell the model what
+	// history does not tell of its context as it now is. They go ahead of
+	// the inputs of each run, and after the history a compaction wrote,
+	// which drops the messages that told it before.
+	Context func(history []agentcore.Message) []agentcore.Message
 }
 
 // Status is a snapshot of the session for display.
@@ -120,7 +125,7 @@ func Open(store *storage.Store, state storage.State, spec RunSpec) (*Session, er
 	s := &Session{
 		store:    store,
 		id:       store.Header().SessionID,
-		agent:    agentcore.NewAgent(spec.Config, state.Messages),
+		agent:    agentcore.NewAgent(spec.agentConfig(), state.Messages),
 		ops:      mailbox{wake: make(chan struct{}, 1)},
 		done:     make(chan struct{}),
 		spec:     spec,
@@ -157,12 +162,19 @@ func (s *Session) Compact(ctx context.Context) error {
 	return <-reply
 }
 
-// Query asks the model a one-off question after the current history, sharing
-// the conversation's request prefix and prompt cache. Neither the question
-// nor the answer enters the history. edit, if set, adjusts the request.
+// Query asks the model a one-off question after the current history and the
+// context it does not tell, sharing the conversation's request prefix and
+// prompt cache. Neither the question nor the answer enters the history.
+// edit, if set, adjusts the request.
 func (s *Session) Query(ctx context.Context, prompt string, edit func(*litellm.Request)) (string, error) {
 	var call agentcore.Call
-	if !s.do(func() { call = agentcore.BuildCall(s.spec.Config, s.agent.Messages()) }) {
+	if !s.do(func() {
+		history := s.agent.Messages()
+		if s.spec.Context != nil {
+			history = append(history, s.spec.Context(history)...)
+		}
+		call = agentcore.BuildCall(s.spec.Config, history)
+	}) {
 		return "", ErrClosed
 	}
 	req := call.Request
@@ -312,7 +324,7 @@ func (s *Session) configure(spec RunSpec) {
 		return
 	}
 	s.spec = spec
-	s.agent.SetConfig(spec.Config)
+	s.agent.SetConfig(spec.agentConfig())
 	if err := s.record(); err != nil {
 		s.emit(Event{Kind: Error, Err: err})
 	}
@@ -415,9 +427,12 @@ func (s *Session) startPending() {
 	s.start(prompts)
 }
 
-// start runs prompts on the Agent; the run hands control back to the actor
-// when it ends.
+// start runs prompts on the Agent, after the context they need; the run
+// hands control back to the actor when it ends.
 func (s *Session) start(prompts []agentcore.Message) {
+	if s.spec.Context != nil {
+		prompts = append(s.spec.Context(s.agent.Messages()), prompts...)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.run = &run{cancel: cancel}
 	s.refreshStatus()
@@ -460,16 +475,45 @@ func (s *Session) observe(ev agentcore.Event) error {
 		})
 	case agentcore.CompactionEnd:
 		if e.Compaction != nil {
-			if err := s.store.AppendCompaction(e.Compaction.Messages); err != nil {
+			if err := s.store.AppendCompaction(e.Compaction); err != nil {
 				return err
 			}
-			s.updateStatus(func(st *Status) { st.Context = s.estimate(e.Compaction.Messages) })
+			s.updateStatus(func(st *Status) {
+				st.Usage.Add(e.Compaction.Usage)
+				st.Context = s.estimate(e.Compaction.Messages)
+			})
 		}
 	case agentcore.RunEnd:
 		s.updateStatus(func(st *Status) { st.LastRun = &e })
 	}
 	s.emit(Event{Kind: Agent, Agent: ev})
 	return nil
+}
+
+// agentConfig is the Agent's Config for spec: one whose compactions tell the
+// context again.
+func (spec RunSpec) agentConfig() agentcore.Config {
+	cfg := spec.Config
+	if spec.Context != nil {
+		cfg.Compactor = retelling{cfg.Compactor, spec.Context}
+	}
+	return cfg
+}
+
+// retelling is a Compactor that appends the context to the history it
+// wrote: the messages that told it are among those it replaced.
+type retelling struct {
+	agentcore.Compactor
+	context func(history []agentcore.Message) []agentcore.Message
+}
+
+func (r retelling) Compact(ctx context.Context, history []agentcore.Message, call func([]agentcore.Message) agentcore.Call) (*agentcore.Compaction, error) {
+	c, err := r.Compactor.Compact(ctx, history, call)
+	if c == nil || err != nil {
+		return c, err
+	}
+	c.Messages = slices.Concat(c.Messages, r.context(c.Messages))
+	return c, nil
 }
 
 // estimate estimates the next request with history, by the Agent's Config.

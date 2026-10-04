@@ -15,6 +15,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"time"
 
@@ -29,11 +30,21 @@ var vendors = []string{
 	"openrouter", "xai", "xiaomi_mimo", "zai",
 }
 
+// read reports whether catalog.LoadFromReader reads a field: the model's
+// facts, its rates, those of its long-input tiers, as
+// input_cost_per_token_above_200k_tokens, and a tiered_pricing table.
+func read(field string) bool {
+	return slices.Contains(fields, field) || field == "tiered_pricing" || tierRate.MatchString(field)
+}
+
 var fields = []string{
 	"mode", "litellm_provider", "max_input_tokens", "max_output_tokens",
 	"supports_reasoning", "input_cost_per_token", "output_cost_per_token",
 	"cache_read_input_token_cost", "cache_creation_input_token_cost",
+	"cache_creation_input_token_cost_above_1hr",
 }
+
+var tierRate = regexp.MustCompile(`^(input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost|cache_creation_input_token_cost_above_1hr)_above_\d+k_tokens$`)
 
 func main() {
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -58,8 +69,8 @@ func main() {
 			continue
 		}
 		trimmed := make(map[string]any, len(fields))
-		for _, field := range fields {
-			if value, ok := entry[field]; ok {
+		for field, value := range entry {
+			if read(field) {
 				trimmed[field] = value
 			}
 		}

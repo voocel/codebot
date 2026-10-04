@@ -8,36 +8,43 @@ import (
 	"github.com/voocel/codebot/internal/config"
 )
 
-// memoryMaxLines is where LoadMemory truncates MEMORY.md, and the limit the
+// memoryMaxLines is where Memory truncates MEMORY.md, and the limit the
 // memory instructions state.
 const memoryMaxLines = 200
 
-// LoadMemory returns the project's memory directory and the first 200 lines
-// of its MEMORY.md, "" when there is none.
-func LoadMemory(cwd string) (content, dir string) {
-	dir = config.MemoryDir(cwd)
-	path := config.MemoryFilePath(cwd)
+// Memory tells the first 200 lines of the MEMORY.md of the project in cwd.
+func Memory(cwd string) Part {
+	content := loadMemory(config.MemoryFilePath(cwd))
+	if content == "" {
+		// The memory instructions promise MEMORY.md is always in context.
+		// Without this placeholder the model sees the promise and tries to
+		// read the file, which does not exist before anything is saved.
+		content = "Your MEMORY.md is currently empty. When you save new memories, they will appear here."
+	}
+	return Part{Key: "memory", Title: "Memory", Body: "Contents of " + config.MemoryFilePath(cwd) +
+		" (auto-memory, persists across conversations):\n\n" + content +
+		"\n\nMemories reflect what was true when they were written. Before relying on one, verify that the files, functions, or flags it mentions still exist — a memory saying X exists is not the same as X existing now."}
+}
+
+// loadMemory returns the first memoryMaxLines lines of the MEMORY.md at
+// path, "" when there is none.
+func loadMemory(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", dir
+		return ""
 	}
-
 	raw := strings.TrimSpace(string(data))
 	if raw == "" {
-		return "", dir
+		return ""
 	}
-
 	lines := strings.Split(raw, "\n")
-	if len(lines) > memoryMaxLines {
-		content = strings.Join(lines[:memoryMaxLines], "\n")
-		content += fmt.Sprintf("\n\n<!-- MEMORY.md has %d lines (limit: %d). "+
-			"Only the first %d lines were loaded. Move detailed content into "+
-			"separate topic files and keep MEMORY.md as a concise index. -->",
-			len(lines), memoryMaxLines, memoryMaxLines)
-	} else {
-		content = raw
+	if len(lines) <= memoryMaxLines {
+		return raw
 	}
-	return content, dir
+	return strings.Join(lines[:memoryMaxLines], "\n") + fmt.Sprintf("\n\n<!-- MEMORY.md has %d lines (limit: %d). "+
+		"Only the first %d lines were loaded. Move detailed content into "+
+		"separate topic files and keep MEMORY.md as a concise index. -->",
+		len(lines), memoryMaxLines, memoryMaxLines)
 }
 
 // memoryInstructions teaches the model how to use auto memory.

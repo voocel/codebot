@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -51,9 +52,9 @@ func TestEfforts(t *testing.T) {
 			t.Errorf("reasoning %v: levels %q, want %q", reasoning, got, want)
 		}
 	}
-	// A provider offers only the settings it can send: MiniMax takes no
-	// effort, Grok cannot turn thinking off.
-	for name, want := range map[string][]string{"deepseek": all, "minimax": {"", "off"}, "grok": {"", "low", "medium", "high", "xhigh", "max"}} {
+	// A provider offers only the settings it can send: MiMo takes no effort,
+	// Grok cannot turn thinking off.
+	for name, want := range map[string][]string{"deepseek": all, "mimo": {"", "off"}, "grok": {"", "low", "medium", "high", "xhigh", "max"}} {
 		p, err := llmprovider.New(name, llmprovider.Config{APIKey: "k"})
 		if err != nil {
 			t.Fatal(err)
@@ -148,7 +149,7 @@ func TestModelFactoryAnthropic(t *testing.T) {
 	defer server.Close()
 
 	models := &Models{}
-	pricing := &catalog.Pricing{InputCostPerToken: 3e-6, OutputCostPerToken: 15e-6}
+	pricing := &catalog.Pricing{Rates: catalog.Rates{Input: 3e-6, Output: 15e-6}}
 	if err := models.catalog.Set("claude-x", catalog.Model{MaxOutputTokens: 64000, Pricing: pricing}); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +169,7 @@ func TestModelFactoryAnthropic(t *testing.T) {
 		return m
 	}
 
-	if m := call("claude-x"); body.MaxTokens != 64000 || beta != "beta-a" || m.Pricing == nil || *m.Pricing != *pricing {
+	if m := call("claude-x"); body.MaxTokens != 64000 || beta != "beta-a" || !reflect.DeepEqual(m.Pricing, pricing) {
 		t.Fatalf("max_tokens = %d, anthropic-beta = %q, pricing %+v", body.MaxTokens, beta, m.Pricing)
 	}
 	if m := call("claude-unlisted"); body.MaxTokens != fallbackMaxTokens || m.Pricing != nil {

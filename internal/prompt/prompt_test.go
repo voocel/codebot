@@ -1,88 +1,86 @@
 package prompt
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-func buildBlocksForTest(cwd string, ctx ContextFiles) (identity, instructions string) {
-	return Identity(cwd, ctx), Instructions(ctx, "")
-}
+func TestSystemHoldsTheConventions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
 
-func TestBuildBlocksIncludesDoingTasksGuardrails(t *testing.T) {
-	t.Parallel()
-
-	// These guardrails live in the identity block.
-	identity, _ := buildBlocksForTest("/tmp/ws", ContextFiles{})
-
+	system := System(cwd)
 	for _, marker := range []string{
+		"expert coding assistant",
 		"## Doing tasks",
 		"## Using tools",
 		"## System reminders",
 		"## Communication",
+		"## Auto memory",
 	} {
-		if !strings.Contains(identity, marker) {
-			t.Errorf("identity block missing section %q", marker)
+		if !strings.Contains(system, marker) {
+			t.Errorf("system prompt missing %q", marker)
+		}
+	}
+	// What changes while a conversation lasts is told in Parts.
+	for _, changing := range []string{cwd, time.Now().Format("2006-01-02")} {
+		if strings.Contains(system, changing) {
+			t.Errorf("system prompt holds %q", changing)
 		}
 	}
 }
 
-func TestBuildBlocksSystemOverride(t *testing.T) {
-	t.Parallel()
-
-	ctx := ContextFiles{SystemOverride: "custom system prompt"}
-	identity, instructions := buildBlocksForTest("/tmp/ws", ctx)
-
-	if identity != "" {
-		t.Error("identity should be empty when SystemOverride is set")
+func TestSystemFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(cwd, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if instructions != "custom system prompt" {
-		t.Errorf("instructions should be the override, got %q", instructions)
+
+	write("APPEND_SYSTEM.md", "appended rule")
+	if system := System(cwd); !strings.Contains(system, "## Doing tasks") || !strings.HasSuffix(system, "\n\nappended rule") {
+		t.Fatalf("APPEND_SYSTEM.md not appended to the built-in prompt:\n%s", system)
+	}
+	write("SYSTEM.md", "custom system prompt")
+	if system := System(cwd); system != "custom system prompt\n\nappended rule" {
+		t.Fatalf("system = %q", system)
 	}
 }
 
-// Workspace context belongs in the cached block 2, never in a per-turn
-// reminder — that is the whole point of the layout. See tasks/todo.md.
-func TestFrozenBlockCarriesWorkspaceContext(t *testing.T) {
-	t.Parallel()
-
-	skills := "- commit: Git commit"
-	ctx := ContextFiles{
-		Agents:       "project context here",
-		Memory:       "remembered fact",
-		MemoryDir:    "/tmp/mem",
-		SystemAppend: "appended rule",
+func TestPartWithNothingToTellSaysSo(t *testing.T) {
+	if got := MCP("").Text(); got != "# MCP Server Instructions\n\nNone." {
+		t.Fatalf("text = %q", got)
 	}
-
-	frozen := Instructions(ctx, skills)
-
-	for _, want := range []string{
-		"## Skills", "commit",
-		"## Project Context", "project context here",
-		"## Memory", "remembered fact",
-		"appended rule",
-	} {
-		if !strings.Contains(frozen, want) {
-			t.Errorf("frozen block missing %q", want)
-		}
+	if got := DeferredTools(nil); got.Body != "" {
+		t.Fatalf("body = %q", got.Body)
 	}
-	if strings.Contains(frozen, "<system-reminder>") {
-		t.Error("frozen block must not wrap content as a per-turn reminder")
+	if got := DeferredTools([]string{"deploy", "rollback"}).Body; !strings.HasSuffix(got, "\n\ndeploy\nrollback") {
+		t.Fatalf("body = %q", got)
 	}
 }
 
-// Same cwd must render byte-identical block 1, or every rebuild pays a cache
-// write for nothing.
-func TestIdentityBlockIsByteStable(t *testing.T) {
-	t.Parallel()
-
-	first := buildIdentityBlock("/tmp/ws")
-	if first != buildIdentityBlock("/tmp/ws") {
-		t.Fatal("identity block must be byte-stable for the same input")
+func TestProjectAndMemory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("project rule\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for _, want := range []string{"expert coding assistant", "/tmp/ws", "Today's date: "} {
-		if !strings.Contains(first, want) {
-			t.Errorf("identity block missing %q", want)
-		}
+	if got := Project(cwd).Body; got != "project rule" {
+		t.Fatalf("project = %q", got)
+	}
+	// MEMORY.md is promised to be in context, so an empty one says so.
+	if got := Memory(cwd).Body; !strings.Contains(got, "currently empty") {
+		t.Fatalf("memory = %q", got)
+	}
+}
+
+func TestGitOutsideARepository(t *testing.T) {
+	if got := Git(t.TempDir()); got.Body != "" {
+		t.Fatalf("body = %q", got.Body)
 	}
 }
