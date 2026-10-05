@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/voocel/codebot/internal/frontmatter"
 )
 
 // Spec is a skill.
@@ -88,21 +90,8 @@ func normalizeName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-// splitFrontmatter returns the YAML between a leading pair of "---" lines,
-// and what follows it.
-func splitFrontmatter(content string) (frontmatter, body string) {
-	if !strings.HasPrefix(content, "---\n") && !strings.HasPrefix(content, "---\r\n") {
-		return "", content
-	}
-	frontmatter, after, ok := strings.Cut(content[4:], "\n---")
-	if !ok {
-		return "", content
-	}
-	return frontmatter, strings.TrimLeft(after, "\r\n")
-}
-
 func stripFrontmatter(content string) string {
-	_, body := splitFrontmatter(content)
+	_, body, _ := frontmatter.Split(content)
 	return strings.TrimSpace(body)
 }
 

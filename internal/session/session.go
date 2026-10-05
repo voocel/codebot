@@ -56,10 +56,10 @@ type RunSpec struct {
 	// Config configures the runs; its Compactor, which Compact uses too,
 	// must be set. The Agent sets its Emit, Steering and FollowUp.
 	Config agentcore.Config
-	// WrapRun, when set, is called as each run starts and returns the run's
+	// WrapRun is called as each run starts and returns the run's
 	// context and a function called with the run's error when it ends.
 	WrapRun func(ctx context.Context) (context.Context, func(err error))
-	// Context, when set, returns the messages that tell the model what
+	// Context returns the messages that tell the model what
 	// history does not tell of its context as it now is. They go ahead of
 	// the inputs of each run, and after the history a compaction wrote,
 	// which drops the messages that told it before.
@@ -165,22 +165,19 @@ func (s *Session) Compact(ctx context.Context) error {
 // Query asks the model a one-off question after the current history and the
 // context it does not tell, sharing the conversation's request prefix and
 // prompt cache. Neither the question nor the answer enters the history.
-// edit, if set, adjusts the request.
-func (s *Session) Query(ctx context.Context, prompt string, edit func(*litellm.Request)) (string, error) {
+// maxTokens, if positive, bounds the answer.
+func (s *Session) Query(ctx context.Context, prompt string, maxTokens int) (string, error) {
 	var call agentcore.Call
 	if !s.do(func() {
 		history := s.agent.Messages()
-		if s.spec.Context != nil {
-			history = append(history, s.spec.Context(history)...)
-		}
-		call = agentcore.BuildCall(s.spec.Config, history)
+		call = agentcore.BuildCall(s.spec.Config, append(history, s.spec.Context(history)...))
 	}) {
 		return "", ErrClosed
 	}
 	req := call.Request
 	req.Messages = append(req.Messages, litellm.UserText(prompt))
-	if edit != nil {
-		edit(&req)
+	if maxTokens > 0 {
+		req.MaxTokens = &maxTokens
 	}
 	resp, err := call.Client.Chat(ctx, req)
 	if err != nil {
@@ -430,9 +427,7 @@ func (s *Session) startPending() {
 // start runs prompts on the Agent, after the context they need; the run
 // hands control back to the actor when it ends.
 func (s *Session) start(prompts []agentcore.Message) {
-	if s.spec.Context != nil {
-		prompts = append(s.spec.Context(s.agent.Messages()), prompts...)
-	}
+	prompts = append(s.spec.Context(s.agent.Messages()), prompts...)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.run = &run{cancel: cancel}
 	s.refreshStatus()
@@ -440,10 +435,7 @@ func (s *Session) start(prompts []agentcore.Message) {
 	spec := s.spec
 	go func() {
 		defer cancel()
-		end := func(error) {}
-		if spec.WrapRun != nil {
-			ctx, end = spec.WrapRun(ctx)
-		}
+		ctx, end := spec.WrapRun(ctx)
 		err := s.agent.Prompt(ctx, prompts...)
 		end(err)
 		s.ops.push(s.runEnded)
@@ -494,9 +486,7 @@ func (s *Session) observe(ev agentcore.Event) error {
 // context again.
 func (spec RunSpec) agentConfig() agentcore.Config {
 	cfg := spec.Config
-	if spec.Context != nil {
-		cfg.Compactor = retelling{cfg.Compactor, spec.Context}
-	}
+	cfg.Compactor = retelling{cfg.Compactor, spec.Context}
 	return cfg
 }
 

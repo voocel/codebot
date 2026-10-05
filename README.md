@@ -153,6 +153,10 @@ All fields are optional. See [settings.example.jsonc](settings.example.jsonc) fo
 
 Provider entries support `extra` for connection settings sent as HTTP/client config, never as request-body fields: `user_agent`, `headers`, and `anthropic_beta` (an explicit `anthropic-beta` header wins); Bedrock takes `region`, `access_key_id`, `secret_access_key`, and optionally `session_token` instead of `api_key`.
 
+A provider of type `anthropic` loads tools on demand through tool search, which takes Claude 4.5 or later; older Claude models, and other vendors' models behind an Anthropic-compatible endpoint, may reject such requests.
+
+For Claude on Amazon Bedrock, use Bedrock's Messages API rather than Converse: `type: "anthropic"`, `base_url: "https://bedrock-mantle.<region>.api.aws/anthropic"`, a Bedrock API key as `api_key`, and model IDs such as `anthropic.claude-opus-5-5`. It takes Anthropic's request format, so tools load on demand through tool search as with Anthropic. Converse cannot defer tools: a tool that joins mid-conversation, such as from an MCP server that connected late, changes the request, which restarts the prompt cache and can get the request rejected by Claude models that bind their thinking to it (Fable 5.1, Opus 5.5, Sonnet 5.5).
+
 Context windows, output caps, and prices come from LiteLLM's model list: a snapshot built into codebot, refreshed daily into `~/.codebot/litellm-models.json`.
 
 OpenAI-protocol providers also support `api: "chat"` (default) or `api: "responses"` to choose between `/v1/chat/completions` and `/v1/responses`.

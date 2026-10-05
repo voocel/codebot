@@ -6,57 +6,31 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// AgentHub is a fan-out point for events produced by background sub-agent
-// runs, which reach it through their Config.Emit; whatever observes their
-// activity (the TUI transcript view) subscribes here.
-//
-// Design constraints:
-//   - Publish is hot-path (called once per event by every run goroutine).
-//     It MUST NOT block on a slow subscriber, or it stalls the run that
-//     produced the event. Each subscriber gets a buffered chan with a
-//     drop-oldest policy.
-//   - Subscribers come and go (modal opens/closes). Subscribe returns an
-//     unsubscribe function instead of exposing the underlying map.
-//   - Late subscribers must see what they missed. Every published event but
-//     the streamed deltas, which the MessageEnd that follows them repeats, is
-//     also appended to a per-agent ring buffer; Subscribe hands back a
-//     snapshot before wiring the live channel. The ring outlives MarkStopped
-//     so an observer can open an agent's transcript after it has finished.
+// AgentHub fans out the events of background sub-agent runs, which reach it
+// through their Config.Emit, to whatever observes them (the TUI transcript
+// view). Publishing never blocks a run: a subscriber that falls behind loses
+// its oldest events. Each agent's events but the streamed deltas, which the
+// MessageEnd after them repeats, are kept in a bounded ring, so a late
+// subscriber, even one opening a finished agent, sees what it missed.
 type AgentHub struct {
-	mu     sync.RWMutex
-	subs   map[string]map[int]chan agentcore.Event // agentName → subId → chan
-	nextID int
-
-	// active tracks agents currently publishing: set by Publish, cleared by
-	// MarkStopped. The history ring is NOT cleared on stop — late observers
-	// can still review a finished agent's transcript.
-	active map[string]bool
-
-	// history retains a bounded replay buffer per agent. Survives MarkStopped
-	// until the hub itself is discarded (session end). nil ring == agent has
-	// never published.
-	history map[string]*eventRing
+	mu      sync.RWMutex
+	subs    map[string]map[int]chan agentcore.Event // agent → subscription → channel
+	nextID  int
+	active  map[string]bool       // agents publishing: set by Publish, cleared by MarkStopped
+	history map[string]*eventRing // agents that have published, stopped ones included
 }
 
-// AgentInfo describes a known agent: its name and whether it is still
-// publishing events. Returned by KnownAgents so the UI can render an "ended"
-// indicator without a second round-trip.
+// AgentInfo is an agent the hub knows and whether it is still publishing.
 type AgentInfo struct {
 	Name   string
 	Active bool
 }
 
-// subBufferSize bounds a subscriber's live queue. Large enough that a normal
-// UI catches up trivially; small enough that an unresponsive subscriber's
-// memory growth is capped. With drop-oldest we never block, so this is a
-// memory cap rather than a correctness knob.
+// subBufferSize bounds a subscriber's live queue.
 const subBufferSize = 64
 
-// historyCapacity bounds the per-agent replay ring. A typical turn
-// produces ~5–10 events (message start and end, tool start and end, …); 512
-// holds roughly the last 50–100 turns. Above that the oldest events scroll
-// off — a user opening the modal sees a truncated head but the tail is
-// always current.
+// historyCapacity bounds an agent's replay ring: some 50–100 turns of 5–10
+// events each.
 const historyCapacity = 512
 
 // NewAgentHub returns an empty hub ready to use.
@@ -68,17 +42,9 @@ func NewAgentHub() *AgentHub {
 	}
 }
 
-// Publish delivers ev to every current subscriber of agentName and appends it
-// to the per-agent history ring. Non-blocking: if a subscriber's buffer is
-// full, the oldest queued event is dropped to make room — slow consumers lose
-// history, never block the publisher. It marks agentName active.
-//
-// Lock discipline: Publish does ring write + chan sends inside the mutex, in
-// strict serialisation with Subscribe's unsubscribe (which closes the chan).
-// Without that ordering, a subscriber that cancels mid-publish would let us
-// send on a closed chan and panic. The sends themselves are non-blocking
-// (drop-oldest), so holding the lock briefly is fine — the hot path is
-// O(subscribers) channel operations, not I/O.
+// Publish records ev in agentName's history, marks the agent active and
+// sends ev to its subscribers. It sends under the lock, so an unsubscribe,
+// which closes the channel, cannot race it; the sends do not block.
 func (h *AgentHub) Publish(agentName string, ev agentcore.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -105,14 +71,9 @@ func (h *AgentHub) MarkStopped(agentName string) {
 	h.active[agentName] = false
 }
 
-// Subscribe registers a listener for agentName's events. Returns the recorded
-// history as a snapshot slice (oldest first) plus a live channel for events
-// arriving after the snapshot was taken. The caller MUST consume the history
-// slice before reading the channel so its transcript renders in order.
-//
-// The channel is buffered (subBufferSize); the publisher drops the oldest
-// queued event when full. cancel MUST be called when the listener is done —
-// it removes the channel from the routing table and closes it.
+// Subscribe returns agentName's history, oldest first, and a channel of the
+// events published after it; handle the history first. cancel ends the
+// subscription and closes the channel.
 func (h *AgentHub) Subscribe(agentName string) ([]agentcore.Event, <-chan agentcore.Event, func()) {
 	ch := make(chan agentcore.Event, subBufferSize)
 	h.mu.Lock()
@@ -144,9 +105,7 @@ func (h *AgentHub) Subscribe(agentName string) ([]agentcore.Event, <-chan agentc
 	}
 }
 
-// ActiveAgents returns the names that are currently publishing — i.e. have
-// published at least once and have not been MarkStopped'd. For the broader
-// roster (including agents that already finished) use KnownAgents.
+// ActiveAgents returns the agents publishing.
 func (h *AgentHub) ActiveAgents() []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -159,10 +118,8 @@ func (h *AgentHub) ActiveAgents() []string {
 	return out
 }
 
-// KnownAgents returns every agent that has ever published an event in this
-// session, alongside its current active flag. Use this for "which agents
-// can I open in the transcript modal?" — already-finished agents still have
-// a readable history.
+// KnownAgents returns every agent that has published, finished ones
+// included, whose history can still be read.
 func (h *AgentHub) KnownAgents() []AgentInfo {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -173,18 +130,15 @@ func (h *AgentHub) KnownAgents() []AgentInfo {
 	return out
 }
 
-// IsActive reports whether agentName is currently publishing events. Returns
-// false for unknown names and for known-but-stopped agents.
+// IsActive reports whether agentName is publishing.
 func (h *AgentHub) IsActive(agentName string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.active[agentName]
 }
 
-// eventRing is a fixed-capacity circular buffer of events. push is O(1) and
-// overwrites the oldest slot when full; snapshot returns a freshly-allocated
-// slice in chronological order. Not safe for concurrent use — callers hold
-// AgentHub.mu while touching it.
+// eventRing keeps the latest events, overwriting the oldest when full.
+// Callers hold AgentHub.mu.
 type eventRing struct {
 	buf  []agentcore.Event
 	head int  // next write position
@@ -215,22 +169,17 @@ func (r *eventRing) snapshot() []agentcore.Event {
 	return out
 }
 
-// nonBlockingSend pushes ev onto ch; if ch is full, drops the oldest queued
-// event and retries. This guarantees the publisher never blocks. The drop is
-// silent — the UI sees a discontinuity in its event stream but the run
-// goroutine stays responsive.
+// nonBlockingSend sends ev on ch, dropping the oldest queued event when ch
+// is full.
 func nonBlockingSend(ch chan agentcore.Event, ev agentcore.Event) {
 	for {
 		select {
 		case ch <- ev:
 			return
 		default:
-			// Drain one event to make room. If another goroutine raced us
-			// and emptied the channel, the next iteration's send succeeds.
 			select {
 			case <-ch:
-			default:
-				// Channel emptied between the two selects — retry send.
+			default: // the subscriber drained it meanwhile
 			}
 		}
 	}

@@ -22,20 +22,17 @@ func TestTurnResultMapsTheRunsEnd(t *testing.T) {
 		{"aborted", end(agentcore.EndAborted), acp.StopReasonCancelled},
 	}
 	for _, tt := range tests {
-		resp, err := turnResult(tt.run, nil)
+		resp, err := turnResult(tt.run)
 		if err != nil || resp.StopReason != tt.want {
 			t.Errorf("%s: got (%q, %v), want %q", tt.name, resp.StopReason, err, tt.want)
 		}
 	}
 }
 
-// A failed run is a failed prompt, carrying the run's error when there is one.
+// A failed run is a failed prompt, carrying the run's error.
 func TestTurnResultFailsAnErroredRun(t *testing.T) {
-	run := &agentcore.RunEnd{Reason: agentcore.EndError}
-	if _, err := turnResult(run, errors.New("rate limited")); err == nil || !strings.Contains(err.Error(), "rate limited") {
+	run := &agentcore.RunEnd{Reason: agentcore.EndError, Err: errors.New("rate limited")}
+	if _, err := turnResult(run); err == nil || !strings.Contains(err.Error(), "rate limited") {
 		t.Fatalf("err = %v, want the run's error", err)
-	}
-	if _, err := turnResult(run, nil); err == nil {
-		t.Fatal("an errored run without a recorded error still fails the prompt")
 	}
 }

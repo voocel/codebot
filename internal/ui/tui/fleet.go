@@ -118,9 +118,9 @@ func (m *Model) handleFleetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.fleetExit()
 		return m, nil, true
 	case "x":
-		// Stop the selected agent; stay in the list so the user can stop
-		// others. The task's abort produces EventAgentEnd → hub MarkStopped →
-		// the row flips to "ended" on the next render. (No-op on the main row.)
+		// Stop the selected agent and stay in the list to stop others. The
+		// run's RunEnd marks it stopped in the hub, which the row shows as
+		// "ended". The main row cannot be stopped here.
 		if m.FleetCursor >= 1 {
 			if e := m.agentTask(agents[m.FleetCursor-1].Name); e != nil {
 				m.tasks.Stop(e.ID)

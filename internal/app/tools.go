@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"strconv"
-	"strings"
 
 	"github.com/voocel/agentcore"
 	coresub "github.com/voocel/agentcore/subagent"
@@ -100,10 +98,13 @@ var coreToolNames = map[string]bool{
 	"ask_user":   true,
 }
 
-// withToolSearch defers the non-core tools behind tool_search when the model
-// supports it.
-func withToolSearch(all []agentcore.Tool, client *litellm.Client, model string) []agentcore.Tool {
-	if !supportsToolSearch(client, model) {
+// withToolSearch defers the non-core tools behind tool_search when the
+// model's adapter defers tools, as Anthropic's does: the models it serves are
+// taken to be Claude 4.5 or later, which take deferred tools. Elsewhere a
+// tool search would add each tool it finds to the request mid-session, which
+// restarts the prompt cache and invalidates Claude's thinking.
+func withToolSearch(all []agentcore.Tool, client *litellm.Client) []agentcore.Tool {
+	if caps, _ := client.Capabilities(); !caps.DeferredTools {
 		return all
 	}
 	var visible, deferred []agentcore.Tool
@@ -118,42 +119,4 @@ func withToolSearch(all []agentcore.Tool, client *litellm.Client, model string) 
 		return all
 	}
 	return append(visible, agentcoretools.Defer(deferred)...)
-}
-
-// supportsToolSearch reports whether a model takes deferred tools: Claude
-// 4.5 and later, not Haiku, behind an adapter whose vendor defers them.
-// Elsewhere a tool search would add each tool it finds to the request
-// mid-session, which restarts the prompt cache and invalidates Claude's
-// thinking.
-func supportsToolSearch(client *litellm.Client, model string) bool {
-	if caps, _ := client.Capabilities(); !caps.DeferredTools {
-		return false
-	}
-	// claude-<family>-<version>, as claude-sonnet-4-5 and claude-fable-5-1;
-	// names led by the version, as claude-3-5-sonnet, are older.
-	m := strings.ToLower(model)
-	family, version, _ := strings.Cut(strings.TrimPrefix(m, "claude-"), "-")
-	if !strings.HasPrefix(m, "claude-") || family == "haiku" || strings.ContainsAny(family, "0123456789") {
-		return false
-	}
-	return versionAtLeast(version, 4, 5)
-}
-
-// versionAtLeast reports whether a version as model names write it, as 4-5,
-// 4.5 or 4, perhaps followed by the date of a snapshot, is at least
-// major.minor.
-func versionAtLeast(s string, major, minor int) bool {
-	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '-' || r == '.' })
-	if len(parts) == 0 {
-		return false
-	}
-	ma, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return false
-	}
-	mi := 0
-	if len(parts) > 1 && len(parts[1]) <= 2 {
-		mi, _ = strconv.Atoi(parts[1])
-	}
-	return ma > major || ma == major && mi >= minor
 }

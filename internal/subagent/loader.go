@@ -1,20 +1,16 @@
 package subagent
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
-)
 
-// frontmatterDelim is the canonical marker for YAML frontmatter in markdown
-// files. Both the opening and closing lines are this exact string on its own
-// line — no flexibility on delimiters, because the grammar is shared with
-// every other tool that touches these files (editors, plugins, GitHub).
-const frontmatterDelim = "---"
+	"github.com/voocel/codebot/internal/frontmatter"
+)
 
 // agentFrontmatter is the strict schema for the YAML block at the top of a
 // .codebot/agents/*.md file. Every field a user might set must appear here;
@@ -74,13 +70,14 @@ func loadAgentFile(path, filename string) (AgentDefinition, error) {
 	if err != nil {
 		return AgentDefinition{}, err
 	}
-	front, body, err := splitFrontmatter(raw)
-	if err != nil {
-		return AgentDefinition{}, err
+	// Every agent file declares its metadata in a frontmatter block.
+	front, body, ok := frontmatter.Split(string(raw))
+	if !ok {
+		return AgentDefinition{}, errors.New(`missing YAML frontmatter: the file must open with a "---" line and close the block with another`)
 	}
 
 	var fm agentFrontmatter
-	dec := yaml.NewDecoder(bytes.NewReader(front))
+	dec := yaml.NewDecoder(strings.NewReader(front))
 	dec.KnownFields(true) // strict: unknown keys are errors, not silently ignored
 	if err := dec.Decode(&fm); err != nil {
 		return AgentDefinition{}, fmt.Errorf("parse frontmatter: %w", err)
@@ -97,7 +94,7 @@ func loadAgentFile(path, filename string) (AgentDefinition, error) {
 	def := AgentDefinition{
 		Name:            name,
 		Description:     fm.Description,
-		SystemPrompt:    strings.TrimSpace(string(body)),
+		SystemPrompt:    strings.TrimSpace(body),
 		Tools:           fm.Tools,
 		DisallowedTools: fm.DisallowedTools,
 		Model:           fm.Model,
@@ -108,64 +105,4 @@ func loadAgentFile(path, filename string) (AgentDefinition, error) {
 		return AgentDefinition{}, err
 	}
 	return def, nil
-}
-
-// splitFrontmatter pulls the YAML preamble out of a markdown file. Returns
-// the (frontmatterBytes, bodyBytes) pair. Files without a frontmatter block
-// are an error — every agent file MUST declare its metadata explicitly so
-// that name/description are never inferred from filenames alone.
-//
-// The parser is line-oriented and accepts only the canonical "---" lines,
-// with LF or CRLF endings. A BOM or fenced markdown is not handled — a
-// forgiving parser would mask real bugs in the user's editor pipeline.
-func splitFrontmatter(raw []byte) (front, body []byte, err error) {
-	// Accept either "---\n" or "---\r\n" as the leading delimiter. Anything
-	// else means no frontmatter block.
-	trimmed := raw
-	switch {
-	case bytes.HasPrefix(trimmed, []byte(frontmatterDelim+"\n")):
-		trimmed = trimmed[len(frontmatterDelim)+1:]
-	case bytes.HasPrefix(trimmed, []byte(frontmatterDelim+"\r\n")):
-		trimmed = trimmed[len(frontmatterDelim)+2:]
-	default:
-		return nil, nil, fmt.Errorf("missing YAML frontmatter block (file must start with %q)", frontmatterDelim)
-	}
-
-	// Find the closing delimiter on its own line. Search line-by-line so a
-	// literal "---" inside the YAML body (rare but legal) doesn't confuse us.
-	end := indexLine(trimmed, frontmatterDelim)
-	if end < 0 {
-		return nil, nil, fmt.Errorf("frontmatter block not closed (missing trailing %q line)", frontmatterDelim)
-	}
-	return trimmed[:end], trimmed[end+len(frontmatterDelim):], nil
-}
-
-// indexLine returns the byte offset of the first line that equals `target`
-// exactly (no leading/trailing whitespace, terminated by \n or end of input).
-// Returns -1 if not found. Built for splitFrontmatter's "find the closing
-// ---" use case — not a general-purpose line search.
-func indexLine(haystack []byte, target string) int {
-	t := []byte(target)
-	off := 0
-	for off < len(haystack) {
-		end := bytes.IndexByte(haystack[off:], '\n')
-		var line []byte
-		if end < 0 {
-			line = haystack[off:]
-		} else {
-			line = haystack[off : off+end]
-		}
-		// Strip trailing CR for CRLF files.
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
-		}
-		if bytes.Equal(line, t) {
-			return off
-		}
-		if end < 0 {
-			return -1
-		}
-		off += end + 1
-	}
-	return -1
 }

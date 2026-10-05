@@ -77,17 +77,10 @@ func (m *Model) handleRestore() (tea.Model, tea.Cmd) {
 }
 
 // restoredUserText is what the user wrote in msg, "" for a message the
-// harness added. Reminders come before the user's text, in blocks of their
-// own.
+// harness added.
 func restoredUserText(msg agentcore.Message) string {
 	if msg.Kind != "" {
 		return ""
 	}
-	var last string
-	for _, block := range msg.Blocks {
-		if t, ok := block.(litellm.TextBlock); ok && t.Text != "" {
-			last = t.Text
-		}
-	}
-	return last
+	return msg.Text()
 }

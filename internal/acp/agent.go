@@ -30,7 +30,6 @@ type Server struct {
 	conn atomic.Pointer[acp.AgentSideConnection]
 
 	mu           sync.Mutex
-	runErr       error                           // the last run error since the prompt began
 	pendingEdits map[acp.ToolCallId]editSnapshot // pre-exec file snapshots for native diffs
 }
 
@@ -93,9 +92,6 @@ func (s *Server) Prompt(ctx context.Context, req acp.PromptRequest) (acp.PromptR
 		return acp.PromptResponse{}, err
 	}
 	conv := s.app.Current()
-	s.mu.Lock()
-	s.runErr = nil
-	s.mu.Unlock()
 	if err := conv.Submit(ctx, blocks); err != nil {
 		return acp.PromptResponse{}, err
 	}
@@ -106,10 +102,7 @@ func (s *Server) Prompt(ctx context.Context, req acp.PromptRequest) (acp.PromptR
 		}
 		return acp.PromptResponse{}, err
 	}
-	s.mu.Lock()
-	runErr := s.runErr
-	s.mu.Unlock()
-	return turnResult(conv.Status().LastRun, runErr)
+	return turnResult(conv.Status().LastRun)
 }
 
 // promptBlocks converts the prompt's text and image blocks.
@@ -135,7 +128,7 @@ func promptBlocks(blocks []acp.ContentBlock) ([]litellm.Block, error) {
 
 // turnResult maps how the last run ended to the prompt's response. ACP has
 // no error stop reason, so a failed run is a JSON-RPC error.
-func turnResult(run *agentcore.RunEnd, runErr error) (acp.PromptResponse, error) {
+func turnResult(run *agentcore.RunEnd) (acp.PromptResponse, error) {
 	if run == nil {
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}
@@ -145,10 +138,7 @@ func turnResult(run *agentcore.RunEnd, runErr error) (acp.PromptResponse, error)
 	case agentcore.EndAborted:
 		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
 	case agentcore.EndError:
-		if runErr == nil {
-			runErr = errors.New("agent run ended with an error")
-		}
-		return acp.PromptResponse{}, fmt.Errorf("acp: %w", runErr)
+		return acp.PromptResponse{}, fmt.Errorf("acp: %w", run.Err)
 	default:
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}

@@ -47,7 +47,7 @@ type BuildDeps struct {
 	// runs its own loop and inherits none from the parent.
 	Middleware []agentcore.ToolMiddleware
 
-	// Emit, if set, returns where the events of a run go, nil for nowhere.
+	// Emit returns where the events of a run go, nil for nowhere.
 	Emit func(coresub.Spawn) func(agentcore.Event) error
 }
 
@@ -86,13 +86,10 @@ func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 				// Breakpoints on the freshest message and where the call
 				// before ended, so each call reads the one before from the
 				// cache.
-				Cache: &litellm.CacheControl{},
-			}
-			if deps.CompactAt > 0 {
-				cfg.Compactor, cfg.CompactAt = compact.Summarizer{}, deps.CompactAt
-			}
-			if deps.Emit != nil {
-				cfg.Emit = deps.Emit(s)
+				Cache:     &litellm.CacheControl{},
+				Compactor: compact.Summarizer{},
+				CompactAt: deps.CompactAt,
+				Emit:      deps.Emit(s),
 			}
 			return cfg, nil
 		},

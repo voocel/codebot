@@ -128,8 +128,8 @@ func (c *SettingsCommand) renderRuntime(width int) string {
 	}
 	p.Row("Max Turns", fmt.Sprintf("%d", s.MaxTurns))
 	p.Row("Mode", string(c.app.Mode()))
-	if s.SmallModel != "" && s.SmallModel != st.Model {
-		p.Hint("SubAgent", s.SmallModel)
+	if st.SmallModel != st.Model {
+		p.Hint("SubAgent", st.SmallModel)
 	}
 	return p.Render()
 }

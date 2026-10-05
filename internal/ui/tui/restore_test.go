@@ -17,8 +17,11 @@ func TestRestoreRendersLikeLive(t *testing.T) {
 	m := testModel("test-model")
 	notification := agentcore.UserText("<task-notification>done</task-notification>")
 	notification.Kind = task.KindNotification
+	reminder := agentcore.UserText("<system-reminder>context</system-reminder>")
+	reminder.Kind = "reminder"
 	m.restored = []agentcore.Message{
-		agentcore.User(litellm.Text("<system-reminder>context</system-reminder>"), litellm.Text("look around")),
+		reminder,
+		agentcore.UserText("look around"),
 		{Role: litellm.RoleAssistant, Blocks: []litellm.Block{
 			litellm.ToolUseBlock{ID: "a", Name: "bash", Arguments: `{"command":"echo one"}`},
 			litellm.ToolUseBlock{ID: "b", Name: "read", Arguments: `{"file_path":"main.go"}`},

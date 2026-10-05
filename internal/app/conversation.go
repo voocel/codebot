@@ -83,12 +83,13 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 	if a.settings.Snapshot && worktree.IsRepo(a.cwd) {
 		c.snapshots = snapshot.New(config.SnapshotDir(a.cwd), a.cwd, config.UndoStatePath(a.cwd, id))
 	}
-	if c.hooks = hooks.New(a.settings.Hooks, id, a.approval, c.sideModel); c.hooks != nil {
+	if c.hooks = hooks.New(a.settings.Hooks, id, a.approval, c.hookModel); c.hooks != nil {
 		c.validator = &validation{hooks: c.hooks}
 	}
 	config.EnsureMemoryDir(a.cwd)
 	c.workspace = a.workspace(a.cwd)
 	c.tools = c.buildTools()
+	c.mcpTools, _ = a.mcpSnapshot()
 
 	if c.session, err = session.Open(store, state, c.specLocked()); err != nil {
 		c.tasks.StopAll()
@@ -141,40 +142,51 @@ func (c *Conversation) Subscribe(fn func(session.Event)) (unsubscribe func()) {
 }
 
 // Submit sends the user's input. UserPromptSubmit hooks run first: a blocking
-// hook rejects the input, and additional context they return is attached to
-// it.
+// hook rejects the input, and context they add goes ahead of it.
 func (c *Conversation) Submit(ctx context.Context, blocks []litellm.Block) error {
-	blocks, err := c.promptSubmit(ctx, blocks)
+	msgs, err := c.promptSubmit(ctx, blocks)
 	if err != nil {
 		return err
 	}
-	c.post(blocks)
+	c.post(msgs)
 	return nil
 }
 
-// promptSubmit runs the UserPromptSubmit hooks over the user's input.
-func (c *Conversation) promptSubmit(ctx context.Context, blocks []litellm.Block) ([]litellm.Block, error) {
+// promptSubmit runs the UserPromptSubmit hooks over the user's input and
+// returns what to post: the context they add, then the input.
+func (c *Conversation) promptSubmit(ctx context.Context, blocks []litellm.Block) ([]agentcore.Message, error) {
+	input := agentcore.User(blocks...)
 	if c.hooks == nil {
-		return blocks, nil
+		return []agentcore.Message{input}, nil
 	}
-	dec, err := c.hooks.RunUserPromptSubmit(ctx, agentcore.User(blocks...).Text())
+	dec, err := c.hooks.RunUserPromptSubmit(ctx, input.Text())
 	if err != nil {
 		return nil, err
 	}
 	if extra := strings.TrimSpace(dec.AdditionalContext); extra != "" {
-		blocks = append([]litellm.Block{litellm.Text(reminder(extra))}, blocks...)
+		return []agentcore.Message{reminderMessage(extra), input}, nil
 	}
-	return blocks, nil
+	return []agentcore.Message{input}, nil
 }
 
-func (c *Conversation) post(blocks []litellm.Block) {
-	c.session.Post(session.Input{Source: session.User, Msg: agentcore.User(blocks...)})
+func (c *Conversation) post(msgs []agentcore.Message) {
+	for _, m := range msgs {
+		c.session.Post(session.Input{Source: session.User, Msg: m})
+	}
 }
 
 // reminder wraps harness-provided context so the model does not take it for
 // the user's words.
 func reminder(text string) string {
 	return "<system-reminder>\n" + text + "\n</system-reminder>"
+}
+
+// reminderMessage is a message of harness-provided context, which frontends
+// do not show as the user's.
+func reminderMessage(text string) agentcore.Message {
+	m := agentcore.UserText(reminder(text))
+	m.Kind = kindReminder
+	return m
 }
 
 // background posts a finished background task's notification.
@@ -196,15 +208,13 @@ func (c *Conversation) Compact(ctx context.Context) error { return c.session.Com
 // adding to it. It thinks as the conversation does: a request that thinks
 // otherwise reads none of the conversation from the prompt cache.
 func (c *Conversation) Query(ctx context.Context, question string) (string, error) {
-	return c.session.Query(ctx, question, nil)
+	return c.session.Query(ctx, question, 0)
 }
 
 // Suggest predicts what the user may type next, or "" when nothing fits. It
 // thinks as the conversation does, as Query.
 func (c *Conversation) Suggest(ctx context.Context) (string, error) {
-	text, err := c.session.Query(ctx, prompt.Suggestion, func(req *litellm.Request) {
-		req.MaxTokens = new(suggestionMaxTokens)
-	})
+	text, err := c.session.Query(ctx, prompt.Suggestion, suggestionMaxTokens)
 	if err != nil {
 		return "", err
 	}
@@ -225,16 +235,22 @@ type Status struct {
 	Cwd      string
 	Worktree string // sandbox directory; "" outside a worktree
 	Tasks    int    // running background tasks
+	// SmallModel runs the explore sub-agent.
+	SmallModel string
 }
 
 // Status returns the conversation's status.
 func (c *Conversation) Status() Status {
+	c.mu.Lock()
+	small := c.model.small
+	c.mu.Unlock()
 	return Status{
-		Status:   c.session.Status(),
-		Mode:     c.app.Mode(),
-		Cwd:      c.Cwd(),
-		Worktree: c.Worktree(),
-		Tasks:    c.tasks.Active(),
+		Status:     c.session.Status(),
+		Mode:       c.app.Mode(),
+		Cwd:        c.Cwd(),
+		Worktree:   c.Worktree(),
+		Tasks:      c.tasks.Active(),
+		SmallModel: small,
 	}
 }
 
@@ -264,12 +280,12 @@ func (c *Conversation) SetModel(prov, name, effort string) error {
 	c.tools = c.buildTools()
 	c.configureLocked()
 	c.mu.Unlock()
-	return config.PatchEffectiveSettings(c.app.cwd, config.Settings{Provider: &prov, Model: &name, SmallModel: &choice.small, ReasoningEffort: &effort})
+	return config.PatchEffectiveSettings(c.app.cwd, config.Settings{Provider: &prov, Model: &name, ReasoningEffort: &effort})
 }
 
-// sideModel is the model the conversation talks to now, for side calls:
-// without the reasoning effort.
-func (c *Conversation) sideModel() agentcore.Model {
+// hookModel is the model prompt hooks call: the conversation's, without its
+// reasoning effort.
+func (c *Conversation) hookModel() agentcore.Model {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.model.model
@@ -277,6 +293,15 @@ func (c *Conversation) sideModel() agentcore.Model {
 
 // suggestionMaxTokens bounds a suggestion's response, reasoning included.
 const suggestionMaxTokens = 2048
+
+// mcpChanged adds the tools the MCP servers now offer to the conversation's,
+// which only grow (see growTools); they apply from the next run.
+func (c *Conversation) mcpChanged(tools []agentcore.Tool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mcpTools = growTools(c.mcpTools, tools)
+	c.configureLocked()
+}
 
 // Reload re-reads the workspace the model is told about, after the user
 // reloaded plugins. The model is told what changed as the next run starts.
@@ -309,14 +334,14 @@ func (c *Conversation) InvokeSkill(ctx context.Context, name, args string) (stri
 		}
 		return res.Text(), nil
 	}
-	blocks, err := c.promptSubmit(ctx, []litellm.Block{litellm.Text(inv.Prompt)})
+	msgs, err := c.promptSubmit(ctx, []litellm.Block{litellm.Text(inv.Prompt)})
 	if err != nil {
 		return "", err
 	}
 	// Granted before the prompt is posted, so the run it lands in has the
 	// skill's tools.
 	c.skillInvoked(inv)
-	c.post(blocks)
+	c.post(msgs)
 	return "", nil
 }
 

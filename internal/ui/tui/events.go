@@ -166,9 +166,8 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 
 	case agentcore.ToolStart:
 		call := e.Call
-		// Hidden tools (task_*) skip the visible pipeline entirely: no header,
-		// no output buffer, no tool count. The call still happens in the agent
-		// loop — only the TUI side is silent.
+		// A hidden call (app.HiddenToolCall) gets no header, output or
+		// count; only the transcript leaves it out.
 		if app.HiddenToolCall(call.Name, call.Args) {
 			m.HiddenToolCalls[call.ID] = struct{}{}
 			break

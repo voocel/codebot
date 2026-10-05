@@ -25,7 +25,7 @@ func TestMCPServersMergeByName(t *testing.T) {
 		"search": {"type": "http", "url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"}}}}`)
 	writeSettings(t, SettingsPath(cwd), `{"mcp_servers": {"docs": {"command": "project-docs", "args": ["-v"]}}}`)
 
-	r, err := LoadSettingsStrict(cwd)
+	r, err := Load(cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestPatchKeepsMCPServers(t *testing.T) {
 	if err := patchSettingsFile(globalSettingsPath(), Settings{Model: &model}); err != nil {
 		t.Fatal(err)
 	}
-	saved, err := loadSettingsFileStrict(path)
+	saved, err := loadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}

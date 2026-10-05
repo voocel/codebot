@@ -51,7 +51,7 @@ func (m *Model) View() string {
 		}
 		// Only show the assistant bullet when there's actual streamed text.
 		// An "empty bullet" frame appears when the assistant message contains
-		// only tool_use blocks (e.g. hidden task_* calls) — IsStream goes
+		// only tool_use blocks (e.g. a hidden todo_write call) — IsStream goes
 		// true at MessageStart, no text deltas arrive, then IsStream clears
 		// at MessageEnd. The Running spinner in the status bar already
 		// signals "agent is working", so we drop the bare bullet to avoid

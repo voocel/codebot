@@ -55,7 +55,7 @@ func (UI) Ask(context.Context, []interact.Question) (interact.Answers, error) {
 func Run(a *app.App, args []string, jsonMode bool) error {
 	prompt := strings.Join(args, " ")
 	if prompt == "" {
-		stdinPrompt, err := ReadStdinPrompt()
+		stdinPrompt, err := readStdinPrompt()
 		if err != nil {
 			return fmt.Errorf("stdin error: %w", err)
 		}
@@ -185,8 +185,8 @@ func (p *printer) onAgentEvent(ev agentcore.Event) {
 	}
 }
 
-// ReadStdinPrompt reads all of stdin as a prompt (for pipe usage).
-func ReadStdinPrompt() (string, error) {
+// readStdinPrompt reads all of stdin as a prompt (for pipe usage).
+func readStdinPrompt() (string, error) {
 	info, _ := os.Stdin.Stat()
 	if info.Mode()&os.ModeCharDevice != 0 {
 		// Not piped, no stdin input.

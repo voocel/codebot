@@ -111,10 +111,4 @@ func (a *App) systemPrompt() []litellm.Block {
 
 // cache is every cache breakpoint of the conversation's requests. They
 // share the TTL: one of a longer TTL may not follow one of a shorter.
-func (a *App) cache() *litellm.CacheControl {
-	ttl := a.settings.PromptCacheTTL
-	if ttl == "" {
-		ttl = a.opts.CacheTTL
-	}
-	return &litellm.CacheControl{TTL: ttl}
-}
+func (a *App) cache() *litellm.CacheControl { return &litellm.CacheControl{TTL: a.opts.CacheTTL} }

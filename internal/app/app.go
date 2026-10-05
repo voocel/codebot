@@ -51,8 +51,7 @@ type Options struct {
 	Interactive bool
 	// CacheTTL is how long the prompt cache keeps the conversation, as
 	// litellm.CacheControl.TTL: "1h" where turns wait on a person, who
-	// pauses longer than the vendors' default five minutes. The
-	// prompt_cache_ttl setting overrides it.
+	// pauses longer than the vendors' default five minutes.
 	CacheTTL string
 	// FS is the file backend for read, write and edit; nil means the local
 	// filesystem.
@@ -91,7 +90,7 @@ type App struct {
 // Boot loads the configuration and opens the first conversation.
 func Boot(opts Options) (*App, error) {
 	cwd := opts.Cwd
-	settings, err := config.ResolveAllStrict(cwd)
+	settings, err := config.Load(cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +245,7 @@ func (a *App) loadPlugins() error {
 	}
 	contrib := plugins.Contributions()
 	// Read afresh, so a reload picks up servers added to settings.json.
-	settings, err := config.LoadSettingsStrict(a.cwd)
+	settings, err := config.Load(a.cwd)
 	if err != nil {
 		return err
 	}
@@ -304,7 +303,7 @@ func (a *App) refreshMCP() int {
 	c := a.current
 	a.mu.Unlock()
 	if c != nil {
-		c.configure()
+		c.mcpChanged(tools)
 	}
 	a.events.publish(Event{Kind: MCPChanged})
 	return len(tools)

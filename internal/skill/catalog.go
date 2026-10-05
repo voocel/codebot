@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/voocel/codebot/internal/frontmatter"
 )
 
 // Catalog is the skills available, by name. It does not change; reloading
@@ -124,7 +126,7 @@ func loadSkillFile(path, name string) (Spec, error) {
 	return spec, nil
 }
 
-type frontmatter struct {
+type skillFrontmatter struct {
 	Name                   string   `yaml:"name"`
 	Description            string   `yaml:"description"`
 	WhenToUse              string   `yaml:"when_to_use"`
@@ -141,8 +143,8 @@ type frontmatter struct {
 // parseSkill reads a skill file's frontmatter. The skill is named by its
 // frontmatter, else by name.
 func parseSkill(content, name string) (Spec, error) {
-	raw, body := splitFrontmatter(content)
-	var fm frontmatter
+	raw, body, _ := frontmatter.Split(content)
+	var fm skillFrontmatter
 	if err := yaml.Unmarshal([]byte(raw), &fm); err != nil {
 		return Spec{}, err
 	}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -20,8 +21,9 @@ const defaultWindow = 128_000
 type modelChoice struct {
 	provider string
 	name     string
-	// model is the model without the reasoning effort, which only the main
-	// agent runs with: sub-agents and side calls take the provider default.
+	// model is the model without the reasoning effort, which only the
+	// conversation's own calls use: sub-agents and prompt hooks take the
+	// provider default.
 	model     agentcore.Model
 	effort    string
 	window    int // effective context window
@@ -72,7 +74,7 @@ func (a *App) chooseModel(prov, name, effort string) (modelChoice, error) {
 // 13% of the window, between 4k and 16k tokens.
 func compactReserve(window, maxOutput int, ratio float64) int {
 	switch {
-	case ratio > 0 && ratio < 1:
+	case ratio > 0:
 		return window - int(float64(window)*ratio)
 	case maxOutput > 0:
 		return min(20_000, maxOutput, window/2)
@@ -81,15 +83,10 @@ func compactReserve(window, maxOutput int, ratio float64) int {
 	}
 }
 
-// smallModel is the model the explore sub-agent runs on.
+// smallModel is the model the explore sub-agent runs on: the provider's
+// small_model, else the model itself.
 func (a *App) smallModel(prov, name string) string {
-	if prov == a.settings.Provider && name == a.settings.Model {
-		return a.settings.SmallModel
-	}
-	if pc := a.settings.Providers[prov]; pc.SmallModel != "" {
-		return pc.SmallModel
-	}
-	return name
+	return cmp.Or(a.settings.Providers[prov].SmallModel, name)
 }
 
 // resolveModelName builds a model named in an agent definition: served by

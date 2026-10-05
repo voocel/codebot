@@ -55,13 +55,11 @@ func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 }
 
 // specLocked builds the RunSpec for the conversation's current state. It is
-// the only place a run's configuration comes from, and where the MCP tools
-// the conversation has join it. Callers hold c.mu.
+// the only place a run's configuration comes from. Callers hold c.mu.
 func (c *Conversation) specLocked() session.RunSpec {
 	a := c.app
-	mcpTools, mcpInstructions := a.mcpSnapshot()
-	c.mcpTools = growTools(c.mcpTools, mcpTools)
-	tools := withToolSearch(slices.Concat(c.tools, c.mcpTools), c.model.model.Client, c.model.name)
+	_, mcpInstructions := a.mcpSnapshot()
+	tools := withToolSearch(slices.Concat(c.tools, c.mcpTools), c.model.model.Client)
 	cwd := c.cwd
 	parts := append(slices.Clone(c.workspace), prompt.MCP(mcpInstructions), prompt.DeferredTools(deferredNames(tools)))
 
@@ -117,9 +115,9 @@ func (c *Conversation) wrapRun(ctx context.Context) (context.Context, func(error
 	}
 }
 
-// KindReminder marks a message the harness adds for the model, such as a
-// validation failure to fix, which frontends do not show as the user's.
-const KindReminder = "reminder"
+// kindReminder marks a message the harness adds for the model, such as a
+// validation failure to fix or context a hook adds.
+const kindReminder = "reminder"
 
 // validation runs the PostStopValidation hooks when a run would stop after
 // changing the repository, and sends the agent back once to fix a failure.
@@ -159,7 +157,5 @@ func (v *validation) stop(ctx context.Context, _ agentcore.StopInfo) ([]agentcor
 		return nil, nil
 	}
 	v.failed = true
-	msg := agentcore.UserText(reminder("The PostStopValidation hook failed. Fix the problem based on the following output:\n" + out))
-	msg.Kind = KindReminder
-	return []agentcore.Message{msg}, nil
+	return []agentcore.Message{reminderMessage("The PostStopValidation hook failed. Fix the problem based on the following output:\n" + out)}, nil
 }

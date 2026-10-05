@@ -3,7 +3,6 @@ package acp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	acp "github.com/coder/acp-go-sdk"
 	agentcore "github.com/voocel/agentcore"
@@ -71,17 +70,11 @@ func (s *Server) onAgentEvent(ev agentcore.Event) {
 			opts = append(opts, acp.WithUpdateContent(content))
 		}
 		s.send(acp.UpdateToolCall(acp.ToolCallId(e.Call.ID), opts...))
-	case agentcore.RunEnd:
-		if e.Err != nil && !errors.Is(e.Err, context.Canceled) {
-			s.mu.Lock()
-			s.runErr = e.Err
-			s.mu.Unlock()
-		}
 	}
 }
 
 // snapshotForDiff captures a write/edit target's content before the tool runs,
-// so EventToolExecEnd can emit it as a native ACP diff. It uses textForDiff
+// so its ToolEnd can emit it as a native ACP diff. It uses textForDiff
 // (not ReadFile) so a disk copy is never mistaken for the editor buffer: an
 // unreliable snapshot later suppresses the diff rather than rendering a
 // misleading one.

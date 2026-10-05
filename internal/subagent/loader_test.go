@@ -152,7 +152,7 @@ body without delimiter
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
-	if !strings.Contains(errs[0].Error(), "not closed") {
+	if !strings.Contains(errs[0].Error(), "frontmatter") {
 		t.Errorf("error should mention closure, got %v", errs[0])
 	}
 }

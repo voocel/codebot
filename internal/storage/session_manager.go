@@ -125,14 +125,7 @@ func userText(data json.RawMessage) string {
 	if json.Unmarshal(data, &msg) != nil || msg.Role != litellm.RoleUser {
 		return ""
 	}
-	// Take the last text block: reminders are prepended, the user's actual
-	// input is always the final text block.
-	var text string
-	for _, b := range msg.Blocks {
-		if t, ok := b.(litellm.TextBlock); ok && t.Text != "" {
-			text = t.Text
-		}
-	}
+	text := msg.Text()
 	if r := []rune(text); len(r) > 80 {
 		text = string(r[:77]) + "..."
 	}

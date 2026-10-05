@@ -153,6 +153,10 @@ Codebot 采用分层的 Coding Agent 架构：
 
 Provider 条目支持 `extra`，用于配置连接参数，作为 HTTP/客户端配置发送，不会进入请求体：`user_agent`、`headers`、`anthropic_beta`（`headers` 中显式的 `anthropic-beta` 优先）；Bedrock 不用 `api_key`，改用 `region`、`access_key_id`、`secret_access_key`，可选 `session_token`。
 
+`type` 为 `anthropic` 的 provider 通过工具搜索按需加载工具，这需要 Claude 4.5 或更新的模型；更早的 Claude 模型，以及通过 Anthropic 兼容端点接入的其他厂商模型，可能会拒绝这类请求。
+
+在 Amazon Bedrock 上用 Claude 时，请走 Bedrock 的 Messages API，而不是 Converse：`type: "anthropic"`，`base_url: "https://bedrock-mantle.<region>.api.aws/anthropic"`，`api_key` 填 Bedrock API key，模型 ID 形如 `anthropic.claude-opus-5-5`。它使用 Anthropic 的请求格式，所以和直连 Anthropic 一样，工具通过工具搜索按需加载。Converse 不能延迟加载工具：对话中途加入的工具（比如晚连上的 MCP 服务器提供的）会改动请求，提示缓存会重新开始；对把思考内容绑定在请求前缀上的 Claude 模型（Fable 5.1、Opus 5.5、Sonnet 5.5），请求还可能被拒绝。
+
 上下文窗口、输出上限和价格来自 LiteLLM 的模型列表：codebot 内置一份快照，每天刷新到 `~/.codebot/litellm-models.json`。
 
 OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`，用于在 `/v1/chat/completions` 和 `/v1/responses` 之间切换。

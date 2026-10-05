@@ -174,13 +174,7 @@ type Settings struct {
 	Provider        *string                    `json:"provider,omitempty"`         // provider name (matches key in providers map)
 	Model           *string                    `json:"model,omitempty"`            // model name sent to API as-is
 	ReasoningEffort *string                    `json:"reasoning_effort,omitempty"` // "" = provider default; off | low | medium | high | xhigh | max
-	SmallModel      *string                    `json:"small_model,omitempty"`      // sub-agent model; defaults to Model if empty
 	Providers       map[string]*ProviderConfig `json:"providers,omitempty"`
-
-	// PromptCacheTTL is how long the prompt cache keeps a conversation:
-	// "5m" or "1h". Unset, it is 1h in the TUI and ACP, where turns wait on
-	// a person, and the vendor default elsewhere.
-	PromptCacheTTL *string `json:"prompt_cache_ttl,omitempty"`
 
 	MaxTurns *int `json:"max_turns,omitempty"`
 
@@ -219,15 +213,13 @@ type PermissionsConfig struct {
 
 // Resolved holds settings resolved to concrete values (no pointers).
 type Resolved struct {
-	Provider   string                    // active provider name
-	Model      string                    // model name sent to API as-is
-	SmallModel string                    // sub-agent model; equals Model when not configured
-	Providers  map[string]ProviderConfig // per-provider credentials
+	Provider  string                    // active provider name
+	Model     string                    // model name sent to API as-is
+	Providers map[string]ProviderConfig // per-provider credentials
 
 	CompactWindow   int     // user-configured cap on effective window; 0 = disabled
 	CompactRatio    float64 // usage ratio that triggers compaction; 0 = unset
 	ReasoningEffort string
-	PromptCacheTTL  string // "" leaves it to the frontend
 	MaxTurns        int
 	SearchProvider  string
 	SearchAPIKey    string
@@ -252,22 +244,20 @@ func FormatModelID(provider, model string) string {
 	return provider + "/" + model
 }
 
-// Resolve converts Settings to Resolved using defaults for unset fields.
-func (s Settings) Resolve() Resolved {
+// resolve converts Settings to Resolved using defaults for unset fields.
+func (s Settings) resolve() Resolved {
 	r := Resolved{
-		Provider:  "openai",
-		Providers: make(map[string]ProviderConfig),
-		MaxTurns:  200,
-		Snapshot:  true,
+		Provider:       "openai",
+		Providers:      make(map[string]ProviderConfig),
+		MaxTurns:       200,
+		SearchProvider: "tavily",
+		Snapshot:       true,
 	}
 	if s.Provider != nil && *s.Provider != "" {
 		r.Provider = *s.Provider
 	}
 	if s.Model != nil {
 		r.Model = *s.Model
-	}
-	if s.SmallModel != nil {
-		r.SmallModel = *s.SmallModel
 	}
 	for k, v := range s.Providers {
 		if v != nil {
@@ -277,22 +267,16 @@ func (s Settings) Resolve() Resolved {
 	if s.ReasoningEffort != nil {
 		r.ReasoningEffort = *s.ReasoningEffort
 	}
-	if s.PromptCacheTTL != nil {
-		r.PromptCacheTTL = *s.PromptCacheTTL
-	}
 	if s.MaxTurns != nil {
 		r.MaxTurns = *s.MaxTurns
 	}
-	if s.CompactWindow != nil && *s.CompactWindow > 0 {
+	if s.CompactWindow != nil {
 		r.CompactWindow = *s.CompactWindow
 	}
 	if s.CompactRatio != nil {
-		ratio := *s.CompactRatio
-		if ratio > 0 && ratio < 1 {
-			r.CompactRatio = ratio
-		}
+		r.CompactRatio = *s.CompactRatio
 	}
-	if s.SearchProvider != nil {
+	if s.SearchProvider != nil && *s.SearchProvider != "" {
 		r.SearchProvider = *s.SearchProvider
 	}
 	if s.SearchAPIKey != nil {
@@ -320,10 +304,16 @@ func validateResolved(r Resolved) error {
 	if !provider.ValidEffort(r.ReasoningEffort) {
 		return fmt.Errorf("configuration error: reasoning_effort=%q is unsupported; use empty string, off, low, medium, high, xhigh, or max", r.ReasoningEffort)
 	}
-	switch r.PromptCacheTTL {
-	case "", "5m", "1h":
+	if r.CompactWindow < 0 {
+		return fmt.Errorf("configuration error: compact_window=%d is negative", r.CompactWindow)
+	}
+	if r.CompactRatio < 0 || r.CompactRatio >= 1 {
+		return fmt.Errorf("configuration error: compact_ratio=%g is out of range; use a value between 0 and 1", r.CompactRatio)
+	}
+	switch r.SearchProvider {
+	case "tavily", "jina":
 	default:
-		return fmt.Errorf("configuration error: prompt_cache_ttl=%q is unsupported; use 5m or 1h", r.PromptCacheTTL)
+		return fmt.Errorf("configuration error: search_provider=%q is unsupported; use tavily or jina", r.SearchProvider)
 	}
 	for name, pc := range r.Providers {
 		if err := validateProviderAPI(name, pc); err != nil {
@@ -425,28 +415,33 @@ func UserConfigDir() string {
 	return filepath.Join(home, ConfigDir)
 }
 
-// LoadSettingsStrict loads and merges settings from global (~/.codebot/settings.json)
-// and project (<cwd>/.codebot/settings.json). Project-level values override
-// global. Returns an error when either settings file exists and cannot be parsed.
-func LoadSettingsStrict(cwd string) (Resolved, error) {
+// Load merges the global (~/.codebot/settings.json) and project
+// (<cwd>/.codebot/settings.json) settings, the project's winning, and applies
+// defaults. It fails when a settings file exists and cannot be parsed or holds
+// an unsupported value. Model is deliberately never defaulted — hardcoded
+// model names go stale; boot validates it is set.
+func Load(cwd string) (Resolved, error) {
 	var global Settings
 	if UserConfigDir() != "" {
 		var err error
-		if global, err = loadSettingsFileStrict(globalSettingsPath()); err != nil {
+		if global, err = loadFile(globalSettingsPath()); err != nil {
 			return Resolved{}, err
 		}
 	}
-
-	project, err := loadSettingsFileStrict(SettingsPath(cwd))
+	project, err := loadFile(SettingsPath(cwd))
 	if err != nil {
 		return Resolved{}, err
 	}
 
-	resolved := mergeSettings(global, project).Resolve()
-	if err := validateResolved(resolved); err != nil {
+	r := mergeSettings(global, project).resolve()
+	if err := validateResolved(r); err != nil {
 		return Resolved{}, err
 	}
-	return resolved, nil
+	if r.SearchAPIKey == "" {
+		r.SearchAPIKey = os.Getenv(strings.ToUpper(r.SearchProvider) + "_API_KEY")
+	}
+	r.Permissions = normalizePermissionRoots(cwd, r.Permissions)
+	return r, nil
 }
 
 // mergeSettings merges two Settings; non-nil fields in override take precedence.
@@ -456,9 +451,6 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.Model != nil {
 		base.Model = override.Model
-	}
-	if override.SmallModel != nil {
-		base.SmallModel = override.SmallModel
 	}
 	if len(override.Providers) > 0 {
 		if base.Providers == nil {
@@ -500,9 +492,6 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.ReasoningEffort != nil {
 		base.ReasoningEffort = override.ReasoningEffort
-	}
-	if override.PromptCacheTTL != nil {
-		base.PromptCacheTTL = override.PromptCacheTTL
 	}
 	if override.MaxTurns != nil {
 		base.MaxTurns = override.MaxTurns
@@ -556,7 +545,7 @@ func mergeSettings(base, override Settings) Settings {
 func patchSettingsFile(path string, patch Settings) error {
 	settingsWriteMu.Lock()
 	defer settingsWriteMu.Unlock()
-	existing, err := loadSettingsFileStrict(path)
+	existing, err := loadFile(path)
 	if err != nil {
 		return err
 	}
@@ -572,7 +561,7 @@ func patchSettingsFile(path string, patch Settings) error {
 
 // PatchEffectiveSettings writes to the project settings file when it exists,
 // otherwise to the global settings file. Runtime UI changes should use this
-// so the visible state matches the settings layer ResolveAllStrict reads.
+// so the visible state matches the settings layer Load reads.
 func PatchEffectiveSettings(cwd string, patch Settings) error {
 	path := globalSettingsPath()
 	if projectConfigExists(cwd) {
@@ -611,7 +600,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-func loadSettingsFileStrict(path string) (Settings, error) {
+func loadFile(path string) (Settings, error) {
 	var s Settings
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -624,39 +613,6 @@ func loadSettingsFileStrict(path string) (Settings, error) {
 		return s, fmt.Errorf("configuration error: malformed settings.json (%s): %w", path, err)
 	}
 	return s, nil
-}
-
-// ResolveAllStrict merges global and project settings, applies defaults, and
-// returns a fully resolved configuration. Refuses to continue
-// when an existing settings file is malformed. Model is deliberately never
-// defaulted — hardcoded model names go stale; boot validates it is set.
-func ResolveAllStrict(cwd string) (Resolved, error) {
-	settings, err := LoadSettingsStrict(cwd)
-	if err != nil {
-		return Resolved{}, err
-	}
-
-	if settings.SmallModel == "" {
-		if pc, ok := settings.Providers[settings.Provider]; ok && pc.SmallModel != "" {
-			settings.SmallModel = pc.SmallModel
-		} else {
-			settings.SmallModel = settings.Model
-		}
-	}
-
-	switch settings.SearchProvider {
-	case "":
-		settings.SearchProvider = "tavily"
-	case "tavily", "jina":
-	default:
-		return Resolved{}, fmt.Errorf("search_provider %q: want tavily or jina", settings.SearchProvider)
-	}
-	if settings.SearchAPIKey == "" {
-		settings.SearchAPIKey = os.Getenv(strings.ToUpper(settings.SearchProvider) + "_API_KEY")
-	}
-
-	settings.Permissions = normalizePermissionRoots(cwd, settings.Permissions)
-	return settings, nil
 }
 
 // normalizePermissionRoots makes the roots absolute, the workspace when none

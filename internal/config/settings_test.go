@@ -79,32 +79,22 @@ func TestConnectionBedrock(t *testing.T) {
 	}
 }
 
-func TestValidateResolvedRejectsInvalidProviderAPI(t *testing.T) {
-	err := validateResolved(Resolved{
-		Providers: map[string]ProviderConfig{
-			"openai": {API: "legacy"},
-		},
-	})
-	if err == nil {
-		t.Fatal("invalid provider api should fail")
+func TestValidateResolved(t *testing.T) {
+	if err := validateResolved(Settings{}.resolve()); err != nil {
+		t.Fatalf("defaults: %v", err)
 	}
-}
-
-func TestValidateResolvedRejectsProviderAPIOnNonOpenAIProvider(t *testing.T) {
-	err := validateResolved(Resolved{
-		Providers: map[string]ProviderConfig{
-			"anthropic": {API: "responses"},
-		},
-	})
-	if err == nil {
-		t.Fatal("non-OpenAI provider api should fail")
-	}
-}
-
-func TestValidateResolvedPromptCacheTTL(t *testing.T) {
-	for ttl, ok := range map[string]bool{"": true, "5m": true, "1h": true, "24h": false} {
-		if err := validateResolved(Resolved{PromptCacheTTL: ttl}); (err == nil) != ok {
-			t.Errorf("prompt_cache_ttl %q: %v", ttl, err)
+	for name, change := range map[string]func(*Resolved){
+		"provider api":                 func(r *Resolved) { r.Providers["openai"] = ProviderConfig{API: "legacy"} },
+		"api on a non-OpenAI provider": func(r *Resolved) { r.Providers["anthropic"] = ProviderConfig{API: "responses"} },
+		"negative compact window":      func(r *Resolved) { r.CompactWindow = -1 },
+		"compact ratio of 1":           func(r *Resolved) { r.CompactRatio = 1 },
+		"negative compact ratio":       func(r *Resolved) { r.CompactRatio = -0.5 },
+		"search provider":              func(r *Resolved) { r.SearchProvider = "bing" },
+	} {
+		r := Settings{}.resolve()
+		change(&r)
+		if validateResolved(r) == nil {
+			t.Errorf("%s: want an error", name)
 		}
 	}
 }

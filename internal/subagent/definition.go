@@ -124,14 +124,12 @@ func builtinDefinitions(cwd string) []AgentDefinition {
 // Definitions loads the sub-agents available in cwd: the built-in ones,
 // overridden by project (.codebot/agents/) and then user (~/.codebot/agents/)
 // definitions. A broken file is logged and skipped rather than blocking
-// startup. smallModel, when set, runs the built-in explore agent.
+// startup. smallModel runs the built-in explore agent.
 func Definitions(cwd, smallModel string) []AgentDefinition {
 	builtin := builtinDefinitions(cwd)
-	if smallModel != "" {
-		for i := range builtin {
-			if builtin[i].Name == "explore" {
-				builtin[i].Model = smallModel
-			}
+	for i := range builtin {
+		if builtin[i].Name == "explore" {
+			builtin[i].Model = smallModel
 		}
 	}
 	project, errs := loadAgentsDir(filepath.Join(cwd, config.ConfigDir, "agents"))

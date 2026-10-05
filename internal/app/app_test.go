@@ -38,9 +38,10 @@ type call struct {
 // fakeModel is a provider answering each call with the next scripted reply,
 // then "done".
 type fakeModel struct {
-	mu      sync.Mutex
-	replies []litellmtest.Reply
-	calls   []call
+	mu          sync.Mutex
+	replies     []litellmtest.Reply
+	calls       []call
+	cannotDefer bool // the vendor takes no deferred tools
 }
 
 func script(replies ...litellmtest.Reply) *fakeModel { return &fakeModel{replies: replies} }
@@ -50,7 +51,7 @@ func (m *fakeModel) Name() string { return "fake" }
 // Capabilities has deferred tools loaded on reference and reasoning
 // efforts, as Anthropic does.
 func (m *fakeModel) Capabilities() litellm.Capabilities {
-	return litellm.Capabilities{DeferredTools: true, ThinkingEffort: true}
+	return litellm.Capabilities{DeferredTools: !m.cannotDefer, ThinkingEffort: true}
 }
 
 func (m *fakeModel) Chat(ctx context.Context, req *litellm.Request) (*litellm.Response, error) {
@@ -415,28 +416,31 @@ func TestSideCallsExtendTheConversation(t *testing.T) {
 	}
 }
 
-// Where a person paces the turns, the cache keeps the conversation for an
-// hour; the setting overrides the frontend.
+// Every breakpoint takes the frontend's TTL: an hour where a person paces
+// the turns.
 func TestCacheTTL(t *testing.T) {
-	for _, tc := range []struct {
-		frontend, setting string
-		want              []string
-	}{
-		{"", "", []string{"", ""}},
-		{"1h", "", []string{"1h", "1h"}},
-		{"1h", "5m", []string{"5m", "5m"}},
-	} {
+	for _, ttl := range []string{"", "1h"} {
 		model := script()
-		s := setup{cacheTTL: tc.frontend}
-		if tc.setting != "" {
-			s.settings = map[string]any{"prompt_cache_ttl": tc.setting}
-		}
-		e := boot(t, s, map[string]*fakeModel{"claude-sonnet-4-5": model})
+		e := boot(t, setup{cacheTTL: ttl}, map[string]*fakeModel{"claude-sonnet-4-5": model})
 		e.submit("hi")
 		// The system prompt's breakpoint, then the prompt's.
-		if got := model.last().cache; !slices.Equal(got, tc.want) {
-			t.Errorf("frontend %q, setting %q: breakpoints %q, want %q", tc.frontend, tc.setting, got, tc.want)
+		if got := model.last().cache; !slices.Equal(got, []string{ttl, ttl}) {
+			t.Errorf("frontend %q: breakpoints %q", ttl, got)
 		}
+	}
+}
+
+// Context a UserPromptSubmit hook adds goes ahead of the input, in a message
+// of its own.
+func TestHookContextGoesAheadOfTheInput(t *testing.T) {
+	hooks := map[string]any{"UserPromptSubmit": []map[string]any{{"type": "command", "command": `echo '{"additional_context":"be concise"}'`}}}
+	e := boot(t, setup{settings: map[string]any{"hooks": hooks}}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
+	e.submit("hi")
+
+	history := e.app.Current().History()
+	i := slices.IndexFunc(history, func(m agentcore.Message) bool { return m.Kind == kindReminder })
+	if i < 0 || !strings.Contains(history[i].Text(), "be concise") || history[i+1].Text() != "hi" {
+		t.Fatalf("history = %q", texts(history))
 	}
 }
 
@@ -593,9 +597,10 @@ func TestDeferredToolsLoadThroughToolSearch(t *testing.T) {
 	}
 }
 
-func TestOtherModelsGetEveryTool(t *testing.T) {
+func TestVendorsThatCannotDeferGetEveryTool(t *testing.T) {
 	model := script()
-	e := boot(t, setup{model: "claude-haiku-4-5"}, map[string]*fakeModel{"claude-haiku-4-5": model})
+	model.cannotDefer = true
+	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
 
 	e.submit("hi")
 
@@ -633,7 +638,7 @@ func TestSetModelAppliesToTheNextRun(t *testing.T) {
 	if st := c.Status(); st.Model != "claude-opus-4-5" {
 		t.Fatalf("status model = %q", st.Model)
 	}
-	settings, err := config.ResolveAllStrict(e.cwd)
+	settings, err := config.Load(e.cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,27 +848,5 @@ func TestQueryLeavesTheHistoryAlone(t *testing.T) {
 	}
 	if got := len(e.app.Current().History()); got != n {
 		t.Fatalf("history has %d messages after a query, %d before", got, n)
-	}
-}
-
-func TestSupportsToolSearch(t *testing.T) {
-	client, err := litellm.New(script())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for model, want := range map[string]bool{
-		"claude-sonnet-4-5": true, "claude-opus-4-5-20251101": true, "claude-fable-5-1": true, "claude-sonnet-5-5": true,
-		"claude-sonnet-4-20250514": false, "claude-3-5-sonnet-20241022": false, "claude-haiku-4-5": false, "gpt-6": false,
-	} {
-		if got := supportsToolSearch(client, model); got != want {
-			t.Errorf("%s: %v, want %v", model, got, want)
-		}
-	}
-	plain, err := litellm.New(litellmtest.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if supportsToolSearch(plain, "claude-sonnet-4-5") {
-		t.Error("a vendor that cannot defer tools got tool search")
 	}
 }

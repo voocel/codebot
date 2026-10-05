@@ -202,6 +202,8 @@ func spec(p litellm.Provider, tools ...agentcore.Tool) RunSpec {
 			Tools:     tools,
 			Compactor: fakeCompactor{},
 		},
+		WrapRun: func(ctx context.Context) (context.Context, func(error)) { return ctx, func(error) {} },
+		Context: func([]agentcore.Message) []agentcore.Message { return nil },
 	}
 }
 
@@ -671,7 +673,7 @@ func TestQueryLeavesTheHistoryAlone(t *testing.T) {
 	h.post(User, "u1")
 	h.waitIdle(1)
 
-	answer, err := h.s.Query(context.Background(), "what next?", nil)
+	answer, err := h.s.Query(context.Background(), "what next?", 0)
 	if err != nil || answer != "side answer" {
 		t.Fatalf("answer = %q, %v", answer, err)
 	}

@@ -3,8 +3,6 @@
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
   "reasoning_effort": "",   // "" = provider default; off | low | medium | high | xhigh | max
-  "small_model": "claude-haiku-4-5",  // auto-filled from provider config or main model
-  "prompt_cache_ttl": "",   // "" = 1h in the TUI and ACP, vendor default (5m) in print mode; 5m | 1h
 
   // Per-provider credentials and model catalog.
   // Provider names are free-form; use "type" to specify the API protocol.
@@ -39,6 +37,17 @@
       "api_key": "",
       "models": ["deepseek-chat", "deepseek-reasoner"],
       "small_model": "deepseek-chat"
+    },
+    // Claude on Amazon Bedrock through its Messages API, which takes Anthropic's
+    // request format: deferred tools and the other Claude features work as with
+    // Anthropic. The api_key is a Bedrock API key. Bedrock's Converse API
+    // (type "bedrock") cannot defer tools, so prefer this for Claude.
+    "bedrock-claude": {
+      "type": "anthropic",
+      "api_key": "",
+      "base_url": "https://bedrock-mantle.us-east-1.api.aws/anthropic",
+      "models": ["anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"],
+      "small_model": "anthropic.claude-haiku-4-5"
     },
     // Custom proxy example: "type" specifies the API protocol (openai/anthropic/gemini).
     // Omit "type" for well-known provider names — it will be inferred automatically.
