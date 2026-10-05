@@ -87,7 +87,7 @@ func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 				// before ended, so each call reads the one before from the
 				// cache.
 				Cache:     &litellm.CacheControl{},
-				Compactor: compact.Summarizer{},
+				Compactor: compact.Summarizer{Notes: tools.FileOps},
 				CompactAt: deps.CompactAt,
 				Emit:      deps.Emit(s),
 			}
