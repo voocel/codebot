@@ -127,7 +127,7 @@ func (p *printer) onEvent(ev app.Event) {
 	}
 	switch ev.Session.Kind {
 	case session.Error:
-		fmt.Fprintf(os.Stderr, "session error: %v\n", ev.Session.Err)
+		fmt.Fprintf(os.Stderr, "session error: %s\n", app.ErrorText(ev.Session.Err))
 		p.fail(ev.Session.Err)
 	case session.Agent:
 		p.onAgentEvent(ev.Session.Agent)
@@ -177,10 +177,6 @@ func (p *printer) onAgentEvent(ev agentcore.Event) {
 	case agentcore.CompactionEnd:
 		if e.Compaction != nil {
 			fmt.Fprintf(os.Stderr, "context compacted: %d messages summarized\n", e.Compaction.Replaced)
-		}
-	case agentcore.RunEnd:
-		if e.Err != nil && !errors.Is(e.Err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "error: %v\n", e.Err)
 		}
 	}
 }

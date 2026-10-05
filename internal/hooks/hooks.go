@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/permission"
 )
 
 // EventType identifies when a hook fires.
@@ -79,17 +79,17 @@ type entry struct {
 type Runner struct {
 	hooks     map[EventType][]entry
 	sessionID string
-	approval  *approval.Engine
+	perms     *permission.Engine
 }
 
 // New compiles the configured hooks, or returns nil when there are none.
 // Prompt hooks ask whatever model returns at the time they run.
-func New(cfg config.HooksConfig, sessionID string, engine *approval.Engine, model func() agentcore.Model) *Runner {
+func New(cfg config.HooksConfig, sessionID string, engine *permission.Engine, model func() agentcore.Model) *Runner {
 	hooks := compileConfig(cfg, model)
 	if len(hooks) == 0 {
 		return nil
 	}
-	return &Runner{hooks: hooks, sessionID: sessionID, approval: engine}
+	return &Runner{hooks: hooks, sessionID: sessionID, perms: engine}
 }
 
 // preToolUse evaluates PreToolUse hooks. A blocking hook that signals a block
@@ -261,7 +261,7 @@ func truncate(s string, n int) string {
 // runOne applies the approval gate then runs the hook, returning its evaluated
 // result. An approval denial counts as a block.
 func (r *Runner) runOne(ctx context.Context, e entry, payload Payload) evalResult {
-	if err := r.approval.ApproveHook(ctx, approval.HookRequest{
+	if err := r.perms.ApproveHook(ctx, permission.HookRequest{
 		Event:    string(payload.Event),
 		Tool:     payload.Tool,
 		Command:  e.label,

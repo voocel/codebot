@@ -14,13 +14,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/voocel/agentcore"
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/mcp"
@@ -62,29 +62,39 @@ type Options struct {
 
 // App is the process-wide state. See the package documentation.
 type App struct {
-	opts     Options
-	cwd      string
-	settings config.Resolved
-	models   *provider.Models
-	newModel ModelFactory
-	sessions *storage.Manager
-	approval *approval.Engine
-	modeMu   sync.Mutex // orders mode switches with their events
-	mcp      *mcp.Manager
-	usage    *skill.UsageTracker
-	tracer   *telemetry.Tracer
-	shutdown func(context.Context) error
-	events   broadcaster
+	opts Options
+	cwd  string
+	// settings are as Boot loaded them, but for the model selection
+	// (Provider, Model, ReasoningEffort), which SetModel changes under mu.
+	settings    config.Resolved
+	models      *provider.Models
+	newModel    ModelFactory
+	sessions    *storage.Manager
+	permissions *permission.Engine
+	modeMu      sync.Mutex // orders mode switches with their events
+	mcp         *mcp.Manager
+	usage       *skill.UsageTracker
+	tracer      *telemetry.Tracer
+	shutdown    func(context.Context) error
+	events      broadcaster
+	// skills and offered are replaced whole on reload and refresh. They are
+	// read without mu, so that a Conversation holding its own lock never
+	// waits for the App's.
+	skills  atomic.Pointer[skill.Catalog]
+	offered atomic.Pointer[mcpOffer]
 
-	mu              sync.Mutex
-	plugins         *plugin.Catalog
-	skills          *skill.Catalog
-	mcpServers      map[string]config.MCPServer
-	mcpTools        []agentcore.Tool
-	mcpPermissions  map[string]permission.Metadata
-	mcpInstructions string
-	current         *Conversation
-	unsubscribe     func()
+	mu          sync.Mutex
+	plugins     *plugin.Catalog
+	mcpServers  map[string]config.MCPServer
+	current     *Conversation
+	unsubscribe func()
+}
+
+// mcpOffer is what the connected MCP servers offer.
+type mcpOffer struct {
+	tools        []agentcore.Tool
+	permissions  map[string]permission.Metadata
+	instructions string
 }
 
 // Boot loads the configuration and opens the first conversation.
@@ -107,6 +117,7 @@ func Boot(opts Options) (*App, error) {
 		sessions: storage.NewManager(config.SessionsDir(cwd)),
 		shutdown: func(context.Context) error { return nil },
 	}
+	a.offered.Store(&mcpOffer{})
 	if a.newModel == nil {
 		a.models.Refresh(config.UserConfigDir())
 		observer, tracer, shutdown, err := telemetry.Setup(context.Background(), settings.Telemetry)
@@ -123,7 +134,7 @@ func Boot(opts Options) (*App, error) {
 	if a.usage, err = skill.NewUsageTracker(filepath.Join(config.UserConfigDir(), "skill-usage.json")); err != nil {
 		return nil, fmt.Errorf("skill usage: %w", err)
 	}
-	if a.approval, err = newApprovalEngine(cwd, opts, settings); err != nil {
+	if a.permissions, err = newPermissionEngine(cwd, opts, settings); err != nil {
 		return nil, err
 	}
 	if err := a.loadPlugins(); err != nil {
@@ -170,6 +181,7 @@ func (a *App) Open(id string) (*Conversation, error) {
 		unsubscribe()
 		prev.close()
 	}
+	c.start()
 	a.events.publish(Event{Kind: Opened, Conversation: c})
 	return c, nil
 }
@@ -188,8 +200,10 @@ type SessionInfo = storage.SessionInfo
 func (a *App) Sessions() ([]SessionInfo, error) { return a.sessions.List() }
 
 // Subscribe calls fn with the events of the current conversation, following
-// it across Open, and with App events. fn may be called from several
-// goroutines; the events of one conversation arrive in order.
+// it across Open, and with App events, one at a time in the order they
+// occur. fn runs on the goroutine that caused the event, and must not cause
+// another (switch the mode, open a conversation) nor wait for the
+// conversation.
 func (a *App) Subscribe(fn func(Event)) (unsubscribe func()) { return a.events.subscribe(fn) }
 
 // Close closes the conversation and releases process resources.
@@ -213,30 +227,49 @@ func (a *App) Close() {
 func (a *App) Cwd() string { return a.cwd }
 
 // Settings returns the resolved settings.
-func (a *App) Settings() config.Resolved { return a.settings }
+func (a *App) Settings() config.Resolved {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.settings
+}
+
+// defaultModel is the model a new conversation runs on.
+func (a *App) defaultModel() storage.Model {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return storage.Model{Provider: a.settings.Provider, Model: a.settings.Model, Effort: a.settings.ReasoningEffort}
+}
+
+// rememberModel makes a model the default for new conversations, in the
+// settings file and in the settings the App runs on.
+func (a *App) rememberModel(prov, name, effort string) error {
+	if err := config.PatchEffectiveSettings(a.cwd, config.Settings{Provider: &prov, Model: &name, ReasoningEffort: &effort}); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.settings.Provider, a.settings.Model, a.settings.ReasoningEffort = prov, name, effort
+	return nil
+}
 
 // Mode returns the permission mode.
-func (a *App) Mode() interact.Mode { return a.approval.Mode() }
+func (a *App) Mode() interact.Mode { return a.permissions.Mode() }
 
 // SetMode switches the permission mode.
 func (a *App) SetMode(m interact.Mode) {
 	a.modeMu.Lock()
 	defer a.modeMu.Unlock()
-	if a.approval.Mode() == m {
+	if a.permissions.Mode() == m {
 		return
 	}
-	a.approval.SetMode(m)
+	a.permissions.SetMode(m)
 	a.events.publish(Event{Kind: ModeChanged, Mode: m})
 }
 
 // Skill is a loaded skill.
 type Skill = skill.Spec
 
-func (a *App) skillCatalog() *skill.Catalog {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.skills
-}
+func (a *App) skillCatalog() *skill.Catalog { return a.skills.Load() }
 
 func (a *App) loadPlugins() error {
 	plugins, err := plugin.LoadAll(a.cwd)
@@ -253,10 +286,10 @@ func (a *App) loadPlugins() error {
 	servers := contrib.MCPServers
 	maps.Copy(servers, settings.MCPServers)
 
+	a.skills.Store(skill.NewCatalog(contrib.Skills))
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.plugins = plugins
-	a.skills = skill.NewCatalog(contrib.Skills)
 	a.mcpServers = servers
 	return nil
 }
@@ -290,37 +323,24 @@ func (a *App) mcpReport(servers int, errs []error) MCPReport {
 	return report
 }
 
-// refreshMCP reloads the MCP tools and instructions into the conversation and
+// refreshMCP reloads what the MCP servers offer into the conversation and
 // returns the number of tools.
 func (a *App) refreshMCP() int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	tools, perms := a.mcp.Tools(ctx)
-	instructions := strings.Join(a.mcp.Instructions(), "\n\n")
-
-	a.mu.Lock()
-	a.mcpTools, a.mcpPermissions, a.mcpInstructions = tools, perms, instructions
-	c := a.current
-	a.mu.Unlock()
-	if c != nil {
-		c.mcpChanged(tools)
+	a.offered.Store(&mcpOffer{tools: tools, permissions: perms, instructions: strings.Join(a.mcp.Instructions(), "\n\n")})
+	if c := a.Current(); c != nil {
+		c.mcpChanged()
 	}
 	a.events.publish(Event{Kind: MCPChanged})
 	return len(tools)
 }
 
-func (a *App) mcpSnapshot() ([]agentcore.Tool, string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.mcpTools, a.mcpInstructions
-}
-
 // toolPermission is how the permission engine sees a tool that classifies
 // itself, an MCP tool; zero for the others.
 func (a *App) toolPermission(name string) permission.Metadata {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.mcpPermissions[name]
+	return a.offered.Load().permissions[name]
 }
 
 // MCPServer is the state of a configured MCP server.
@@ -354,8 +374,8 @@ func (a *App) ReloadPlugins(ctx context.Context) (ReloadReport, error) {
 	return report, nil
 }
 
-func newApprovalEngine(cwd string, opts Options, settings config.Resolved) (*approval.Engine, error) {
-	rules, err := approval.ParseRuleSet(settings.Permissions.Allow, settings.Permissions.Deny)
+func newPermissionEngine(cwd string, opts Options, settings config.Resolved) (*permission.Engine, error) {
+	rules, err := permission.ParseRuleSet(settings.Permissions.Allow, settings.Permissions.Deny)
 	if err != nil {
 		return nil, fmt.Errorf("parse permission rules: %w", err)
 	}
@@ -363,11 +383,11 @@ func newApprovalEngine(cwd string, opts Options, settings config.Resolved) (*app
 	// The sandbox worktrees are part of the workspace even where the
 	// configured roots leave them out.
 	worktrees := worktree.Root(cwd)
-	engine, err := approval.NewEngine(approval.Config{
+	engine, err := permission.NewEngine(permission.Config{
 		Cwd:   cwd,
 		Mode:  opts.Mode,
 		Rules: rules,
-		Roots: approval.FilesystemRoots{
+		Roots: permission.FilesystemRoots{
 			ReadRoots:  append(slices.Clone(settings.Permissions.ReadRoots), config.SessionsDir(cwd), worktrees),
 			WriteRoots: append(slices.Clone(settings.Permissions.WriteRoots), worktrees),
 			// Auto-memory lives outside the workspace; as a harness-managed
@@ -379,15 +399,15 @@ func newApprovalEngine(cwd string, opts Options, settings config.Resolved) (*app
 		OnAudit: auditor(config.AuditLogPath()),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("approval engine: %w", err)
+		return nil, fmt.Errorf("permission engine: %w", err)
 	}
 	return engine, nil
 }
 
 // auditor appends permission decisions to the audit log.
-func auditor(path string) func(approval.AuditEntry) {
+func auditor(path string) func(permission.AuditEntry) {
 	var mu sync.Mutex
-	return func(e approval.AuditEntry) {
+	return func(e permission.AuditEntry) {
 		entry := map[string]any{
 			"time":       e.Time.Format(time.RFC3339Nano),
 			"mode":       string(e.Mode),

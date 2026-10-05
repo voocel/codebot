@@ -44,7 +44,7 @@ func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 	if c.hooks != nil {
 		out = append(out, c.hooks.PreToolUse())
 	}
-	out = append(out, a.approval.Middleware(c.skillGrants, a.toolPermission))
+	out = append(out, a.permissions.Middleware(c.skillGrants, a.toolPermission))
 	if mw := a.tracer.ToolMiddleware(); mw != nil {
 		out = append(out, mw)
 	}
@@ -58,10 +58,9 @@ func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 // the only place a run's configuration comes from. Callers hold c.mu.
 func (c *Conversation) specLocked() session.RunSpec {
 	a := c.app
-	_, mcpInstructions := a.mcpSnapshot()
 	tools := withToolSearch(slices.Concat(c.tools, c.mcpTools), c.model.model.Client)
 	cwd := c.cwd
-	parts := append(slices.Clone(c.workspace), prompt.MCP(mcpInstructions), prompt.DeferredTools(deferredNames(tools)))
+	parts := append(slices.Clone(c.workspace), prompt.MCP(a.offered.Load().instructions), prompt.DeferredTools(deferredNames(tools)))
 
 	model := c.model.model
 	model.Request.Thinking = provider.Thinking(c.model.effort)

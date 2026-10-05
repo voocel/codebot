@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/todo"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 	"github.com/voocel/litellm"
@@ -657,7 +658,7 @@ func (m *Model) submit(text string, images []litellm.Block) tea.Cmd {
 	conv := m.conv
 	return func() tea.Msg {
 		if err := conv.Submit(context.Background(), blocks); err != nil {
-			return CommandResultMsg{Text: ErrorStyle.Render("error: " + err.Error())}
+			return CommandResultMsg{Text: ErrorStyle.Render(app.ErrorText(err))}
 		}
 		return nil
 	}

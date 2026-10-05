@@ -30,26 +30,27 @@ func TestAgentEmit_ParallelSameTypeDisambiguates(t *testing.T) {
 	}
 }
 
-// A name freed by RunEnd is reusable by a later run.
-func TestAgentEmit_ReleasesNameOnEnd(t *testing.T) {
+// A finished run keeps its name, so a later run of the same type does not
+// add to its transcript.
+func TestAgentEmit_KeepsFinishedRunsApart(t *testing.T) {
 	hub := NewAgentHub()
 	emit := agentEmit(hub)
 
 	run := emit(background("explore"))
 	_ = run(agentcore.MessageStart{})
-	if got := hub.ActiveAgents(); !slices.Equal(got, []string{"explore"}) {
-		t.Fatalf("after start: active = %v", got)
-	}
-
 	_ = run(agentcore.RunEnd{})
 	if got := hub.ActiveAgents(); len(got) != 0 {
 		t.Fatalf("after end: active = %v, want empty", got)
 	}
 
-	// A fresh run reuses the now-free bare name rather than "explore #2".
 	_ = emit(background("explore"))(agentcore.MessageStart{})
-	if got := hub.ActiveAgents(); !slices.Equal(got, []string{"explore"}) {
-		t.Fatalf("after reuse: active = %v, want [explore]", got)
+	if got := hub.ActiveAgents(); !slices.Equal(got, []string{"explore #2"}) {
+		t.Fatalf("second run: active = %v, want [explore #2]", got)
+	}
+	history, _, cancel := hub.Subscribe("explore")
+	defer cancel()
+	if len(history) != 2 {
+		t.Fatalf("first run's history = %#v, want its own two events", history)
 	}
 }
 

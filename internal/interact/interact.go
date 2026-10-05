@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-
-	"github.com/voocel/codebot/internal/permission"
 )
 
 // ErrUnsupported is returned by a UI that cannot ask questions, such as a
@@ -47,13 +45,13 @@ type Approval struct {
 }
 
 // Choice is the user's answer to an Approval.
-type Choice = permission.Choice
+type Choice string
 
 const (
-	AllowOnce    = permission.ChoiceAllowOnce
-	AllowSession = permission.ChoiceAllowSession
-	AllowAlways  = permission.ChoiceAllowAlways
-	Deny         = permission.ChoiceDeny
+	AllowOnce    Choice = "allow_once"
+	AllowSession Choice = "allow_session"
+	AllowAlways  Choice = "allow_always"
+	Deny         Choice = "deny"
 )
 
 // Question is a single multi-choice question.
@@ -91,13 +89,13 @@ type Answers struct {
 }
 
 // Mode is the permission mode: how much the agent may do without asking.
-type Mode = permission.Mode
+type Mode string
 
 const (
-	ModeStrict      = permission.ModeStrict
-	ModeBalanced    = permission.ModeBalanced
-	ModeAcceptEdits = permission.ModeAcceptEdits
-	ModeTrust       = permission.ModeTrust
+	ModeStrict      Mode = "strict"
+	ModeBalanced    Mode = "balanced"
+	ModeAcceptEdits Mode = "accept-edits"
+	ModeTrust       Mode = "trust"
 )
 
 // Modes lists every mode in Shift+Tab / ACP order.

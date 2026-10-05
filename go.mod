@@ -13,14 +13,16 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/voocel/agentcore v1.8.5
 	github.com/voocel/litellm v1.9.4
-	github.com/voocel/litellm/otel v0.0.0-20260929152617-dd9ff45a6ac3
+	github.com/voocel/litellm/otel v0.0.0-20261005033127-13693bf5d685
 	github.com/voocel/mcp-sdk-go v1.3.0
-	go.opentelemetry.io/otel v1.46.0
+	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
-	go.opentelemetry.io/otel/sdk v1.46.0
-	go.opentelemetry.io/otel/trace v1.46.0
+	go.opentelemetry.io/otel/sdk v1.47.0
+	go.opentelemetry.io/otel/trace v1.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require go.opentelemetry.io/otel/log v1.47.0 // indirect
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -57,7 +59,7 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
-	go.opentelemetry.io/otel/metric v1.46.0 // indirect
+	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/net v0.55.0 // indirect

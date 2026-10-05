@@ -1,4 +1,4 @@
-package approval
+package permission
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/permission"
 )
 
 // approveFunc is a UI that answers approvals with itself.
@@ -39,10 +38,10 @@ func newEngine(t *testing.T, cfg Config) *Engine {
 
 func noGrants() []Rule { return nil }
 
-func noMeta(string) permission.Metadata { return permission.Metadata{} }
+func noMeta(string) Metadata { return Metadata{} }
 
 // gate returns a function reporting whether e lets a call run.
-func gate(e *Engine, grants func() []Rule, meta func(string) permission.Metadata) func(ctx context.Context, name, args string) (bool, error) {
+func gate(e *Engine, grants func() []Rule, meta func(string) Metadata) func(ctx context.Context, name, args string) (bool, error) {
 	mw := e.Middleware(grants, meta)
 	return func(ctx context.Context, name, args string) (bool, error) {
 		ran := false
@@ -184,15 +183,15 @@ func TestDecideAskUserHonorsDenyRules(t *testing.T) {
 // declares.
 func TestMiddlewareUsesToolMetadata(t *testing.T) {
 	e := newEngine(t, Config{Mode: interact.ModeBalanced})
-	for capability, want := range map[permission.Capability]bool{
-		permission.CapabilityRead:  true,
-		permission.CapabilityWrite: false, // asked, and nobody answers
+	for capability, want := range map[Capability]bool{
+		CapabilityRead:  true,
+		CapabilityWrite: false, // asked, and nobody answers
 	} {
-		meta := func(name string) permission.Metadata {
+		meta := func(name string) Metadata {
 			if name != "mcp__srv__lookup" {
 				t.Fatalf("metadata asked for %q", name)
 			}
-			return permission.Metadata{Capability: capability, KeyPrefix: "mcp"}
+			return Metadata{Capability: capability, KeyPrefix: "mcp"}
 		}
 		if ran, err := gate(e, noGrants, meta)(context.Background(), "mcp__srv__lookup", `{}`); err != nil || ran != want {
 			t.Errorf("%s: ran %v, %v", capability, ran, err)

@@ -138,7 +138,7 @@ func turnResult(run *agentcore.RunEnd) (acp.PromptResponse, error) {
 	case agentcore.EndAborted:
 		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
 	case agentcore.EndError:
-		return acp.PromptResponse{}, fmt.Errorf("acp: %w", run.Err)
+		return acp.PromptResponse{}, errors.New(app.ErrorText(run.Err))
 	default:
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}

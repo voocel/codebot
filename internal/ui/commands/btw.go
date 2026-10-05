@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -83,7 +82,7 @@ func (c *BtwCommand) View(width, _ int) string {
 	sb.WriteString("\n\n")
 
 	if c.err != nil {
-		sb.WriteString(tui.ErrorStyle.Render(fmt.Sprintf("Error: %v", c.err)))
+		sb.WriteString(tui.ErrorStyle.Render(app.ErrorText(c.err)))
 	} else if c.loading {
 		sb.WriteString(tui.MutedStyle.Render("Thinking..."))
 	} else {

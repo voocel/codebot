@@ -163,12 +163,12 @@ OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`
 
 `type: "gateway"` 的 provider 是一个 [LiteLLM 网关](https://github.com/voocel/litellm/blob/main/README_CN.md#网关)：codebot 负责运行 agent（比如在沙盒里），`base_url` 处的网关持有 provider key、执行模型调用并计费；`api_key` 是 codebot 访问网关的 token。思考级别、prompt 缓存和重试与直连 provider 时一样有效。
 
-Plugin 开发参考 [docs/plugins.md](docs/plugins.md)。真实示例 plugin 放在 `docs/examples/plugins/`，目前包含 `review-assistant`、`release-ops`、`docs-context`。
+新建 plugin 用 `/plugins create <plugin-id> [project|user]`，它会生成一个骨架供填写，写好后可用 `/plugins validate <plugin-id>` 校验。
 
 ## 环境要求
 
 - 至少一个 Provider 的 API Key
-- Go 1.25+（仅通过 `go install` 或源码构建时需要）
+- Go 1.26+（仅通过 `go install` 或源码构建时需要）
 
 ## 许可证
 

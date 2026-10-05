@@ -6,58 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/voocel/codebot/internal/interact"
 )
 
-// testClassifier maps a fixed set of conventional tool names to capabilities
-// for the test suite. Production callers register their own classifier via
-// EngineConfig.Classifier; the engine itself has no built-in tool name knowledge.
-func testClassifier(req Request) Classification {
-	args := map[string]any{}
-	if len(req.Args) > 0 {
-		_ = json.Unmarshal(req.Args, &args)
-	}
-	str := func(key string) string {
-		v, _ := args[key].(string)
-		return v
-	}
-	switch req.ToolName {
-	case "read", "glob", "grep", "ls":
-		return Classification{Capability: CapabilityRead, Path: str("path")}
-	case "write", "edit":
-		return Classification{Capability: CapabilityWrite, Path: str("path")}
-	case "bash":
-		return Classification{
-			Capability: CapabilityExec,
-			Command:    str("command"),
-			Workdir:    str("workdir"),
-		}
-	case "web_fetch":
-		return Classification{Capability: CapabilityNetwork, URL: str("url")}
-	case "web_search":
-		return Classification{Capability: CapabilityNetwork, Key: "network:search"}
-	}
-	return Classification{}
-}
-
-// newTestEngine makes an engine over workspace with the test classifier and
-// a throwaway store; cfg supplies the rest.
-func newTestEngine(t *testing.T, workspace string, cfg EngineConfig) *Engine {
-	t.Helper()
-	store, err := NewStore(filepath.Join(t.TempDir(), "approvals.json"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	cfg.Workspace = workspace
-	cfg.Store = store
-	cfg.Classifier = testClassifier
-	return NewEngine(cfg)
-}
-
-func mustNotAsk(t *testing.T) Approver {
-	return func(context.Context, Prompt) (Choice, error) {
+func mustNotAsk(t *testing.T) interact.UI {
+	return approveFunc(func(context.Context, interact.Approval) (interact.Choice, error) {
 		t.Errorf("the user was asked")
-		return ChoiceDeny, nil
-	}
+		return interact.Deny, nil
+	})
 }
 
 func toolReq(name string, args map[string]any) Request {
@@ -69,7 +26,7 @@ func toolReq(name string, args map[string]any) Request {
 }
 
 func TestBalancedReadAllowed(t *testing.T) {
-	engine := newTestEngine(t, t.TempDir(), EngineConfig{})
+	engine := newEngine(t, Config{})
 
 	decision, err := engine.Decide(context.Background(), toolReq("read", map[string]any{"path": "a.txt"}))
 	if err != nil {
@@ -80,64 +37,26 @@ func TestBalancedReadAllowed(t *testing.T) {
 	}
 }
 
-func TestBalancedWriteDeniedWithoutApprover(t *testing.T) {
-	engine := newTestEngine(t, t.TempDir(), EngineConfig{})
+func TestBalancedWriteDeniedWithoutUI(t *testing.T) {
+	engine := newEngine(t, Config{})
 
 	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": "a.txt"}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	if decision == nil || decision.Kind != DecisionDeny || decision.Allowed() {
-		t.Fatalf("expected deny without approver, got %#v", decision)
-	}
-}
-
-// TestRequestWorkspaceOverridesPathBase: a per-request Workspace changes the
-// base relative operand paths resolve (and audit) against, so a moved cwd (e.g.
-// into a worktree) checks the right directory.
-func TestRequestWorkspaceOverridesPathBase(t *testing.T) {
-	main := t.TempDir()
-	wt := t.TempDir()
-	var summaries []string
-	engine := NewEngine(EngineConfig{
-		Workspace:  main,
-		Mode:       ModeTrust, // auto-allow; we only assert the normalized path
-		Classifier: testClassifier,
-		Roots:      FilesystemRoots{ReadRoots: []string{main, wt}, WriteRoots: []string{main, wt}},
-		OnAudit:    func(e AuditEntry) { summaries = append(summaries, e.Summary) },
-	})
-
-	// No per-request workspace → relative path resolves against the engine
-	// workspace (main).
-	if _, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": "a.txt"})); err != nil {
-		t.Fatalf("Decide default: %v", err)
-	}
-	// Per-request workspace → the same relative path resolves against wt.
-	req := toolReq("write", map[string]any{"path": "a.txt"})
-	req.Workspace = wt
-	if _, err := engine.Decide(context.Background(), req); err != nil {
-		t.Fatalf("Decide override: %v", err)
-	}
-
-	if len(summaries) != 2 {
-		t.Fatalf("want 2 audit entries, got %d", len(summaries))
-	}
-	if want := filepath.Join(main, "a.txt"); summaries[0] != want {
-		t.Errorf("default summary = %q, want %q", summaries[0], want)
-	}
-	if want := filepath.Join(wt, "a.txt"); summaries[1] != want {
-		t.Errorf("per-request workspace summary = %q, want %q", summaries[1], want)
+		t.Fatalf("expected deny without a UI, got %#v", decision)
 	}
 }
 
 func TestOutsideRootsAllowSessionDegradesToAllowOnce(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
-	var prompt Prompt
-	engine := newTestEngine(t, workspace, EngineConfig{Approver: func(_ context.Context, p Prompt) (Choice, error) {
+	var prompt interact.Approval
+	engine := newEngine(t, Config{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Choice, error) {
 		prompt = p
-		return ChoiceAllowSession, nil
-	}})
+		return interact.AllowSession, nil
+	})})
 
 	decision, err := engine.Decide(context.Background(), Request{
 		ToolName: "read",
@@ -157,10 +76,10 @@ func TestOutsideRootsAllowSessionDegradesToAllowOnce(t *testing.T) {
 func TestPromptCarriesTheToolCallID(t *testing.T) {
 	workspace := t.TempDir()
 	var got string
-	engine := newTestEngine(t, workspace, EngineConfig{Approver: func(_ context.Context, p Prompt) (Choice, error) {
+	engine := newEngine(t, Config{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Choice, error) {
 		got = p.ToolID
-		return ChoiceDeny, nil
-	}})
+		return interact.Deny, nil
+	})})
 	req := toolReq("write", map[string]any{"path": "a.txt"})
 	req.ToolID = "call_1"
 	if _, err := engine.Decide(context.Background(), req); err != nil {
@@ -182,7 +101,7 @@ func TestWriteViaSymlinkEscapeDenied(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	engine := newTestEngine(t, workspace, EngineConfig{})
+	engine := newEngine(t, Config{Cwd: workspace})
 	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": "link/escape.txt"}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
@@ -193,7 +112,7 @@ func TestWriteViaSymlinkEscapeDenied(t *testing.T) {
 }
 
 func TestMetadataOverrideForCustomTool(t *testing.T) {
-	engine := newTestEngine(t, t.TempDir(), EngineConfig{})
+	engine := newEngine(t, Config{})
 
 	decision, err := engine.Decide(context.Background(), Request{
 		ToolName: "custom_lookup",
@@ -214,9 +133,10 @@ func TestMetadataOverrideForCustomTool(t *testing.T) {
 func TestInternalReadablePathSilentlyAllowed(t *testing.T) {
 	workspace := t.TempDir()
 	memDir := t.TempDir()
-	engine := newTestEngine(t, workspace, EngineConfig{
-		Roots:    FilesystemRoots{InternalReadable: []string{memDir}},
-		Approver: mustNotAsk(t),
+	engine := newEngine(t, Config{
+		Cwd:   workspace,
+		Roots: FilesystemRoots{InternalReadable: []string{memDir}},
+		UI:    mustNotAsk(t),
 	})
 
 	target := filepath.Join(memDir, "MEMORY.md")
@@ -244,9 +164,10 @@ func TestInternalReadablePathSilentlyAllowed(t *testing.T) {
 func TestInternalWritablePathSilentlyAllowedInBalancedMode(t *testing.T) {
 	workspace := t.TempDir()
 	memDir := t.TempDir()
-	engine := newTestEngine(t, workspace, EngineConfig{
-		Roots:    FilesystemRoots{InternalWritable: []string{memDir}},
-		Approver: mustNotAsk(t),
+	engine := newEngine(t, Config{
+		Cwd:   workspace,
+		Roots: FilesystemRoots{InternalWritable: []string{memDir}},
+		UI:    mustNotAsk(t),
 	})
 
 	target := filepath.Join(memDir, "MEMORY.md")
@@ -265,9 +186,10 @@ func TestInternalWritablePathSilentlyAllowedInBalancedMode(t *testing.T) {
 func TestInternalWritableImpliesReadable(t *testing.T) {
 	workspace := t.TempDir()
 	memDir := t.TempDir()
-	engine := newTestEngine(t, workspace, EngineConfig{
-		Roots:    FilesystemRoots{InternalWritable: []string{memDir}},
-		Approver: mustNotAsk(t),
+	engine := newEngine(t, Config{
+		Cwd:   workspace,
+		Roots: FilesystemRoots{InternalWritable: []string{memDir}},
+		UI:    mustNotAsk(t),
 	})
 
 	target := filepath.Join(memDir, "topic.md")
@@ -286,7 +208,8 @@ func TestInternalWritableImpliesReadable(t *testing.T) {
 func TestInternalReadOnlyHardDeniesWrite(t *testing.T) {
 	workspace := t.TempDir()
 	memDir := t.TempDir()
-	engine := newTestEngine(t, workspace, EngineConfig{
+	engine := newEngine(t, Config{
+		Cwd:   workspace,
 		Roots: FilesystemRoots{InternalReadable: []string{memDir}},
 	})
 
@@ -314,7 +237,8 @@ func TestInternalPathRespectsDenyRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRuleSet: %v", err)
 	}
-	engine := newTestEngine(t, workspace, EngineConfig{
+	engine := newEngine(t, Config{
+		Cwd:   workspace,
 		Rules: rules,
 		Roots: FilesystemRoots{InternalReadable: []string{memDir}},
 	})
@@ -344,15 +268,16 @@ func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 	workspace := t.TempDir()
 	memDir := t.TempDir()
 	var prompted bool
-	engine := newTestEngine(t, workspace, EngineConfig{
+	engine := newEngine(t, Config{
+		Cwd: workspace,
 		Roots: FilesystemRoots{
 			WriteRoots:       []string{memDir},
 			InternalWritable: []string{memDir},
 		},
-		Approver: func(context.Context, Prompt) (Choice, error) {
+		UI: approveFunc(func(context.Context, interact.Approval) (interact.Choice, error) {
 			prompted = true
-			return ChoiceAllowOnce, nil
-		},
+			return interact.AllowOnce, nil
+		}),
 	})
 
 	target := filepath.Join(memDir, "MEMORY.md")
@@ -364,7 +289,7 @@ func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 		t.Fatalf("Decide: %v", err)
 	}
 	if !prompted {
-		t.Fatalf("expected approver to be called for user-write-roots path, got %#v", decision)
+		t.Fatalf("expected the user to be asked for user-write-roots path, got %#v", decision)
 	}
 	if decision == nil || !decision.Allowed() {
 		t.Fatalf("expected allow after prompt, got %#v", decision)
@@ -391,7 +316,7 @@ func TestGrantsAllowTheirRequestOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := newTestEngine(t, workspace, EngineConfig{Rules: rules})
+	engine := newEngine(t, Config{Cwd: workspace, Rules: rules})
 	grant, err := ParseRule("Bash")
 	if err != nil {
 		t.Fatal(err)
@@ -409,41 +334,5 @@ func TestGrantsAllowTheirRequestOnly(t *testing.T) {
 	denied.Grants = []Rule{grant}
 	if d, _ := engine.Decide(context.Background(), denied); d.Allowed() {
 		t.Fatalf("grant beat a deny rule: %#v", d)
-	}
-}
-
-// A classification asking to confirm the call asks every time, whatever the
-// mode and the approvals given before, and an allow covers the call only.
-func TestConfirmAsksEveryTime(t *testing.T) {
-	workspace := t.TempDir()
-	var prompts []Prompt
-	engine := NewEngine(EngineConfig{
-		Workspace: workspace,
-		Mode:      ModeTrust,
-		Classifier: func(req Request) Classification {
-			c := testClassifier(req)
-			c.Confirm = "shell startup file"
-			return c
-		},
-		Approver: func(_ context.Context, p Prompt) (Choice, error) {
-			prompts = append(prompts, p)
-			return ChoiceAllowAlways, nil
-		},
-	})
-	req := toolReq("write", map[string]any{"path": ".bashrc"})
-	for range 2 {
-		d, err := engine.Decide(context.Background(), req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if d.Kind != DecisionAllowOnce {
-			t.Fatalf("decision = %#v, want allow once", d)
-		}
-	}
-	if len(prompts) != 2 {
-		t.Fatalf("asked %d times, want 2", len(prompts))
-	}
-	if p := prompts[0]; !p.OnceOnly || p.OutsideRoots || p.Reason != "shell startup file" {
-		t.Fatalf("prompt = %#v", p)
 	}
 }

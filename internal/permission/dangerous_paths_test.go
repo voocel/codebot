@@ -1,4 +1,4 @@
-package approval
+package permission
 
 import (
 	"encoding/json"
@@ -6,13 +6,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-
-	"github.com/voocel/codebot/internal/permission"
 )
 
-func mkReq(tool, key, path string) permission.Request {
+func mkReq(tool, key, path string) Request {
 	args, _ := json.Marshal(map[string]string{key: path})
-	return permission.Request{ToolName: tool, Args: args}
+	return Request{ToolName: tool, Args: args}
 }
 
 func TestCheckDangerousPath_ForceAsk(t *testing.T) {
@@ -20,7 +18,7 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 
 	tests := []struct {
 		name string
-		req  permission.Request
+		req  Request
 	}{
 		// leak-class on read
 		{"read ssh rsa key", mkReq("read", "file_path", filepath.Join(home, ".ssh", "id_rsa"))},
@@ -67,7 +65,7 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 
 	tests := []struct {
 		name string
-		req  permission.Request
+		req  Request
 	}{
 		{"read ssh public key", mkReq("read", "file_path", filepath.Join(home, ".ssh", "id_rsa.pub"))},
 		{"read .bashrc is not credential", mkReq("read", "file_path", filepath.Join(home, ".bashrc"))},
@@ -76,7 +74,7 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 		{"write .git/info/exclude is harmless", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "info", "exclude"))},
 		{"write .git/branches is harmless", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "branches", "x"))},
 		{"bash has no path", mkReq("bash", "command", "ls -la")},
-		{"empty args", permission.Request{ToolName: "write"}},
+		{"empty args", Request{ToolName: "write"}},
 	}
 
 	for _, tc := range tests {

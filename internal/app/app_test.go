@@ -654,6 +654,15 @@ func TestSetModelAppliesToTheNextRun(t *testing.T) {
 	if st := resumed.Status(); st.Model != "claude-opus-4-5" {
 		t.Fatalf("resumed model = %q", st.Model)
 	}
+
+	// A new session starts on it too, as it would in a new process.
+	fresh, err := e.app.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := fresh.Status(); st.Model != "claude-opus-4-5" {
+		t.Fatalf("new session model = %q, want the remembered model", st.Model)
+	}
 }
 
 func TestPostStopValidationSendsTheAgentBackOnce(t *testing.T) {

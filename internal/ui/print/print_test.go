@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +141,46 @@ func TestRunPrintRefusesWhatNeedsConfirming(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cwd, ".bashrc")); !os.IsNotExist(err) {
 		t.Fatalf(".bashrc was written: %v", err)
+	}
+}
+
+// A failed run is reported once, by the caller Run returns its error to, not
+// also as it happens.
+func TestRunPrintLeavesTheFailureToTheCaller(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settings := `{"provider":"anthropic","model":"claude-haiku-4-5","snapshot":false,
+		"providers":{"anthropic":{"api_key":"test","models":["claude-haiku-4-5"]}}}`
+	if err := os.MkdirAll(filepath.Join(home, ".codebot"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codebot", "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rejected := &litellm.Error{Type: litellm.ErrorTypeValidation, Message: "unknown model", Provider: "anthropic", StatusCode: 400}
+	model := &scriptModel{replies: []litellmtest.Reply{litellmtest.Fail(rejected)}}
+	a, err := app.Boot(app.Options{Cwd: t.TempDir(), Mode: interact.ModeTrust, UI: UI{}, NewModel: model.factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = w
+	err = Run(a, []string{"hi"}, false)
+	os.Stderr = stderr
+	w.Close()
+	written, _ := io.ReadAll(r)
+
+	if !errors.As(err, new(*litellm.Error)) {
+		t.Fatalf("Run returned %v, want the provider's error", err)
+	}
+	if strings.Contains(string(written), "unknown model") {
+		t.Fatalf("the failure was also written as it happened:\n%s", written)
 	}
 }
 

@@ -83,7 +83,7 @@ func (m *Model) HandleAgentEvent(ev agentcore.Event) (tea.Model, tea.Cmd) {
 		m.Running = false
 		m.clearStatusLine()
 		if e.Err != nil && !errors.Is(e.Err, context.Canceled) {
-			cmds = append(cmds, m.printBlock(indentBlock(ErrorStyle.Render(m.wrapTextForIndent("error: "+e.Err.Error(), 2)), 2)))
+			cmds = append(cmds, m.printBlock(indentBlock(ErrorStyle.Render(m.wrapTextForIndent(app.ErrorText(e.Err), 2)), 2)))
 		}
 		m.RunStats.Turns = e.Turns
 		m.RunStats.Duration = time.Since(m.RunStats.StartedAt)

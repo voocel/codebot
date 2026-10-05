@@ -163,12 +163,12 @@ OpenAI-protocol providers also support `api: "chat"` (default) or `api: "respons
 
 A provider of `type: "gateway"` is a [LiteLLM gateway](https://github.com/voocel/litellm#gateway): codebot runs the agent, say in a sandbox, while the gateway at `base_url` holds the provider keys, makes the model calls and bills them; `api_key` is codebot's token for the gateway. Reasoning effort, prompt caching and retries work as with a direct provider.
 
-Plugin authoring guide: [docs/plugins.md](docs/plugins.md). Real example plugins live under `docs/examples/plugins/`, including `review-assistant`, `release-ops`, and `docs-context`.
+To start a plugin, run `/plugins create <plugin-id> [project|user]`: it writes a skeleton to fill in, and `/plugins validate <plugin-id>` checks it.
 
 ## Requirements
 
 - API key for at least one provider
-- Go 1.25+ (only if installing via `go install` or building from source)
+- Go 1.26+ (only if installing via `go install` or building from source)
 
 ## License
 

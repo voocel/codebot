@@ -3,8 +3,12 @@
 package arch
 
 import (
-	"os/exec"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -19,15 +23,16 @@ var allowed = map[string][]string{
 	"internal/ui/": {"internal/app", "internal/session", "internal/interact", "internal/config", "internal/todo", "internal/ui/"},
 	"internal/acp": {"internal/app", "internal/session", "internal/interact"},
 	// The session knows the kernel and its log, nothing else.
-	"internal/session":    {"internal/storage"},
-	"internal/interact":   {"internal/permission"},
+	"internal/session": {"internal/storage"},
+	// The contract with the frontends depends on nothing; what implements
+	// or calls it does.
+	"internal/interact":   {},
 	"internal/todo":       {},
 	"internal/storage":    {},
-	"internal/permission": {},
-	"internal/approval":   {"internal/config", "internal/interact", "internal/permission"},
-	"internal/tools":      {"internal/interact", "internal/permission", "internal/skill", "internal/todo"},
+	"internal/permission": {"internal/config", "internal/interact"},
+	"internal/tools":      {"internal/interact", "internal/skill", "internal/todo"},
 	"internal/prompt":     {"internal/config"},
-	"internal/subagent":   {"internal/config", "internal/prompt", "internal/provider", "internal/tools"},
+	"internal/subagent":   {"internal/config", "internal/frontmatter", "internal/prompt", "internal/provider", "internal/tools"},
 }
 
 // external lists the non-standard modules a package may import, where that
@@ -36,19 +41,49 @@ var external = map[string][]string{
 	"internal/session": {"github.com/voocel/agentcore", "github.com/voocel/litellm"},
 }
 
+// TestDependencyRules reads the imports from the sources rather than from go
+// list: the test cache sees the files a test opens, not those a command it
+// runs does, so a cached pass would hide a new violation.
 func TestDependencyRules(t *testing.T) {
-	out, err := exec.Command("go", "list", "-f", `{{.ImportPath}} {{join .Imports " "}}`, module+"...").Output()
-	if err != nil {
-		t.Fatalf("go list: %v", err)
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		pkg, imports := strings.TrimPrefix(fields[0], module), fields[1:]
-		for _, imp := range imports {
-			if err := check(pkg, imp); err != "" {
-				t.Errorf("%s imports %s: %s", pkg, imp, err)
+	root := filepath.Join("..", "..")
+	fset := token.NewFileSet()
+	reported := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		dir, err := filepath.Rel(root, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		pkg := filepath.ToSlash(dir)
+		for _, spec := range f.Imports {
+			imp, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return err
+			}
+			if why := check(pkg, imp); why != "" && !reported[pkg+" "+imp] {
+				reported[pkg+" "+imp] = true
+				t.Errorf("%s imports %s: %s", pkg, imp, why)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -100,7 +135,8 @@ func isStdlib(imp string) bool {
 
 func TestCheckCatchesViolations(t *testing.T) {
 	bad := [][2]string{
-		{"internal/ui/tui", module + "internal/approval"},
+		{"internal/ui/tui", module + "internal/permission"},
+		{"internal/interact", module + "internal/permission"},
 		{"internal/acp", module + "internal/config"},
 		{"internal/session", module + "internal/config"},
 		{"internal/session", "github.com/charmbracelet/bubbletea"},

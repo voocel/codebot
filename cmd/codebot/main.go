@@ -1,15 +1,21 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"runtime/debug"
+	"strconv"
+	"strings"
 
 	"github.com/voocel/codebot/internal/acp"
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/storage"
 	"github.com/voocel/codebot/internal/ui/commands"
 	"github.com/voocel/codebot/internal/ui/print"
 	"github.com/voocel/codebot/internal/ui/tui"
@@ -139,6 +145,47 @@ func boot(opts app.Options) *app.App {
 }
 
 func fail(err error, prefix string) {
-	fmt.Fprintln(os.Stderr, formatError(err, prefix))
+	fmt.Fprintln(os.Stderr, prefix+": "+app.ErrorText(err))
 	os.Exit(1)
+}
+
+// chooseSession resolves -c and -r to the session to open: "" starts a new
+// one. -r asks on the terminal, so it needs one.
+func chooseSession(cwd string, latest, pick, interactive bool) (string, error) {
+	if !latest && !pick {
+		return "", nil
+	}
+	sessions, err := storage.NewManager(config.SessionsDir(cwd)).List()
+	if err != nil {
+		return "", err
+	}
+	if len(sessions) == 0 {
+		return "", nil
+	}
+	if latest {
+		return sessions[0].ID, nil
+	}
+	if !interactive {
+		return "", fmt.Errorf("-r requires an interactive terminal, use -c in non-interactive mode")
+	}
+
+	fmt.Fprintf(os.Stderr, "Available sessions:\n")
+	for i, s := range sessions {
+		fmt.Fprintf(os.Stderr, "  %d. %s  %s  %s\n", i+1, s.Updated.Format("2006-01-02 15:04"), s.ID, s.FirstMessage)
+	}
+	fmt.Fprintf(os.Stderr, "Select session number or id: ")
+	raw, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read session selection: %w", err)
+	}
+	choice := strings.TrimSpace(raw)
+	for _, s := range sessions {
+		if s.ID == choice {
+			return s.ID, nil
+		}
+	}
+	if i, err := strconv.Atoi(choice); err == nil && i >= 1 && i <= len(sessions) {
+		return sessions[i-1].ID, nil
+	}
+	return "", fmt.Errorf("invalid session selection %q", choice)
 }

@@ -29,9 +29,11 @@ type Event struct {
 	Mode         interact.Mode
 }
 
-// broadcaster calls every subscriber with each event, on the publishing
-// goroutine.
+// broadcaster calls every subscriber with each event on the publishing
+// goroutine, one event at a time.
 type broadcaster struct {
+	delivering sync.Mutex // held while an event is delivered
+
 	mu   sync.Mutex
 	next int
 	subs map[int]func(Event)
@@ -54,6 +56,8 @@ func (b *broadcaster) subscribe(fn func(Event)) func() {
 }
 
 func (b *broadcaster) publish(ev Event) {
+	b.delivering.Lock()
+	defer b.delivering.Unlock()
 	b.mu.Lock()
 	subs := make([]func(Event), 0, len(b.subs))
 	for _, fn := range b.subs {

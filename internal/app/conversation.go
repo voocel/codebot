@@ -13,10 +13,10 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/hooks"
 	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/permission"
 	"github.com/voocel/codebot/internal/prompt"
 	"github.com/voocel/codebot/internal/session"
 	"github.com/voocel/codebot/internal/skill"
@@ -44,6 +44,7 @@ type Conversation struct {
 
 	system []litellm.Block // the system prompt; see context.go
 
+	// mu guards what follows. The App's lock is never taken under it.
 	mu        sync.Mutex
 	cwd       string
 	worktree  *worktreeState
@@ -54,14 +55,14 @@ type Conversation struct {
 	mcpTools  []agentcore.Tool // every MCP tool the conversation had, see growTools
 	// grants are the tools the skills invoked in the current run allow; they
 	// go when it ends.
-	grants []approval.Rule
+	grants []permission.Rule
 }
 
 func openConversation(a *App, store *storage.Store, state storage.State) (*Conversation, error) {
 	id := store.Header().SessionID
 	recorded := state.Model
 	if recorded.Model == "" {
-		recorded = storage.Model{Provider: a.settings.Provider, Model: a.settings.Model, Effort: a.settings.ReasoningEffort}
+		recorded = a.defaultModel()
 	}
 	model, err := a.chooseModel(recorded.Provider, recorded.Model, recorded.Effort)
 	if err != nil {
@@ -83,28 +84,36 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 	if a.settings.Snapshot && worktree.IsRepo(a.cwd) {
 		c.snapshots = snapshot.New(config.SnapshotDir(a.cwd), a.cwd, config.UndoStatePath(a.cwd, id))
 	}
-	if c.hooks = hooks.New(a.settings.Hooks, id, a.approval, c.hookModel); c.hooks != nil {
+	if c.hooks = hooks.New(a.settings.Hooks, id, a.permissions, c.hookModel); c.hooks != nil {
 		c.validator = &validation{hooks: c.hooks}
 	}
 	config.EnsureMemoryDir(a.cwd)
 	c.workspace = a.workspace(a.cwd)
 	c.tools = c.buildTools()
-	c.mcpTools, _ = a.mcpSnapshot()
+	c.mcpTools = a.offered.Load().tools
 
 	if c.session, err = session.Open(store, state, c.specLocked()); err != nil {
 		c.tasks.StopAll()
 		return nil, err
 	}
-	a.tracer.SetSession(id)
-	if c.hooks != nil {
-		c.hooks.RunSessionStart()
-		c.session.Subscribe(func(ev session.Event) {
-			if ev.Kind == session.Idle {
-				c.hooks.RunNotification("agent response complete")
-			}
-		})
-	}
 	return c, nil
+}
+
+// start starts the conversation once it is current and the one it replaces
+// has ended: it takes what the MCP servers offer now, in case a refresh went
+// to the conversation it replaced, and starts telemetry and the hooks.
+func (c *Conversation) start() {
+	c.mcpChanged()
+	c.app.tracer.SetSession(c.id)
+	if c.hooks == nil {
+		return
+	}
+	c.hooks.RunSessionStart()
+	c.session.Subscribe(func(ev session.Event) {
+		if ev.Kind == session.Idle {
+			c.hooks.RunNotification("agent response complete")
+		}
+	})
 }
 
 // close ends the conversation: the run, background tasks, a worktree with no
@@ -280,7 +289,7 @@ func (c *Conversation) SetModel(prov, name, effort string) error {
 	c.tools = c.buildTools()
 	c.configureLocked()
 	c.mu.Unlock()
-	return config.PatchEffectiveSettings(c.app.cwd, config.Settings{Provider: &prov, Model: &name, ReasoningEffort: &effort})
+	return c.app.rememberModel(prov, name, effort)
 }
 
 // hookModel is the model prompt hooks call: the conversation's, without its
@@ -294,12 +303,14 @@ func (c *Conversation) hookModel() agentcore.Model {
 // suggestionMaxTokens bounds a suggestion's response, reasoning included.
 const suggestionMaxTokens = 2048
 
-// mcpChanged adds the tools the MCP servers now offer to the conversation's,
-// which only grow (see growTools); they apply from the next run.
-func (c *Conversation) mcpChanged(tools []agentcore.Tool) {
+// mcpChanged takes what the MCP servers now offer: their tools join the
+// conversation's, which only grow (see growTools), and their instructions
+// replace the ones before, from the next run. It reads the offer under c.mu,
+// so of concurrent calls the last one applies the latest offer.
+func (c *Conversation) mcpChanged() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.mcpTools = growTools(c.mcpTools, tools)
+	c.mcpTools = growTools(c.mcpTools, c.app.offered.Load().tools)
 	c.configureLocked()
 }
 
@@ -352,14 +363,14 @@ func (c *Conversation) skillInvoked(inv *skill.Invocation) {
 	if inv.Fork {
 		return
 	}
-	grants := approval.ParseGrants(inv.AllowedTools)
+	grants := permission.ParseGrants(inv.AllowedTools)
 	c.mu.Lock()
 	c.grants = append(c.grants, grants...)
 	c.mu.Unlock()
 }
 
 // skillGrants returns what the skills of the current run allow.
-func (c *Conversation) skillGrants() []approval.Rule {
+func (c *Conversation) skillGrants() []permission.Rule {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.grants

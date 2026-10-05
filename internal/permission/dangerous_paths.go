@@ -1,15 +1,13 @@
-package approval
+package permission
 
 import (
 	"path/filepath"
 	"strings"
-
-	"github.com/voocel/codebot/internal/permission"
 )
 
 // checkDangerousPath classifies a permission request's target path:
 //
-//	reason != ""  → confirm every call (Classification.Confirm): the mode
+//	reason != ""  → confirm every call (classification.confirm): the mode
 //	                and stored approvals are bypassed and only Allow Once /
 //	                Deny are offered; deny rules still apply. Two flavours
 //	                of path qualify:
@@ -43,7 +41,7 @@ import (
 //	project/innocent → /etc/passwd  (attacker):
 //	  raw would miss;
 //	  resolved catches the real target.
-func checkDangerousPath(workspace string, req permission.Request) string {
+func checkDangerousPath(workspace string, req Request) string {
 	// bash needs special handling: paths are embedded in the command string,
 	// not exposed as a structured argument. Without this, `bash cat ~/.ssh/id_rsa`
 	// would bypass the read-side checks entirely (cat is on the readonly

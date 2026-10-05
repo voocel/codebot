@@ -112,7 +112,7 @@ func (c *SettingsCommand) renderGeneral(width int) string {
 func (c *SettingsCommand) renderRuntime(width int) string {
 	s := c.app.Settings()
 	st := c.app.Current().Status()
-	effort := s.ReasoningEffort
+	effort := st.Effort
 	if effort == "" {
 		effort = "(unset)"
 	}
@@ -146,7 +146,7 @@ func (c *SettingsCommand) renderProviders(width int) string {
 	}
 	sort.Strings(names)
 
-	current := s.Provider
+	current := c.app.Current().Status().Provider
 	p := tui.NewInfoPanel(width)
 	for _, n := range names {
 		pc := s.Providers[n]

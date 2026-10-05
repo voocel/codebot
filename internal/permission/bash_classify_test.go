@@ -1,4 +1,4 @@
-package approval
+package permission
 
 import "testing"
 

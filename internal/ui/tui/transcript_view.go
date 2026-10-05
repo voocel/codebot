@@ -208,7 +208,7 @@ func (t *TranscriptView) HandleEvent(ev agentcore.Event) {
 		// A cancelled run ends without the response under way.
 		t.isStream = false
 		if e.Err != nil && !errors.Is(e.Err, context.Canceled) {
-			t.appendBlock(ErrorStyle.Render(wrapTextWidth("error: "+e.Err.Error(), t.bodyWidth())))
+			t.appendBlock(ErrorStyle.Render(wrapTextWidth(app.ErrorText(e.Err), t.bodyWidth())))
 		}
 	}
 

@@ -1,21 +1,16 @@
-// Package permission is the policy engine that decides tool calls: rules,
-// modes, filesystem roots and stored approvals, asking the user when they
-// leave a call open. Package approval adapts it to the tools.
+// Package permission decides whether the agent's tool calls and hook
+// commands may run. It classifies each call — its capability, the paths it
+// touches, whether it must be confirmed each time — and weighs it against
+// the rules, the mode, the filesystem roots and the approvals the user gave,
+// asking the user through interact.UI when these leave it open.
 package permission
 
 import (
-	"context"
 	"encoding/json"
+	"strings"
 	"time"
-)
 
-type Mode string
-
-const (
-	ModeStrict      Mode = "strict"
-	ModeBalanced    Mode = "balanced"
-	ModeAcceptEdits Mode = "accept-edits"
-	ModeTrust       Mode = "trust"
+	"github.com/voocel/codebot/internal/interact"
 )
 
 type Capability string
@@ -50,15 +45,6 @@ const (
 	DecisionSourceStore    DecisionSource = "store"
 	DecisionSourceRoots    DecisionSource = "roots"
 	DecisionSourceInternal DecisionSource = "internal"
-)
-
-type Choice string
-
-const (
-	ChoiceAllowOnce    Choice = "allow_once"
-	ChoiceAllowSession Choice = "allow_session"
-	ChoiceAllowAlways  Choice = "allow_always"
-	ChoiceDeny         Choice = "deny"
 )
 
 // FilesystemRoots scope filesystem access for tool requests. The two pairs
@@ -101,12 +87,12 @@ type Request struct {
 	Args      json.RawMessage `json:"args,omitempty"`
 	Metadata  Metadata        `json:"metadata,omitempty"`
 	// Workspace overrides the base for resolving relative operand paths on THIS
-	// request; empty falls back to EngineConfig.Workspace. Set it when the cwd
+	// request; empty falls back to Config.Cwd. Set it when the cwd
 	// changes per call (e.g. a worktree) so checks/audit match where tools run.
 	Workspace string `json:"workspace,omitempty"`
 	// Grants allow this request on top of the stored approvals, e.g. for the
-	// tools an active skill allows. Deny rules, the roots and the classifier's
-	// Confirm still come first.
+	// tools an active skill allows. Deny rules, the roots and the paths
+	// confirmed each time still come first.
 	Grants []Rule `json:"-"`
 }
 
@@ -130,83 +116,60 @@ func (d Decision) Allowed() bool {
 	}
 }
 
-type Prompt struct {
-	// ToolID is the ID of the tool call awaiting approval, when the request
-	// came from one.
-	ToolID     string
-	Tool       string
-	Summary    string
-	Reason     string
-	Capability Capability
-	// OutsideRoots means the call reaches outside the filesystem roots.
-	OutsideRoots bool
-	// OnceOnly means only ChoiceAllowOnce or ChoiceDeny apply: the call is
-	// outside the roots, or its classification asks to confirm it each time.
-	// Any other allow counts as once.
-	OnceOnly bool
-}
-
-type Approver func(ctx context.Context, prompt Prompt) (Choice, error)
-
 type AuditEntry struct {
-	Time       time.Time  `json:"time"`
-	Mode       Mode       `json:"mode"`
-	Tool       string     `json:"tool"`
-	Capability Capability `json:"capability"`
-	Summary    string     `json:"summary"`
-	Decision   string     `json:"decision"`
-	Reason     string     `json:"reason,omitempty"`
-	Allow      bool       `json:"allow"`
+	Time       time.Time     `json:"time"`
+	Mode       interact.Mode `json:"mode"`
+	Tool       string        `json:"tool"`
+	Capability Capability    `json:"capability"`
+	Summary    string        `json:"summary"`
+	Decision   string        `json:"decision"`
+	Reason     string        `json:"reason,omitempty"`
+	Allow      bool          `json:"allow"`
 }
 
-// Classification describes how the permission engine should treat a tool
-// call. The harness owns the mapping from tool names to capabilities and
-// operand fields, and provides it via EngineConfig.Classifier.
-//
-// Field semantics by Capability:
-//   - Read    : Path is checked against ReadRoots; populates summary.
-//   - Write   : Path is checked against WriteRoots; populates summary
-//     and contributes to the audit key (write:<path>).
-//   - Exec    : Command populates summary; hashed into the audit key
-//     (exec:<hash>). Workdir, if set, is checked against WriteRoots.
-//   - Network : URL populates summary; host extracted into audit key
-//     (network:<host>). Empty URL falls back to network:<tool>.
-//   - Internal: no operand fields used; key is internal:<tool>.
-//   - Unknown : key is tool:<tool>.
-//
-// Summary, Reason, and Key are optional overrides — empty fields fall
-// back to engine-derived defaults.
-type Classification struct {
-	Capability Capability
-	Path       string
-	Command    string
-	Workdir    string
-	URL        string
-	Summary    string
-	Reason     string
-	Key        string
-	// Confirm, when set, is why the user must confirm this call each time:
-	// the mode and stored approvals do not apply, and an allow covers this
-	// call only. Deny rules still apply first.
-	Confirm string
+// ParseGrants parses the tools a skill allows. Entries that do not parse
+// grant nothing.
+func ParseGrants(raw []string) []Rule {
+	var rules []Rule
+	for _, r := range raw {
+		if rule, err := ParseRule(r); err == nil {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
 }
 
-// Classifier maps a Request to a Classification. The harness owns the
-// mapping from tool names to capabilities and operand fields. If nil,
-// every request defaults to CapabilityUnknown unless Request.Metadata
-// supplies a Capability override.
-type Classifier func(req Request) Classification
+// HookRequest is a hook command about to run.
+type HookRequest struct {
+	Event    string
+	Tool     string
+	Command  string
+	Blocking bool
+}
 
-type EngineConfig struct {
-	Workspace string
-	Mode      Mode
-	Rules     *RuleSet
-	Roots     FilesystemRoots
-	Store     *Store
-	// Approver asks the user. Without one, whatever needs asking is denied.
-	Approver Approver
-	OnAudit  func(AuditEntry)
-	// Classifier maps tool requests to capabilities + operand fields.
-	// See Classification for field semantics.
-	Classifier Classifier
+// request is how the engine sees a hook command: a tool of its own, with the
+// hook capability, remembered per event and command.
+func (h HookRequest) request() Request {
+	event := strings.ToLower(strings.TrimSpace(firstNonEmpty(h.Event, "unknown")))
+	command := strings.TrimSpace(h.Command)
+	summary := command
+	switch {
+	case h.Tool != "":
+		summary = h.Event + " (" + h.Tool + ") -> " + command
+	case h.Event != "":
+		summary = h.Event + " -> " + command
+	}
+	reason := "hook command requires approval"
+	if h.Blocking {
+		reason = "blocking hook command requires approval"
+	}
+	return Request{
+		ToolName: "hook/" + event,
+		Summary:  summary,
+		Reason:   reason,
+		Metadata: Metadata{
+			Capability: CapabilityHook,
+			Key:        "hook:" + event + ":" + command,
+		},
+	}
 }

@@ -100,7 +100,7 @@ func forward(a *app.App, q *msgQueue, ev app.Event) {
 			q.push(IdleMsg{})
 			go suggest(a.Current(), q)
 		case session.Error:
-			q.push(CommandResultMsg{Text: ErrorStyle.Render("Session error: " + ev.Session.Err.Error())})
+			q.push(CommandResultMsg{Text: ErrorStyle.Render("Session error: " + app.ErrorText(ev.Session.Err))})
 		}
 	}
 }

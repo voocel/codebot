@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/approval"
 	"github.com/voocel/codebot/internal/config"
 	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/permission"
 	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/litellmtest"
 )
@@ -169,7 +169,7 @@ func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
 	t.Parallel()
 
 	// A denial stores nothing, so the user's approvals file is only read.
-	engine, err := approval.NewEngine(approval.Config{
+	engine, err := permission.NewEngine(permission.Config{
 		Cwd:  t.TempDir(),
 		Mode: interact.ModeBalanced,
 		UI: approveFunc(func(context.Context, interact.Approval) (interact.Choice, error) {
@@ -315,7 +315,7 @@ func TestPromptHookUsesTheCurrentModel(t *testing.T) {
 // newRunner compiles cfg with an engine that lets every hook run.
 func newRunner(t *testing.T, cfg config.HooksConfig, model func() agentcore.Model) *Runner {
 	t.Helper()
-	engine, err := approval.NewEngine(approval.Config{Cwd: t.TempDir(), Mode: interact.ModeTrust})
+	engine, err := permission.NewEngine(permission.Config{Cwd: t.TempDir(), Mode: interact.ModeTrust})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}

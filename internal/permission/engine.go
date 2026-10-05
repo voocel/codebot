@@ -1,7 +1,9 @@
 package permission
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,36 +11,97 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/voocel/agentcore"
+	agentcoretools "github.com/voocel/agentcore/tools"
+
+	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/interact"
 )
 
-// Engine decides tool requests. Everything but the mode and the approvals
-// given while it runs is fixed when it is made.
+// Config is what an Engine is made from.
+type Config struct {
+	Cwd   string
+	Mode  interact.Mode
+	Rules *RuleSet
+	Roots FilesystemRoots
+	// UI is asked whatever the mode does not allow on its own; without one,
+	// that is denied.
+	UI      interact.UI
+	OnAudit func(AuditEntry)
+}
+
+// Engine decides tool calls and hook commands. Only its mode and the
+// approvals given while it runs change; what one conversation allows on top
+// travels with its requests, see Middleware.
 type Engine struct {
-	workspace  string
-	rules      *RuleSet
-	store      *Store
-	onAudit    func(AuditEntry)
-	classifier Classifier
-	approver   Approver
-	fsRoots    FilesystemRoots
+	workspace string
+	rules     *RuleSet
+	roots     FilesystemRoots
+	store     *Store
+	ui        interact.UI
+	onAudit   func(AuditEntry)
 
 	mu           sync.RWMutex
-	mode         Mode
+	mode         interact.Mode
 	sessionAllow map[string]StoreEntry
 }
 
-func NewEngine(cfg EngineConfig) *Engine {
+func NewEngine(cfg Config) (*Engine, error) {
+	store, err := NewStore(config.ApprovalsPath(cfg.Cwd))
+	if err != nil {
+		return nil, err
+	}
 	return &Engine{
-		workspace:    cfg.Workspace,
+		workspace:    cfg.Cwd,
 		rules:        cfg.Rules,
-		store:        cfg.Store,
+		roots:        normalizeFilesystemRoots(cfg.Cwd, cfg.Roots),
+		store:        store,
+		ui:           cfg.UI,
 		onAudit:      cfg.OnAudit,
-		classifier:   cfg.Classifier,
-		approver:     cfg.Approver,
-		fsRoots:      normalizeFilesystemRoots(cfg.Workspace, cfg.Roots),
 		mode:         cfg.Mode,
 		sessionAllow: make(map[string]StoreEntry),
+	}, nil
+}
+
+// Middleware decides the tool calls of one conversation, refusing those it
+// does not allow. grants returns what the conversation allows beyond the mode
+// at the time of each call, such as the tools of the skills its run invoked;
+// meta returns how the engine sees the tools that classify themselves, such
+// as MCP tools.
+func (e *Engine) Middleware(grants func() []Rule, meta func(tool string) Metadata) agentcore.ToolMiddleware {
+	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
+		decision, err := e.Decide(ctx, Request{
+			ToolID:    call.ID,
+			ToolName:  call.Name,
+			ToolLabel: call.Tool.Label,
+			Args:      call.Args,
+			Metadata:  meta(call.Name),
+			// Paths resolve against the directory the tool runs in, which
+			// moves with a worktree entered mid-run.
+			Workspace: agentcoretools.CwdFromContext(ctx),
+			Grants:    grants(),
+		})
+		if err != nil {
+			return agentcore.Result{}, err
+		}
+		if !decision.Allowed() {
+			return agentcore.ErrorResult(cmp.Or(decision.Reason, "tool execution denied")), nil
+		}
+		return next(ctx, call)
 	}
+}
+
+// ApproveHook decides whether a hook command may run.
+func (e *Engine) ApproveHook(ctx context.Context, req HookRequest) error {
+	decision, err := e.Decide(ctx, req.request())
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed() {
+		return errors.New(decision.Reason)
+	}
+	return nil
 }
 
 func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
@@ -46,7 +109,7 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 	// wins over the engine's construction-time workspace, so relative operand
 	// paths are normalized, checked, and audited against the directory the
 	// tool actually runs in. Empty preserves the original behaviour.
-	info := inspectRequest(firstNonEmpty(req.Workspace, e.workspace), e.fsRoots, e.classifier, req)
+	info := inspectRequest(firstNonEmpty(req.Workspace, e.workspace), e.roots, req)
 	if info.hardDeny != "" {
 		decision := denyDecision(DecisionSourceRoots, info, info.hardDeny)
 		e.audit(info, decision)
@@ -97,11 +160,11 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 	}
 
 	switch e.Mode() {
-	case ModeTrust:
+	case interact.ModeTrust:
 		decision := allowDecision(DecisionSourceMode, info, "trust mode allows tool execution")
 		e.audit(info, decision)
 		return decision, nil
-	case ModeAcceptEdits:
+	case interact.ModeAcceptEdits:
 		switch info.capability {
 		case CapabilityRead, CapabilityInternal, CapabilityWrite:
 			decision := allowDecision(DecisionSourceMode, info, "accept-edits mode allows this capability")
@@ -110,7 +173,7 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 		default:
 			return e.ask(ctx, info)
 		}
-	case ModeStrict:
+	case interact.ModeStrict:
 		switch info.capability {
 		case CapabilityRead, CapabilityInternal:
 			decision := allowDecision(DecisionSourceMode, info, "strict mode allows read-only tools")
@@ -135,38 +198,41 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 	}
 }
 
-func (e *Engine) SetMode(mode Mode) {
+func (e *Engine) SetMode(mode interact.Mode) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.mode = mode
 }
 
-func (e *Engine) Mode() Mode {
+func (e *Engine) Mode() interact.Mode {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.mode
 }
 
-// ask puts the request to the approver and audits the outcome.
+// ask puts the request to the user and audits the outcome.
 func (e *Engine) ask(ctx context.Context, info toolInfo) (*Decision, error) {
-	if e.approver == nil {
+	if e.ui == nil {
 		msg := info.reason
 		if msg == "" {
-			msg = "approval required but no approver is configured"
+			msg = "approval required but no one can be asked"
 		}
 		decision := denyDecision(DecisionSourcePrompt, info, msg)
 		e.audit(info, decision)
 		return decision, nil
 	}
-	choice, err := e.approver(ctx, Prompt{
+	approval := interact.Approval{
 		ToolID:       info.toolID,
 		Tool:         info.tool,
 		Summary:      info.summary,
 		Reason:       info.reason,
-		Capability:   info.capability,
 		OutsideRoots: info.outsideRoots,
 		OnceOnly:     info.onceOnly(),
-	})
+	}
+	if info.tool == "bash" {
+		approval.Warning = destructiveCommandWarning(info.summary)
+	}
+	choice, err := e.ui.Approve(ctx, approval)
 	if err != nil {
 		return nil, err
 	}
@@ -175,12 +241,12 @@ func (e *Engine) ask(ctx context.Context, info toolInfo) (*Decision, error) {
 	return decision, nil
 }
 
-func (e *Engine) resolveChoice(info toolInfo, choice Choice) *Decision {
-	if info.onceOnly() && (choice == ChoiceAllowAlways || choice == ChoiceAllowSession) {
-		choice = ChoiceAllowOnce
+func (e *Engine) resolveChoice(info toolInfo, choice interact.Choice) *Decision {
+	if info.onceOnly() && (choice == interact.AllowAlways || choice == interact.AllowSession) {
+		choice = interact.AllowOnce
 	}
 	switch choice {
-	case ChoiceAllowAlways:
+	case interact.AllowAlways:
 		entry := StoreEntry{
 			Key:        info.key,
 			Tool:       info.tool,
@@ -190,11 +256,8 @@ func (e *Engine) resolveChoice(info toolInfo, choice Choice) *Decision {
 		}
 		e.mu.Lock()
 		e.sessionAllow[info.key] = entry
-		store := e.store
 		e.mu.Unlock()
-		if store != nil {
-			_ = store.Add(entry)
-		}
+		_ = e.store.Add(entry)
 		return &Decision{
 			Kind:         DecisionAllowAlways,
 			Source:       DecisionSourcePrompt,
@@ -204,7 +267,7 @@ func (e *Engine) resolveChoice(info toolInfo, choice Choice) *Decision {
 			OutsideRoots: info.outsideRoots,
 			Prompted:     true,
 		}
-	case ChoiceAllowSession:
+	case interact.AllowSession:
 		sKey := "session:" + string(info.capability)
 		entry := StoreEntry{
 			Key:        sKey,
@@ -225,7 +288,7 @@ func (e *Engine) resolveChoice(info toolInfo, choice Choice) *Decision {
 			OutsideRoots: info.outsideRoots,
 			Prompted:     true,
 		}
-	case ChoiceDeny:
+	case interact.Deny:
 		return &Decision{
 			Kind:         DecisionDeny,
 			Source:       DecisionSourcePrompt,
@@ -259,12 +322,8 @@ func (e *Engine) allowed(key string) bool {
 	}
 	e.mu.RLock()
 	_, ok := e.sessionAllow[key]
-	store := e.store
 	e.mu.RUnlock()
-	if ok {
-		return true
-	}
-	return store != nil && store.Has(key)
+	return ok || e.store.Has(key)
 }
 
 func (e *Engine) audit(info toolInfo, decision *Decision) {
@@ -342,15 +401,12 @@ func allowDecision(source DecisionSource, info toolInfo, reason string) *Decisio
 	}
 }
 
-func inspectRequest(workspace string, roots FilesystemRoots, classifier Classifier, req Request) toolInfo {
-	var c Classification
-	if classifier != nil {
-		c = classifier(req)
-	}
+func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolInfo {
+	c := classify(workspace, req)
 	info := toolInfo{
 		toolID:     req.ToolID,
 		tool:       req.ToolName,
-		capability: c.Capability,
+		capability: c.capability,
 		summary:    strings.TrimSpace(req.Summary),
 		reason:     strings.TrimSpace(req.Reason),
 		workspace:  workspace,
@@ -359,21 +415,15 @@ func inspectRequest(workspace string, roots FilesystemRoots, classifier Classifi
 		info.capability = CapabilityUnknown
 	}
 	if info.summary == "" {
-		info.summary = strings.TrimSpace(c.Summary)
-	}
-	if info.summary == "" {
 		info.summary = req.ToolName
-	}
-	if info.reason == "" {
-		info.reason = strings.TrimSpace(c.Reason)
 	}
 
 	switch info.capability {
 	case CapabilityRead:
 		info.key = "read"
 		info.roots = roots.ReadRoots
-		if c.Path != "" {
-			path, deny := checkedPath(workspace, roots.ReadRoots, c.Path, "readable")
+		if c.path != "" {
+			path, deny := checkedPath(workspace, roots.ReadRoots, c.path, "readable")
 			if path != "" {
 				info.summary = path
 			}
@@ -391,7 +441,7 @@ func inspectRequest(workspace string, roots FilesystemRoots, classifier Classifi
 		}
 	case CapabilityWrite:
 		info.roots = roots.WriteRoots
-		path, deny := checkedPath(workspace, roots.WriteRoots, c.Path, "writable")
+		path, deny := checkedPath(workspace, roots.WriteRoots, c.path, "writable")
 		info.summary = firstNonEmpty(path, info.summary)
 		info.key = "write:" + path
 		if info.reason == "" {
@@ -404,7 +454,7 @@ func inspectRequest(workspace string, roots FilesystemRoots, classifier Classifi
 			case pathInRoots(path, roots.InternalReadable):
 				info.hardDeny = fmt.Sprintf("path in read-only internal root, not writable: %s", path)
 			default:
-				_, notInReadRoots := checkedPath(workspace, roots.ReadRoots, c.Path, "readable")
+				_, notInReadRoots := checkedPath(workspace, roots.ReadRoots, c.path, "readable")
 				if notInReadRoots == "" {
 					info.hardDeny = fmt.Sprintf("path in read-only root, not writable: %s", path)
 				} else {
@@ -414,13 +464,13 @@ func inspectRequest(workspace string, roots FilesystemRoots, classifier Classifi
 			}
 		}
 	case CapabilityExec:
-		command := strings.TrimSpace(c.Command)
+		command := strings.TrimSpace(c.command)
 		info.summary = firstNonEmpty(command, info.summary)
 		info.key = "exec:" + shortHash(command)
 		if info.reason == "" {
 			info.reason = "shell execution requires approval"
 		}
-		if wd := strings.TrimSpace(c.Workdir); wd != "" {
+		if wd := strings.TrimSpace(c.workdir); wd != "" {
 			_, deny := checkedPath(workspace, roots.WriteRoots, wd, "writable")
 			if deny != "" {
 				info.outsideRoots = true
@@ -428,7 +478,7 @@ func inspectRequest(workspace string, roots FilesystemRoots, classifier Classifi
 			}
 		}
 	case CapabilityNetwork:
-		target := strings.TrimSpace(c.URL)
+		target := strings.TrimSpace(c.url)
 		info.summary = firstNonEmpty(target, info.summary)
 		if target != "" {
 			info.key = "network:" + hostOf(target)
@@ -448,8 +498,8 @@ func inspectRequest(workspace string, roots FilesystemRoots, classifier Classifi
 		}
 	}
 
-	if c.Key != "" {
-		info.key = c.Key
+	if c.key != "" {
+		info.key = c.key
 	}
 
 	meta := req.Metadata
@@ -467,9 +517,9 @@ func inspectRequest(workspace string, roots FilesystemRoots, classifier Classifi
 	} else if meta.KeyPrefix != "" {
 		info.key = meta.KeyPrefix + ":" + req.ToolName
 	}
-	if c.Confirm != "" {
+	if c.confirm != "" {
 		info.confirm = true
-		info.reason = c.Confirm
+		info.reason = c.confirm
 	}
 	return info
 }
