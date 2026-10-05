@@ -5,7 +5,6 @@ import (
 	"image/color"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,7 +21,8 @@ func (m *Model) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	v.WindowTitle = "codebot · " + filepath.Base(m.status.Cwd)
+	v.ReportFocus = true
+	v.WindowTitle = m.title()
 	if m.width == 0 || m.height == 0 {
 		return v
 	}

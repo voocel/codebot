@@ -1,7 +1,9 @@
 package editor
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -9,9 +11,14 @@ import (
 )
 
 func newEditor() *Editor {
+	return newEditorIn("")
+}
+
+// newEditorIn returns an editor mentioning the files under root.
+func newEditorIn(root string) *Editor {
 	e := New(func() []Completion {
 		return []Completion{{Name: "help", Run: true}, {Name: "model", Aliases: []string{"m"}, Run: true}, {Name: "btw"}}
-	})
+	}, func() string { return root })
 	e.SetWidth(60)
 	return e
 }
@@ -32,25 +39,60 @@ func keyPress(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "space":
+		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+	case "ctrl+r":
+		return tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}
 	}
 	return tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
 }
 
-// press presses keys and returns the input sent, if any.
+// press presses keys, doing the work they start as the program would, and
+// returns the input sent, if any.
 func press(e *Editor, keys ...string) *Input {
 	var in *Input
 	for _, k := range keys {
-		if _, sent := e.Update(keyPress(k)); sent != nil {
+		cmd, sent := e.Update(keyPress(k))
+		if sent != nil {
 			in = sent
 		}
+		do(e, cmd)
 	}
 	return in
 }
 
+func do(e *Editor, cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		for _, c := range msg {
+			do(e, c)
+		}
+	case filesMsg:
+		c, _ := e.Update(msg)
+		do(e, c)
+	}
+}
+
 func write(e *Editor, text string) {
 	for _, r := range text {
-		press(e, string(r))
+		if r == ' ' {
+			press(e, "space")
+		} else {
+			press(e, string(r))
+		}
 	}
+}
+
+// labels lists what the menu offers.
+func labels(e *Editor) []string {
+	var out []string
+	for _, it := range e.menu {
+		out = append(out, it.label)
+	}
+	return out
 }
 
 func TestSend(t *testing.T) {
@@ -110,13 +152,13 @@ func TestCompletion(t *testing.T) {
 	press(e, "down", "down")
 	e.Clear()
 	write(e, "/")
-	if c, _ := e.selected(); c.Name != "help" {
-		t.Errorf("a new menu selects %q", c.Name)
+	if c, _ := e.selected(); c.label != "/help" {
+		t.Errorf("a new menu selects %q", c.label)
 	}
 	press(e, "down")
 	write(e, "m")
-	if c, _ := e.selected(); c.Name != "model" {
-		t.Errorf("/m selects %q", c.Name)
+	if c, _ := e.selected(); c.label != "/model" {
+		t.Errorf("/m selects %q", c.label)
 	}
 
 	// enter runs a command that takes no arguments.
@@ -195,5 +237,115 @@ func TestPastedCarriageReturns(t *testing.T) {
 	}
 	if in := press(e, "enter"); in == nil || strings.Contains(in.Text, "\r") {
 		t.Errorf("sent %q", in.Text)
+	}
+}
+
+func TestMentionsAFile(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []string{"src/editor.go", "src/view.go", "README.md", ".git/config", "docs/my notes.md"} {
+		path := filepath.Join(root, f)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := newEditorIn(root)
+
+	write(e, "look at @")
+	if got, want := labels(e), []string{"src/", "docs/", "README.md", "src/view.go", "src/editor.go", "docs/my notes.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("@ offers %q, want %q", got, want)
+	}
+	write(e, "edgo")
+	if got := labels(e); len(got) != 1 || got[0] != "src/editor.go" {
+		t.Fatalf("@edgo offers %q", got)
+	}
+	if in := press(e, "enter"); in != nil || e.ta.Value() != "look at @src/editor.go " {
+		t.Fatalf("sent %+v, the input holds %q", in, e.ta.Value())
+	}
+	if e.Menu(60) != nil {
+		t.Error("the menu stayed after the mention")
+	}
+
+	// A directory goes on to what it holds.
+	write(e, "and @sr")
+	press(e, "tab")
+	if got, want := labels(e), []string{"src/view.go", "src/editor.go"}; e.ta.Value() != "look at @src/editor.go and @src/" || !reflect.DeepEqual(got, want) {
+		t.Fatalf("the input holds %q, the menu %q", e.ta.Value(), got)
+	}
+
+	// A path with a space is quoted.
+	e.Clear()
+	write(e, "@notes")
+	press(e, "tab")
+	if got := e.ta.Value(); got != `@"docs/my notes.md" ` {
+		t.Errorf("the input holds %q", got)
+	}
+
+	// Mail is no mention.
+	e.Clear()
+	write(e, "me@ex")
+	if e.Menu(60) != nil {
+		t.Error("an address opened the menu")
+	}
+}
+
+func TestRank(t *testing.T) {
+	paths := []string{"internal/", "internal/ui/", "internal/ui/view.go", "internal/ui/editor/", "internal/ui/editor/editor.go", "internal/ui/editor/editor_test.go", "docs/editing.md"}
+	for _, c := range []struct {
+		q    string
+		want []string
+	}{
+		{"editor.go", []string{"internal/ui/editor/editor.go", "internal/ui/editor/editor_test.go"}},
+		{"Editor", []string{"internal/ui/editor/", "internal/ui/editor/editor.go", "internal/ui/editor/editor_test.go"}},
+		{"ui/v", []string{"internal/ui/view.go"}},
+		{"edtst", []string{"internal/ui/editor/editor_test.go"}},
+		{"zz", nil},
+	} {
+		if got := rank(paths, c.q); !reflect.DeepEqual(got, c.want) && !(len(got) == 0 && len(c.want) == 0) {
+			t.Errorf("%q ranks %q, want %q", c.q, got, c.want)
+		}
+	}
+}
+
+func TestSearchesTheHistory(t *testing.T) {
+	e := newEditor()
+	e.SetHistory(NewHistory(filepath.Join(t.TempDir(), "history.jsonl"), "/project"))
+	for _, s := range []string{"fix the tests", "write the docs", "run the tests"} {
+		write(e, s)
+		press(e, "enter")
+	}
+
+	write(e, "draft")
+	press(e, "ctrl+r")
+	if !strings.Contains(e.View(60), "Search history") || len(e.menu) != 3 {
+		t.Fatalf("ctrl+r shows %d entries:\n%s", len(e.menu), e.View(60))
+	}
+	write(e, "TESTS")
+	if got, want := labels(e), []string{"run the tests", "fix the tests"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the search offers %q", got)
+	}
+	press(e, "ctrl+r")
+	if in := press(e, "enter"); in != nil || e.ta.Value() != "fix the tests" {
+		t.Fatalf("sent %+v, the input holds %q", in, e.ta.Value())
+	}
+	if strings.Contains(e.View(60), "Search history") {
+		t.Error("the search went on after picking")
+	}
+
+	// esc goes back to what the input held.
+	e.Clear()
+	write(e, "draft")
+	press(e, "ctrl+r")
+	write(e, "nothing like it")
+	if menu := e.Menu(60); len(menu) != 1 || !strings.Contains(menu[0], "Nothing sent before") {
+		t.Errorf("a search finding nothing shows %q", menu)
+	}
+	if in := press(e, "enter"); in != nil {
+		t.Errorf("enter sent the search: %+v", in)
+	}
+	if !e.Dismiss() || e.ta.Value() != "draft" {
+		t.Errorf("esc left %q", e.ta.Value())
 	}
 }

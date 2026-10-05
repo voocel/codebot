@@ -42,6 +42,9 @@ var tips = []string{
 	"shift+tab switches how much codebot asks before acting",
 	"/btw asks a side question that stays out of the conversation",
 	"ctrl+v pastes an image from the clipboard",
+	"@ mentions a file · tab completes its path",
+	"ctrl+r searches what you sent before",
+	"ctrl+g opens the input in your editor",
 	"Type while codebot works: your message joins at its next step",
 	"esc stops the run · what you queued comes back to the editor",
 }

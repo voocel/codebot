@@ -71,6 +71,7 @@ type Model struct {
 	toast     string
 	toastID   int
 	quitArmed bool
+	away      bool // the terminal reports the user has gone elsewhere
 }
 
 // pending is an input sent but not yet in the conversation.
@@ -136,7 +137,7 @@ type (
 
 func newModel(a *app.App, version string) *Model {
 	m := &Model{app: a, version: version, cmds: commands.New(a, version), mode: a.Mode(), tip: randomTip()}
-	m.editor = editor.New(m.commands)
+	m.editor = editor.New(m.commands, func() string { return m.conv.Cwd() })
 	m.editor.SetHistory(editor.NewHistory(filepath.Join(config.UserConfigDir(), "history.jsonl"), a.Cwd()))
 	m.open(a.Current())
 	return m
@@ -182,6 +183,12 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return m.key(msg)
 	case tea.MouseMsg:
 		return m.mouse(msg)
+	case tea.FocusMsg:
+		m.away = false
+		return nil
+	case tea.BlurMsg:
+		m.away = true
+		return nil
 	case tea.PasteMsg:
 		if p := m.top(); p != nil {
 			return m.updatePanel(p, msg)
@@ -197,7 +204,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return m.tick()
 	case idleMsg:
 		m.idle()
-		return nil
+		return m.alert("Done")
 	case statusMsg:
 		m.status = msg.status
 		return nil
@@ -229,9 +236,10 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case approveMsg:
-		return m.push(panel.NewPermission(msg.req, msg.reply, func() { m.app.SetMode(interact.ModeAcceptEdits) }))
+		p := panel.NewPermission(msg.req, msg.reply, func() { m.app.SetMode(interact.ModeAcceptEdits) })
+		return tea.Batch(m.push(p), m.alert("Allow "+transcript.Title(msg.req.Tool)+"?"))
 	case askMsg:
-		return m.push(panel.NewAsk(msg.qs, msg.reply))
+		return tea.Batch(m.push(panel.NewAsk(msg.qs, msg.reply)), m.alert("A question for you"))
 	case withdrawMsg:
 		m.remove(func(p panel.Panel) bool {
 			r, ok := p.(panel.Request)

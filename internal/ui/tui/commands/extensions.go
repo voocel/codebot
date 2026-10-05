@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/ui/tui/editor"
 	"github.com/voocel/codebot/internal/ui/tui/panel"
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
@@ -237,7 +237,10 @@ func memory(a *app.App) Command {
 				_ = os.WriteFile(index, []byte("# Project Memory\n"), 0o644)
 			}
 			conv := a.Current()
-			return edit(index, func() tea.Msg {
+			return editor.Open(index, func(err error) tea.Msg {
+				if err != nil {
+					return transcript.Fail("Editor: " + err.Error())
+				}
 				conv.Reload()
 				return transcript.Note("Memory reloaded")
 			})
@@ -257,23 +260,4 @@ func memory(a *app.App) Command {
 		}
 		return output(text + "\n/memory edit opens the index in your editor.")
 	}}
-}
-
-// edit opens path in the user's editor, then runs done.
-func edit(path string, done func() tea.Msg) tea.Cmd {
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-	// The editor may come with flags, "code --wait".
-	args := append(strings.Fields(editor), path)
-	return tea.ExecProcess(exec.Command(args[0], args[1:]...), func(err error) tea.Msg {
-		if err != nil {
-			return transcript.Fail("Editor: " + err.Error())
-		}
-		return done()
-	})
 }
