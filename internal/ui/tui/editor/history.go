@@ -1,7 +1,7 @@
 package editor
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,12 +10,14 @@ import (
 )
 
 const (
-	maxHistory = 500
+	maxHistory = 500 // entries kept of a project
 	// maxPasted caps the paste bodies an entry keeps; past it they are
 	// dropped and recall marks them unavailable.
 	maxPasted = 1 << 20
-	// maxHistoryLine bounds a line of the history file.
-	maxHistoryLine = 8 << 20
+	// maxHistoryFile bounds the history file. Past it, the file is rewritten
+	// with the newest entries that fit in half of it, so that it is not
+	// rewritten on every start.
+	maxHistoryFile = 10 << 20
 )
 
 // History is what the user sent in a project, newest first, kept in a JSON
@@ -80,32 +82,79 @@ func (h *History) Add(text string, pasted map[int]string) {
 	h.append(record{Display: text, Pasted: pasted, Timestamp: time.Now().UnixMilli(), Project: h.project, SessionID: h.sessionID})
 }
 
+// stored is an entry of the history file, as read.
+type stored struct {
+	raw []byte
+	record
+}
+
 func (h *History) load() {
-	f, err := os.Open(h.path)
+	data, err := os.ReadFile(h.path)
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	var all []entry
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64<<10), maxHistoryLine)
-	for sc.Scan() {
+	var lines []stored
+	for _, raw := range bytes.Split(data, []byte("\n")) {
 		var r record
-		if json.Unmarshal(sc.Bytes(), &r) != nil || r.Project != h.project || r.Display == "" {
-			continue
+		if json.Unmarshal(raw, &r) == nil && r.Display != "" {
+			lines = append(lines, stored{raw, r})
 		}
-		all = append(all, entry{r.Display, r.Pasted})
 	}
 	seen := map[string]bool{}
-	for _, e := range slices.Backward(all) {
-		if seen[e.text] {
+	for _, l := range slices.Backward(lines) {
+		if l.Project != h.project || seen[l.Display] {
 			continue
 		}
-		seen[e.text] = true
-		h.items = append(h.items, e)
+		seen[l.Display] = true
+		h.items = append(h.items, entry{l.Display, l.Pasted})
 		if len(h.items) == maxHistory {
 			break
 		}
+	}
+	if len(data) > maxHistoryFile {
+		h.compact(lines)
+	}
+}
+
+// compact rewrites the history file with the newest entries of each project
+// that fit in half of maxHistoryFile. Another codebot appending meanwhile
+// may lose its entry, which is only history.
+func (h *History) compact(lines []stored) {
+	type key struct{ project, text string }
+	seen := map[key]bool{}
+	kept := map[string]int{}
+	budget := maxHistoryFile / 2
+	var keep [][]byte
+	for _, l := range slices.Backward(lines) {
+		k := key{l.Project, l.Display}
+		if seen[k] || kept[l.Project] == maxHistory {
+			continue
+		}
+		if budget -= len(l.raw) + 1; budget < 0 {
+			break
+		}
+		seen[k] = true
+		kept[l.Project]++
+		keep = append(keep, l.raw)
+	}
+	var b bytes.Buffer
+	for _, raw := range slices.Backward(keep) {
+		b.Write(raw)
+		b.WriteByte('\n')
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(h.path), "history-*.jsonl")
+	if err != nil {
+		return
+	}
+	_, err = tmp.Write(b.Bytes())
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), h.path)
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
 	}
 }
 
@@ -115,7 +164,8 @@ func (h *History) append(r record) {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(h.path), 0o755)
-	f, err := os.OpenFile(h.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	// What the user typed is theirs alone.
+	f, err := os.OpenFile(h.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}

@@ -37,13 +37,13 @@ func compact(a *app.App) Command {
 
 func newSession(a *app.App) Command {
 	return Command{Name: "new", Aliases: []string{"clear"}, Description: "Start a new conversation", Idle: true, Run: func(string) tea.Cmd {
-		return open(a, "")
+		return Open(a, "")
 	}}
 }
 
-// open opens session id, a new one for "", off the TUI's goroutine: opening
-// publishes to it.
-func open(a *app.App, id string) tea.Cmd {
+// Open opens the conversation id, a new one for "", off the TUI's
+// goroutine: opening publishes to it.
+func Open(a *app.App, id string) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := a.Open(id); err != nil {
 			return transcript.Fail("Could not open the session: " + err.Error())
@@ -67,7 +67,7 @@ func resume(a *app.App) Command {
 			}
 			items = append(items, panel.Item{
 				Title:   title,
-				Detail:  fmt.Sprintf("%s · %d messages", age(time.Since(s.Updated)), s.MessageCount),
+				Detail:  fmt.Sprintf("%s · %d messages", transcript.Ago(time.Since(s.Updated)), s.MessageCount),
 				Current: s.ID == current,
 				Value:   s.ID,
 			})
@@ -79,7 +79,7 @@ func resume(a *app.App) Command {
 			if it.Current {
 				return nil
 			}
-			return open(a, it.Value.(string))
+			return Open(a, it.Value.(string))
 		}})
 	}}
 }
@@ -226,10 +226,10 @@ func status(a *app.App, version string) Command {
 				{"Mode", string(st.Mode)},
 				{"Context", contextLine(st.Context, st.Window)},
 				{"Cost", cost(st.Usage)},
-				{"Directory", transcript.ShortPath(st.Cwd)},
+				{"Directory", transcript.HomePath(st.Cwd)},
 			}
 			if st.Worktree != "" {
-				overview = append(overview, [2]string{"Worktree", transcript.ShortPath(st.Worktree)})
+				overview = append(overview, [2]string{"Worktree", transcript.HomePath(st.Worktree)})
 			}
 			if branch != "" {
 				overview = append(overview, [2]string{"Branch", branch})
@@ -238,7 +238,7 @@ func status(a *app.App, version string) Command {
 			session := [][2]string{{"ID", st.SessionID}, {"Messages", strconv.Itoa(messages)}}
 			if sess.Path != "" {
 				session = append(session,
-					[2]string{"Started", sess.Created.Format("2006-01-02 15:04") + " (" + age(time.Since(sess.Created)) + ")"},
+					[2]string{"Started", sess.Created.Format("2006-01-02 15:04") + " (" + transcript.Ago(time.Since(sess.Created)) + ")"},
 					[2]string{"File", transcript.ShortPath(sess.Path)})
 			}
 			if st.Tasks > 0 {
@@ -459,19 +459,6 @@ func fileTail(path string, n int64) string {
 	buf := make([]byte, st.Size()-off)
 	_, _ = f.ReadAt(buf, off)
 	return string(buf)
-}
-
-func age(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
 }
 
 func plural(n int, word string) string {

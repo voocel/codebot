@@ -3,6 +3,7 @@ package transcript
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -170,5 +171,18 @@ func TestWriteWithoutChanges(t *testing.T) {
 	tr.Apply(agentcore.ToolStart{Call: agentcore.ToolCall{ID: "w", Name: "write", Preview: "(no changes)"}})
 	if got := plain(render(tr, Params{Width: 40})); !strings.Contains(got, "No changes") {
 		t.Errorf("rendered\n%s", got)
+	}
+}
+
+func TestHomePath(t *testing.T) {
+	for p, want := range map[string]string{
+		home:                          "~",
+		filepath.Join(home, "x", "y"): filepath.Join("~", "x", "y"),
+		home + "x":                    home + "x",
+		"/elsewhere":                  "/elsewhere",
+	} {
+		if got := HomePath(p); got != want {
+			t.Errorf("HomePath(%q) = %q, want %q", p, got, want)
+		}
 	}
 }

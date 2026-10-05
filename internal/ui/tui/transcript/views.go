@@ -127,7 +127,13 @@ func ShortPath(p string) string {
 			return rel
 		}
 	}
-	if home != "" && strings.HasPrefix(p, home+string(filepath.Separator)) {
+	return HomePath(p)
+}
+
+// HomePath shows p from the home directory, "~/project", for a directory
+// that is the place itself rather than a file in the work.
+func HomePath(p string) string {
+	if home != "" && (p == home || strings.HasPrefix(p, home+string(filepath.Separator))) {
 		return "~" + p[len(home):]
 	}
 	return p

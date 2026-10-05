@@ -26,8 +26,9 @@ type modelChoice struct {
 	// provider default.
 	model     agentcore.Model
 	effort    string
-	window    int // effective context window
-	compactAt int // estimated request size that triggers compaction
+	reasoning bool // the model takes a reasoning effort
+	window    int  // effective context window
+	compactAt int  // estimated request size that triggers compaction
 	small     string
 }
 
@@ -43,7 +44,8 @@ func (a *App) chooseModel(prov, name, effort string) (modelChoice, error) {
 		return modelChoice{}, fmt.Errorf("create model failed: %w", err)
 	}
 	facts, ok := a.models.Lookup(spec)
-	if !slices.Contains(provider.ThinkingLevels(model.Client, facts.Reasoning), effort) {
+	levels := provider.ThinkingLevels(model.Client, facts.Reasoning)
+	if !slices.Contains(levels, effort) {
 		return modelChoice{}, fmt.Errorf("model %s/%s: unsupported reasoning_effort %q", prov, name, effort)
 	}
 
@@ -62,6 +64,7 @@ func (a *App) chooseModel(prov, name, effort string) (modelChoice, error) {
 		name:      name,
 		model:     model,
 		effort:    effort,
+		reasoning: len(levels) > 1,
 		window:    window,
 		compactAt: window - compactReserve(window, maxOutput, a.settings.CompactRatio),
 		small:     a.smallModel(prov, name),

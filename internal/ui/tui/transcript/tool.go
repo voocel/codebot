@@ -183,6 +183,23 @@ func Duration(d time.Duration) string {
 	}
 }
 
+// Ago formats how long ago something was: "just now", "5m ago", "3h ago",
+// "yesterday", "4d ago".
+func Ago(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 48*time.Hour:
+		return "yesterday"
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
 // Tokens formats a token count briefly: "950", "12.3k", "1.2M".
 func Tokens(n int) string {
 	switch {

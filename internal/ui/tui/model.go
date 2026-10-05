@@ -53,6 +53,12 @@ type Model struct {
 	stopped  bool // the user stopped the run, which drops the pending inputs
 	expanded bool
 
+	// recent are the conversations the welcome offers, recentAt the line
+	// of the main area each shows on; tip is the welcome's tip.
+	recent   []app.SessionInfo
+	recentAt map[int]string
+	tip      string
+
 	ticking   bool
 	toast     string
 	toastID   int
@@ -121,7 +127,7 @@ type (
 )
 
 func newModel(a *app.App, version string) *Model {
-	m := &Model{app: a, version: version, cmds: commands.New(a, version), mode: a.Mode()}
+	m := &Model{app: a, version: version, cmds: commands.New(a, version), mode: a.Mode(), tip: randomTip()}
 	m.editor = editor.New(m.commands)
 	m.editor.SetHistory(editor.NewHistory(filepath.Join(config.UserConfigDir(), "history.jsonl"), a.Cwd()))
 	m.open(a.Current())
@@ -152,7 +158,7 @@ func (m *Model) commands() []editor.Completion {
 	return out
 }
 
-func (m *Model) Init() tea.Cmd { return nil }
+func (m *Model) Init() tea.Cmd { return m.loadRecent() }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, m.update(msg)
@@ -192,6 +198,9 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return nil
 	case openedMsg:
 		m.open(msg.conv)
+		return m.loadRecent()
+	case recentMsg:
+		m.setRecent(msg.sessions)
 		return nil
 	case modeMsg:
 		m.mode = msg.mode
@@ -545,7 +554,11 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 			v.scroll(3)
 		}
 	case tea.MouseClickMsg:
-		if y := ms.Y - m.mainTop; ms.Button == tea.MouseLeft && y >= 0 && y < m.mainHeight {
+		y := ms.Y - m.mainTop
+		if id, ok := m.recentAt[y]; ok && ms.Button == tea.MouseLeft && v == m.chat && len(m.t.Cells()) == 0 && !m.run.active {
+			return commands.Open(m.app, id)
+		}
+		if ms.Button == tea.MouseLeft && y >= 0 && y < m.mainHeight {
 			v.press(ms.X-1, y)
 		}
 	case tea.MouseMotionMsg:

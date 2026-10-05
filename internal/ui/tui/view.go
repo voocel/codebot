@@ -187,49 +187,6 @@ func modeColor(m interact.Mode) color.Color {
 	return theme.Accent
 }
 
-// glyphs draw the wordmark, each letter 5 columns by 3 rows.
-var glyphs = map[rune][3]string{
-	'C': {"▄████", "█    ", "▀████"},
-	'O': {"▄███▄", "█   █", "▀███▀"},
-	'D': {"████▄", "█   █", "████▀"},
-	'E': {"█████", "████ ", "█████"},
-	'B': {"████▄", "███▀▄", "████▀"},
-	'T': {"█████", "  █  ", "  █  "},
-}
-
-// welcome is what an empty conversation shows.
-func (m *Model) welcome(width, height int) []string {
-	var out []string
-	if width >= 45 {
-		var rows [3]strings.Builder
-		for i, r := range "CODEBOT" {
-			for j := range rows {
-				if i > 0 {
-					rows[j].WriteByte(' ')
-				}
-				rows[j].WriteString(glyphs[r][j])
-			}
-		}
-		out = append(out, "",
-			lipgloss.NewStyle().Foreground(theme.Strong).Render(rows[0].String()),
-			lipgloss.NewStyle().Foreground(theme.Accent).Bold(true).Render(rows[1].String()),
-			lipgloss.NewStyle().Foreground(theme.Accent).Faint(true).Render(rows[2].String()))
-	} else {
-		out = append(out, "", theme.Selected.Render("codebot"))
-	}
-	st := m.status
-	out = append(out, "",
-		theme.MutedText.Render("codebot "+m.version)+theme.SubtleText.Render(" · "+st.Provider+"/"+st.Model),
-		theme.SubtleText.Render(transcript.ShortPath(st.Cwd)),
-		"",
-		theme.Hint("/", "commands", "!", "shell", "shift+tab", "mode", "ctrl+o", "expand", "ctrl+t", "transcript"),
-	)
-	for i, l := range out {
-		out[i] = ansi.Truncate(l, width, "…")
-	}
-	return out[:min(len(out), height)]
-}
-
 func emptyPage(width, height int) []string {
 	return []string{theme.SubtleText.Render("Nothing yet")}
 }

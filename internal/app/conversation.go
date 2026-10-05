@@ -251,12 +251,15 @@ type Status struct {
 	Tasks    int    // running background tasks
 	// SmallModel runs the explore sub-agent.
 	SmallModel string
+	// Reasoning reports whether the model takes a reasoning effort; Effort
+	// "" then leaves it to the provider.
+	Reasoning bool
 }
 
 // Status returns the conversation's status.
 func (c *Conversation) Status() Status {
 	c.mu.Lock()
-	small := c.model.small
+	small, reasoning := c.model.small, c.model.reasoning
 	c.mu.Unlock()
 	return Status{
 		Status:     c.session.Status(),
@@ -265,6 +268,7 @@ func (c *Conversation) Status() Status {
 		Worktree:   c.Worktree(),
 		Tasks:      c.tasks.Active(),
 		SmallModel: small,
+		Reasoning:  reasoning,
 	}
 }
 

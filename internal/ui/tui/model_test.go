@@ -211,7 +211,7 @@ func use(id, tool string, args any) litellmtest.Reply {
 
 func TestWelcome(t *testing.T) {
 	h := boot(t)
-	h.shows("codebot test", "anthropic/claude-sonnet-4-5", "/ commands", "balanced")
+	h.shows(strings.TrimSpace(bot[0]), "codebot  test", tagline, "claude-sonnet-4-5  ·  effort auto", "Tip", "for commands", "balanced")
 	v := h.m.View()
 	if v.Cursor == nil {
 		t.Fatal("the editor has no cursor")
@@ -219,6 +219,63 @@ func TestWelcome(t *testing.T) {
 	if lines := strings.Count(v.Content, "\n") + 1; lines != 30 {
 		t.Errorf("the view has %d lines, want 30", lines)
 	}
+
+	// Narrow, the bot makes way for the lines beside it.
+	h.feed(tea.WindowSizeMsg{Width: 30, Height: 20})
+	if s := h.screen(); strings.Contains(s, strings.TrimSpace(bot[0])) || !strings.Contains(s, "codebot  test") {
+		t.Errorf("at 30 columns:\n%s", s)
+	}
+}
+
+// resumable leaves a conversation behind and opens a new one.
+func resumable(t *testing.T) (h *harness, id string) {
+	h = boot(t, litellmtest.Text("Sure."))
+	h.write("Refactor the TUI layer")
+	h.press("enter")
+	h.settle()
+	id = h.m.conv.ID()
+	h.write("/new")
+	h.press("enter")
+	await[openedMsg](h)
+	return h, id
+}
+
+func TestWelcomeFits(t *testing.T) {
+	h, _ := resumable(t)
+	for _, width := range []int{20, 40, 50, 72, 100, 160} {
+		for _, height := range []int{6, 10, 14, 24, 40} {
+			h.feed(tea.WindowSizeMsg{Width: width, Height: height})
+			lines := strings.Split(h.m.View().Content, "\n")
+			if len(lines) != height {
+				t.Errorf("%dx%d: %d lines", width, height, len(lines))
+			}
+			for _, l := range lines {
+				if w := ansi.StringWidth(l); w > width {
+					t.Errorf("%dx%d: %q is %d wide", width, height, ansi.Strip(l), w)
+				}
+			}
+		}
+	}
+}
+
+func TestResumeFromTheWelcome(t *testing.T) {
+	h, id := resumable(t)
+	h.shows("Recent", "Refactor the TUI layer")
+	if h.m.conv.ID() == id {
+		t.Fatal("/new kept the conversation")
+	}
+	for y, row := range strings.Split(h.screen(), "\n") {
+		if x := strings.Index(row, "Refactor"); x >= 0 {
+			h.feed(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			await[openedMsg](h)
+			if h.m.conv.ID() != id {
+				t.Errorf("the click opened %s, want %s", h.m.conv.ID(), id)
+			}
+			h.shows("Sure.")
+			return
+		}
+	}
+	t.Fatalf("no recent conversation:\n%s", h.screen())
 }
 
 func TestConversation(t *testing.T) {
