@@ -318,33 +318,90 @@ func TestStopRestoresQueuedInput(t *testing.T) {
 	h.shows("Interrupted", "❯ second")
 }
 
+// pause is the user stopping for a moment, after which a request on top
+// takes keys.
+func (h *harness) pause() {
+	h.m.shownAt = h.m.shownAt.Add(-armDelay)
+	h.m.lastKey = h.m.lastKey.Add(-armDelay)
+}
+
+func answered[T any](t *testing.T, reply chan T) T {
+	t.Helper()
+	select {
+	case c := <-reply:
+		return c
+	default:
+		t.Fatal("no answer")
+		return *new(T)
+	}
+}
+
 func TestPermissionPanel(t *testing.T) {
 	h := boot(t)
-	reply := make(chan interact.Choice, 1)
-	h.feed(approveMsg{interact.Approval{Tool: "bash", Summary: "rm -rf build"}, reply})
-	h.shows("Allow bash?", "rm -rf build", "Yes")
+	reply := make(chan interact.Verdict, 1)
+	h.feed(approveMsg{interact.Approval{Tool: "bash", Summary: "make build"}, reply})
+	h.shows("Allow Bash?", "make build", "Yes")
 	if h.m.View().Cursor != nil {
 		t.Error("the editor's cursor shows under a panel")
 	}
-	h.press("y")
-	select {
-	case c := <-reply:
-		if c != interact.AllowOnce {
-			t.Errorf("answered %v", c)
-		}
-	default:
-		t.Fatal("no answer")
+
+	// What the user was typing as it came goes on to the editor.
+	h.write("12")
+	if len(reply) > 0 || h.m.editor.Empty() {
+		t.Fatalf("typing answered %d, and the editor is empty: %v", len(reply), h.m.editor.Empty())
+	}
+	h.pause()
+	h.press("1")
+	if c := answered(t, reply).Choice; c != interact.AllowOnce {
+		t.Errorf("answered %v", c)
 	}
 	if h.m.top() != nil {
 		t.Error("the panel stayed")
 	}
 
 	// A request withdrawn takes its panel away.
-	other := make(chan<- interact.Choice, 1)
+	other := make(chan<- interact.Verdict, 1)
 	h.feed(approveMsg{interact.Approval{Tool: "write"}, other})
 	h.feed(withdrawMsg{other})
 	if h.m.top() != nil {
 		t.Error("the withdrawn panel stayed")
+	}
+}
+
+// Requests are answered in the order they come, and each waits to take
+// keys when it comes on top: the enter that answered one does not answer
+// the next.
+func TestRequestsQueue(t *testing.T) {
+	h := boot(t)
+	first, second := make(chan interact.Verdict, 1), make(chan interact.Verdict, 1)
+	h.feed(approveMsg{interact.Approval{Tool: "bash", Summary: "make one"}, first})
+	h.feed(approveMsg{interact.Approval{Tool: "bash", Summary: "make two"}, second})
+	h.shows("make one", "1 more")
+	h.pause()
+	h.press("enter")
+	answered(t, first)
+	h.shows("make two")
+	h.press("enter")
+	if len(second) > 0 {
+		t.Fatal("the enter that answered the first answered the second")
+	}
+	h.pause()
+	h.press("esc")
+	if c := answered(t, second).Choice; c != interact.Deny {
+		t.Errorf("answered %v", c)
+	}
+}
+
+// Allowing all edits switches to the accept-edits mode.
+func TestPermissionAcceptsEdits(t *testing.T) {
+	h := boot(t)
+	reply := make(chan interact.Verdict, 1)
+	h.feed(approveMsg{interact.Approval{Tool: "edit", Summary: "a.go", Edit: true}, reply})
+	h.shows("Allow Edit?", "allow all edits")
+	h.pause()
+	h.press("2")
+	if c := answered(t, reply).Choice; c != interact.AllowOnce || h.app.Mode() != interact.ModeAcceptEdits {
+		t.Errorf("answered %v in mode %v", c, h.app.Mode())
 	}
 }
 

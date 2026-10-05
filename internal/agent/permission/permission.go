@@ -28,11 +28,10 @@ const (
 type DecisionKind string
 
 const (
-	DecisionAllow        DecisionKind = "allow"
-	DecisionAllowOnce    DecisionKind = "allow_once"
-	DecisionAllowSession DecisionKind = "allow_session"
-	DecisionAllowAlways  DecisionKind = "allow_always"
-	DecisionDeny         DecisionKind = "deny"
+	DecisionAllow       DecisionKind = "allow"
+	DecisionAllowOnce   DecisionKind = "allow_once"
+	DecisionAllowAlways DecisionKind = "allow_always"
+	DecisionDeny        DecisionKind = "deny"
 )
 
 type DecisionSource string
@@ -52,8 +51,7 @@ const (
 //
 //   - ReadRoots / WriteRoots: user-configured. Subject to deny rules and
 //     mode-based prompts (e.g. balanced mode asks for any write). Out-of-roots
-//     access triggers an OutsideRoots prompt; AllowAlways for that prompt is
-//     downgraded to AllowOnce so a one-shot consent does not silently grant
+//     access is confirmed each time, so a one-shot consent does not grant
 //     persistent access.
 //
 //   - InternalReadable / InternalWritable: harness-declared. Reserved for
@@ -102,14 +100,13 @@ type Decision struct {
 	Reason       string         `json:"reason,omitempty"`
 	Capability   Capability     `json:"capability,omitempty"`
 	Summary      string         `json:"summary,omitempty"`
-	Key          string         `json:"key,omitempty"`
 	OutsideRoots bool           `json:"outside_roots,omitempty"`
 	Prompted     bool           `json:"prompted,omitempty"`
 }
 
 func (d Decision) Allowed() bool {
 	switch d.Kind {
-	case DecisionAllow, DecisionAllowOnce, DecisionAllowSession, DecisionAllowAlways:
+	case DecisionAllow, DecisionAllowOnce, DecisionAllowAlways:
 		return true
 	default:
 		return false

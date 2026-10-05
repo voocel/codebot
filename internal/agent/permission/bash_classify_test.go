@@ -1,6 +1,9 @@
 package permission
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestIsReadonlyBash(t *testing.T) {
 	tests := []struct {
@@ -83,34 +86,44 @@ func TestIsReadonlyBash(t *testing.T) {
 	}
 }
 
-func TestBashPrefix(t *testing.T) {
-	tests := []struct {
-		cmd  string
-		want string
-	}{
-		{"ls", "ls"},
-		{"ls -la", "ls"},
-		{"git commit -m 'fix x'", "git commit"},
-		{`git commit -m "different message"`, "git commit"},
-		{"npm run build", "npm run"},
-		{"NODE_ENV=prod npm run build", "npm run"},
-		{"FOO=1 BAR=2 ls", "ls"},
-		{"rm -rf /tmp/x", "rm"},
-		{"ls && pwd", "ls"}, // first segment wins
-		{"", ""},
-		{"   ", ""},
-		// second-token not a subcommand shape → single-token prefix
-		{"./script.sh arg", "./script.sh"},
-		{"cat /tmp/file", "cat"},
-		{"git status", "git status"},
+func TestCommandKeys(t *testing.T) {
+	for cmd, want := range map[string][]string{
+		"ls -la && make build":               {"exec:make build"},
+		"git commit -m 'fix x'":              {"exec:git commit"},
+		`git commit -m "a; b"`:               {"exec:git commit"},
+		"go test ./... && go vet ./...":      {"exec:go test", "exec:go vet"},
+		"go test ./... 2>&1 | tail -20":      {"exec:go test"},
+		"go test ./... > /dev/null":          {"exec:go test"},
+		"./script.sh arg":                    {"exec:./script.sh"},
+		"npm run build; npm run build":       {"exec:npm run"},
+		"go test ./... > out.txt":            nil, // writes a file
+		"go test $(curl -s x.example)":       nil, // substitution
+		"go test `curl -s x.example`":        nil,
+		`echo "$(whoami)"`:                   nil, // runs inside double quotes too
+		"make build &":                       nil, // background
+		"make build\nrm -rf src":             nil, // another line
+		"LD_PRELOAD=/tmp/x.so go test":       nil, // set up by a variable
+		"sudo make install":                  nil, // runs another
+		"find . -name x | xargs rm":          nil,
+		"bash -c 'go test'":                  nil,
+		"rm -rf build":                       nil, // destructive
+		"git push --force origin main":       nil,
+		"diff <(go run a.go) <(go run b.go)": nil, // process substitution
+		"ls && pwd":                          nil, // read-only: nothing to remember
+	} {
+		if got := commandKeys(cmd); !slices.Equal(got, want) {
+			t.Errorf("commandKeys(%q) = %q, want %q", cmd, got, want)
+		}
 	}
+}
 
-	for _, tc := range tests {
-		t.Run(tc.cmd, func(t *testing.T) {
-			if got := bashPrefix(tc.cmd); got != tc.want {
-				t.Fatalf("bashPrefix(%q) = %q, want %q", tc.cmd, got, tc.want)
-			}
-		})
+// What only looks read-only is not: a substitution or another line runs
+// whatever it holds.
+func TestReadonlyBashRefusesHiddenCommands(t *testing.T) {
+	for _, cmd := range []string{"ls $(touch x)", "ls `touch x`", "ls\ntouch x", "cat a & touch x"} {
+		if isReadonlyBash(cmd) {
+			t.Errorf("%q passed as read-only", cmd)
+		}
 	}
 }
 

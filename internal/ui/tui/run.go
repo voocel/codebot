@@ -30,17 +30,17 @@ var _ interact.UI = (*UI)(nil)
 func (u *UI) send(msg tea.Msg) { u.program.Load().Send(msg) }
 
 // Approve shows a permission request and waits for the answer.
-func (u *UI) Approve(ctx context.Context, req interact.Approval) (interact.Choice, error) {
-	reply := make(chan interact.Choice, 1)
+func (u *UI) Approve(ctx context.Context, req interact.Approval) (interact.Verdict, error) {
+	reply := make(chan interact.Verdict, 1)
 	// The panel answers on the send side, which is how it is known.
-	answer := (chan<- interact.Choice)(reply)
+	answer := (chan<- interact.Verdict)(reply)
 	u.send(approveMsg{req, answer})
 	select {
-	case c := <-reply:
-		return c, nil
+	case v := <-reply:
+		return v, nil
 	case <-ctx.Done():
 		u.send(withdrawMsg{answer})
-		return interact.Deny, ctx.Err()
+		return interact.Verdict{Choice: interact.Deny}, ctx.Err()
 	}
 }
 

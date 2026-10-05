@@ -1,8 +1,6 @@
 package permission
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -110,9 +108,4 @@ func (s *Store) saveLocked() error {
 		return err
 	}
 	return os.Rename(tmpPath, s.path)
-}
-
-func shortHash(s string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(s)))
-	return hex.EncodeToString(sum[:8])
 }

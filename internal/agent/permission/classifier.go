@@ -8,23 +8,17 @@ import (
 //
 // Fields by capability:
 //   - Read    : path is checked against ReadRoots and becomes the summary.
-//   - Write   : path is checked against WriteRoots, becomes the summary and
-//     the approval key (write:<path>).
-//   - Exec    : command becomes the summary and, hashed, the approval key
-//     (exec:<hash>); workdir, if set, is checked against WriteRoots.
-//   - Network : url becomes the summary; its host the approval key
-//     (network:<host>), network:<tool> without one.
-//   - Internal: the approval key is internal:<tool>.
-//   - Unknown : the approval key is tool:<tool>.
-//
-// key, when set, replaces the approval key.
+//   - Write   : path is checked against WriteRoots and becomes the summary.
+//   - Exec    : command becomes the summary, and each command it runs an
+//     approval key (see commandKeys); workdir, if set, is checked against
+//     WriteRoots.
+//   - Network : url becomes the summary; its host the approval key.
 type classification struct {
 	capability Capability
 	path       string
 	command    string
 	workdir    string
 	url        string
-	key        string
 	// confirm, when set, is why the user must confirm this call each time:
 	// the mode and stored approvals do not apply, and an allow covers this
 	// call only. Deny rules still apply first.
@@ -66,22 +60,12 @@ func classifyTool(req Request) classification {
 	case "bash":
 		cmd := stringField(req.Args, "command")
 		capability := CapabilityExec
-		keyPrefix := "exec:"
 		if isReadonlyBash(cmd) {
 			capability = CapabilityRead
-			keyPrefix = "exec:readonly:"
 		}
-		return classification{
-			capability: capability,
-			command:    cmd,
-			workdir:    stringField(req.Args, "workdir"),
-			key:        keyPrefix + bashPrefix(cmd),
-		}
-	case "web_fetch":
-		target := stringField(req.Args, "url")
-		return classification{capability: CapabilityRead, url: target, key: "web_fetch:" + hostOf(target)}
-	case "web_search":
-		return classification{capability: CapabilityRead, key: "web_search"}
+		return classification{capability: capability, command: cmd, workdir: stringField(req.Args, "workdir")}
+	case "web_fetch", "web_search":
+		return classification{capability: CapabilityRead}
 	case "todo_write", "task_output", "task_stop", "subagent", "skill", "ask_user", "tool_search", "enter_worktree", "exit_worktree":
 		return classification{capability: CapabilityInternal}
 	}

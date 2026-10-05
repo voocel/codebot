@@ -42,9 +42,8 @@ type Engine struct {
 	ui        interact.UI
 	onAudit   func(AuditEntry)
 
-	mu           sync.RWMutex
-	mode         interact.Mode
-	sessionAllow map[string]StoreEntry
+	mu   sync.RWMutex
+	mode interact.Mode
 }
 
 func NewEngine(cfg Config) (*Engine, error) {
@@ -53,14 +52,13 @@ func NewEngine(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	return &Engine{
-		workspace:    cfg.Cwd,
-		rules:        cfg.Rules,
-		roots:        normalizeFilesystemRoots(cfg.Cwd, cfg.Roots),
-		store:        store,
-		ui:           cfg.UI,
-		onAudit:      cfg.OnAudit,
-		mode:         cfg.Mode,
-		sessionAllow: make(map[string]StoreEntry),
+		workspace: cfg.Cwd,
+		rules:     cfg.Rules,
+		roots:     normalizeFilesystemRoots(cfg.Cwd, cfg.Roots),
+		store:     store,
+		ui:        cfg.UI,
+		onAudit:   cfg.OnAudit,
+		mode:      cfg.Mode,
 	}, nil
 }
 
@@ -125,7 +123,7 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 
 	// A call outside the roots, or one the harness wants confirmed each
 	// time, asks whatever the mode and the stored approvals say.
-	if info.onceOnly() {
+	if info.askEachTime() {
 		return e.ask(ctx, info)
 	}
 
@@ -147,7 +145,7 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 		}
 	}
 
-	if e.allowed(info.key) || e.allowedSession(info.capability) {
+	if e.remembered(info) {
 		decision := allowDecision(DecisionSourceStore, info, "allowed by stored approval")
 		e.audit(info, decision)
 		return decision, nil
@@ -227,103 +225,58 @@ func (e *Engine) ask(ctx context.Context, info toolInfo) (*Decision, error) {
 		Summary:      info.summary,
 		Reason:       info.reason,
 		OutsideRoots: info.outsideRoots,
-		OnceOnly:     info.onceOnly(),
+		Confirm:      info.askEachTime(),
+		Edit:         info.capability == CapabilityWrite && !info.askEachTime(),
+	}
+	if info.rememberable() {
+		approval.Remember = info.remember
 	}
 	if info.tool == "bash" {
 		approval.Warning = destructiveCommandWarning(info.summary)
 	}
-	choice, err := e.ui.Approve(ctx, approval)
+	verdict, err := e.ui.Approve(ctx, approval)
 	if err != nil {
 		return nil, err
 	}
-	decision := e.resolveChoice(info, choice)
+	decision := e.resolve(info, verdict)
 	e.audit(info, decision)
 	return decision, nil
 }
 
-func (e *Engine) resolveChoice(info toolInfo, choice interact.Choice) *Decision {
-	if info.onceOnly() && (choice == interact.AllowAlways || choice == interact.AllowSession) {
-		choice = interact.AllowOnce
+// resolve turns the user's answer into a decision, remembering what an
+// always allows. A denial tells the agent it was the user's, and what they
+// said to do instead.
+func (e *Engine) resolve(info toolInfo, v interact.Verdict) *Decision {
+	d := &Decision{
+		Kind:         DecisionAllowOnce,
+		Source:       DecisionSourcePrompt,
+		Capability:   info.capability,
+		Summary:      info.summary,
+		OutsideRoots: info.outsideRoots,
+		Prompted:     true,
 	}
-	switch choice {
-	case interact.AllowAlways:
-		entry := StoreEntry{
-			Key:        info.key,
-			Tool:       info.tool,
-			Capability: info.capability,
-			Summary:    info.summary,
-			AddedAt:    time.Now(),
+	switch {
+	case v.Choice == interact.Deny && v.Feedback != "":
+		d.Kind, d.Reason = DecisionDeny, "The user denied this and said what to do instead: "+v.Feedback
+	case v.Choice == interact.Deny:
+		d.Kind, d.Reason = DecisionDeny, "The user denied this. Do not try to get around it; if it is unclear how to go on, ask them."
+	case v.Choice == interact.AllowAlways && info.rememberable():
+		for _, key := range info.keys {
+			_ = e.store.Add(StoreEntry{Key: key, Tool: info.tool, Capability: info.capability, Summary: info.summary, AddedAt: time.Now()})
 		}
-		e.mu.Lock()
-		e.sessionAllow[info.key] = entry
-		e.mu.Unlock()
-		_ = e.store.Add(entry)
-		return &Decision{
-			Kind:         DecisionAllowAlways,
-			Source:       DecisionSourcePrompt,
-			Capability:   info.capability,
-			Summary:      info.summary,
-			Key:          info.key,
-			OutsideRoots: info.outsideRoots,
-			Prompted:     true,
-		}
-	case interact.AllowSession:
-		sKey := "session:" + string(info.capability)
-		entry := StoreEntry{
-			Key:        sKey,
-			Tool:       info.tool,
-			Capability: info.capability,
-			Summary:    info.summary,
-			AddedAt:    time.Now(),
-		}
-		e.mu.Lock()
-		e.sessionAllow[sKey] = entry
-		e.mu.Unlock()
-		return &Decision{
-			Kind:         DecisionAllowSession,
-			Source:       DecisionSourcePrompt,
-			Capability:   info.capability,
-			Summary:      info.summary,
-			Key:          sKey,
-			OutsideRoots: info.outsideRoots,
-			Prompted:     true,
-		}
-	case interact.Deny:
-		return &Decision{
-			Kind:         DecisionDeny,
-			Source:       DecisionSourcePrompt,
-			Reason:       firstNonEmpty(info.reason, "tool execution denied by user"),
-			Capability:   info.capability,
-			Summary:      info.summary,
-			Key:          info.key,
-			OutsideRoots: info.outsideRoots,
-			Prompted:     true,
-		}
-	default:
-		return &Decision{
-			Kind:         DecisionAllowOnce,
-			Source:       DecisionSourcePrompt,
-			Capability:   info.capability,
-			Summary:      info.summary,
-			Key:          info.key,
-			OutsideRoots: info.outsideRoots,
-			Prompted:     true,
-		}
+		d.Kind = DecisionAllowAlways
 	}
+	return d
 }
 
-func (e *Engine) allowedSession(cap Capability) bool {
-	return e.allowed("session:" + string(cap))
-}
-
-func (e *Engine) allowed(key string) bool {
-	if key == "" {
-		return false
+// remembered reports whether the user always allowed what the call does.
+func (e *Engine) remembered(info toolInfo) bool {
+	for _, key := range info.keys {
+		if !e.store.Has(key) {
+			return false
+		}
 	}
-	e.mu.RLock()
-	_, ok := e.sessionAllow[key]
-	e.mu.RUnlock()
-	return ok || e.store.Has(key)
+	return len(info.keys) > 0
 }
 
 func (e *Engine) audit(info toolInfo, decision *Decision) {
@@ -343,11 +296,14 @@ func (e *Engine) audit(info toolInfo, decision *Decision) {
 }
 
 type toolInfo struct {
-	toolID       string
-	tool         string
-	capability   Capability
-	summary      string
-	key          string
+	toolID     string
+	tool       string
+	capability Capability
+	summary    string
+	// keys are what remembering the call stores, all of which allow it
+	// again; remember says what they allow, for the user.
+	keys         []string
+	remember     string
 	reason       string
 	hardDeny     string
 	outsideRoots bool
@@ -365,8 +321,11 @@ func (i toolInfo) orReason(reason string) toolInfo {
 	return i
 }
 
-// onceOnly reports whether the request needs asking every time.
-func (i toolInfo) onceOnly() bool { return i.outsideRoots || i.confirm }
+// askEachTime reports whether the call is confirmed every time.
+func (i toolInfo) askEachTime() bool { return i.outsideRoots || i.confirm }
+
+// rememberable reports whether always allowing the call can be remembered.
+func (i toolInfo) rememberable() bool { return len(i.keys) > 0 && !i.askEachTime() }
 
 // ruleAction is what the matching rule says of a request; "" when none
 // matches.
@@ -384,7 +343,6 @@ func denyDecision(source DecisionSource, info toolInfo, reason string) *Decision
 		Reason:       reason,
 		Capability:   info.capability,
 		Summary:      info.summary,
-		Key:          info.key,
 		OutsideRoots: info.outsideRoots,
 	}
 }
@@ -396,7 +354,6 @@ func allowDecision(source DecisionSource, info toolInfo, reason string) *Decisio
 		Reason:       reason,
 		Capability:   info.capability,
 		Summary:      info.summary,
-		Key:          info.key,
 		OutsideRoots: info.outsideRoots,
 	}
 }
@@ -420,7 +377,6 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 
 	switch info.capability {
 	case CapabilityRead:
-		info.key = "read"
 		info.roots = roots.ReadRoots
 		if c.path != "" {
 			path, deny := checkedPath(workspace, roots.ReadRoots, c.path, "readable")
@@ -443,7 +399,6 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 		info.roots = roots.WriteRoots
 		path, deny := checkedPath(workspace, roots.WriteRoots, c.path, "writable")
 		info.summary = firstNonEmpty(path, info.summary)
-		info.key = "write:" + path
 		if info.reason == "" {
 			info.reason = "file modification requires approval"
 		}
@@ -466,7 +421,8 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 	case CapabilityExec:
 		command := strings.TrimSpace(c.command)
 		info.summary = firstNonEmpty(command, info.summary)
-		info.key = "exec:" + shortHash(command)
+		info.keys = commandKeys(command)
+		info.remember = commands(info.keys)
 		if info.reason == "" {
 			info.reason = "shell execution requires approval"
 		}
@@ -481,25 +437,20 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 		target := strings.TrimSpace(c.url)
 		info.summary = firstNonEmpty(target, info.summary)
 		if target != "" {
-			info.key = "network:" + hostOf(target)
+			info.keys, info.remember = []string{"network:" + hostOf(target)}, "requests to "+hostOf(target)
 		} else {
-			info.key = "network:" + req.ToolName
+			info.keys, info.remember = []string{"network:" + req.ToolName}, "`"+req.ToolName+"`"
 		}
 		if info.reason == "" {
 			info.reason = "network access requires approval"
 		}
 	case CapabilityInternal:
-		info.key = "internal:" + req.ToolName
 	default:
 		info.capability = CapabilityUnknown
-		info.key = "tool:" + req.ToolName
+		info.keys, info.remember = []string{"tool:" + req.ToolName}, "`"+req.ToolName+"`"
 		if info.reason == "" {
 			info.reason = "unclassified tool requires approval"
 		}
-	}
-
-	if c.key != "" {
-		info.key = c.key
 	}
 
 	meta := req.Metadata
@@ -512,10 +463,15 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 	if meta.Reason != "" {
 		info.reason = meta.Reason
 	}
-	if meta.Key != "" {
-		info.key = meta.Key
-	} else if meta.KeyPrefix != "" {
-		info.key = meta.KeyPrefix + ":" + req.ToolName
+	if meta.Key != "" || meta.KeyPrefix != "" {
+		info.keys = []string{cmp.Or(meta.Key, meta.KeyPrefix+":"+req.ToolName)}
+		info.remember = "`" + firstNonEmpty(req.ToolLabel, meta.SummaryHint, req.ToolName) + "`"
+		if info.capability == CapabilityHook {
+			info.remember = "this hook command"
+		}
+	}
+	if info.remember != "" {
+		info.remember += " in this project"
 	}
 	if c.confirm != "" {
 		info.confirm = true
@@ -676,4 +632,20 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// commands names the commands keys allow: "`go test` and `go vet`
+// commands".
+func commands(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	names := make([]string, len(keys))
+	for i, key := range keys {
+		names[i] = "`" + strings.TrimPrefix(key, "exec:") + "`"
+	}
+	if n := len(names); n > 1 {
+		return strings.Join(names[:n-1], ", ") + " and " + names[n-1] + " commands"
+	}
+	return names[0] + " commands"
 }

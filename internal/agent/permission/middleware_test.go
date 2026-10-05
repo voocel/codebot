@@ -13,9 +13,9 @@ import (
 )
 
 // approveFunc is a UI that answers approvals with itself.
-type approveFunc func(context.Context, interact.Approval) (interact.Choice, error)
+type approveFunc func(context.Context, interact.Approval) (interact.Verdict, error)
 
-func (f approveFunc) Approve(ctx context.Context, a interact.Approval) (interact.Choice, error) {
+func (f approveFunc) Approve(ctx context.Context, a interact.Approval) (interact.Verdict, error) {
 	return f(ctx, a)
 }
 
@@ -114,9 +114,9 @@ func TestDangerousPathsAreConfirmedEachTime(t *testing.T) {
 	e := newEngine(t, Config{
 		Mode:  interact.ModeTrust,
 		Rules: rules,
-		UI: approveFunc(func(_ context.Context, a interact.Approval) (interact.Choice, error) {
+		UI: approveFunc(func(_ context.Context, a interact.Approval) (interact.Verdict, error) {
 			asked = append(asked, a)
-			return interact.AllowAlways, nil
+			return interact.Verdict{Choice: interact.AllowAlways}, nil
 		}),
 	})
 	decide := gate(e, noGrants, noMeta)
@@ -125,7 +125,7 @@ func TestDangerousPathsAreConfirmedEachTime(t *testing.T) {
 			t.Fatalf("ran %v, %v", ran, err)
 		}
 	}
-	if len(asked) != 2 || !asked[0].OnceOnly || asked[0].OutsideRoots {
+	if len(asked) != 2 || !asked[0].Confirm || asked[0].Remember != "" || asked[0].OutsideRoots {
 		t.Fatalf("asked %+v, want twice, once only, inside the roots", asked)
 	}
 	if ran, err := decide(context.Background(), "write", `{"file_path":".git/hooks/pre-commit"}`); err != nil || ran || len(asked) != 2 {
@@ -137,9 +137,9 @@ func TestApproveHookAllowAlwaysPersists(t *testing.T) {
 	calls := 0
 	e := newEngine(t, Config{
 		Mode: interact.ModeBalanced,
-		UI: approveFunc(func(context.Context, interact.Approval) (interact.Choice, error) {
+		UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
 			calls++
-			return interact.AllowAlways, nil
+			return interact.Verdict{Choice: interact.AllowAlways}, nil
 		}),
 	})
 	req := HookRequest{Event: "PreToolUse", Tool: "bash", Command: "echo ok", Blocking: true}
@@ -204,9 +204,9 @@ func TestMiddlewareApprovalCarriesTheCallAndTheWarning(t *testing.T) {
 	var got interact.Approval
 	e := newEngine(t, Config{
 		Mode: interact.ModeBalanced,
-		UI: approveFunc(func(_ context.Context, a interact.Approval) (interact.Choice, error) {
+		UI: approveFunc(func(_ context.Context, a interact.Approval) (interact.Verdict, error) {
 			got = a
-			return interact.Deny, nil
+			return interact.Verdict{Choice: interact.Deny}, nil
 		}),
 	})
 	if _, err := gate(e, noGrants, noMeta)(context.Background(), "bash", `{"command":"git reset --hard HEAD~3"}`); err != nil {

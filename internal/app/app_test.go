@@ -134,11 +134,11 @@ type fakeUI struct {
 	approvals []interact.Approval
 }
 
-func (u *fakeUI) Approve(_ context.Context, req interact.Approval) (interact.Choice, error) {
+func (u *fakeUI) Approve(_ context.Context, req interact.Approval) (interact.Verdict, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.approvals = append(u.approvals, req)
-	return u.choice, nil
+	return interact.Verdict{Choice: u.choice}, nil
 }
 
 func (u *fakeUI) Ask(context.Context, []interact.Question) (interact.Answers, error) {

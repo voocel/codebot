@@ -33,15 +33,15 @@ var (
 	errOutsideWorkspace = errors.New("nobody can approve access outside the workspace in print mode; add the directory to permissions.read_roots or write_roots in settings.json to allow it")
 )
 
-func (UI) Approve(_ context.Context, req interact.Approval) (interact.Choice, error) {
+func (UI) Approve(_ context.Context, req interact.Approval) (interact.Verdict, error) {
 	switch {
 	case req.OutsideRoots:
-		return interact.Deny, errOutsideWorkspace
-	case req.OnceOnly:
+		return interact.Verdict{Choice: interact.Deny}, errOutsideWorkspace
+	case req.Confirm:
 		// No mode allows it either: it is confirmed every time.
-		return interact.Deny, fmt.Errorf("nobody can approve this in print mode: %s needs confirming each time", req.Reason)
+		return interact.Verdict{Choice: interact.Deny}, fmt.Errorf("nobody can approve this in print mode: %s needs confirming each time", req.Reason)
 	}
-	return interact.Deny, errNobodyToApprove
+	return interact.Verdict{Choice: interact.Deny}, errNobodyToApprove
 }
 
 func (UI) Ask(context.Context, []interact.Question) (interact.Answers, error) {

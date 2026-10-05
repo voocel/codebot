@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,8 +173,8 @@ func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
 	engine, err := permission.NewEngine(permission.Config{
 		Cwd:  t.TempDir(),
 		Mode: interact.ModeBalanced,
-		UI: approveFunc(func(context.Context, interact.Approval) (interact.Choice, error) {
-			return interact.Deny, nil
+		UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
+			return interact.Verdict{Choice: interact.Deny}, nil
 		}),
 	})
 	if err != nil {
@@ -187,7 +188,7 @@ func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
 	}
 	r := New(cfg, "test", engine, nil)
 	_, err = r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`))
-	if err == nil || err.Error() != "hook: blocking hook command requires approval" {
+	if err == nil || !strings.HasPrefix(err.Error(), "hook: The user denied this") {
 		t.Fatalf("expected approval denial, got %v", err)
 	}
 }
@@ -337,9 +338,9 @@ func answerModel(t *testing.T, text string) agentcore.Model {
 }
 
 // approveFunc is a UI that answers approvals with itself.
-type approveFunc func(context.Context, interact.Approval) (interact.Choice, error)
+type approveFunc func(context.Context, interact.Approval) (interact.Verdict, error)
 
-func (f approveFunc) Approve(ctx context.Context, a interact.Approval) (interact.Choice, error) {
+func (f approveFunc) Approve(ctx context.Context, a interact.Approval) (interact.Verdict, error) {
 	return f(ctx, a)
 }
 

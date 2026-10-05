@@ -46,6 +46,14 @@ type Model struct {
 	editor *editor.Editor
 	panels []panel.Panel
 
+	// A request comes unasked for, maybe while the user types: the one on
+	// top takes keys once it has shown, since shownAt, with none pressed
+	// for armDelay. armed is the one that does.
+	shown   panel.Panel
+	shownAt time.Time
+	armed   panel.Panel
+	lastKey time.Time
+
 	run      run
 	shell    *shellRun // the "!" line running, nil when none
 	pending  []pending
@@ -104,7 +112,7 @@ type (
 	}
 	approveMsg struct {
 		req   interact.Approval
-		reply chan<- interact.Choice
+		reply chan<- interact.Verdict
 	}
 	askMsg struct {
 		qs    []interact.Question
@@ -221,13 +229,13 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case approveMsg:
-		return m.push(panel.NewPermission(msg.req, msg.reply))
+		return m.push(panel.NewPermission(msg.req, msg.reply, func() { m.app.SetMode(interact.ModeAcceptEdits) }))
 	case askMsg:
 		return m.push(panel.NewAsk(msg.qs, msg.reply))
 	case withdrawMsg:
-		m.panels = slices.DeleteFunc(m.panels, func(p panel.Panel) bool {
-			k, ok := p.(panel.Keyed)
-			return ok && k.Key() == msg.key
+		m.remove(func(p panel.Panel) bool {
+			r, ok := p.(panel.Request)
+			return ok && r.Key() == msg.key
 		})
 		return nil
 
@@ -290,11 +298,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	// the editor.
 	var cmds []tea.Cmd
 	for _, p := range slices.Clone(m.panels) {
-		cmd, done := p.Update(msg)
-		if done {
-			m.remove(p)
-		}
-		cmds = append(cmds, cmd)
+		cmds = append(cmds, m.updatePanel(p, msg))
 	}
 	cmd, _ := m.editor.Update(msg)
 	return tea.Batch(append(cmds, cmd)...)
@@ -343,7 +347,8 @@ func (m *Model) idle() {
 }
 
 func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
-	s := k.String()
+	s, now := k.String(), time.Now()
+	defer func() { m.lastKey = now }()
 	if s != "ctrl+c" {
 		m.quitArmed = false
 	}
@@ -353,12 +358,6 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case "ctrl+t":
 		return m.pager()
-	case "pgup":
-		m.main().scroll(-max(m.mainHeight-2, 1))
-		return nil
-	case "pgdown":
-		m.main().scroll(max(m.mainHeight-2, 1))
-		return nil
 	case "shift+up":
 		m.main().scroll(-1)
 		return nil
@@ -367,8 +366,18 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 
-	if p := m.top(); p != nil {
+	// What the user types under a request that has just come goes on to
+	// the editor.
+	if p := m.top(); p != nil && m.ready(p, now) {
 		return m.updatePanel(p, k)
+	}
+	switch s {
+	case "pgup":
+		m.main().scroll(-max(m.mainHeight-2, 1))
+		return nil
+	case "pgdown":
+		m.main().scroll(max(m.mainHeight-2, 1))
+		return nil
 	}
 	if m.page != nil {
 		switch s {
@@ -514,22 +523,72 @@ func (m *Model) top() panel.Panel {
 	return m.panels[len(m.panels)-1]
 }
 
+// push shows p over the panels shown, but a request after those before it:
+// requests are answered in the order they come.
 func (m *Model) push(p panel.Panel) tea.Cmd {
-	m.panels = append(m.panels, p)
+	at := len(m.panels)
+	if isRequest(p) {
+		if i := slices.IndexFunc(m.panels, isRequest); i >= 0 {
+			at = i
+		}
+	}
+	m.panels = slices.Insert(m.panels, at, p)
+	m.restack()
 	if i, ok := p.(panel.Initer); ok {
 		return i.Init()
 	}
 	return nil
 }
 
-func (m *Model) remove(p panel.Panel) {
-	m.panels = slices.DeleteFunc(m.panels, func(q panel.Panel) bool { return q == p })
+func (m *Model) remove(match func(panel.Panel) bool) {
+	m.panels = slices.DeleteFunc(m.panels, match)
+	m.restack()
+}
+
+// restack follows a change of the panels: the request on top learns how
+// many wait behind it, and when it has just come on top, it waits to take
+// keys.
+func (m *Model) restack() {
+	top := m.top()
+	if top != m.shown {
+		m.shown, m.shownAt = top, time.Now()
+	}
+	if r, ok := top.(panel.Request); ok {
+		behind := -1
+		for _, p := range m.panels {
+			if isRequest(p) {
+				behind++
+			}
+		}
+		r.Queue(behind)
+	}
+}
+
+func isRequest(p panel.Panel) bool {
+	_, ok := p.(panel.Request)
+	return ok
+}
+
+// armDelay is how long a request waits, with no key pressed, before it
+// takes keys.
+var armDelay = 500 * time.Millisecond
+
+// ready reports whether p, on top, takes keys at now; see armed.
+func (m *Model) ready(p panel.Panel, now time.Time) bool {
+	if !isRequest(p) || p == m.armed {
+		return true
+	}
+	if now.Sub(m.shownAt) < armDelay || now.Sub(m.lastKey) < armDelay {
+		return false
+	}
+	m.armed = p
+	return true
 }
 
 func (m *Model) updatePanel(p panel.Panel, msg tea.Msg) tea.Cmd {
 	cmd, done := p.Update(msg)
 	if done {
-		m.remove(p)
+		m.remove(func(q panel.Panel) bool { return q == p })
 	}
 	return cmd
 }

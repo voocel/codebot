@@ -22,8 +22,8 @@ func (f *fakeUI) Ask(_ context.Context, qs []interact.Question) (interact.Answer
 	return f.answers, f.askErr
 }
 
-func (f *fakeUI) Approve(context.Context, interact.Approval) (interact.Choice, error) {
-	return interact.Deny, nil
+func (f *fakeUI) Approve(context.Context, interact.Approval) (interact.Verdict, error) {
+	return interact.Verdict{Choice: interact.Deny}, nil
 }
 
 func runAskUser(t *testing.T, ui *fakeUI, args string) string {

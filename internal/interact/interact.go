@@ -19,9 +19,8 @@ var ErrUnsupported = errors.New("interaction not supported by this frontend")
 // UI is implemented by each frontend.
 type UI interface {
 	// Approve asks for consent to a tool call or hook command the
-	// permission mode does not allow on its own. When OnceOnly is set, only
-	// a one-time allow may be offered.
-	Approve(ctx context.Context, req Approval) (Choice, error)
+	// permission mode does not allow on its own.
+	Approve(ctx context.Context, req Approval) (Verdict, error)
 	// Ask poses multi-choice questions, for ask_user.
 	Ask(ctx context.Context, qs []Question) (Answers, error)
 }
@@ -39,19 +38,32 @@ type Approval struct {
 	Warning string
 	// OutsideRoots means the call reaches outside the workspace.
 	OutsideRoots bool
-	// OnceOnly means only a one-time allow may be offered: the call reaches
-	// outside the workspace or touches a path that is confirmed every time.
-	OnceOnly bool
+	// Confirm means the call is confirmed each time: no mode or stored
+	// approval allows it.
+	Confirm bool
+	// Remember says what AllowAlways allows from now on, "`go test`
+	// commands in this project"; empty when only this call may be allowed.
+	Remember string
+	// Edit means the call edits files, which the accept-edits mode allows
+	// without asking.
+	Edit bool
 }
 
-// Choice is the user's answer to an Approval.
+// Verdict is the user's answer to an Approval.
+type Verdict struct {
+	Choice Choice
+	// Feedback is what the user said to do instead, with a denial.
+	Feedback string
+}
+
+// Choice is what the user chose for an Approval.
 type Choice string
 
 const (
-	AllowOnce    Choice = "allow_once"
-	AllowSession Choice = "allow_session"
-	AllowAlways  Choice = "allow_always"
-	Deny         Choice = "deny"
+	AllowOnce Choice = "allow_once"
+	// AllowAlways allows the call and what Approval.Remember says.
+	AllowAlways Choice = "allow_always"
+	Deny        Choice = "deny"
 )
 
 // Question is a single multi-choice question.

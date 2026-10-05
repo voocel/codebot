@@ -34,6 +34,8 @@ func keyPress(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	case "backspace":
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	case "ctrl+c":
+		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	}
 	return tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
 }
@@ -52,50 +54,101 @@ func fits(t *testing.T, view string, width, height int) {
 }
 
 func TestPermission(t *testing.T) {
+	req := interact.Approval{Tool: "bash", Summary: "go test ./...", Remember: "`go test` commands in this project"}
 	for _, c := range []struct {
 		keys []string
 		want interact.Choice
 	}{
 		{[]string{"enter"}, interact.AllowOnce},
-		{[]string{"s"}, interact.AllowSession},
-		{[]string{"3"}, interact.AllowAlways},
-		{[]string{"down", "down", "down", "enter"}, interact.Deny},
+		{[]string{"2"}, interact.AllowAlways},
 		{[]string{"esc"}, interact.Deny},
+		{[]string{"ctrl+c"}, interact.Deny},
+		// No letter answers: one typed by chance must not.
+		{[]string{"y", "a", "s", "n", "enter"}, interact.AllowOnce},
 	} {
-		reply := make(chan interact.Choice, 1)
-		p := NewPermission(interact.Approval{Tool: "bash", Summary: "go test ./..."}, reply)
+		reply := make(chan interact.Verdict, 1)
+		p := NewPermission(req, reply, nil)
 		if !press(p, c.keys...) {
 			t.Errorf("%v: the panel stayed", c.keys)
 			continue
 		}
-		if got := <-reply; got != c.want {
+		if got := (<-reply).Choice; got != c.want {
 			t.Errorf("%v: answered %v, want %v", c.keys, got, c.want)
 		}
 	}
 }
 
-func TestPermissionOnceOnly(t *testing.T) {
-	reply := make(chan interact.Choice, 1)
-	p := NewPermission(interact.Approval{Tool: "write", OnceOnly: true}, reply)
-	view := ansi.Strip(p.View(60, 20))
-	if strings.Contains(view, "session") || strings.Contains(view, "always") {
-		t.Errorf("a once-only request offers more:\n%s", view)
+func TestPermissionOffersWhatItRemembers(t *testing.T) {
+	p := NewPermission(interact.Approval{Tool: "bash", Summary: "go test ./...", Remember: "`go test` commands in this project"}, make(chan interact.Verdict, 1), nil)
+	if v := ansi.Strip(p.View(80, 20)); !strings.Contains(v, "don't ask again for go test commands in this project") {
+		t.Errorf("the option does not name what it remembers:\n%s", v)
 	}
-	if press(p, "s") {
-		t.Error("s answered a once-only request")
+
+	// Nothing to remember, nothing offered beyond this call.
+	reply := make(chan interact.Verdict, 1)
+	p = NewPermission(interact.Approval{Tool: "write", Confirm: true}, reply, nil)
+	if v := ansi.Strip(p.View(60, 20)); strings.Contains(v, "again") || strings.Contains(v, "all edits") {
+		t.Errorf("a call confirmed each time offers more:\n%s", v)
 	}
+	press(p, "esc")
+	if got := (<-reply).Choice; got != interact.Deny {
+		t.Errorf("esc answered %v, want No", got)
+	}
+}
+
+// The last option denies with what to do instead; esc there goes back to
+// the options.
+func TestPermissionDeniesWithFeedback(t *testing.T) {
+	reply := make(chan interact.Verdict, 1)
+	p := NewPermission(interact.Approval{Tool: "bash", Summary: "rm -rf build"}, reply, nil)
+	if press(p, "2") {
+		t.Fatal("the last option answered before the user said what to do")
+	}
+	press(p, "x", "esc")
+	if len(reply) > 0 || !strings.Contains(ansi.Strip(p.View(60, 12)), "2. No, and tell codebot") {
+		t.Fatalf("esc did not go back to the options:\n%s", ansi.Strip(p.View(60, 12)))
+	}
+	press(p, "enter")
+	for _, r := range "use make clean" {
+		press(p, string(r))
+	}
+	if !press(p, "enter") {
+		t.Fatal("enter did not answer")
+	}
+	if v := <-reply; v.Choice != interact.Deny || v.Feedback != "use make clean" {
+		t.Errorf("answered %+v", v)
+	}
+}
+
+// An edit offers the accept-edits mode, switched before the answer goes.
+func TestPermissionAcceptsEdits(t *testing.T) {
+	reply := make(chan interact.Verdict, 1)
+	switched := false
+	p := NewPermission(interact.Approval{Tool: "edit", Summary: "a.go", Edit: true}, reply, func() {
+		if len(reply) > 0 {
+			t.Error("the answer went before the mode switched")
+		}
+		switched = true
+	})
 	press(p, "2")
-	if got := <-reply; got != interact.Deny {
-		t.Errorf("2 answered %v, want No", got)
+	if got := (<-reply).Choice; got != interact.AllowOnce || !switched {
+		t.Errorf("answered %v, switched %v", got, switched)
 	}
 }
 
 func TestPermissionKeepsTheChoicesInView(t *testing.T) {
-	p := NewPermission(interact.Approval{Tool: "bash", Summary: strings.Repeat("echo line\n", 50)}, make(chan interact.Choice, 1))
+	p := NewPermission(interact.Approval{Tool: "bash", Summary: strings.Repeat("echo line\n", 49) + "echo last"}, make(chan interact.Verdict, 1), nil)
 	view := p.View(40, 10)
 	fits(t, view, 40, 10)
-	if !strings.Contains(ansi.Strip(view), "No") {
-		t.Errorf("the choices do not show:\n%s", ansi.Strip(view))
+	if v := ansi.Strip(view); !strings.Contains(v, "No") || !strings.Contains(v, "of 50") {
+		t.Errorf("the choices or the scroll do not show:\n%s", v)
+	}
+	// pgdown scrolls to the rest of the command.
+	for range 20 {
+		press(p, "pgdown")
+	}
+	if v := ansi.Strip(p.View(40, 10)); !strings.Contains(v, "echo last") {
+		t.Errorf("the end of the command does not show:\n%s", v)
 	}
 }
 

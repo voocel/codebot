@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/voocel/codebot/internal/interact"
 )
 
 func mustNotAsk(t *testing.T) interact.UI {
-	return approveFunc(func(context.Context, interact.Approval) (interact.Choice, error) {
+	return approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
 		t.Errorf("the user was asked")
-		return interact.Deny, nil
+		return interact.Verdict{Choice: interact.Deny}, nil
 	})
 }
 
@@ -49,13 +50,13 @@ func TestBalancedWriteDeniedWithoutUI(t *testing.T) {
 	}
 }
 
-func TestOutsideRootsAllowSessionDegradesToAllowOnce(t *testing.T) {
+func TestOutsideRootsAllowsOnlyOnce(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	var prompt interact.Approval
-	engine := newEngine(t, Config{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Choice, error) {
+	engine := newEngine(t, Config{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
 		prompt = p
-		return interact.AllowSession, nil
+		return interact.Verdict{Choice: interact.AllowAlways}, nil
 	})})
 
 	decision, err := engine.Decide(context.Background(), Request{
@@ -68,17 +69,91 @@ func TestOutsideRootsAllowSessionDegradesToAllowOnce(t *testing.T) {
 	if decision == nil || decision.Kind != DecisionAllowOnce || !decision.Prompted || !decision.OutsideRoots {
 		t.Fatalf("expected prompted allow-once for outside roots, got %#v", decision)
 	}
-	if !prompt.OutsideRoots || !prompt.OnceOnly {
-		t.Fatalf("prompt = %#v, want it outside the roots and once only", prompt)
+	if !prompt.OutsideRoots || !prompt.Confirm || prompt.Remember != "" {
+		t.Fatalf("prompt = %#v, want it outside the roots, confirmed each time, with nothing to remember", prompt)
+	}
+}
+
+// Always remembers the commands a call runs, each of which must be
+// remembered for a later call to go unasked: one command approved does
+// not let another ride along.
+func TestAlwaysRemembersEachCommand(t *testing.T) {
+	var asked []interact.Approval
+	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+		asked = append(asked, p)
+		return interact.Verdict{Choice: interact.AllowAlways}, nil
+	})})
+	run := func(cmd string) {
+		t.Helper()
+		if d, err := engine.Decide(context.Background(), toolReq("bash", map[string]any{"command": cmd})); err != nil || !d.Allowed() {
+			t.Fatalf("%s: %v, %v", cmd, d, err)
+		}
+	}
+	run("go test ./...")
+	if got := asked[0].Remember; got != "`go test` commands in this project" {
+		t.Errorf("remember %q", got)
+	}
+	run("go test -run X ./... 2>&1 | tail -5")
+	if len(asked) != 1 {
+		t.Errorf("a remembered command was asked again: %+v", asked[1:])
+	}
+	run("go test ./... && curl -s x.example")
+	if len(asked) != 2 || asked[1].Remember != "`go test` and `curl` commands in this project" {
+		t.Errorf("asked %+v", asked)
+	}
+	// What cannot be remembered is asked every time.
+	run("go test $(cat pkgs)")
+	run("go test $(cat pkgs)")
+	if len(asked) != 4 || asked[3].Remember != "" {
+		t.Errorf("asked %+v", asked)
+	}
+}
+
+// A denial tells the agent it was the user's, with what they said to do
+// instead.
+func TestDenialCarriesTheFeedback(t *testing.T) {
+	feedback := ""
+	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
+		return interact.Verdict{Choice: interact.Deny, Feedback: feedback}, nil
+	})})
+	deny := func() string {
+		t.Helper()
+		d, err := engine.Decide(context.Background(), toolReq("bash", map[string]any{"command": "rm -rf build"}))
+		if err != nil || d.Allowed() {
+			t.Fatalf("%v, %v", d, err)
+		}
+		return d.Reason
+	}
+	if r := deny(); !strings.Contains(r, "The user denied this") {
+		t.Errorf("reason %q", r)
+	}
+	feedback = "use make clean"
+	if r := deny(); !strings.Contains(r, "use make clean") {
+		t.Errorf("reason %q", r)
+	}
+}
+
+// An edit offers the accept-edits mode instead of remembering the file.
+func TestEditOffersTheMode(t *testing.T) {
+	var prompt interact.Approval
+	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+		prompt = p
+		return interact.Verdict{Choice: interact.AllowOnce}, nil
+	})})
+	if _, err := engine.Decide(context.Background(), toolReq("edit", map[string]any{"file_path": "a.go"})); err != nil {
+		t.Fatal(err)
+	}
+	if !prompt.Edit || prompt.Remember != "" {
+		t.Errorf("prompt = %+v", prompt)
 	}
 }
 
 func TestPromptCarriesTheToolCallID(t *testing.T) {
 	workspace := t.TempDir()
 	var got string
-	engine := newEngine(t, Config{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Choice, error) {
+	engine := newEngine(t, Config{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
 		got = p.ToolID
-		return interact.Deny, nil
+		return interact.Verdict{Choice: interact.Deny}, nil
 	})})
 	req := toolReq("write", map[string]any{"path": "a.txt"})
 	req.ToolID = "call_1"
@@ -125,7 +200,7 @@ func TestMetadataOverrideForCustomTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if decision == nil || decision.Kind != DecisionAllow || decision.Key != "custom:custom_lookup" {
+	if decision == nil || decision.Kind != DecisionAllow || decision.Capability != CapabilityRead {
 		t.Fatalf("expected metadata-driven allow, got %#v", decision)
 	}
 }
@@ -274,9 +349,9 @@ func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 			WriteRoots:       []string{memDir},
 			InternalWritable: []string{memDir},
 		},
-		UI: approveFunc(func(context.Context, interact.Approval) (interact.Choice, error) {
+		UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
 			prompted = true
-			return interact.AllowOnce, nil
+			return interact.Verdict{Choice: interact.AllowOnce}, nil
 		}),
 	})
 

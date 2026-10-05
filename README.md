@@ -172,4 +172,4 @@ To start a plugin, run `/plugins create <plugin-id> [project|user]`: it writes a
 
 ## License
 
-MIT
+[Apache License 2.0](LICENSE)

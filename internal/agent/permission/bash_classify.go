@@ -2,6 +2,7 @@ package permission
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -29,7 +30,7 @@ func isReadonlyBash(cmd string) bool {
 	if cmd == "" {
 		return false
 	}
-	if hasUnquotedRedirect(cmd) {
+	if hasUnquotedRedirect(cmd) || opaque(cmd) {
 		return false
 	}
 	for _, seg := range splitBashSegments(cmd) {
@@ -261,44 +262,107 @@ func splitBashSegments(cmd string) []string {
 	return parts
 }
 
-// bashPrefix returns a stable key suffix for store / sessionAllow bucketing.
-//
-// "git commit -m 'fix x'"  → "git commit"   (next commit reuses the entry)
-// "ls -la /tmp"            → "ls"
-// "NODE_ENV=prod npm run build" → "npm run" (env var skipped)
-// "" or fully-malformed     → "" (caller picks fallback)
-//
-// This replaces the previous SHA-hash key — those bucketed every command
-// argument variant separately, so users had to re-approve `git commit -m "y"`
-// after approving `git commit -m "x"`.
-func bashPrefix(cmd string) string {
-	segs := splitBashSegments(cmd)
-	if len(segs) == 0 {
+// commandKeys returns the approval key of each command cmd runs that is
+// not read-only, "exec:go test", so that remembering them allows cmd again.
+// It returns nil, nothing to remember, when cmd may do more than its
+// commands say, when it is destructive, or when a command is set up by
+// variables or runs another it is given.
+func commandKeys(cmd string) []string {
+	if opaque(cmd) || destructiveCommandWarning(cmd) != "" {
+		return nil
+	}
+	var keys []string
+	for _, seg := range splitBashSegments(cmd) {
+		if isReadonlySegment(seg) {
+			continue
+		}
+		p := commandPrefix(seg)
+		if p == "" {
+			return nil
+		}
+		if k := "exec:" + p; !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+// commandPrefix names the command seg runs, which is what an approval
+// remembers: "git commit -m 'fix x'" → "git commit", "ls -la" → "ls",
+// "./script.sh arg" → "./script.sh". It is "" for a command that leading
+// variables set up (LD_PRELOAD=…) or that runs another (sudo, xargs, sh).
+func commandPrefix(seg string) string {
+	tokens := strings.Fields(seg)
+	if len(tokens) == 0 || envVarAssignRE.MatchString(tokens[0]) || runsAnother[tokens[0]] {
 		return ""
 	}
-	// Use the FIRST segment of compound commands as the prefix. Users almost
-	// always reason about "the command they typed", and `a && b` reuses
-	// `a` as its identifier in any reasonable allow rule.
-	tokens := strings.Fields(segs[0])
-	i := 0
-	for i < len(tokens) && envVarAssignRE.MatchString(tokens[i]) {
-		i++
+	// A subcommand only follows a plain command name, not a path or a flag.
+	if subcommandShapeRE.MatchString(tokens[0]) && len(tokens) > 1 && subcommandShapeRE.MatchString(tokens[1]) {
+		return tokens[0] + " " + tokens[1]
 	}
-	if i >= len(tokens) {
-		return ""
+	return tokens[0]
+}
+
+// runsAnother lists the commands that run a command they are given:
+// remembering one would allow anything.
+var runsAnother = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "fish": true, "dash": true, "ksh": true,
+	"eval": true, "exec": true, "source": true, ".": true, "command": true, "builtin": true,
+	"sudo": true, "su": true, "doas": true, "env": true, "xargs": true, "nohup": true,
+	"nice": true, "timeout": true, "time": true, "watch": true, "chroot": true,
+}
+
+// opaque reports whether cmd may do more than its commands say: substitute
+// a command's output, run a job in the background or another line, or
+// write a file through redirection. Only single quotes keep these out;
+// a substitution runs inside double quotes too.
+func opaque(cmd string) bool {
+	single, double := false, false
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		next := byte(0)
+		if i+1 < len(cmd) {
+			next = cmd[i+1]
+		}
+		switch {
+		case single:
+			single = c != '\''
+		case c == '\\':
+			i++
+		case c == '\'' && !double:
+			single = true
+		case c == '"':
+			double = !double
+		case c == '`', c == '$' && next == '(':
+			return true
+		case double:
+		case c == '\n', (c == '<' || c == '>') && next == '(':
+			return true
+		case c == '&' && next == '&':
+			i++
+		case c == '&':
+			// Only part of a redirection, 2>&1 or &>, does not background.
+			if next != '>' && (i == 0 || cmd[i-1] != '>') {
+				return true
+			}
+		case c == '>':
+			if writesFile(cmd[i+1:]) {
+				return true
+			}
+		}
 	}
-	first := tokens[i]
-	// Only attempt subcommand extraction when the first token itself looks
-	// like a standard command name (lowercase alnum). Skip for paths
-	// (./script.sh), flags, absolute exec (/usr/bin/python), etc. — there
-	// the prefix IS the first token alone.
-	if !subcommandShapeRE.MatchString(first) {
-		return first
+	return false
+}
+
+// writesFile reports whether the redirection target that rest starts with
+// is a file: not a descriptor (&1) or /dev/null.
+func writesFile(rest string) bool {
+	rest = strings.TrimLeft(strings.TrimPrefix(rest, ">"), " \t")
+	if strings.HasPrefix(rest, "&") {
+		return false
 	}
-	if i+1 < len(tokens) && subcommandShapeRE.MatchString(tokens[i+1]) {
-		return first + " " + tokens[i+1]
-	}
-	return first
+	target, _, _ := strings.Cut(rest, " ")
+	return strings.TrimRight(target, ";|&") != "/dev/null"
 }
 
 var (

@@ -88,6 +88,18 @@ func viewOf(tool string) view {
 }
 
 // humanize makes a tool name readable: "task_output" reads "Task Output".
+// Title names a tool the way its calls are shown: "Bash", "Web Search";
+// a hook command, which goes as the tool "hook/<event>", is a "Hook".
+func Title(name string) string {
+	if v, ok := views[name]; ok && v.title != "" {
+		return v.title
+	}
+	if strings.HasPrefix(name, "hook/") {
+		return "Hook"
+	}
+	return humanize(name)
+}
+
 func humanize(name string) string {
 	words := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' })
 	for i, w := range words {

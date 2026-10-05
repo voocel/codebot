@@ -11,15 +11,15 @@ import (
 var _ interact.UI = (*Server)(nil)
 
 // Approve forwards a permission decision to the editor via
-// session/request_permission. A OnceOnly approval offers only one-time allow
-// and reject, never a persistent allow.
-func (s *Server) Approve(ctx context.Context, p interact.Approval) (interact.Choice, error) {
+// session/request_permission. A persistent allow is offered when there is
+// something to remember, and named for it.
+func (s *Server) Approve(ctx context.Context, p interact.Approval) (interact.Verdict, error) {
 	opts := []acp.PermissionOption{
 		{Kind: acp.PermissionOptionKindAllowOnce, Name: "Allow", OptionId: "allow_once"},
 	}
-	if !p.OnceOnly {
+	if p.Remember != "" {
 		opts = append(opts, acp.PermissionOption{
-			Kind: acp.PermissionOptionKindAllowAlways, Name: "Always allow", OptionId: "allow_always",
+			Kind: acp.PermissionOptionKindAllowAlways, Name: "Always allow " + p.Remember, OptionId: "allow_always",
 		})
 	}
 	opts = append(opts, acp.PermissionOption{
@@ -46,19 +46,18 @@ func (s *Server) Approve(ctx context.Context, p interact.Approval) (interact.Cho
 		},
 	})
 	if err != nil {
-		return interact.Deny, err
+		return interact.Verdict{Choice: interact.Deny}, err
 	}
-	if resp.Outcome.Selected == nil { // cancelled or no selection
-		return interact.Deny, nil
+	choice := interact.Deny // also when cancelled, with nothing selected
+	if resp.Outcome.Selected != nil {
+		switch resp.Outcome.Selected.OptionId {
+		case "allow_once":
+			choice = interact.AllowOnce
+		case "allow_always":
+			choice = interact.AllowAlways
+		}
 	}
-	switch resp.Outcome.Selected.OptionId {
-	case "allow_once":
-		return interact.AllowOnce, nil
-	case "allow_always":
-		return interact.AllowAlways, nil
-	default:
-		return interact.Deny, nil
-	}
+	return interact.Verdict{Choice: choice}, nil
 }
 
 // Ask is unsupported: ACP has no way to pose questions, so the App runs

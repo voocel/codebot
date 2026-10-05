@@ -172,4 +172,4 @@ OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`
 
 ## 许可证
 
-MIT
+[Apache License 2.0](LICENSE)

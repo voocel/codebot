@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/voocel/codebot/internal/interact"
@@ -19,13 +18,15 @@ type Ask struct {
 	reply chan<- interact.Answers
 	tab   int // a question, or len(qs) for the review
 	state []answer
-
-	input  textinput.Model
-	typing bool // the user is typing their own answer
+	head  head
+	queue
+	own field // where the user types their own answer
 }
 
+// answer is where a question stands: its rows are its options, then the
+// user's own answer when it takes one.
 type answer struct {
-	cursor int
+	menu
 	picked map[int]bool // options chosen, for a multi-select question
 	custom string       // the user's own answer
 	done   bool
@@ -33,34 +34,25 @@ type answer struct {
 
 // NewAsk returns the panel for qs, which answers on reply.
 func NewAsk(qs []interact.Question, reply chan<- interact.Answers) *Ask {
-	in := textinput.New()
-	in.Prompt = ""
-	in.Placeholder = "Type your answer"
-	a := &Ask{qs: qs, reply: reply, state: make([]answer, len(qs)), input: in}
-	for i := range a.state {
-		a.state[i].picked = map[int]bool{}
+	a := &Ask{qs: qs, reply: reply, state: make([]answer, len(qs)), own: newField("Type your answer")}
+	for i, q := range qs {
+		n := len(q.Options)
+		if q.AllowsCustom() {
+			n++
+		}
+		a.state[i] = answer{menu: menu{n: n}, picked: map[int]bool{}}
 	}
 	return a
 }
 
 func (a *Ask) Key() any { return a.reply }
 
-// rows is the number of rows question i offers: its options, then the
-// user's own answer when it takes one.
-func (a *Ask) rows(i int) int {
-	n := len(a.qs[i].Options)
-	if a.qs[i].AllowsCustom() {
-		n++
-	}
-	return n
-}
-
 func (a *Ask) Update(msg tea.Msg) (tea.Cmd, bool) {
-	if a.typing {
-		return a.updateTyping(msg)
+	if a.own.on {
+		return a.typed(msg)
 	}
 	k, ok := key(msg)
-	if !ok {
+	if !ok || a.head.key(k) {
 		return nil, false
 	}
 	if k == "esc" || k == "ctrl+c" {
@@ -70,10 +62,10 @@ func (a *Ask) Update(msg tea.Msg) (tea.Cmd, bool) {
 	if len(a.qs) > 1 {
 		switch k {
 		case "tab", "right":
-			a.tab = (a.tab + 1) % (len(a.qs) + 1)
+			a.tab, a.head = (a.tab+1)%(len(a.qs)+1), head{}
 			return nil, false
 		case "shift+tab", "left":
-			a.tab = (a.tab + len(a.qs)) % (len(a.qs) + 1)
+			a.tab, a.head = (a.tab+len(a.qs))%(len(a.qs)+1), head{}
 			return nil, false
 		}
 	}
@@ -85,41 +77,29 @@ func (a *Ask) Update(msg tea.Msg) (tea.Cmd, bool) {
 	}
 
 	q, s := a.qs[a.tab], &a.state[a.tab]
-	n := a.rows(a.tab)
-	switch k {
-	case "up", "k":
-		s.cursor = (s.cursor + n - 1) % n
-	case "down", "j":
-		s.cursor = (s.cursor + 1) % n
-	case "space":
-		if q.MultiSelect && s.cursor < len(q.Options) {
-			s.picked[s.cursor] = !s.picked[s.cursor]
-			return nil, false
-		}
-		return a.choose()
-	case "enter":
-		return a.choose()
-	default:
-		if i, err := strconv.Atoi(k); err == nil && i >= 1 && i <= n {
-			s.cursor = i - 1
-			if q.MultiSelect && s.cursor < len(q.Options) {
-				s.picked[s.cursor] = !s.picked[s.cursor]
-				return nil, false
-			}
-			return a.choose()
+	if k == "space" {
+		k = "enter"
+		if q.MultiSelect {
+			k = strconv.Itoa(s.cursor + 1)
 		}
 	}
-	return nil, false
+	i := s.key(k)
+	switch {
+	case i < 0:
+		return nil, false
+	case q.MultiSelect && k != "enter" && i < len(q.Options):
+		// A number, or space, ticks an option of several.
+		s.picked[i] = !s.picked[i]
+		return nil, false
+	}
+	return a.choose()
 }
 
 // choose answers the current question with the row under the cursor.
 func (a *Ask) choose() (tea.Cmd, bool) {
 	q, s := a.qs[a.tab], &a.state[a.tab]
 	if s.cursor == len(q.Options) {
-		a.typing = true
-		a.input.SetValue(s.custom)
-		a.input.CursorEnd()
-		return a.input.Focus(), false
+		return a.own.open(s.custom), false
 	}
 	if q.MultiSelect && !anyPicked(s.picked) {
 		s.picked[s.cursor] = true
@@ -128,31 +108,22 @@ func (a *Ask) choose() (tea.Cmd, bool) {
 	return a.next()
 }
 
-func (a *Ask) updateTyping(msg tea.Msg) (tea.Cmd, bool) {
-	if k, ok := key(msg); ok {
-		switch k {
-		case "ctrl+c":
-			a.reply <- interact.Answers{Cancelled: true}
-			return nil, true
-		case "esc":
-			a.typing = false
-			a.input.Blur()
-			return nil, false
-		case "enter":
-			a.typing = false
-			a.input.Blur()
-			s := &a.state[a.tab]
-			s.custom = strings.TrimSpace(a.input.Value())
-			if s.custom == "" {
-				return nil, false
-			}
-			s.done = true
-			return a.next()
-		}
+// typed takes msg while the user types their own answer.
+func (a *Ask) typed(msg tea.Msg) (tea.Cmd, bool) {
+	if k, _ := key(msg); k == "ctrl+c" {
+		a.reply <- interact.Answers{Cancelled: true}
+		return nil, true
 	}
-	var cmd tea.Cmd
-	a.input, cmd = a.input.Update(msg)
-	return cmd, false
+	cmd, text, entered := a.own.update(msg)
+	if !entered {
+		return cmd, false
+	}
+	s := &a.state[a.tab]
+	if s.custom = text; text == "" {
+		return nil, false
+	}
+	s.done = true
+	return a.next()
 }
 
 // next moves to the first question left unanswered, or submits a single
@@ -227,7 +198,7 @@ func (a *Ask) View(width, height int) string {
 	title := "Question"
 	if a.tab == len(a.qs) {
 		body = append(body, a.review(width)...)
-		return frame(title, body, theme.Hint("enter", "submit", "tab", "switch", "esc", "cancel"), width, height)
+		return frame(a.queue.title(title), body, theme.Hint("enter", "submit", "tab", "switch", "esc", "cancel"), width, height)
 	}
 
 	q, s := a.qs[a.tab], a.state[a.tab]
@@ -236,14 +207,14 @@ func (a *Ask) View(width, height int) string {
 	}
 	var opts []string
 	for i, o := range q.Options {
-		mark := strconv.Itoa(i+1) + ". "
+		line := s.numbered(i, o.Label)
 		if q.MultiSelect {
-			mark = "[ ] "
+			mark := "[ ] "
 			if s.picked[i] {
 				mark = "[✓] "
 			}
+			line = row(mark+o.Label, i == s.cursor)
 		}
-		line := row(mark+o.Label, i == s.cursor)
 		if o.Description != "" {
 			line += "  " + theme.SubtleText.Render(o.Description)
 		}
@@ -252,36 +223,35 @@ func (a *Ask) View(width, height int) string {
 	if q.AllowsCustom() {
 		i := len(q.Options)
 		switch {
-		case a.typing:
-			a.input.SetWidth(max(width-5, 10))
-			opts = append(opts, theme.Selected.Render("❯ ")+a.input.View())
+		case a.own.on:
+			opts = append(opts, a.own.view(width))
 		case s.custom != "":
-			opts = append(opts, row(strconv.Itoa(i+1)+". "+s.custom, s.cursor == i))
+			opts = append(opts, s.numbered(i, s.custom))
 		default:
-			opts = append(opts, row(strconv.Itoa(i+1)+". Type your own answer", s.cursor == i))
+			opts = append(opts, s.numbered(i, "Type your own answer"))
 		}
 	}
-	// The question may be long; the options must show.
-	question := markdown.Wrap(q.Question, theme.Bold, width-2)
-	if room := height - 3 - len(body) - len(opts); len(question) > room {
-		question = append(question[:max(room-1, 0)], theme.SubtleText.Render("…"))
-	}
-	body = append(body, question...)
-	body = append(body, "")
-	body = append(body, opts...)
 	if s.cursor < len(q.Options) && q.Options[s.cursor].Preview != "" {
-		body = append(body, "")
-		body = append(body, markdown.Render(q.Options[s.cursor].Preview, width-4)...)
+		opts = append(opts, "")
+		opts = append(opts, markdown.Render(q.Options[s.cursor].Preview, width-4)...)
 	}
+	// The question may be long; the options must show.
+	body, cut := a.head.fit(append(body, markdown.Wrap(q.Question, theme.Bold, width-2)...), opts, height-2)
 
-	hint := theme.Hint("↑↓", "select", "enter", "choose", "esc", "cancel")
+	hint := []string{"↑↓", "select", "enter", "choose"}
 	switch {
-	case a.typing:
-		hint = theme.Hint("enter", "confirm", "esc", "back")
+	case a.own.on:
+		hint = []string{"enter", "confirm", "esc", "back"}
 	case q.MultiSelect:
-		hint = theme.Hint("space", "toggle", "enter", "confirm", "esc", "cancel")
+		hint = []string{"space", "toggle", "enter", "confirm"}
 	}
-	return frame(title, body, hint, width, height)
+	if cut {
+		hint = append(hint, "pgup/pgdn", "scroll")
+	}
+	if !a.own.on {
+		hint = append(hint, "esc", "cancel")
+	}
+	return frame(a.queue.title(title), body, theme.Hint(hint...), width, height)
 }
 
 func (a *Ask) review(width int) []string {
