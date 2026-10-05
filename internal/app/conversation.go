@@ -13,34 +13,34 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/hooks"
+	"github.com/voocel/codebot/internal/agent/permission"
+	"github.com/voocel/codebot/internal/agent/prompt"
+	"github.com/voocel/codebot/internal/agent/skill"
+	"github.com/voocel/codebot/internal/agent/tools"
+	"github.com/voocel/codebot/internal/extension/hooks"
+	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/permission"
-	"github.com/voocel/codebot/internal/prompt"
 	"github.com/voocel/codebot/internal/session"
-	"github.com/voocel/codebot/internal/skill"
-	"github.com/voocel/codebot/internal/snapshot"
-	"github.com/voocel/codebot/internal/storage"
-	"github.com/voocel/codebot/internal/tools"
-	"github.com/voocel/codebot/internal/worktree"
+	"github.com/voocel/codebot/internal/session/storage"
+	"github.com/voocel/codebot/internal/workspace/snapshot"
+	"github.com/voocel/codebot/internal/workspace/worktree"
 )
 
 // Conversation is one session and everything that lives as long as it: its
 // tools, working directory, background tasks, checkpoints and hooks. Opening
 // another session replaces the whole Conversation; nothing is reset.
 type Conversation struct {
-	app       *App
-	id        string
-	dir       string // per-session directory: background output, tool output
-	session   *session.Session
-	tasks     *task.Runtime
-	agents    *AgentHub         // background sub-agent runs
-	snapshots *snapshot.Tracker // nil when checkpoints are off
-	hooks     *hooks.Runner     // nil without hooks
-	files     *agentcoretools.FileReadState
-	limiter   *tools.OutputLimiter
-	validator *validation // nil without hooks
+	app        *App
+	id         string
+	dir        string // per-session directory: background output, tool output
+	session    *session.Session
+	tasks      *task.Runtime
+	agents     *AgentHub         // background sub-agent runs
+	snapshots  *snapshot.Tracker // nil when checkpoints are off
+	hooks      *hooks.Runner     // nil without hooks
+	files      *agentcoretools.FileReadState
+	limiter    *tools.OutputLimiter
+	validation *hooks.Validation // nil without hooks
 
 	system []litellm.Block // the system prompt; see context.go
 
@@ -85,7 +85,7 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 		c.snapshots = snapshot.New(config.SnapshotDir(a.cwd), a.cwd, config.UndoStatePath(a.cwd, id))
 	}
 	if c.hooks = hooks.New(a.settings.Hooks, id, a.permissions, c.hookModel); c.hooks != nil {
-		c.validator = &validation{hooks: c.hooks}
+		c.validation = hooks.NewValidation(c.hooks)
 	}
 	config.EnsureMemoryDir(a.cwd)
 	c.workspace = a.workspace(a.cwd)
@@ -189,6 +189,10 @@ func (c *Conversation) post(msgs []agentcore.Message) {
 func reminder(text string) string {
 	return "<system-reminder>\n" + text + "\n</system-reminder>"
 }
+
+// kindReminder marks a message the harness adds for the model, such as a
+// validation failure to fix or context a hook adds.
+const kindReminder = "reminder"
 
 // reminderMessage is a message of harness-provided context, which frontends
 // do not show as the user's.

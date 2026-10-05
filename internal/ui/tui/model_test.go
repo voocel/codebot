@@ -10,10 +10,10 @@ import (
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/litellm"
 
+	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
-	"github.com/voocel/codebot/internal/todo"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)

@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/ui/imageinput"
+	"github.com/voocel/codebot/internal/ui/tui/imageinput"
 )
 
 // handleCommandKey takes the keys that act on the input as a whole:

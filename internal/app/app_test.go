@@ -17,11 +17,11 @@ import (
 	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/litellmtest"
 
-	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/agent/todo"
+	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/session"
-	"github.com/voocel/codebot/internal/todo"
 )
 
 const timeout = 10 * time.Second

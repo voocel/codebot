@@ -12,8 +12,8 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/app"
-	"github.com/voocel/codebot/internal/todo"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 	"github.com/voocel/litellm"
 )

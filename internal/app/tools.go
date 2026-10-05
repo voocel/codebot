@@ -10,8 +10,8 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/subagent"
-	"github.com/voocel/codebot/internal/tools"
+	"github.com/voocel/codebot/internal/agent/subagent"
+	"github.com/voocel/codebot/internal/agent/tools"
 )
 
 // buildTools builds the conversation's own tools for the current model. MCP

@@ -10,8 +10,8 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm/catalog"
 
-	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/provider"
+	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/infra/provider"
 )
 
 // defaultWindow applies to models the model list does not know.

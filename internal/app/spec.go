@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"slices"
-	"sync/atomic"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -11,9 +10,8 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm/retry"
 
-	"github.com/voocel/codebot/internal/hooks"
-	"github.com/voocel/codebot/internal/prompt"
-	"github.com/voocel/codebot/internal/provider"
+	"github.com/voocel/codebot/internal/agent/prompt"
+	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/session"
 )
 
@@ -49,7 +47,7 @@ func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 		out = append(out, mw)
 	}
 	if c.hooks != nil {
-		out = append(out, c.hooks.PostToolUse(), c.validator.track)
+		out = append(out, c.hooks.PostToolUse(), c.validation.Track)
 	}
 	return append(out, c.limiter.Middleware())
 }
@@ -81,7 +79,7 @@ func (c *Conversation) specLocked() session.RunSpec {
 		Cache: a.cache(),
 	}
 	if c.hooks != nil {
-		cfg.OnStop = c.validator.stop
+		cfg.OnStop = c.stop
 	}
 	return session.RunSpec{
 		Provider: c.model.provider,
@@ -114,47 +112,11 @@ func (c *Conversation) wrapRun(ctx context.Context) (context.Context, func(error
 	}
 }
 
-// kindReminder marks a message the harness adds for the model, such as a
-// validation failure to fix or context a hook adds.
-const kindReminder = "reminder"
-
-// validation runs the PostStopValidation hooks when a run would stop after
-// changing the repository, and sends the agent back once to fix a failure.
-type validation struct {
-	hooks  *hooks.Runner
-	dirty  atomic.Bool // the repository changed since the last passing validation
-	failed bool        // the last stop was refused; touched only by the run
-}
-
-// track marks the repository changed after a successful mutating call.
-func (v *validation) track(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
-	res, err := next(ctx, call)
-	if err == nil && !res.IsError {
-		switch call.Name {
-		case "bash", "write", "edit":
-			v.dirty.Store(true)
-		}
+// stop is the run's Stop: a failing PostStopValidation sends the agent back
+// to fix it.
+func (c *Conversation) stop(ctx context.Context, _ agentcore.StopInfo) ([]agentcore.Message, error) {
+	if fix := c.validation.Check(ctx); fix != "" {
+		return []agentcore.Message{reminderMessage(fix)}, nil
 	}
-	return res, err
-}
-
-// stop is the run's Stop: with the repository changed, the run goes on to
-// fix a failing validation, once per stop.
-func (v *validation) stop(ctx context.Context, _ agentcore.StopInfo) ([]agentcore.Message, error) {
-	if !v.dirty.Load() {
-		return nil, nil
-	}
-	out := v.hooks.RunPostStopValidation(ctx)
-	if out == "" {
-		v.dirty.Store(false)
-		v.failed = false
-		return nil, nil
-	}
-	if v.failed {
-		// One fix attempt per stop; the next run validates again.
-		v.failed = false
-		return nil, nil
-	}
-	v.failed = true
-	return []agentcore.Message{reminderMessage("The PostStopValidation hook failed. Fix the problem based on the following output:\n" + out)}, nil
+	return nil, nil
 }

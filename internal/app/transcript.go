@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/todo"
+	"github.com/voocel/codebot/internal/agent/todo"
+	"github.com/voocel/codebot/internal/infra/config"
 )
 
 // HiddenToolCall reports whether a tool call is bookkeeping that frontends

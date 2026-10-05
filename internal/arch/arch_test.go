@@ -1,5 +1,19 @@
-// Package arch checks the dependency rules between codebot's packages
-// (docs/refactor-plan.md §4.1).
+// Package arch checks the dependency rules between codebot's packages. The
+// directories under internal are its layers, each depending only on those
+// below it:
+//
+//	ui/         frontends: tui, print, acp
+//	app/        assembly: App and Conversation
+//	extension/  what users plug in: plugins, MCP servers, hooks
+//	agent/      what the agent runs with: tools, skills, sub-agents, prompt,
+//	            permissions, todos
+//	session/    the conversation actor and its log
+//	workspace/  what codebot does to the repository: checkpoints, worktrees
+//	infra/      settings, models, telemetry
+//
+// agent, session and workspace share a layer and do not depend on one
+// another; app joins them. interact, the contract with the frontends, and
+// lib, generic helpers, are leaves any layer may use.
 package arch
 
 import (
@@ -15,24 +29,25 @@ import (
 
 const module = "github.com/voocel/codebot/"
 
-// allowed lists, for a package or a package prefix ending in "/", the
-// codebot packages it may import. Packages not listed are unconstrained.
+// allowed lists, for a package or a package and those under it ("x/..."),
+// the codebot packages it may import; the most specific pattern applies.
+// Packages not listed are unconstrained.
 var allowed = map[string][]string{
-	// The frontends drive the core through app alone; config and todo are
-	// plain data they also show.
-	"internal/ui/": {"internal/app", "internal/session", "internal/interact", "internal/config", "internal/todo", "internal/ui/"},
-	"internal/acp": {"internal/app", "internal/session", "internal/interact"},
+	// The frontends drive the core through app alone, and none depends on
+	// another; settings and todos are plain data they also show.
+	"internal/ui/...":        {"internal/app", "internal/session", "internal/interact", "internal/infra/config", "internal/agent/todo"},
+	"internal/ui/tui/...":    {"internal/app", "internal/session", "internal/interact", "internal/infra/config", "internal/agent/todo", "internal/ui/tui/..."},
+	"internal/extension/...": {"internal/extension/...", "internal/agent/...", "internal/workspace/...", "internal/infra/...", "internal/interact", "internal/lib/..."},
+	"internal/agent/...":     {"internal/agent/...", "internal/infra/...", "internal/interact", "internal/lib/..."},
+	"internal/workspace/...": {"internal/workspace/...", "internal/infra/...", "internal/lib/..."},
 	// The session knows the kernel and its log, nothing else.
-	"internal/session": {"internal/storage"},
+	"internal/session/...": {"internal/session/..."},
+	"internal/infra/...":   {"internal/infra/...", "internal/lib/..."},
 	// The contract with the frontends depends on nothing; what implements
 	// or calls it does.
-	"internal/interact":   {},
-	"internal/todo":       {},
-	"internal/storage":    {},
-	"internal/permission": {"internal/config", "internal/interact"},
-	"internal/tools":      {"internal/interact", "internal/skill", "internal/todo"},
-	"internal/prompt":     {"internal/config"},
-	"internal/subagent":   {"internal/config", "internal/frontmatter", "internal/prompt", "internal/provider", "internal/tools"},
+	"internal/interact": {},
+	// Shared helpers know nothing of codebot, so any package may use them.
+	"internal/lib/...": {"internal/lib/..."},
 }
 
 // external lists the non-standard modules a package may import, where that
@@ -90,7 +105,7 @@ func TestDependencyRules(t *testing.T) {
 // check returns why pkg may not import imp, or "".
 func check(pkg, imp string) string {
 	if dep, ok := strings.CutPrefix(imp, module); ok {
-		if dep == "internal/app" || strings.HasPrefix(dep, "internal/ui/") || dep == "internal/acp" {
+		if dep == "internal/app" || isFrontend(dep) {
 			// The core never depends on what is built on it.
 			if !strings.HasPrefix(pkg, "cmd/") && !isFrontend(pkg) {
 				return "only cmd and the frontends may use app and the frontends"
@@ -107,27 +122,28 @@ func check(pkg, imp string) string {
 	return ""
 }
 
+// ruleFor returns the rule of the most specific pattern covering pkg.
 func ruleFor(pkg string) ([]string, bool) {
-	for key, rule := range allowed {
-		if matches(key, pkg) {
-			return rule, true
+	best := ""
+	for pattern := range allowed {
+		if matches(pattern, pkg) && len(pattern) > len(best) {
+			best = pattern
 		}
 	}
-	return nil, false
+	rule, ok := allowed[best]
+	return rule, ok
 }
 
-// matches reports whether pattern, a package or a prefix ending in "/",
-// covers pkg.
+// matches reports whether pattern, a package or a package and those under it
+// ("x/..."), covers pkg.
 func matches(pattern, pkg string) bool {
-	if strings.HasSuffix(pattern, "/") {
-		return strings.HasPrefix(pkg, pattern)
+	if dir, ok := strings.CutSuffix(pattern, "/..."); ok {
+		return pkg == dir || strings.HasPrefix(pkg, dir+"/")
 	}
 	return pkg == pattern
 }
 
-func isFrontend(pkg string) bool {
-	return strings.HasPrefix(pkg, "internal/ui/") || pkg == "internal/acp"
-}
+func isFrontend(pkg string) bool { return matches("internal/ui/...", pkg) }
 
 func isStdlib(imp string) bool {
 	return !strings.Contains(strings.Split(imp, "/")[0], ".")
@@ -135,13 +151,20 @@ func isStdlib(imp string) bool {
 
 func TestCheckCatchesViolations(t *testing.T) {
 	bad := [][2]string{
-		{"internal/ui/tui", module + "internal/permission"},
-		{"internal/interact", module + "internal/permission"},
-		{"internal/acp", module + "internal/config"},
-		{"internal/session", module + "internal/config"},
+		{"internal/ui/tui", module + "internal/agent/permission"},
+		{"internal/ui/acp", module + "internal/ui/tui"},
+		{"internal/ui/print", module + "internal/ui/tui/markdown"},
+		{"internal/agent/tools", module + "internal/app"},
+		{"internal/agent/tools", module + "internal/extension/mcp"},
+		{"internal/agent/permission", module + "internal/session"},
+		{"internal/agent/tools", module + "internal/workspace/worktree"},
+		{"internal/workspace/snapshot", module + "internal/agent/permission"},
+		{"internal/infra/config", module + "internal/agent/prompt"},
+		{"internal/extension/plugin", module + "internal/ui/tui"},
+		{"internal/session", module + "internal/infra/config"},
 		{"internal/session", "github.com/charmbracelet/bubbletea"},
-		{"internal/tools", module + "internal/app"},
-		{"internal/plugin", module + "internal/ui/tui"},
+		{"internal/interact", module + "internal/agent/permission"},
+		{"internal/lib/frontmatter", module + "internal/infra/config"},
 	}
 	for _, b := range bad {
 		if check(b[0], b[1]) == "" {
@@ -149,10 +172,17 @@ func TestCheckCatchesViolations(t *testing.T) {
 		}
 	}
 	good := [][2]string{
-		{"internal/ui/commands", module + "internal/ui/tui"},
+		{"internal/ui/tui/commands", module + "internal/ui/tui"},
+		{"internal/ui/tui", module + "internal/ui/tui/markdown"},
+		{"internal/ui/acp", module + "internal/app"},
+		{"internal/extension/mcp", module + "internal/agent/permission"},
+		{"internal/agent/subagent", module + "internal/lib/frontmatter"},
+		{"internal/agent/permission", module + "internal/infra/config"},
+		{"internal/workspace/worktree", module + "internal/infra/config"},
+		{"internal/session", module + "internal/session/storage"},
 		{"internal/session", "github.com/voocel/agentcore/context"},
 		{"cmd/codebot", module + "internal/app"},
-		{"internal/app", module + "internal/tools"},
+		{"internal/app", module + "internal/agent/tools"},
 	}
 	for _, g := range good {
 		if why := check(g[0], g[1]); why != "" {

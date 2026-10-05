@@ -13,8 +13,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/truncate"
 
+	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/todo"
 )
 
 // ---------------------------------------------------------------------------

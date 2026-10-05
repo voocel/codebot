@@ -21,18 +21,18 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/agent/permission"
+	"github.com/voocel/codebot/internal/agent/skill"
+	"github.com/voocel/codebot/internal/agent/tools"
+	"github.com/voocel/codebot/internal/extension/mcp"
+	"github.com/voocel/codebot/internal/extension/plugin"
+	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/infra/provider"
+	"github.com/voocel/codebot/internal/infra/telemetry"
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/mcp"
-	"github.com/voocel/codebot/internal/permission"
-	"github.com/voocel/codebot/internal/plugin"
-	"github.com/voocel/codebot/internal/provider"
 	"github.com/voocel/codebot/internal/session"
-	"github.com/voocel/codebot/internal/skill"
-	"github.com/voocel/codebot/internal/storage"
-	"github.com/voocel/codebot/internal/telemetry"
-	"github.com/voocel/codebot/internal/tools"
-	"github.com/voocel/codebot/internal/worktree"
+	"github.com/voocel/codebot/internal/session/storage"
+	"github.com/voocel/codebot/internal/workspace/worktree"
 )
 
 // ModelFactory builds a model.

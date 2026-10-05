@@ -18,8 +18,8 @@ import (
 	"github.com/voocel/litellm/litellmtest"
 
 	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/provider"
 )
 
 // scriptModel is a provider answering with its replies in order, then

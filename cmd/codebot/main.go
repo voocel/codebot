@@ -11,14 +11,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/voocel/codebot/internal/acp"
 	"github.com/voocel/codebot/internal/app"
-	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/storage"
-	"github.com/voocel/codebot/internal/ui/commands"
+	"github.com/voocel/codebot/internal/session/storage"
+	"github.com/voocel/codebot/internal/ui/acp"
 	"github.com/voocel/codebot/internal/ui/print"
 	"github.com/voocel/codebot/internal/ui/tui"
+	"github.com/voocel/codebot/internal/ui/tui/commands"
 )
 
 // Set via ldflags by GoReleaser. Defaults are fallbacks for `go build` /

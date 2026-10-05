@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/voocel/codebot/internal/config"
-	"github.com/voocel/codebot/internal/worktree"
+	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/workspace/worktree"
 )
 
 // worktreeState is the sandbox the conversation works in.

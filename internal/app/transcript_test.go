@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/infra/config"
 )
 
 func TestHiddenToolCall(t *testing.T) {

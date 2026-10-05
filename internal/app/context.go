@@ -11,8 +11,8 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/prompt"
-	"github.com/voocel/codebot/internal/skill"
+	"github.com/voocel/codebot/internal/agent/prompt"
+	"github.com/voocel/codebot/internal/agent/skill"
 )
 
 // A conversation's requests only ever grow: what one sends is the start of

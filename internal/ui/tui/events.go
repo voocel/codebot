@@ -15,8 +15,8 @@ import (
 	"github.com/voocel/agentcore/subagent"
 	"github.com/voocel/litellm"
 
+	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/app"
-	"github.com/voocel/codebot/internal/todo"
 )
 
 // formatScrollbackBlock applies the project's standard spacing rules to a

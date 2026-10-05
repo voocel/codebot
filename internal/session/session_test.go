@@ -18,7 +18,7 @@ import (
 	"github.com/voocel/litellm/catalog"
 	"github.com/voocel/litellm/litellmtest"
 
-	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/session/storage"
 )
 
 const timeout = 5 * time.Second

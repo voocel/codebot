@@ -13,11 +13,11 @@ import (
 	"github.com/voocel/agentcore/task"
 	"github.com/voocel/litellm"
 
+	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/app"
-	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
-	"github.com/voocel/codebot/internal/todo"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 )
 

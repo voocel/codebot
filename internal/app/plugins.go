@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/voocel/codebot/internal/plugin"
+	"github.com/voocel/codebot/internal/extension/plugin"
 )
 
 // Plugin is a loaded plugin.

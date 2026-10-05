@@ -19,7 +19,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm"
 
-	"github.com/voocel/codebot/internal/storage"
+	"github.com/voocel/codebot/internal/session/storage"
 )
 
 // ErrClosed is returned by calls on a closed session.

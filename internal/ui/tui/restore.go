@@ -8,8 +8,8 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm"
 
+	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/app"
-	"github.com/voocel/codebot/internal/todo"
 )
 
 // handleRestore replays the open conversation's history into scrollback,

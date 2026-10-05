@@ -3,7 +3,7 @@ package tui
 // onboarding.go — first-run setup wizard. A standalone Bubble Tea program run
 // by main() before the runtime boots, sharing the welcome card's chrome
 // (frameCard, theme tokens). Pure presentation: detection and persistence
-// live in internal/config (NeedsSetup / ApplySetup).
+// live in internal/infra/config (NeedsSetup / ApplySetup).
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/voocel/codebot/internal/config"
+	"github.com/voocel/codebot/internal/infra/config"
 	llmprovider "github.com/voocel/litellm/provider"
 )
 
