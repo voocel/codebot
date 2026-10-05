@@ -107,7 +107,7 @@ func TestCatalogPrefersTheMoreTrustedSource(t *testing.T) {
 		{{Name: "review", Source: "project"}, {Name: "review", Source: "remote"}},
 		{{Name: "review", Source: "project", Description: "first"}, {Name: "review", Source: "project", Description: "later"}},
 	} {
-		spec, _ := NewCatalog(order).Get("review", "")
+		spec, _ := NewCatalog(order).Get("review")
 		want := order[1]
 		if order[1].Source == "remote" {
 			want = order[0]
@@ -131,17 +131,31 @@ func TestCatalogActivationFollowsTheWorkspace(t *testing.T) {
 		{Name: "frontend", Paths: []string{"web/**"}},
 	})
 
-	if got := c.List(withoutMarker); len(got) != 1 || got[0].Name != "always-on" {
+	without := c.Active(withoutMarker)
+	if got := without.List(); len(got) != 1 || got[0].Name != "always-on" {
 		t.Fatalf("frontend must be inactive without a match, got %+v", got)
 	}
-	if _, ok := c.Get("frontend", withoutMarker); ok {
+	if _, ok := without.Get("frontend"); ok {
 		t.Fatal("Get must respect the same activation check as List")
 	}
-	if got := c.List(withMarker); len(got) != 2 {
+	with := c.Active(withMarker)
+	if got := with.List(); len(got) != 2 {
 		t.Fatalf("frontend must be active in the workspace holding a match, got %+v", got)
 	}
-	if _, ok := c.Get("Frontend", withMarker); !ok {
+	if _, ok := with.Get("Frontend"); !ok {
 		t.Fatal("Get must find the skill where it is active, ignoring case")
+	}
+}
+
+// What git keeps is not the workspace.
+func TestCatalogActivationIgnoresGit(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	writeSkillFile(t, filepath.Join(cwd, ".git", "hooks", "pre-commit.py"), "")
+	c := NewCatalog([]Spec{{Name: "python", Paths: []string{"**/*.py"}}})
+	if got := c.Active(cwd).List(); len(got) != 0 {
+		t.Fatalf("a file under .git activated %+v", got)
 	}
 }
 

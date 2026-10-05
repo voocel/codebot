@@ -83,7 +83,7 @@ func compareStable(a, b Spec) int {
 }
 
 func skillIsActive(spec Spec, cwd string) bool {
-	if len(spec.Paths) == 0 || cwd == "" {
+	if len(spec.Paths) == 0 {
 		return true
 	}
 	return slices.ContainsFunc(spec.Paths, func(pattern string) bool { return pathPatternExists(cwd, pattern) })
@@ -112,6 +112,9 @@ func pathPatternExists(cwd, pattern string) bool {
 	_ = filepath.WalkDir(rootPath, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
 		}
 		rel, err := filepath.Rel(cwd, path)
 		if err != nil {

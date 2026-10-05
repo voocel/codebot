@@ -1,21 +1,26 @@
+// Package tui is codebot's terminal interface: a full-screen view of the
+// conversation over an editor. See docs/tui-plan.md.
 package tui
 
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
+	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// UI asks the user through dialogs. It is the interact.UI the App boots
-// with; Run binds it to the screen.
+// UI asks the user through panels. It is the interact.UI the App boots with;
+// Run binds it to the screen.
 type UI struct {
 	program atomic.Pointer[tea.Program]
 }
@@ -24,107 +29,130 @@ var _ interact.UI = (*UI)(nil)
 
 func (u *UI) send(msg tea.Msg) { u.program.Load().Send(msg) }
 
-// Approve shows a permission card and waits for the answer.
+// Approve shows a permission request and waits for the answer.
 func (u *UI) Approve(ctx context.Context, req interact.Approval) (interact.Choice, error) {
-	resp := make(chan interact.Choice, 1)
-	u.send(PermissionMsg{Approval: req, RespCh: resp})
+	reply := make(chan interact.Choice, 1)
+	// The panel answers on the send side, which is how it is known.
+	answer := (chan<- interact.Choice)(reply)
+	u.send(approveMsg{req, answer})
 	select {
-	case choice := <-resp:
-		return choice, nil
+	case c := <-reply:
+		return c, nil
 	case <-ctx.Done():
-		u.send(PermissionDismissMsg{RespCh: resp})
+		u.send(withdrawMsg{answer})
 		return interact.Deny, ctx.Err()
 	}
 }
 
-// Ask shows the questions and waits for the answers. A dialog torn down
-// without an answer counts as dismissed.
+// Ask shows the questions and waits for the answers.
 func (u *UI) Ask(ctx context.Context, qs []interact.Question) (interact.Answers, error) {
-	resp := make(chan interact.Answers, 1)
-	u.send(AskUserMsg{Questions: qs, RespCh: resp})
+	reply := make(chan interact.Answers, 1)
+	answer := (chan<- interact.Answers)(reply)
+	u.send(askMsg{qs, answer})
 	select {
-	case answers, ok := <-resp:
-		if !ok {
-			return interact.Answers{Cancelled: true}, nil
-		}
-		return answers, nil
+	case a := <-reply:
+		return a, nil
 	case <-ctx.Done():
-		u.send(AskUserDismissMsg{RespCh: resp})
+		u.send(withdrawMsg{answer})
 		return interact.Answers{}, ctx.Err()
 	}
 }
 
-// Run shows a's conversations until the user quits. ui must be the UI a was
-// booted with.
-func Run(a *app.App, ui *UI, cmds Commands, version string) error {
-	m := New(a, cmds, version)
+// Run shows a's conversations until the user quits, then leaves the
+// conversation in the terminal. ui must be the UI a was booted with.
+func Run(a *app.App, ui *UI, version string) error {
+	theme.Detect()
+	m := newModel(a, version)
 	p := tea.NewProgram(m)
 	ui.program.Store(p)
 
 	// The App publishes some events on the caller's goroutine, which may be
 	// the program's own; queue them so publishing never waits for Update.
-	q := newMsgQueue(p)
+	q := newQueue(p)
 	defer q.close()
-	unsubscribe := a.Subscribe(func(ev app.Event) { forward(a, q, ev) })
+	unsubscribe := a.Subscribe(func(ev app.Event) {
+		if msg := message(a, ev); msg != nil {
+			q.push(msg)
+		}
+		if ev.Kind == app.SessionEvent && ev.Session.Kind == session.Idle {
+			go suggest(a.Current(), q)
+		}
+	})
 	defer unsubscribe()
 
 	go func() {
-		report := a.ConnectMCP(context.Background())
-		if report.Servers > 0 {
-			p.Send(MCPReadyMsg{Tools: report.Tools, Errors: report.Errors})
+		if r := a.ConnectMCP(context.Background()); r.Servers > 0 {
+			q.push(mcpMsg{r})
 		}
 	}()
 
-	if _, err := p.Run(); err != nil {
+	_, err := p.Run()
+	if m.shell != nil {
+		m.shell.cancel()
+	}
+	if err != nil {
 		return fmt.Errorf("run tui: %w", err)
+	}
+	m.goodbye()
+	return nil
+}
+
+// goodbye prints the conversation to the terminal the TUI leaves.
+func (m *Model) goodbye() {
+	if m.width == 0 || len(m.t.Cells()) == 0 {
+		return
+	}
+	lines := renderAll(m.t.Cells(), m.width, false)
+	fmt.Fprintln(os.Stdout, strings.Join(lines, "\n"))
+	if len(m.conv.History()) > 0 {
+		fmt.Fprintln(os.Stdout, "\n "+theme.SubtleText.Render("Resume this conversation with ")+theme.AccentText.Render("codebot -c"))
+	}
+}
+
+// message returns the TUI's message for an App event, nil for none.
+func message(a *app.App, ev app.Event) tea.Msg {
+	switch ev.Kind {
+	case app.Opened:
+		return openedMsg{ev.Conversation}
+	case app.ModeChanged:
+		return modeMsg{ev.Mode}
+	case app.SessionEvent:
+		switch ev.Session.Kind {
+		case session.Agent:
+			return agentMsg{ev.Session.Agent}
+		case session.RunStarted:
+			return runStartedMsg{}
+		case session.StatusChanged:
+			return statusMsg{a.Current().Status()}
+		case session.Idle:
+			return idleMsg{}
+		case session.Error:
+			return sessionErrMsg{ev.Session.Err}
+		}
 	}
 	return nil
 }
 
-// forward turns an App event into the TUI's message for it.
-func forward(a *app.App, q *msgQueue, ev app.Event) {
-	switch ev.Kind {
-	case app.Opened:
-		q.push(OpenedMsg{Conversation: ev.Conversation})
-	case app.ModeChanged:
-		q.push(ModeMsg{Mode: ev.Mode})
-	case app.SessionEvent:
-		switch ev.Session.Kind {
-		case session.Agent:
-			q.push(AgentEventMsg{Event: ev.Session.Agent})
-		case session.RunStarted:
-			q.push(RunStartedMsg{})
-		case session.StatusChanged:
-			q.push(StatusChangedMsg{Status: a.Current().Status()})
-		case session.Idle:
-			q.push(IdleMsg{})
-			go suggest(a.Current(), q)
-		case session.Error:
-			q.push(CommandResultMsg{Text: ErrorStyle.Render("Session error: " + app.ErrorText(ev.Session.Err))})
-		}
-	}
-}
-
-// suggest predicts the user's next input after a run.
-func suggest(conv *app.Conversation, q *msgQueue) {
+// suggest predicts what the user may type next.
+func suggest(conv *app.Conversation, q *queue) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if text, err := conv.Suggest(ctx); err == nil && text != "" {
-		q.push(SuggestionMsg{Text: text})
+		q.push(suggestionMsg{conv, text})
 	}
 }
 
-// msgQueue sends messages to the program in order without making the sender
+// queue sends messages to the program in order without making the sender
 // wait.
-type msgQueue struct {
+type queue struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
 	msgs   []tea.Msg
 	closed bool
 }
 
-func newMsgQueue(p *tea.Program) *msgQueue {
-	q := &msgQueue{}
+func newQueue(p *tea.Program) *queue {
+	q := &queue{}
 	q.cond = sync.NewCond(&q.mu)
 	go func() {
 		for {
@@ -147,14 +175,14 @@ func newMsgQueue(p *tea.Program) *msgQueue {
 	return q
 }
 
-func (q *msgQueue) push(msg tea.Msg) {
+func (q *queue) push(msg tea.Msg) {
 	q.mu.Lock()
 	q.msgs = append(q.msgs, msg)
 	q.mu.Unlock()
 	q.cond.Signal()
 }
 
-func (q *msgQueue) close() {
+func (q *queue) close() {
 	q.mu.Lock()
 	q.closed = true
 	q.mu.Unlock()

@@ -1,129 +1,283 @@
 package tui
 
-// Model.View — composes the live bottom-pinned area from render_*.go helpers.
-
 import (
 	"fmt"
+	"image/color"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/ui/tui/theme"
+	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// View renders the live area pinned at the bottom of the terminal.
-// Completed content lives in terminal scrollback (printed via tea.Println).
-func (m *Model) View() string {
-	if !m.Ready {
-		return "\n  Initializing..."
+func (m *Model) View() tea.View {
+	var v tea.View
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	v.WindowTitle = "codebot · " + filepath.Base(m.status.Cwd)
+	if m.width == 0 || m.height == 0 {
+		return v
 	}
+	now := time.Now()
 
-	// Transcript modal takes over the entire viewport when open. We do not
-	// emit any scrollback content (status bar, streaming bullets, input
-	// panel) so the modal renders against an effectively blank canvas —
-	// terminal scrollback above it stays untouched and reappears when the
-	// modal closes. Skipped while the fleet list holds focus: that path keeps
-	// the list pinned below the preview (renderFleetSplit), so the user can
-	// switch agents without closing anything.
-	if !m.FleetFocus {
-		if body := m.transcriptViewBody(); body != "" {
-			return body
+	var bottom []string
+	editorAt := -1
+	switch p := m.top(); {
+	case p != nil:
+		bottom = m.statusLines(now, nil)
+		bottom = append(bottom, strings.Split(p.View(m.width, max(m.height*2/3, 8)), "\n")...)
+	case m.page != nil:
+		bottom = []string{m.pageFooter()}
+	default:
+		bottom = m.statusLines(now, m.pending)
+		editorAt = len(bottom)
+		bottom = append(bottom, strings.Split(m.editor.View(m.width), "\n")...)
+		if menu := m.editor.Menu(m.width - 1); menu != nil {
+			bottom = append(bottom, menu...)
+		} else {
+			bottom = append(bottom, m.footer())
 		}
 	}
 
-	// Fleet split-preview: an agent is selected in the focused list, so show
-	// its live transcript on top with the list pinned below.
-	if m.FleetFocus && m.TranscriptModal != nil {
-		return m.renderFleetSplit()
-	}
+	main := m.mainView(max(m.height-len(bottom), 1), now)
+	lines := append(main, bottom...)
+	// On a short screen the bottom takes it all; the top gives way.
+	cut := max(len(lines)-m.height, 0)
+	m.mainTop -= cut
+	v.SetContent(strings.Join(lines[cut:], "\n"))
 
-	var parts []string
-	overlay := m.overlayView()
-	appendInputArea := func() {
-		parts = append(parts, m.renderInputPanel())
-	}
-
-	if m.ShowWelcome {
-		parts = append(parts, m.renderWelcome())
-	}
-
-	if m.IsStream {
-		if thinking := strings.TrimSpace(m.Thinking.String()); thinking != "" {
-			indented := indentBlock(ThinkingBodyStyle.Render(m.wrapTextForIndent(thinking, 2)), 2)
-			parts = append(parts, "", ThinkingIconStyle.Render("● ")+strings.TrimPrefix(indented, "  "))
-		}
-		// Only show the assistant bullet when there's actual streamed text.
-		// An "empty bullet" frame appears when the assistant message contains
-		// only tool_use blocks (e.g. a hidden todo_write call) — IsStream goes
-		// true at MessageStart, no text deltas arrive, then IsStream clears
-		// at MessageEnd. The Running spinner in the status bar already
-		// signals "agent is working", so we drop the bare bullet to avoid
-		// the flash.
-		if streamed := m.Streaming.String(); strings.TrimSpace(streamed) != "" {
-			indented := m.RenderMarkdownBlock(streamed, 2)
-			parts = append(parts, "", AssistantIconStyle.Render("● ")+strings.TrimPrefix(indented, "  ")+m.Spinner.View())
+	if editorAt >= 0 {
+		if c := m.editor.Cursor(); c != nil {
+			c.Y += len(main) + editorAt - cut
+			v.Cursor = c
 		}
 	}
+	return v
+}
 
-	for id, name := range m.PendingTools {
-		line := m.ToolSpinner.View() + " " + ToolNameStyle.Render(name)
-		if buf, ok := m.ToolOutputBuf[id]; ok && buf.Len() > 0 {
-			output := RenderStreamingOutput(buf.String(), ToolStreamTailLines)
-			line += "\n" + indentBlock(m.wrapTextForIndent(output, 2), 2)
+// statusLines render what goes on above the input: the run, and a shell
+// line running, set off from the conversation by a blank line.
+func (m *Model) statusLines(now time.Time, pending []pending) []string {
+	lines := m.run.lines(m.width, now, pending)
+	if m.shell != nil {
+		lines = append([]string{shellLine(m.shell, m.width, now, !m.run.active)}, lines...)
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return append([]string{""}, lines...)
+}
+
+// mainView renders the conversation, or the page over it, height lines.
+func (m *Model) mainView(height int, now time.Time) []string {
+	var head []string
+	if m.page != nil {
+		head = []string{m.pageHeader(now)}
+	}
+	v := m.main()
+	v.width = max(m.width-2, 10)
+	v.height = max(height-len(head), 1)
+	v.params = transcript.Params{Expanded: m.expanded, Now: now}
+	m.mainHeight = v.height
+	m.mainTop = len(head)
+
+	lines := v.view()
+	for i, l := range lines {
+		lines[i] = " " + l
+	}
+	for len(lines) < v.height {
+		lines = append(lines, "")
+	}
+	if !v.follow {
+		pill := "↓ end to jump to the latest"
+		if n := v.unseen(); n > 0 {
+			pill = fmt.Sprintf("↓ %d new · end to jump", n)
 		}
-		parts = append(parts, "", line)
+		pill = lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Accent).Render(" " + pill + " ")
+		lines[len(lines)-1] = strings.Repeat(" ", max(m.width-ansi.StringWidth(pill)-1, 0)) + pill
+	}
+	return append(head, lines...)
+}
+
+func (m *Model) pageHeader(now time.Time) string {
+	state := theme.OKText.Render("done")
+	if m.page.live() {
+		state = theme.WarmText.Render(transcript.Spinner(now) + " running")
+	}
+	line := " " + theme.Selected.Render(m.page.title) + theme.SubtleText.Render(" · ") + state
+	return ansi.Truncate(line, m.width, "…")
+}
+
+func (m *Model) pageFooter() string {
+	return " " + theme.Hint("esc", "back", "↑↓ wheel", "scroll", "ctrl+o", "expand")
+}
+
+// footer shows the permission mode, or a passing message, and the state of
+// the conversation.
+func (m *Model) footer() string {
+	left := lipgloss.NewStyle().Foreground(modeColor(m.mode)).Render("⏵ "+modeLabel(m.mode)) + theme.FaintText.Render("  shift+tab")
+	if m.toast != "" {
+		left = theme.AccentText.Render(m.toast)
 	}
 
-	if status := m.renderStatusLine(); status != "" {
-		parts = append(parts, "", MutedStyle.Render(status))
+	var right []string
+	st := m.status
+	model := st.Model
+	if st.Effort != "" {
+		model += " · " + st.Effort
 	}
+	right = append(right, theme.MutedText.Render(model))
+	if st.Window > 0 {
+		pct := st.Context * 100 / st.Window
+		c := theme.SubtleText
+		switch {
+		case pct >= 85:
+			c = theme.ErrorText
+		case pct >= 60:
+			c = theme.WarmText
+		}
+		right = append(right, c.Render(fmt.Sprintf("ctx %d%%", pct)))
+	}
+	if st.Worktree != "" {
+		right = append(right, theme.WarmText.Render("worktree"))
+	}
+	if m.branch != "" {
+		right = append(right, theme.SubtleText.Render("⎇ "+m.branch))
+	}
+	if n := len(m.conv.Agents().ActiveAgents()); n > 0 {
+		right = append(right, lipgloss.NewStyle().Foreground(theme.Agent).Render(fmt.Sprintf("%d %s · /agents", n, plural(n, "agent"))))
+	}
+	r := strings.Join(right, theme.FaintText.Render(" · "))
 
-	parts = append(parts, "")
+	room := m.width - 2
+	if ansi.StringWidth(left)+ansi.StringWidth(r)+2 > room {
+		r = ansi.TruncateLeft(r, ansi.StringWidth(left)+ansi.StringWidth(r)+2-room, "…")
+	}
+	gap := max(room-ansi.StringWidth(left)-ansi.StringWidth(r), 1)
+	return ansi.Truncate(" "+left+strings.Repeat(" ", gap)+r, m.width, "")
+}
 
-	// A dialog takes the keys first, so it shows first, over an overlay.
-	if card := m.Dialogs.active(); card != nil {
-		parts = append(parts, card.render(m))
-	} else if overlay != "" {
-		parts = append(parts, overlay)
+func modeLabel(m interact.Mode) string {
+	switch m {
+	case interact.ModeAcceptEdits:
+		return "accept edits"
+	case interact.ModeTrust:
+		return "trust · no prompts"
+	}
+	return string(m)
+}
+
+func modeColor(m interact.Mode) color.Color {
+	switch m {
+	case interact.ModeStrict:
+		return theme.Info
+	case interact.ModeAcceptEdits:
+		return theme.Warm
+	case interact.ModeTrust:
+		return theme.Danger
+	}
+	return theme.Accent
+}
+
+// glyphs draw the wordmark, each letter 5 columns by 3 rows.
+var glyphs = map[rune][3]string{
+	'C': {"▄████", "█    ", "▀████"},
+	'O': {"▄███▄", "█   █", "▀███▀"},
+	'D': {"████▄", "█   █", "████▀"},
+	'E': {"█████", "████ ", "█████"},
+	'B': {"████▄", "███▀▄", "████▀"},
+	'T': {"█████", "  █  ", "  █  "},
+}
+
+// welcome is what an empty conversation shows.
+func (m *Model) welcome(width, height int) []string {
+	var out []string
+	if width >= 45 {
+		var rows [3]strings.Builder
+		for i, r := range "CODEBOT" {
+			for j := range rows {
+				if i > 0 {
+					rows[j].WriteByte(' ')
+				}
+				rows[j].WriteString(glyphs[r][j])
+			}
+		}
+		out = append(out, "",
+			lipgloss.NewStyle().Foreground(theme.Strong).Render(rows[0].String()),
+			lipgloss.NewStyle().Foreground(theme.Accent).Bold(true).Render(rows[1].String()),
+			lipgloss.NewStyle().Foreground(theme.Accent).Faint(true).Render(rows[2].String()))
 	} else {
-		if statusBar := m.RenderStatusBar(); statusBar != "" {
-			parts = append(parts, statusBar, "")
-		}
-		if len(m.QueuedMsgs) > 0 {
-			parts = append(parts, m.renderQueuedMsgs())
-		}
-		appendInputArea()
-		if comp := m.renderCompletions(); comp != "" {
-			parts = append(parts, comp)
-		} else if fleet := m.renderFleetList(); fleet != "" {
-			parts = append(parts, fleet)
-		}
+		out = append(out, "", theme.Selected.Render("codebot"))
 	}
-
-	// While focused in the fleet list, the list owns the bottom region — the
-	// context bar steps aside (it returns when focus goes back to the input).
-	// Full-screen dialogs (ask_user) also displace it; compact cards keep it.
-	dialogHidesBar := false
-	if card := m.Dialogs.active(); card != nil {
-		dialogHidesBar = card.hidesContextBar()
+	st := m.status
+	out = append(out, "",
+		theme.MutedText.Render("codebot "+m.version)+theme.SubtleText.Render(" · "+st.Provider+"/"+st.Model),
+		theme.SubtleText.Render(transcript.ShortPath(st.Cwd)),
+		"",
+		theme.Hint("/", "commands", "!", "shell", "shift+tab", "mode", "ctrl+o", "expand", "ctrl+t", "transcript"),
+	)
+	for i, l := range out {
+		out[i] = ansi.Truncate(l, width, "…")
 	}
-	if !m.compActive && overlay == "" && !dialogHidesBar && !m.FleetFocus {
-		parts = append(parts, m.RenderContextBar())
-		parts = append(parts, "")
-	}
-
-	return strings.Join(parts, "\n")
+	return out[:min(len(out), height)]
 }
 
-// renderStatusLine formats the current live status.
-func (m *Model) renderStatusLine() string {
-	if m.StatusPrefix == "" {
-		return ""
-	}
-	if m.StatusDeadline.IsZero() {
-		return m.StatusPrefix + "..."
-	}
-	remain := time.Until(m.StatusDeadline)
-	if remain <= 0 {
-		return m.StatusPrefix + "..."
-	}
-	secs := int((remain + time.Second - 1) / time.Second)
-	return fmt.Sprintf("%s in %ds...", m.StatusPrefix, secs)
+func emptyPage(width, height int) []string {
+	return []string{theme.SubtleText.Render("Nothing yet")}
 }
+
+// renderAll renders cells one under the other, as the conversation shows
+// them, with a margin.
+func renderAll(cells []transcript.Cell, width int, expanded bool) []string {
+	v := newChatView(func() []transcript.Cell { return cells }, emptyPage)
+	v.width = max(width-2, 10)
+	v.params = transcript.Params{Expanded: expanded, Now: time.Now()}
+	var out []string
+	for i := range cells {
+		for _, l := range v.lines(cells, i) {
+			out = append(out, " "+l)
+		}
+	}
+	return out
+}
+
+// pager opens the conversation in the user's pager, for searching and
+// copying: less shows it in color; another pager gets plain text.
+func (m *Model) pager() tea.Cmd {
+	lines := renderAll(m.main().cells(), m.width, true)
+	args := []string{"less", "-R", "+G"}
+	if p := os.Getenv("PAGER"); p != "" {
+		args = strings.Fields(p)
+		for i, l := range lines {
+			lines[i] = ansi.Strip(l)
+		}
+	}
+	f, err := os.CreateTemp("", "codebot-transcript-*.txt")
+	if err != nil {
+		return emit(transcript.Fail("Could not open the pager: " + err.Error()))
+	}
+	_, err = f.WriteString(strings.Join(lines, "\n") + "\n")
+	f.Close()
+	if err != nil {
+		os.Remove(f.Name())
+		return emit(transcript.Fail("Could not open the pager: " + err.Error()))
+	}
+	cmd := exec.Command(args[0], append(args[1:], f.Name())...)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		os.Remove(f.Name())
+		if err != nil {
+			return transcript.Fail("Pager: " + err.Error())
+		}
+		return nil
+	})
+}
+
+func emit(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }

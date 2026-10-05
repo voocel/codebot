@@ -12,7 +12,7 @@ func TestBundledSkills(t *testing.T) {
 	cwd := t.TempDir()
 	catalog := NewCatalog(Bundled(cwd))
 	for _, name := range []string{"debug", "refactor", "review"} {
-		if spec, ok := catalog.Get(name, cwd); !ok || spec.Source != "bundled" || spec.BaseDir != cwd {
+		if spec, ok := catalog.Get(name); !ok || spec.Source != "bundled" || spec.BaseDir != cwd {
 			t.Errorf("bundled %s = %+v, %v", name, spec, ok)
 		}
 	}

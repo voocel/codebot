@@ -1,9 +1,6 @@
-// Package syntax wraps chroma to emit ANSI-colored code that nests safely
-// inside a lipgloss background-color span. The standard chroma TTY
-// formatter terminates every token with ESC[0m (full SGR reset), which
-// would clear the diff line's bg tint mid-row. We emit only foreground
-// SGR plus a foreground-only reset (39) so an outer Background() stays
-// intact.
+// Package syntax colors code with chroma for the terminal. It emits only
+// foreground SGR codes and foreground-only resets, never a full reset, so the
+// code keeps a background an enclosing style paints, as a diff line's.
 package syntax
 
 import (
@@ -13,18 +10,13 @@ import (
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
-	"github.com/charmbracelet/lipgloss"
+
+	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Both nord and tango ship a green LiteralString that blends into DiffAddBg —
-// override to a non-clashing hue. tango additionally paints structural tokens
-// as bold pure black (Punctuation, NameFunction), which reads as ink-on-paper
-// rather than syntax colour; lightExtras retones those to GitHub Primer.
-const (
-	stringOverrideDark  = "#d08770"
-	stringOverrideLight = "#A04100"
-)
-
+// The base styles paint strings green, which blends into the added-line
+// background of a diff, so strings get another hue. tango also paints
+// structural tokens bold black; lightExtras retones them.
 var lightExtras = chroma.StyleEntries{
 	chroma.Punctuation:   "nobold #57606A",
 	chroma.NameFunction:  "#6F42C1",
@@ -35,106 +27,86 @@ var lightExtras = chroma.StyleEntries{
 }
 
 var (
-	darkDiffStyle  = mustOverride("nord", stringOverrideDark, nil)
-	lightDiffStyle = mustOverride("tango", stringOverrideLight, lightExtras)
+	darkStyle  = mustStyle("nord", "#D08770", nil)
+	lightStyle = mustStyle("tango", "#A04100", lightExtras)
 )
 
-func mustOverride(baseName, stringHex string, extras chroma.StyleEntries) *chroma.Style {
-	base := styles.Get(baseName)
-	if base == nil || base.Name == "swapoff" {
-		panic("syntax: chroma style not found: " + baseName)
+func mustStyle(base, stringHex string, extras chroma.StyleEntries) *chroma.Style {
+	b := styles.Get(base).Builder()
+	for _, tt := range []chroma.TokenType{chroma.LiteralString, chroma.LiteralStringDouble, chroma.LiteralStringSingle, chroma.LiteralStringBacktick, chroma.LiteralStringChar} {
+		b.Add(tt, stringHex)
 	}
-	builder := base.Builder().
-		Add(chroma.LiteralString, stringHex).
-		Add(chroma.LiteralStringDouble, stringHex).
-		Add(chroma.LiteralStringSingle, stringHex).
-		Add(chroma.LiteralStringBacktick, stringHex).
-		Add(chroma.LiteralStringChar, stringHex)
 	for tt, entry := range extras {
-		builder = builder.Add(tt, entry)
+		b.Add(tt, entry)
 	}
-	out, err := builder.Build()
+	s, err := b.Build()
 	if err != nil {
-		panic("syntax: failed to override style " + baseName + ": " + err.Error())
+		panic("syntax: style " + base + ": " + err.Error())
 	}
-	return out
+	return s
 }
 
-func activeStyle() *chroma.Style {
-	if lipgloss.HasDarkBackground() {
-		return darkDiffStyle
+// File colors code from the file at path, chosen by its name; code it has no
+// lexer for comes back as it is.
+func File(code, path string) string { return highlight(code, lexers.Match(path)) }
+
+// Lang colors code in the language a markdown fence names.
+func Lang(code, lang string) string {
+	if lang == "" {
+		return code
 	}
-	return lightDiffStyle
+	return highlight(code, lexers.Get(lang))
 }
 
-// Highlight returns code annotated with ANSI fg SGR escapes inferred from
-// filePath. Output ends with "\x1b[39m" and contains no full resets, so
-// wrapping it in a background span produces a continuous colored band.
-// Unrecognised paths or lex errors return the input verbatim.
-func Highlight(code, filePath string) string {
-	if code == "" {
+func highlight(code string, lexer chroma.Lexer) string {
+	if code == "" || lexer == nil {
 		return code
 	}
-
-	lexer := lexers.Match(filePath)
-	if lexer == nil {
-		return code
-	}
-	lexer = chroma.Coalesce(lexer)
-
-	iterator, err := lexer.Tokenise(nil, code)
+	it, err := chroma.Coalesce(lexer).Tokenise(nil, code)
 	if err != nil {
 		return code
 	}
-
+	style := lightStyle
+	if theme.Dark {
+		style = darkStyle
+	}
 	var out strings.Builder
-	out.Grow(len(code) + 32)
-	style := activeStyle()
-	for token := iterator(); token != chroma.EOF; token = iterator() {
-		entry := style.Get(token.Type)
-		writeToken(&out, entry, token.Value)
+	out.Grow(len(code) + 64)
+	for tok := it(); tok != chroma.EOF; tok = it() {
+		writeToken(&out, style.Get(tok.Type), tok.Value)
 	}
-	out.WriteString("\x1b[39m")
 	return out.String()
 }
 
-// writeToken emits fg + bold/italic for one token, then resets via 22;23;39
-// (never 0 — a full reset would cancel the caller's background).
+// writeToken writes text in entry's foreground, bold and italic, and resets
+// just those.
 func writeToken(out *strings.Builder, entry chroma.StyleEntry, text string) {
 	if text == "" {
 		return
 	}
-	hasFg := entry.Colour.IsSet()
-	if hasFg || entry.Bold == chroma.Yes || entry.Italic == chroma.Yes {
-		out.WriteString("\x1b[")
-		first := true
-		if entry.Bold == chroma.Yes {
-			out.WriteString("1")
-			first = false
-		}
-		if entry.Italic == chroma.Yes {
-			if !first {
-				out.WriteString(";")
-			}
-			out.WriteString("3")
-			first = false
-		}
-		if hasFg {
-			if !first {
-				out.WriteString(";")
-			}
-			fmt.Fprintf(out, "38;2;%d;%d;%d", entry.Colour.Red(), entry.Colour.Green(), entry.Colour.Blue())
-		}
-		out.WriteString("m")
+	var on []string
+	if entry.Bold == chroma.Yes {
+		on = append(on, "1")
 	}
-	out.WriteString(text)
-	if entry.Bold == chroma.Yes || entry.Italic == chroma.Yes {
-		out.WriteString("\x1b[22;23")
-		if hasFg {
-			out.WriteString(";39")
+	if entry.Italic == chroma.Yes {
+		on = append(on, "3")
+	}
+	if entry.Colour.IsSet() {
+		on = append(on, fmt.Sprintf("38;2;%d;%d;%d", entry.Colour.Red(), entry.Colour.Green(), entry.Colour.Blue()))
+	}
+	if len(on) == 0 {
+		out.WriteString(text)
+		return
+	}
+	// A token may span lines; each line gets its own codes so lines stand
+	// alone once split.
+	open := "\x1b[" + strings.Join(on, ";") + "m"
+	for i, line := range strings.Split(text, "\n") {
+		if i > 0 {
+			out.WriteByte('\n')
 		}
-		out.WriteString("m")
-	} else if hasFg {
-		out.WriteString("\x1b[39m")
+		if line != "" {
+			out.WriteString(open + line + "\x1b[22;23;39m")
+		}
 	}
 }

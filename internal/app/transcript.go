@@ -6,9 +6,33 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/voocel/agentcore"
+	"github.com/voocel/litellm"
+
 	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/infra/config"
 )
+
+// kindSkill marks the prompt of a skill the user invoked as a command. Its
+// first block is the command as typed, the rest the skill.
+const kindSkill = "skill"
+
+// UserText is what frontends show of a user message: the user's words, or
+// the command that invoked a skill. ok is false for a message the harness
+// added, such as context or a task notification.
+func UserText(m agentcore.Message) (text string, ok bool) {
+	switch m.Kind {
+	case "":
+		return m.Text(), true
+	case kindSkill:
+		if len(m.Blocks) > 0 {
+			if b, isText := m.Blocks[0].(litellm.TextBlock); isText {
+				return b.Text, true
+			}
+		}
+	}
+	return "", false
+}
 
 // HiddenToolCall reports whether a tool call is bookkeeping that frontends
 // leave out of the transcript: todo_write, shown as the todo list instead,

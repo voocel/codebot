@@ -78,8 +78,8 @@ func TestInvokeChecksWhoInvokes(t *testing.T) {
 func TestInvokeRejectsInactivePathScopedSkill(t *testing.T) {
 	t.Parallel()
 
-	catalog := NewCatalog([]Spec{{Name: "frontend", Paths: []string{"web/**"}}})
-	_, err := catalog.Invoke(context.Background(), InvokeInput{Name: "frontend", Cwd: t.TempDir(), By: ByUser})
+	catalog := NewCatalog([]Spec{{Name: "frontend", Paths: []string{"web/**"}}}).Active(t.TempDir())
+	_, err := catalog.Invoke(context.Background(), InvokeInput{Name: "frontend", By: ByUser})
 	if err != ErrNotFound {
 		t.Fatalf("expected inactive skill to behave as not found, got %v", err)
 	}

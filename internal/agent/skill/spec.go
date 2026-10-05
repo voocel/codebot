@@ -50,6 +50,10 @@ type Spec struct {
 }
 
 // trusted reports whether the skill comes from somewhere the user trusts.
+// Forked reports whether the skill runs in a sub-agent rather than in the
+// conversation.
+func (s Spec) Forked() bool { return s.Context == "fork" }
+
 func (s Spec) trusted() bool {
 	switch s.Source {
 	case "bundled", "project", "user":

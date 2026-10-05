@@ -5,322 +5,208 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/voocel/codebot/internal/app"
-	"github.com/voocel/codebot/internal/ui/tui"
 )
 
-// PluginsCommand drives /plugins — a multi-subcommand entry that inspects
-// and mutates the plugin catalog.
-type PluginsCommand struct {
-	app   *app.App
-	table *Table
-}
+const pluginsUsage = "/plugins [list | show <id> | validate <id|path> | create <id> [user] | install <path> [user] | remove <id> | enable <id> | disable <id> | trust <id> trusted|untrusted]"
 
-func (p *PluginsCommand) Spec() Spec {
-	return Spec{
-		Name:        "plugins",
-		Usage:       "/plugins [list|show|validate|create|install|remove|enable|disable|trust] ...",
-		Description: "Inspect or manage plugins",
-		Kind:        KindBuiltin,
-	}
-}
-
-func (p *PluginsCommand) Run(inv Invocation) tea.Cmd {
-	args := inv.Args
-	if len(args) == 0 {
-		return p.list()
-	}
-	switch strings.ToLower(strings.TrimSpace(args[0])) {
-	case "list":
-		return p.list()
-	case "show":
-		return p.show(args[1:])
-	case "validate":
-		return p.validate(args[1:])
-	case "create":
-		return p.create(args[1:])
-	case "install":
-		return p.install(args[1:])
-	case "remove":
-		return p.remove(args[1:])
-	case "enable", "disable", "trust":
-		return p.mutate(args)
-	}
-	return tui.SendCommandResult(tui.ErrorStyle.Render(
-		"Usage: /plugins [list|show|validate|create|install|remove|enable|disable|trust] ..."))
-}
-
-func (p *PluginsCommand) list() tea.Cmd {
-	plugins := p.app.Plugins()
-	if len(plugins) == 0 {
-		return tui.SendCommandResult(tui.CommandStyle.Render("Plugins\n\nNo plugins loaded."))
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Plugins\n\n")
-	for _, pl := range plugins {
-		status := "enabled"
-		if !pl.State.Enabled {
-			status = "disabled"
+func plugins(a *app.App) Command {
+	return Command{Name: "plugins", Args: "[action]", Description: "Inspect and manage plugins: list, show, install, enable…", Run: func(line string) tea.Cmd {
+		args := ParseArgs(line)
+		if len(args) == 0 {
+			return pluginList(a)
 		}
-		fmt.Fprintf(&sb, "%s (%s)\n", pl.Manifest.Name, pl.Manifest.ID)
-		fmt.Fprintf(&sb, "  version: %s\n", pl.Manifest.Version)
-		fmt.Fprintf(&sb, "  scope:   %s\n", pl.Scope)
-		fmt.Fprintf(&sb, "  status:  %s\n", status)
-		fmt.Fprintf(&sb, "  trust:   %s\n", pl.State.Trust)
-		fmt.Fprintf(&sb, "  skills:  %d\n", pl.SkillCount())
-		fmt.Fprintf(&sb, "  mcp:     %d\n", pl.MCPCount())
-		if desc := strings.TrimSpace(pl.Manifest.Description); desc != "" {
-			fmt.Fprintf(&sb, "  about:   %s\n", desc)
+		verb, rest := strings.ToLower(args[0]), args[1:]
+		if verb == "list" {
+			return pluginList(a)
 		}
-		sb.WriteString("\n")
-	}
-
-	return tui.SendCommandResult(tui.CommandStyle.Render(strings.TrimRight(sb.String(), "\n")))
+		if verb == "show" || verb == "validate" {
+			if len(rest) == 0 {
+				return fail("Usage: " + pluginsUsage)
+			}
+			if verb == "show" {
+				return pluginShow(a, rest[0])
+			}
+			return pluginValidate(a, rest[0])
+		}
+		// The rest change what the agent runs with.
+		if a.Current().Status().Running {
+			return fail("/plugins " + verb + " waits for the agent to finish; press esc to stop it.")
+		}
+		if len(rest) == 0 {
+			return fail("Usage: " + pluginsUsage)
+		}
+		ctx := context.Background()
+		switch verb {
+		case "enable", "disable":
+			p, ok := a.Plugin(rest[0])
+			if !ok {
+				return fail("Unknown plugin " + rest[0])
+			}
+			r, err := a.SetPluginEnabled(ctx, rest[0], verb == "enable")
+			if err != nil {
+				return fail("Could not " + verb + " the plugin: " + err.Error())
+			}
+			return note(fmt.Sprintf("Plugin %s %sd. %s", p.Manifest.ID, verb, mcpReloaded(p, r.MCP)))
+		case "trust":
+			if len(rest) < 2 || (rest[1] != "trusted" && rest[1] != "untrusted") {
+				return fail("Usage: /plugins trust <id> trusted|untrusted")
+			}
+			p, ok := a.Plugin(rest[0])
+			if !ok {
+				return fail("Unknown plugin " + rest[0])
+			}
+			r, err := a.SetPluginTrusted(ctx, rest[0], rest[1] == "trusted")
+			if err != nil {
+				return fail("Could not change the plugin's trust: " + err.Error())
+			}
+			if rest[1] == "untrusted" {
+				return note("Plugin " + p.Manifest.ID + " is untrusted: its MCP servers are off and its skills lose their privileged fields.")
+			}
+			return note("Plugin " + p.Manifest.ID + " is trusted. " + mcpReloaded(p, r.MCP))
+		case "create", "install":
+			user, ok := scope(rest[1:])
+			if !ok {
+				return fail("Usage: " + pluginsUsage)
+			}
+			if verb == "create" {
+				c, _, err := a.CreatePlugin(ctx, rest[0], user)
+				if err != nil {
+					return fail("Could not create the plugin: " + err.Error())
+				}
+				return output(fmt.Sprintf("Created plugin %s (%s) in %s.\nEdit %s, add skills under skills/, then /reload.", c.ID, c.Scope, c.RootDir, c.ManifestPath))
+			}
+			c, _, err := a.InstallPlugin(ctx, rest[0], user)
+			if err != nil {
+				return fail("Could not install the plugin: " + err.Error())
+			}
+			return output(fmt.Sprintf("Installed plugin %s (%s) in %s.", c.ID, c.Scope, c.RootDir))
+		case "remove":
+			if _, err := a.RemovePlugin(ctx, rest[0]); err != nil {
+				return fail("Could not remove the plugin: " + err.Error())
+			}
+			return note("Plugin " + rest[0] + " removed.")
+		}
+		return fail("Usage: " + pluginsUsage)
+	}}
 }
 
-func (p *PluginsCommand) show(args []string) tea.Cmd {
-	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins show <plugin-id>"))
+func pluginList(a *app.App) tea.Cmd {
+	ps := a.Plugins()
+	if len(ps) == 0 {
+		return note("No plugins loaded.")
 	}
-	loaded, ok := p.app.Plugin(args[0])
+	var b strings.Builder
+	for i, p := range ps {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		state := "enabled"
+		if !p.State.Enabled {
+			state = "disabled"
+		}
+		fmt.Fprintf(&b, "%s  %s · %s · %s · %d skills · %d MCP", p.Manifest.ID, p.Manifest.Version, p.Scope, state, p.SkillCount(), p.MCPCount())
+		if d := strings.TrimSpace(p.Manifest.Description); d != "" {
+			b.WriteString("\n  " + d)
+		}
+	}
+	return output(b.String())
+}
+
+func pluginShow(a *app.App, id string) tea.Cmd {
+	p, ok := a.Plugin(id)
 	if !ok {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + strings.TrimSpace(args[0])))
+		return fail("Unknown plugin " + id)
 	}
-
-	status := "enabled"
-	if !loaded.State.Enabled {
-		status = "disabled"
+	state := "enabled"
+	if !p.State.Enabled {
+		state = "disabled"
 	}
-	var sb strings.Builder
-	sb.WriteString("Plugin\n\n")
-	fmt.Fprintf(&sb, "name:     %s\n", loaded.Manifest.Name)
-	fmt.Fprintf(&sb, "id:       %s\n", loaded.Manifest.ID)
-	fmt.Fprintf(&sb, "version:  %s\n", loaded.Manifest.Version)
-	fmt.Fprintf(&sb, "scope:    %s\n", loaded.Scope)
-	fmt.Fprintf(&sb, "status:   %s\n", status)
-	fmt.Fprintf(&sb, "trust:    %s\n", loaded.State.Trust)
-	if loaded.RootDir != "" {
-		fmt.Fprintf(&sb, "root:     %s\n", loaded.RootDir)
+	lines := []string{
+		p.Manifest.Name + " (" + p.Manifest.ID + ") " + p.Manifest.Version,
+		fmt.Sprintf("%s · %s · trust %s · %d skills · %d MCP", p.Scope, state, p.State.Trust, p.SkillCount(), p.MCPCount()),
 	}
-	fmt.Fprintf(&sb, "skills:   %d\n", loaded.SkillCount())
-	fmt.Fprintf(&sb, "mcp:      %d\n", loaded.MCPCount())
-	if desc := strings.TrimSpace(loaded.Manifest.Description); desc != "" {
-		fmt.Fprintf(&sb, "about:    %s\n", desc)
+	if p.RootDir != "" {
+		lines = append(lines, p.RootDir)
 	}
-	if !loaded.IsTrusted() {
-		sb.WriteString("policy:   untrusted plugins cannot contribute MCP servers and their skills run without privileged fields\n")
+	if d := strings.TrimSpace(p.Manifest.Description); d != "" {
+		lines = append(lines, d)
 	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(sb.String()))
+	if !p.IsTrusted() {
+		lines = append(lines, "Untrusted: it cannot add MCP servers, and its skills run without privileged fields.")
+	}
+	return output(strings.Join(lines, "\n"))
 }
 
-func (p *PluginsCommand) mutate(args []string) tea.Cmd {
-	if len(args) < 2 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins [enable|disable|trust] ..."))
-	}
-	if msg := p.guardRunning(); msg != "" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
-	}
-
-	action := strings.ToLower(strings.TrimSpace(args[0]))
-	id := strings.TrimSpace(args[1])
-	if action == "trust" {
-		return p.trust(id, args[2:])
-	}
-	enable := action == "enable"
-	loaded, ok := p.app.Plugin(id)
-	if !ok {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + id))
-	}
-	report, err := p.app.SetPluginEnabled(context.Background(), id, enable)
+func pluginValidate(a *app.App, target string) tea.Cmd {
+	r, err := a.ValidatePlugin(target)
 	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin update failed: " + err.Error()))
+		return fail("Validation failed: " + err.Error())
 	}
-	p.table.Rebuild()
-
-	status := "disabled"
-	if enable {
-		status = "enabled"
+	lines := []string{
+		fmt.Sprintf("%s (%s) %s · %s", r.Manifest.Name, r.Manifest.ID, r.Manifest.Version, r.Scope),
+		fmt.Sprintf("%d skills · %d MCP · %s", r.SkillCount, r.MCPCount, r.Summary()),
 	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Plugin %s %s.", loaded.Manifest.ID, status)
-	if loaded.MCPCount() > 0 || len(report.MCP.Errors) > 0 {
-		sb.WriteString(" " + formatMCPReload(report.MCP))
+	for _, w := range r.Warnings {
+		lines = append(lines, "warning: "+w)
 	}
-	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
+	for _, e := range r.Errors {
+		lines = append(lines, "error: "+e)
+	}
+	return output(strings.Join(lines, "\n"))
 }
 
-func (p *PluginsCommand) trust(id string, args []string) tea.Cmd {
-	usage := "Usage: /plugins trust <plugin-id> <trusted|untrusted>"
-	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
+func mcpReloaded(p app.Plugin, r app.MCPReport) string {
+	if p.MCPCount() == 0 && len(r.Errors) == 0 {
+		return ""
 	}
-	var trusted bool
-	switch strings.ToLower(strings.TrimSpace(args[0])) {
-	case "trusted":
-		trusted = true
-	case "untrusted":
-	default:
-		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
-	}
-	loaded, ok := p.app.Plugin(id)
-	if !ok {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Unknown plugin: " + id))
-	}
-	report, err := p.app.SetPluginTrusted(context.Background(), id, trusted)
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin trust update failed: " + err.Error()))
-	}
-	p.table.Rebuild()
-
-	var sb strings.Builder
-	if trusted {
-		fmt.Fprintf(&sb, "Plugin %s trust set to trusted.", loaded.Manifest.ID)
-		if loaded.MCPCount() > 0 || len(report.MCP.Errors) > 0 {
-			sb.WriteString(" " + formatMCPReload(report.MCP))
-		}
-	} else {
-		fmt.Fprintf(&sb, "Plugin %s trust set to untrusted. MCP contributions are disabled and skill privileged fields are stripped.", loaded.Manifest.ID)
-	}
-	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
+	return fmt.Sprintf("MCP reloaded: %d connected, %d failed, %d tools.", r.Connected, len(r.Errors), r.Tools)
 }
 
-func (p *PluginsCommand) create(args []string) tea.Cmd {
-	usage := "Usage: /plugins create <plugin-id> [project|user|--project|--user]"
-	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
-	}
-	if msg := p.guardRunning(); msg != "" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
-	}
-	user, ok := parseScope(args[1:])
-	if !ok {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
-	}
-
-	created, _, err := p.app.CreatePlugin(context.Background(), args[0], user)
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin scaffold failed: " + err.Error()))
-	}
-	p.table.Rebuild()
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Plugin scaffold created: %s (%s).\n", created.ID, created.Scope)
-	fmt.Fprintf(&sb, "root: %s\n", created.RootDir)
-	fmt.Fprintf(&sb, "manifest: %s\n", created.ManifestPath)
-	sb.WriteString("next: edit plugin.json, add skills under skills/, then run /reload.")
-	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
-}
-
-func (p *PluginsCommand) validate(args []string) tea.Cmd {
-	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins validate <plugin-id|path>"))
-	}
-	report, err := p.app.ValidatePlugin(strings.TrimSpace(args[0]))
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin validation failed: " + err.Error()))
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Plugin Validation\n\n")
-	fmt.Fprintf(&sb, "id:        %s\n", report.Manifest.ID)
-	fmt.Fprintf(&sb, "name:      %s\n", report.Manifest.Name)
-	fmt.Fprintf(&sb, "version:   %s\n", report.Manifest.Version)
-	fmt.Fprintf(&sb, "scope:     %s\n", report.Scope)
-	fmt.Fprintf(&sb, "root:      %s\n", report.RootDir)
-	if report.State != nil {
-		status := "enabled"
-		if !report.State.Enabled {
-			status = "disabled"
-		}
-		fmt.Fprintf(&sb, "status:    %s\n", status)
-		fmt.Fprintf(&sb, "trust:     %s\n", report.State.Trust)
-	}
-	fmt.Fprintf(&sb, "skills:    %d\n", report.SkillCount)
-	fmt.Fprintf(&sb, "mcp:       %d\n", report.MCPCount)
-	fmt.Fprintf(&sb, "summary:   %s\n", report.Summary())
-	if len(report.Warnings) > 0 {
-		sb.WriteString("\nWarnings:\n")
-		for _, warning := range report.Warnings {
-			sb.WriteString("  - " + warning + "\n")
-		}
-	}
-	if len(report.Errors) > 0 {
-		sb.WriteString("\nErrors:\n")
-		for _, issue := range report.Errors {
-			sb.WriteString("  - " + issue + "\n")
-		}
-	}
-	return tui.SendCommandResult(tui.CommandStyle.Render(strings.TrimRight(sb.String(), "\n")))
-}
-
-func (p *PluginsCommand) install(args []string) tea.Cmd {
-	usage := "Usage: /plugins install <path> [project|user|--project|--user]"
-	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
-	}
-	if msg := p.guardRunning(); msg != "" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
-	}
-	user, ok := parseScope(args[1:])
-	if !ok {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(usage))
-	}
-
-	installed, _, err := p.app.InstallPlugin(context.Background(), args[0], user)
-	if err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin install failed: " + err.Error()))
-	}
-	p.table.Rebuild()
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Plugin installed: %s (%s).\n", installed.ID, installed.Scope)
-	fmt.Fprintf(&sb, "root: %s\n", installed.RootDir)
-	fmt.Fprintf(&sb, "manifest: %s", installed.ManifestPath)
-	return tui.SendCommandResult(tui.SystemMsgStyle.Render(sb.String()))
-}
-
-func (p *PluginsCommand) remove(args []string) tea.Cmd {
-	if len(args) < 1 {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Usage: /plugins remove <plugin-id>"))
-	}
-	if msg := p.guardRunning(); msg != "" {
-		return tui.SendCommandResult(tui.ErrorStyle.Render(msg))
-	}
-	id := strings.TrimSpace(args[0])
-	if _, err := p.app.RemovePlugin(context.Background(), id); err != nil {
-		return tui.SendCommandResult(tui.ErrorStyle.Render("Plugin remove failed: " + err.Error()))
-	}
-	p.table.Rebuild()
-	return tui.SendCommandResult(tui.SystemMsgStyle.Render("Plugin " + id + " removed."))
-}
-
-// guardRunning returns a non-empty error message while the agent runs,
-// blocking mutating plugin operations until the user aborts.
-func (p *PluginsCommand) guardRunning() string {
-	if p.app.Current().Status().Running {
-		return "agent is running; press Esc to abort first"
-	}
-	return ""
-}
-
-// parseScope reads an optional project/user scope argument; user reports
-// the user scope.
-func parseScope(args []string) (user, ok bool) {
+// scope reads an optional "user" or "project" argument: user reports the
+// former.
+func scope(args []string) (user, ok bool) {
 	if len(args) == 0 {
 		return false, true
 	}
-	switch strings.ToLower(strings.TrimSpace(args[0])) {
-	case "project", "--project":
+	switch strings.TrimPrefix(strings.ToLower(args[0]), "--") {
+	case "project":
 		return false, true
-	case "user", "--user":
+	case "user":
 		return true, true
 	}
 	return false, false
 }
 
-func formatMCPReload(r app.MCPReport) string {
-	return fmt.Sprintf("MCP runtime reloaded: %d connected, %d failed, %d tools.", r.Connected, len(r.Errors), r.Tools)
+// ParseArgs splits s into words, keeping quoted runs together.
+func ParseArgs(s string) []string {
+	var out []string
+	var cur strings.Builder
+	var quote rune
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range s {
+		switch {
+		case quote != 0 && r == quote:
+			flush()
+			quote = 0
+		case quote != 0:
+			cur.WriteRune(r)
+		case r == '"' || r == '\'':
+			flush()
+			quote = r
+		case r == ' ' || r == '\t':
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return out
 }

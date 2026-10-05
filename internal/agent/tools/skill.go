@@ -9,7 +9,6 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/schema"
-	agentcoretools "github.com/voocel/agentcore/tools"
 
 	"github.com/voocel/codebot/internal/agent/skill"
 )
@@ -21,7 +20,8 @@ type ForkExecutor func(ctx context.Context, args json.RawMessage) (agentcore.Res
 // NewSkillTool returns the skill tool, which lets the model invoke skills by
 // name: it loads the skill, expands its $ARGUMENTS and returns the prompt.
 // Skills with context: fork run in a subagent through fork. catalog returns
-// the current skill catalog; invoked sees every invocation before it runs.
+// the skills active in the conversation's workspace; invoked sees every
+// invocation before it runs.
 func NewSkillTool(catalog func() *skill.Catalog, sessionID string, fork ForkExecutor, invoked func(*skill.Invocation)) agentcore.Tool {
 	tool := agentcore.NewTool("skill", skillDescription,
 		schema.Object(
@@ -36,7 +36,6 @@ func NewSkillTool(catalog func() *skill.Catalog, sessionID string, fork ForkExec
 			inv, err := catalog().Invoke(ctx, skill.InvokeInput{
 				Name:      name,
 				Args:      a.Args,
-				Cwd:       agentcoretools.CwdFromContext(ctx),
 				SessionID: sessionID,
 				By:        skill.ByModel,
 			})

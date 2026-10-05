@@ -30,13 +30,15 @@ import (
 const kindContext = "context:"
 
 // workspace is what the model is told about the directory the conversation
-// works in, loaded when the conversation opens or moves and when the user
-// reloads.
-func (a *App) workspace(cwd string) []prompt.Part {
-	skills := skill.Listing(a.skillCatalog().List(cwd), a.usage.Scores(time.Now()))
+// works in, and the skills active there, loaded when the conversation opens
+// or moves and when the user reloads. The user and the model are offered
+// the skills the model is told of.
+func (a *App) workspace(cwd string) (*skill.Catalog, []prompt.Part) {
+	skills := a.skillCatalog().Active(cwd)
+	listing := skill.Listing(skills.List(), a.usage.Scores(time.Now()))
 	// Memory belongs to the project, not to the worktree the conversation
 	// may be in.
-	return []prompt.Part{prompt.Skills(skills), prompt.Project(cwd), prompt.Memory(a.cwd), prompt.Git(cwd)}
+	return skills, []prompt.Part{prompt.Skills(listing), prompt.Project(cwd), prompt.Memory(a.cwd), prompt.Git(cwd)}
 }
 
 // contextMessages returns the messages telling each part as it is that

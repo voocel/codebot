@@ -21,11 +21,8 @@ const (
 )
 
 type InvokeInput struct {
-	Name string
-	Args string
-	// Cwd is the workspace the skill runs in, which decides whether it is
-	// active.
-	Cwd       string
+	Name      string
+	Args      string
 	SessionID string
 	By        Invoker
 }
@@ -45,7 +42,7 @@ type Invocation struct {
 
 // Invoke renders the named skill for an invocation.
 func (c *Catalog) Invoke(ctx context.Context, in InvokeInput) (*Invocation, error) {
-	spec, ok := c.Get(in.Name, in.Cwd)
+	spec, ok := c.Get(in.Name)
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -63,7 +60,7 @@ func (c *Catalog) Invoke(ctx context.Context, in InvokeInput) (*Invocation, erro
 	inv := &Invocation{
 		Spec:   spec,
 		Prompt: prompt,
-		Fork:   spec.Context == "fork",
+		Fork:   spec.Forked(),
 		Agent:  strings.TrimSpace(spec.Agent),
 	}
 	if inv.Agent == "" {

@@ -122,7 +122,7 @@ func (c *Conversation) moveLocked(dir string) {
 	if c.snapshots != nil {
 		c.snapshots.Rebind(config.SnapshotDir(dir), dir, config.UndoStatePath(dir, c.id))
 	}
-	c.workspace = c.app.workspace(dir)
+	c.skills, c.workspace = c.app.workspace(dir)
 	// Tools follow the cwd through the run's context at once; the model is
 	// told of the move as the next run starts.
 	c.configureLocked()

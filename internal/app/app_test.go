@@ -802,24 +802,38 @@ func TestWorktreeSkillsFollowTheWorkspace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := e.app.ReloadPlugins(context.Background()); err != nil {
+	// The marker is in the workspace, but not in git: a worktree has none.
+	if err := os.WriteFile(filepath.Join(e.cwd, "marker.txt"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	reload := func() {
+		if _, err := e.app.ReloadPlugins(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reload()
 	c := e.app.Current()
 	active := func() bool {
 		return slices.ContainsFunc(c.Skills(), func(s Skill) bool { return s.Name == "marked" })
 	}
-	if active() {
-		t.Fatal("skill is active without its marker")
+	if !active() {
+		t.Fatal("skill is not active in the workspace holding its marker")
 	}
 
 	dir, err := c.EnterWorktree("try")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if active() {
+		t.Fatal("skill is active in a worktree without its marker")
+	}
+
+	// What is active is looked up as the conversation moves or reloads, as
+	// what the model is told is.
 	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	reload()
 	if !active() {
 		t.Fatal("skill is not active in the worktree holding its marker")
 	}

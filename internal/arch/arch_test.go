@@ -54,6 +54,12 @@ var allowed = map[string][]string{
 // is constrained.
 var external = map[string][]string{
 	"internal/session": {"github.com/voocel/agentcore", "github.com/voocel/litellm"},
+	// What the TUI shows of a conversation renders to plain strings, apart
+	// from the event loop: it is the same live, restored and left on exit.
+	"internal/ui/tui/transcript": {"github.com/voocel/agentcore", "github.com/voocel/litellm", "charm.land/lipgloss/v2", "github.com/charmbracelet/x/ansi"},
+	"internal/ui/tui/markdown":   {"charm.land/lipgloss/v2", "github.com/charmbracelet/x/ansi", "github.com/yuin/goldmark"},
+	"internal/ui/tui/syntax":     {"github.com/alecthomas/chroma/v2"},
+	"internal/ui/tui/theme":      {"charm.land/lipgloss/v2"},
 }
 
 // TestDependencyRules reads the imports from the sources rather than from go
@@ -163,6 +169,8 @@ func TestCheckCatchesViolations(t *testing.T) {
 		{"internal/extension/plugin", module + "internal/ui/tui"},
 		{"internal/session", module + "internal/infra/config"},
 		{"internal/session", "github.com/charmbracelet/bubbletea"},
+		{"internal/ui/tui/transcript", "charm.land/bubbletea/v2"},
+		{"internal/ui/tui/markdown", "charm.land/bubbles/v2/viewport"},
 		{"internal/interact", module + "internal/agent/permission"},
 		{"internal/lib/frontmatter", module + "internal/infra/config"},
 	}
@@ -172,7 +180,8 @@ func TestCheckCatchesViolations(t *testing.T) {
 		}
 	}
 	good := [][2]string{
-		{"internal/ui/tui/commands", module + "internal/ui/tui"},
+		{"internal/ui/tui", module + "internal/ui/tui/commands"},
+		{"internal/ui/tui/transcript", "github.com/voocel/agentcore/subagent"},
 		{"internal/ui/tui", module + "internal/ui/tui/markdown"},
 		{"internal/ui/acp", module + "internal/app"},
 		{"internal/extension/mcp", module + "internal/agent/permission"},

@@ -33,7 +33,7 @@ func (c *Conversation) buildTools() []agentcore.Tool {
 	c.subagents = c.buildSubagents(out, ws)
 	out = append(out,
 		c.subagents,
-		tools.NewSkillTool(a.skillCatalog, c.id, c.subagents.Run, c.skillInvoked),
+		tools.NewSkillTool(c.activeSkills, c.id, c.subagents.Run, c.skillInvoked),
 		// Main agent only, so after the sub-agents' pool.
 		tools.NewEnterWorktree(c.EnterWorktree),
 		tools.NewExitWorktree(func(discard bool) (string, error) {

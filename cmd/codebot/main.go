@@ -18,7 +18,7 @@ import (
 	"github.com/voocel/codebot/internal/ui/acp"
 	"github.com/voocel/codebot/internal/ui/print"
 	"github.com/voocel/codebot/internal/ui/tui"
-	"github.com/voocel/codebot/internal/ui/tui/commands"
+	"github.com/voocel/codebot/internal/ui/tui/onboarding"
 )
 
 // Set via ldflags by GoReleaser. Defaults are fallbacks for `go build` /
@@ -85,7 +85,7 @@ func main() {
 	// ~/.codebot/settings.json, then the normal boot path picks it up.
 	if interactive {
 		if *setupFlag || config.NeedsSetup(cwd) {
-			result, err := tui.RunOnboarding()
+			result, err := onboarding.Run()
 			if err != nil {
 				fail(err, "error")
 			}
@@ -132,7 +132,7 @@ func run(opts app.Options, printMode, acpMode, jsonMode bool) error {
 		opts.UI, opts.Interactive, opts.CacheTTL = screen, true, "1h"
 		a := boot(opts)
 		defer a.Close()
-		return tui.Run(a, screen, commands.New(a, version), version)
+		return tui.Run(a, screen, version)
 	}
 }
 

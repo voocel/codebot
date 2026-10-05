@@ -365,7 +365,7 @@ func (a *App) ReloadPlugins(ctx context.Context) (ReloadReport, error) {
 	servers := a.mcpServers
 	a.mu.Unlock()
 	report := ReloadReport{
-		Skills: len(a.skillCatalog().List("")),
+		Skills: len(a.skillCatalog().List()),
 		MCP:    a.mcpReport(len(servers), a.mcp.Reconfigure(ctx, servers)),
 	}
 	if c := a.Current(); c != nil {

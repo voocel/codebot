@@ -50,6 +50,7 @@ type Conversation struct {
 	worktree  *worktreeState
 	model     modelChoice
 	workspace []prompt.Part
+	skills    *skill.Catalog   // those active in the workspace
 	tools     []agentcore.Tool // built for the current model
 	subagents agentcore.Tool   // the subagent tool among them, for forked skills
 	mcpTools  []agentcore.Tool // every MCP tool the conversation had, see growTools
@@ -88,7 +89,7 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 		c.validation = hooks.NewValidation(c.hooks)
 	}
 	config.EnsureMemoryDir(a.cwd)
-	c.workspace = a.workspace(a.cwd)
+	c.skills, c.workspace = a.workspace(a.cwd)
 	c.tools = c.buildTools()
 	c.mcpTools = a.offered.Load().tools
 
@@ -272,7 +273,13 @@ func (c *Conversation) Status() Status {
 func (c *Conversation) GitBranch() string { return worktree.CurrentBranch(c.Cwd()) }
 
 // Skills returns the skills active in the conversation's workspace.
-func (c *Conversation) Skills() []Skill { return c.app.skillCatalog().List(c.Cwd()) }
+func (c *Conversation) Skills() []Skill { return c.activeSkills().List() }
+
+func (c *Conversation) activeSkills() *skill.Catalog {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.skills
+}
 
 // Tasks returns the background task runtime.
 func (c *Conversation) Tasks() *task.Runtime { return c.tasks }
@@ -323,7 +330,7 @@ func (c *Conversation) mcpChanged() {
 func (c *Conversation) Reload() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.workspace = c.app.workspace(c.cwd)
+	c.skills, c.workspace = c.app.workspace(c.cwd)
 	c.configureLocked()
 }
 
@@ -331,10 +338,9 @@ func (c *Conversation) Reload() {
 // submitted as the user's input; a forked one runs in a sub-agent whose output
 // is returned.
 func (c *Conversation) InvokeSkill(ctx context.Context, name, args string) (string, error) {
-	inv, err := c.app.skillCatalog().Invoke(ctx, skill.InvokeInput{
+	inv, err := c.activeSkills().Invoke(ctx, skill.InvokeInput{
 		Name:      name,
 		Args:      args,
-		Cwd:       c.Cwd(),
 		SessionID: c.id,
 		By:        skill.ByUser,
 	})
@@ -349,10 +355,12 @@ func (c *Conversation) InvokeSkill(ctx context.Context, name, args string) (stri
 		}
 		return res.Text(), nil
 	}
-	msgs, err := c.promptSubmit(ctx, []litellm.Block{litellm.Text(inv.Prompt)})
+	line := strings.TrimSpace("/" + name + " " + args)
+	msgs, err := c.promptSubmit(ctx, []litellm.Block{litellm.Text(line), litellm.Text(inv.Prompt)})
 	if err != nil {
 		return "", err
 	}
+	msgs[len(msgs)-1].Kind = kindSkill
 	// Granted before the prompt is posted, so the run it lands in has the
 	// skill's tools.
 	c.skillInvoked(inv)

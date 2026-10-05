@@ -1,314 +1,409 @@
 package tui
 
 import (
-	"regexp"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/task"
 	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/litellmtest"
 
-	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
+	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-func stripANSI(s string) string {
-	return ansiPattern.ReplaceAllString(s, "")
+// harness drives the TUI's model over an App whose model replies as
+// scripted, the way the program would.
+type harness struct {
+	t    *testing.T
+	app  *app.App
+	m    *Model
+	msgs chan tea.Msg
 }
 
-func mustModel(t *testing.T, tm tea.Model) *Model {
+func boot(t *testing.T, replies ...litellmtest.Reply) *harness {
 	t.Helper()
-	model, ok := tm.(*Model)
-	if !ok {
-		t.Fatalf("expected *Model, got %T", tm)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEBOT_THEME", "dark")
+	cwd := t.TempDir()
+	settings, _ := json.Marshal(map[string]any{
+		"provider":  "anthropic",
+		"model":     "claude-sonnet-4-5",
+		"snapshot":  false,
+		"providers": map[string]any{"anthropic": map[string]any{"api_key": "test", "models": []string{"claude-sonnet-4-5"}}},
+	})
+	if err := os.MkdirAll(filepath.Join(home, ".codebot"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	return model
+	if err := os.WriteFile(filepath.Join(home, ".codebot", "settings.json"), settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "README.md"), []byte("# demo\n\nA demo project.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := litellmtest.New(replies...)
+	a, err := app.Boot(app.Options{
+		Cwd:         cwd,
+		Mode:        interact.ModeBalanced,
+		UI:          &UI{},
+		Interactive: true,
+		NewModel: func(spec provider.ModelSpec) (agentcore.Model, error) {
+			client, err := litellm.New(fake)
+			if err != nil {
+				return agentcore.Model{}, err
+			}
+			return agentcore.Model{Client: client, Request: litellm.Request{Model: spec.Model}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+
+	h := &harness{t: t, app: a, m: newModel(a, "test"), msgs: make(chan tea.Msg, 256)}
+	unsubscribe := a.Subscribe(func(ev app.Event) {
+		if msg := message(a, ev); msg != nil {
+			h.msgs <- msg
+		}
+	})
+	t.Cleanup(unsubscribe)
+	h.feed(tea.WindowSizeMsg{Width: 80, Height: 30})
+	return h
 }
 
-func TestViewShowsLiveThinkingWhenStreaming(t *testing.T) {
-	m := testModel("test-model")
-	m.Ready = true
-	m.Width = 80
-	m.IsStream = true
-	m.Streaming.WriteString("assistant reply")
-	m.Thinking.WriteString("thinking trace")
+// feed gives the model msg and carries out the commands it returns.
+func (h *harness) feed(msg tea.Msg) {
+	h.do(h.m.update(msg))
+}
 
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "thinking trace") {
-		t.Fatalf("expected view to contain thinking text, got: %q", view)
+// do carries out cmd. What it returns at once goes to the model; what takes
+// longer comes later with the App's messages.
+func (h *harness) do(cmd tea.Cmd) {
+	if cmd == nil {
+		return
 	}
-	if !strings.Contains(view, "assistant reply") {
-		t.Fatalf("expected view to contain assistant streaming text, got: %q", view)
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		h.take(msg)
+	case <-time.After(100 * time.Millisecond):
+		go func() { h.msgs <- <-done }()
 	}
 }
 
-func TestRenderCompletionsShowsCommandPalette(t *testing.T) {
-	m := testModel("test-model")
-	m.commands = fakeCommands{complete: func(string) []CompletionItem {
-		return []CompletionItem{{
-			Name:        "model",
-			Description: "Switch current model",
-			Kind:        "builtin",
-			Aliases:     []string{"m"},
-		}}
-	}}
-	m.Ready = true
-	m.Width = 100
-	m.Input.SetValue("/mo")
-	m.updateCompletions()
+// take handles what a command returned, as the program would. The
+// animation's ticks are left out.
+func (h *harness) take(msg tea.Msg) {
+	switch msg.(type) {
+	case nil, tickMsg:
+		return
+	}
+	// A batch or a sequence, which the program carries out.
+	if v := reflect.ValueOf(msg); v.Kind() == reflect.Slice && v.Type().Elem() == reflect.TypeFor[tea.Cmd]() {
+		for i := range v.Len() {
+			h.do(v.Index(i).Interface().(tea.Cmd))
+		}
+		return
+	}
+	h.feed(msg)
+}
 
-	view := m.renderCompletions()
-	for _, want := range []string{"/model", "/m", "Switch current model", "Tab complete"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("expected command palette to contain %q, got: %q", want, view)
+func (h *harness) press(keys ...string) {
+	for _, k := range keys {
+		h.feed(keyPress(k))
+	}
+}
+
+func keyPress(k string) tea.KeyPressMsg {
+	switch k {
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "esc":
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "ctrl+c":
+		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+	}
+	r := []rune(k)[0]
+	return tea.KeyPressMsg{Code: r, Text: k}
+}
+
+// write types text into the editor.
+func (h *harness) write(text string) {
+	for _, r := range text {
+		h.press(string(r))
+	}
+}
+
+// settle feeds the App's messages to the model until the conversation goes
+// idle.
+func (h *harness) settle() {
+	h.t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-h.msgs:
+			h.take(msg)
+			if _, ok := msg.(idleMsg); ok {
+				return
+			}
+		case <-timeout:
+			h.t.Fatal("the conversation did not go idle")
 		}
 	}
 }
 
-func TestEnterOnCommandCompletion(t *testing.T) {
-	cases := []struct {
-		name       string
-		item       CompletionItem
-		wantInput  string
-		wantHasCmd bool
+// await feeds the App's messages to the model until one is like want.
+func await[T tea.Msg](h *harness) {
+	h.t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-h.msgs:
+			h.take(msg)
+			if _, ok := msg.(T); ok {
+				return
+			}
+		case <-timeout:
+			h.t.Fatalf("no %T came", *new(T))
+		}
+	}
+}
+
+// screen renders the view without styles.
+func (h *harness) screen() string {
+	return ansi.Strip(h.m.View().Content)
+}
+
+func (h *harness) shows(want ...string) {
+	h.t.Helper()
+	s := h.screen()
+	for _, w := range want {
+		if !strings.Contains(s, w) {
+			h.t.Errorf("the screen does not show %q:\n%s", w, s)
+		}
+	}
+}
+
+func use(id, tool string, args any) litellmtest.Reply {
+	raw, _ := json.Marshal(args)
+	return litellmtest.Respond(litellm.ToolUseBlock{ID: id, Name: tool, Arguments: string(raw)})
+}
+
+func TestWelcome(t *testing.T) {
+	h := boot(t)
+	h.shows("codebot test", "anthropic/claude-sonnet-4-5", "/ commands", "balanced")
+	v := h.m.View()
+	if v.Cursor == nil {
+		t.Fatal("the editor has no cursor")
+	}
+	if lines := strings.Count(v.Content, "\n") + 1; lines != 30 {
+		t.Errorf("the view has %d lines, want 30", lines)
+	}
+}
+
+func TestConversation(t *testing.T) {
+	h := boot(t,
+		use("r1", "read", map[string]any{"file_path": "README.md"}),
+		litellmtest.Respond(
+			litellm.ReasoningBlock{Text: "The readme is short."},
+			litellm.Text("It is a **demo** project:\n\n- one file\n- one line"),
+		),
+	)
+	h.write("what is this?")
+	h.press("enter")
+	h.settle()
+
+	h.shows("❯ what is this?", "Read", "README.md", "Thought", "● It is a demo project:", "• one file", "Worked for")
+	if h.m.run.active || len(h.m.pending) > 0 {
+		t.Errorf("after the run: active %v, pending %v", h.m.run.active, h.m.pending)
+	}
+	if !h.m.editor.Empty() {
+		t.Error("the editor kept the input")
+	}
+	t.Log("\n" + h.screen())
+}
+
+func TestStopRestoresQueuedInput(t *testing.T) {
+	h := boot(t, litellmtest.Reply{Blocks: []litellm.Block{litellm.Text("Looking")}, Stall: true})
+	h.write("first")
+	h.press("enter")
+	await[runStartedMsg](h)
+
+	h.write("second")
+	h.press("enter")
+	h.shows("↳ second", "esc to stop")
+
+	h.press("esc")
+	h.settle()
+	if h.m.editor.Empty() || len(h.m.pending) > 0 {
+		t.Errorf("the queued input did not go back to the editor: pending %v", h.m.pending)
+	}
+	h.shows("Interrupted", "❯ second")
+}
+
+func TestPermissionPanel(t *testing.T) {
+	h := boot(t)
+	reply := make(chan interact.Choice, 1)
+	h.feed(approveMsg{interact.Approval{Tool: "bash", Summary: "rm -rf build"}, reply})
+	h.shows("Allow bash?", "rm -rf build", "Yes")
+	if h.m.View().Cursor != nil {
+		t.Error("the editor's cursor shows under a panel")
+	}
+	h.press("y")
+	select {
+	case c := <-reply:
+		if c != interact.AllowOnce {
+			t.Errorf("answered %v", c)
+		}
+	default:
+		t.Fatal("no answer")
+	}
+	if h.m.top() != nil {
+		t.Error("the panel stayed")
+	}
+
+	// A request withdrawn takes its panel away.
+	other := make(chan<- interact.Choice, 1)
+	h.feed(approveMsg{interact.Approval{Tool: "write"}, other})
+	h.feed(withdrawMsg{other})
+	if h.m.top() != nil {
+		t.Error("the withdrawn panel stayed")
+	}
+}
+
+func TestCommandMenu(t *testing.T) {
+	h := boot(t)
+	h.write("/he")
+	h.shows("/help")
+	h.press("enter")
+	if h.m.top() == nil {
+		t.Fatal("/help showed no panel")
+	}
+	h.shows("Help", "commands")
+	h.press("esc")
+	if h.m.top() != nil {
+		t.Error("esc left the panel")
+	}
+	h.shows("❯ /help")
+}
+
+func TestShellLine(t *testing.T) {
+	h := boot(t)
+	h.write("!echo hi")
+	h.press("enter")
+	h.shows("! echo hi", "hi")
+	if len(h.m.pending) > 0 {
+		t.Error("a shell line went to the agent")
+	}
+}
+
+func TestMessagesForEvents(t *testing.T) {
+	h := boot(t)
+	for _, c := range []struct {
+		ev   app.Event
+		want tea.Msg
 	}{
-		{
-			name: "arg command fills input",
-			item: CompletionItem{
-				Name:        "model",
-				Description: "Switch the model",
-				AutoExecute: false,
-			},
-			wantInput:  "/model ",
-			wantHasCmd: false,
-		},
-		{
-			name: "no-arg command executes immediately",
-			item: CompletionItem{
-				Name:        "help",
-				Description: "Show help",
-				AutoExecute: true,
-			},
-			wantInput:  "",
-			wantHasCmd: true,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			m := testModel("test-model")
-			m.commands = fakeCommands{}
-			m.compItems = []CompletionItem{tc.item}
-			m.compActive = true
-			m.compIdx = 0
-
-			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-			got := mustModel(t, next)
-			if (cmd != nil) != tc.wantHasCmd {
-				t.Fatalf("cmd presence = %v, want %v", cmd != nil, tc.wantHasCmd)
-			}
-			if got.Input.Value() != tc.wantInput {
-				t.Fatalf("input = %q, want %q", got.Input.Value(), tc.wantInput)
-			}
-		})
+		{app.Event{Kind: app.ModeChanged, Mode: interact.ModeTrust}, modeMsg{interact.ModeTrust}},
+		{app.Event{Kind: app.SessionEvent, Session: session.Event{Kind: session.RunStarted}}, runStartedMsg{}},
+		{app.Event{Kind: app.SessionEvent, Session: session.Event{Kind: session.Idle}}, idleMsg{}},
+	} {
+		if got := message(h.app, c.ev); got != c.want {
+			t.Errorf("%v: got %#v, want %#v", c.ev.Kind, got, c.want)
+		}
 	}
 }
 
-func TestCommandPaletteReplacesBottomContextArea(t *testing.T) {
-	m := testModel("anthropic/claude-sonnet-4.6")
-	m.Ready = true
-	m.Width = 100
-	m.Cwd = "/tmp/project"
-	m.Input.SetValue("/")
-	m.compItems = []CompletionItem{{
-		Name:        "help",
-		Description: "Show help",
-		Kind:        "builtin",
-		AutoExecute: true,
-	}}
-	m.compActive = true
+func TestStopAShellLine(t *testing.T) {
+	h := boot(t)
+	h.write("!sleep 30")
+	h.press("enter")
+	h.shows("Running sleep 30", "esc to stop")
 
-	view := m.View()
-	if strings.Contains(view, "project · anthropic/claude-sonnet-4.6") {
-		t.Fatalf("expected context bar to be hidden while palette is active, got: %q", view)
+	// Another while it runs waits in the editor.
+	h.write("!echo again")
+	h.press("enter")
+	if h.m.editor.Empty() {
+		t.Error("the second line was dropped")
 	}
-	if strings.Contains(view, "╰────────────────") && strings.Contains(view, "project · anthropic/claude-sonnet-4.6") {
-		t.Fatalf("expected palette to own the bottom area, got: %q", view)
+	h.press("ctrl+c") // clears the input
+	h.press("esc")
+	await[shellDoneMsg](h)
+	h.shows("Stopped")
+}
+
+func TestCompactionOutsideARun(t *testing.T) {
+	h := boot(t)
+	h.feed(agentMsg{agentcore.CompactionStart{}})
+	s := h.screen()
+	if !strings.Contains(s, "Compacting the conversation · 0s") || strings.Contains(s, "esc to stop") {
+		t.Errorf("status:\n%s", s)
 	}
 }
 
-// The status carries what the conversation changed: its model, and where it
-// works, which moves into and out of a worktree.
-func TestStatusChangeUpdatesModelAndCwd(t *testing.T) {
-	m := testModel("gpt-4.1")
-	m.Status.Provider, m.Cwd = "openai", "/tmp/project"
-
-	nextModel, _ := m.Update(StatusChangedMsg{Status: app.Status{
-		Status: session.Status{Provider: "openrouter", Model: "openai/gpt-5", Window: 400_000},
-		Cwd:    "/tmp/project/.codebot/worktrees/fix",
-	}})
-	next := mustModel(t, nextModel)
-	if st := next.Status; st.Provider != "openrouter" || st.Model != "openai/gpt-5" || st.Window != 400_000 {
-		t.Fatalf("provider, model, window = %q, %q, %d", st.Provider, st.Model, st.Window)
+func TestShortScreen(t *testing.T) {
+	h := boot(t)
+	h.m.pending = []pending{{id: 1, text: "a"}, {id: 2, text: "b"}, {id: 3, text: "c"}}
+	h.write(strings.Repeat("line\n", 9))
+	h.feed(tea.WindowSizeMsg{Width: 60, Height: 10})
+	v := h.m.View()
+	if n := strings.Count(v.Content, "\n") + 1; n != 10 {
+		t.Errorf("%d lines on a 10-line screen", n)
 	}
-	if next.Cwd != "/tmp/project/.codebot/worktrees/fix" {
-		t.Fatalf("cwd = %q", next.Cwd)
+	if v.Cursor == nil || v.Cursor.Y < 0 || v.Cursor.Y >= 10 {
+		t.Fatalf("cursor at %+v", v.Cursor)
+	}
+	if row := strings.Split(ansi.Strip(v.Content), "\n")[v.Cursor.Y]; !strings.HasPrefix(row, "  ") && !strings.HasPrefix(row, "❯") {
+		t.Errorf("the cursor is on %q, not the editor", row)
 	}
 }
 
-func TestFormatScrollbackBlock(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name    string
-		content string
-		inline  bool
-		want    string
-	}{
-		{name: "block adds leading blank line", content: "  ok", inline: false, want: "\n  ok"},
-		{name: "inline stays flush", content: "  ok", inline: true, want: "  ok"},
-		{name: "block strips trailing newlines", content: "hello\n\n", inline: false, want: "\nhello"},
-		{name: "inline strips trailing newlines", content: "hello\n\n", inline: true, want: "hello"},
+func TestPendingInputsJoinInAnyOrder(t *testing.T) {
+	h := boot(t)
+	h.m.pending = []pending{{id: 1, text: "first", posted: true}, {id: 2, text: "second", posted: true}}
+	h.feed(agentMsg{agentcore.MessageEnd{Message: agentcore.UserText("second")}})
+	if len(h.m.pending) != 1 || h.m.pending[0].text != "first" {
+		t.Errorf("pending = %v", h.m.pending)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := formatScrollbackBlock(tc.content, tc.inline); got != tc.want {
-				t.Fatalf("formatScrollbackBlock(%q, %v) = %q, want %q", tc.content, tc.inline, got, tc.want)
-			}
-		})
+	skill := agentcore.User(litellm.Text("/review"), litellm.Text("the skill's prompt"))
+	skill.Kind = "skill"
+	h.feed(agentMsg{agentcore.MessageEnd{Message: skill}})
+	if len(h.m.pending) != 1 {
+		t.Errorf("a skill's line took an input's place: %v", h.m.pending)
 	}
 }
 
-// An overlay takes the input's place; a dialog, which takes the keys first,
-// shows over it.
-func TestOverlayReplacesInputAndDialogsShowOverIt(t *testing.T) {
-	m := testModel("anthropic/claude-sonnet-4.6")
-	m.commands = fakeCommands{overlay: &OverlayState{
-		View: func(width, height int) string { return "overlay-body" },
-	}}
-	m.Ready = true
-	m.Width = 100
-	m.Input.SetValue("/model")
-
-	view := m.View()
-	if !strings.Contains(view, "overlay-body") || strings.Contains(view, "/model") {
-		t.Fatalf("expected the overlay in place of the input, got: %q", view)
-	}
-
-	m.Update(PermissionMsg{Approval: interact.Approval{Tool: "bash", Summary: "make deploy"}, RespCh: make(chan interact.Choice, 1)})
-	view = m.View()
-	if !strings.Contains(view, "make deploy") || strings.Contains(view, "overlay-body") {
-		t.Fatalf("expected the dialog over the overlay, got: %q", view)
+func TestStatusIsSetOffFromTheConversation(t *testing.T) {
+	h := boot(t)
+	h.m.t.Append(transcript.Print(strings.Repeat("output\n", 40)))
+	h.write("!sleep 30")
+	h.press("enter")
+	defer func() {
+		h.press("esc")
+		await[shellDoneMsg](h)
+	}()
+	lines := strings.Split(h.screen(), "\n")
+	i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "Running sleep 30") })
+	if i < 2 || strings.TrimSpace(lines[i-1]) != "" || strings.TrimSpace(lines[i-2]) == "" {
+		t.Errorf("no blank line above the status:\n%s", h.screen())
 	}
 }
-
-func useImmediateHideCompletedTodosTick(t *testing.T) {
-	t.Helper()
-	orig := hideCompletedTodosTick
-	hideCompletedTodosTick = func(version uint64) tea.Cmd {
-		return func() tea.Msg { return hideCompletedTodosMsg{Version: version} }
-	}
-	t.Cleanup(func() { hideCompletedTodosTick = orig })
-}
-
-func todoEvents(id, args string, isError bool) (agentcore.Event, agentcore.Event) {
-	c := call(id, todo.ToolName, args)
-	res := agentcore.TextResult("ok")
-	res.IsError = isError
-	return agentcore.ToolStart{Call: c}, agentcore.ToolEnd{Call: c, Result: res}
-}
-
-// The list follows todo_write calls the tool accepted; a rejected call leaves
-// the previous list on screen.
-func TestTodoWriteEventsDriveTheList(t *testing.T) {
-	m := testModel("test-model")
-	start, end := todoEvents("1", `{"todos":[{"content":"read","status":"in_progress"}]}`, false)
-	m.HandleAgentEvent(start)
-	m.HandleAgentEvent(end)
-	if len(m.Todos) != 1 || m.Todos[0].Content != "read" {
-		t.Fatalf("Todos = %+v, want the accepted list", m.Todos)
-	}
-
-	start, end = todoEvents("2", `{"todos":[{"content":"x","status":"in_progress"},{"content":"y","status":"in_progress"}]}`, true)
-	m.HandleAgentEvent(start)
-	m.HandleAgentEvent(end)
-	if len(m.Todos) != 1 || m.Todos[0].Content != "read" {
-		t.Fatalf("Todos = %+v, rejected call must not replace the list", m.Todos)
-	}
-}
-
-func TestCompletedTodosHideAfterDelay(t *testing.T) {
-	useImmediateHideCompletedTodosTick(t)
-
-	m := testModel("test-model")
-	cmd := m.setTodos([]todo.Item{{Content: "a", Status: todo.Completed}})
-	if cmd == nil {
-		t.Fatal("expected a hide command for a fully completed list")
-	}
-	nextModel, _ := m.Update(cmd())
-	if next := mustModel(t, nextModel); next.Todos != nil {
-		t.Fatalf("expected the completed list to be hidden, got %+v", next.Todos)
-	}
-}
-
-func TestStaleHideDoesNotClearNewOpenTodos(t *testing.T) {
-	useImmediateHideCompletedTodosTick(t)
-
-	m := testModel("test-model")
-	staleHide := m.setTodos([]todo.Item{{Content: "a", Status: todo.Completed}})()
-	m.setTodos([]todo.Item{{Content: "b", Status: todo.Pending}})
-
-	nextModel, _ := m.Update(staleHide)
-	if next := mustModel(t, nextModel); len(next.Todos) != 1 || next.Todos[0].Content != "b" {
-		t.Fatalf("stale hide must be ignored, got %+v", next.Todos)
-	}
-}
-
-func TestRestoreSchedulesHideForCompletedTodos(t *testing.T) {
-	useImmediateHideCompletedTodosTick(t)
-
-	m := testModel("test-model")
-	args := `{"todos":[{"content":"a","status":"completed"},{"content":"b","status":"completed"}]}`
-	m.restored = []agentcore.Message{
-		{Role: litellm.RoleAssistant, Blocks: []litellm.Block{litellm.ToolUseBlock{ID: "t1", Name: todo.ToolName, Arguments: args}}},
-		agentcore.ToolResult("t1", agentcore.TextResult("ok")),
-	}
-	_, cmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	if len(m.Todos) != 2 || cmd == nil {
-		t.Fatalf("todos = %+v, want the restored list with its hide scheduled", m.Todos)
-	}
-}
-
-// testModel is a Model with no conversation open, showing modelName.
-func testModel(modelName string) *Model {
-	m := newModel()
-	m.commands = fakeCommands{}
-	m.agents, m.tasks = app.NewAgentHub(), task.NewRuntime("", nil)
-	m.history = &inputHistory{}
-	m.Status.Model = modelName
-	return m
-}
-
-// fakeCommands offers fixed completions and overlay.
-type fakeCommands struct {
-	complete func(prefix string) []CompletionItem
-	overlay  *OverlayState
-}
-
-func (fakeCommands) Run(string) tea.Cmd { return nil }
-
-func (f fakeCommands) Complete(prefix string) []CompletionItem {
-	if f.complete == nil {
-		return nil
-	}
-	return f.complete(prefix)
-}
-
-func (f fakeCommands) Overlay() *OverlayState { return f.overlay }

@@ -1,0 +1,230 @@
+package transcript
+
+import (
+	"strconv"
+	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/voocel/codebot/internal/ui/tui/markdown"
+	"github.com/voocel/codebot/internal/ui/tui/theme"
+)
+
+// Prompt is what the user sent: a message to the agent, a slash command or a
+// "!" shell line, shown on a band.
+type Prompt struct {
+	rev
+	still
+	Text    string
+	Images  int
+	Kind    PromptKind
+	toggled bool
+}
+
+// PromptKind says what a prompt went to.
+type PromptKind int
+
+const (
+	ToAgent PromptKind = iota
+	ToCommand
+	ToShell
+)
+
+// promptLines is how many lines of a long prompt show collapsed.
+const promptLines = 12
+
+func (c *Prompt) Toggle() { c.toggled = !c.toggled; c.bump() }
+
+func (c *Prompt) Render(p Params) []string {
+	band := lipgloss.NewStyle().Background(theme.Surface)
+	text := band.Foreground(theme.Fg)
+	mark, markStyle := "❯", band.Foreground(theme.Accent).Bold(true)
+	switch c.Kind {
+	case ToCommand:
+		markStyle = band.Foreground(theme.Muted).Bold(true)
+	case ToShell:
+		mark, markStyle = "!", band.Foreground(theme.Shell).Bold(true)
+	}
+
+	w := max(p.Width-2, 1)
+	var lines []string
+	for _, l := range strings.Split(strings.ReplaceAll(c.Text, "\t", "    "), "\n") {
+		if ansi.StringWidth(l) > w {
+			l = ansi.Wrap(l, w, "")
+		}
+		lines = append(lines, strings.Split(l, "\n")...)
+	}
+	hidden := 0
+	if p.Expanded == c.toggled && len(lines) > promptLines {
+		hidden = len(lines) - promptLines + 1
+		lines = lines[:promptLines-1]
+	}
+
+	out := make([]string, 0, len(lines)+2)
+	for i, l := range lines {
+		head := "  "
+		if i == 0 {
+			head = mark + " "
+		}
+		out = append(out, markStyle.Render(head)+text.Render(l)+band.Render(strings.Repeat(" ", max(w-ansi.StringWidth(l), 0))))
+	}
+	var notes []string
+	if hidden > 0 {
+		notes = append(notes, "… +"+strconv.Itoa(hidden)+" lines")
+	}
+	for i := range c.Images {
+		notes = append(notes, "[image "+strconv.Itoa(i+1)+"]")
+	}
+	if len(notes) > 0 {
+		note := fit(strings.Join(notes, " "), w)
+		out = append(out, band.Render("  ")+band.Foreground(theme.Muted).Render(note)+band.Render(strings.Repeat(" ", max(w-ansi.StringWidth(note), 0))))
+	}
+	return out
+}
+
+// Assistant is a reply: what the model thought, then what it said.
+type Assistant struct {
+	rev
+	still
+	thinking  strings.Builder
+	text      strings.Builder
+	streaming bool
+	toggled   bool
+
+	// The rendered prefix of a streaming reply, up to the last break between
+	// blocks, which later text does not change.
+	stable      int
+	stableWidth int
+	stableLines []string
+}
+
+func (c *Assistant) Toggle() { c.toggled = !c.toggled; c.bump() }
+
+func (c *Assistant) empty() bool {
+	return strings.TrimSpace(c.text.String()) == "" && strings.TrimSpace(c.thinking.String()) == ""
+}
+
+func (c *Assistant) Render(p Params) []string {
+	var out []string
+	if thinking := strings.TrimSpace(c.thinking.String()); thinking != "" {
+		out = append(out, c.renderThinking(thinking, p)...)
+	}
+	text := strings.TrimSpace(c.text.String())
+	if text == "" {
+		return out
+	}
+	if len(out) > 0 {
+		out = append(out, "")
+	}
+	head := lipgloss.NewStyle().Foreground(theme.Strong).Bold(true).Render(bullet) + " "
+	return append(out, indent(c.renderText(text, p.Width-2), head)...)
+}
+
+func (c *Assistant) renderThinking(thinking string, p Params) []string {
+	head := theme.SubtleText.Render("✻") + " "
+	style := lipgloss.NewStyle().Foreground(theme.Subtle).Italic(true)
+	if p.Expanded != c.toggled {
+		return indent(markdown.Wrap(thinking, style, p.Width-2), head)
+	}
+	// Collapsed: the latest line while it streams, the first once done.
+	line := firstLine(thinking)
+	if c.streaming && strings.TrimSpace(c.text.String()) == "" {
+		lines := strings.Split(thinking, "\n")
+		line = strings.TrimSpace(lines[len(lines)-1])
+		if line == "" && len(lines) > 1 {
+			line = strings.TrimSpace(lines[len(lines)-2])
+		}
+	}
+	label := "Thought · "
+	if c.streaming {
+		label = "Thinking · "
+	}
+	return []string{head + style.Render(fit(label+line, p.Width-2))}
+}
+
+// renderText renders the reply's markdown. While it streams, the blocks
+// before the last break between them are rendered once.
+func (c *Assistant) renderText(text string, width int) []string {
+	if !c.streaming {
+		return markdown.Render(text, width)
+	}
+	cut := stableCut(text)
+	if cut != c.stable || width != c.stableWidth {
+		c.stable, c.stableWidth = cut, width
+		c.stableLines = markdown.Render(text[:cut], width)
+	}
+	rest := strings.TrimSpace(text[cut:])
+	if cut == 0 {
+		return markdown.Render(rest, width)
+	}
+	if rest == "" {
+		return c.stableLines
+	}
+	out := append([]string{}, c.stableLines...)
+	return append(append(out, ""), markdown.Render(rest, width)...)
+}
+
+// stableCut is where the last blank line outside a code fence ends: the
+// blocks before it are complete.
+func stableCut(text string) int {
+	cut, fenced, at := 0, false, 0
+	for _, line := range strings.SplitAfter(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			fenced = !fenced
+		}
+		at += len(line)
+		if !fenced && trimmed == "" && strings.HasSuffix(line, "\n") && at < len(text) {
+			cut = at
+		}
+	}
+	return cut
+}
+
+// Level is the kind of a Notice.
+type Level int
+
+const (
+	// Info is something the harness did: compacted, interrupted.
+	Info Level = iota
+	// Error is something that failed.
+	Error
+	// Output is what a command printed.
+	Output
+	// Summary sums up a run.
+	Summary
+)
+
+// Notice is a message from the harness or a command rather than the agent.
+type Notice struct {
+	rev
+	still
+	Level Level
+	Text  string
+}
+
+// Note returns an Info notice.
+func Note(text string) *Notice { return &Notice{Level: Info, Text: text} }
+
+// Fail returns an Error notice.
+func Fail(text string) *Notice { return &Notice{Level: Error, Text: text} }
+
+// Print returns an Output notice.
+func Print(text string) *Notice { return &Notice{Level: Output, Text: text} }
+
+func (c *Notice) Attached() bool { return c.Level != Summary }
+
+func (c *Notice) Render(p Params) []string {
+	text := strings.TrimRight(c.Text, "\n")
+	switch c.Level {
+	case Error:
+		return body(markdown.Wrap(text, theme.ErrorText, bodyWidth(p.Width)), p.Width)
+	case Output:
+		return indent(markdown.Wrap(text, theme.Text, p.Width-2), "  ")
+	case Summary:
+		return markdown.Wrap(text, theme.SubtleText, p.Width)
+	default:
+		return body(markdown.Wrap(text, theme.MutedText, bodyWidth(p.Width)), p.Width)
+	}
+}

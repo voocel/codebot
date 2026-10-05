@@ -37,25 +37,28 @@ func NewCatalog(specs []Spec) *Catalog {
 	return c
 }
 
-// List returns the skills active in the workspace at cwd: those whose Paths
-// match something there, or that have none. An empty cwd lists them all.
-func (c *Catalog) List(cwd string) []Spec {
-	var out []Spec
-	for _, spec := range c.list {
-		if skillIsActive(spec, cwd) {
-			out = append(out, spec)
-		}
-	}
-	return out
+// List returns the skills, by name.
+func (c *Catalog) List() []Spec { return slices.Clone(c.list) }
+
+// Get returns the named skill.
+func (c *Catalog) Get(name string) (Spec, bool) {
+	spec, ok := c.byName[normalizeName(name)]
+	return spec, ok
 }
 
-// Get returns the named skill if it is active in the workspace at cwd.
-func (c *Catalog) Get(name, cwd string) (Spec, bool) {
-	spec, ok := c.byName[normalizeName(name)]
-	if !ok || !skillIsActive(spec, cwd) {
-		return Spec{}, false
+// Active returns the catalog of the skills active in the workspace at cwd:
+// those whose Paths match something there, or that have none. Matching may
+// walk the workspace, so it happens here, once: a conversation keeps the
+// result with the rest of what it tells the model about its workspace, and
+// offers the user and the model the same skills.
+func (c *Catalog) Active(cwd string) *Catalog {
+	var specs []Spec
+	for _, spec := range c.list {
+		if skillIsActive(spec, cwd) {
+			specs = append(specs, spec)
+		}
 	}
-	return spec, true
+	return NewCatalog(specs)
 }
 
 // LoadDir loads the skills in dir: each *.md file, and each subdirectory
