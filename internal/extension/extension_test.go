@@ -632,7 +632,7 @@ func TestDecided(t *testing.T) {
 	if st := d.Standing(Surface{a, b, c, NewItem("allow", "d")}); !slices.Equal(st.Ask(), Surface{NewItem("allow", "d")}) {
 		t.Errorf("ask %v", st.Ask())
 	}
-	if st := (Consent{Denied: true}).Standing(Surface{a}); len(st.Agreed) > 0 || len(st.Ask()) > 0 {
+	if st := (Consent{Denied: true, Surface: Surface{a}}).Standing(Surface{a}); len(st.Agreed) > 0 || len(st.Declined) > 0 {
 		t.Errorf("denied %+v", st)
 	}
 }

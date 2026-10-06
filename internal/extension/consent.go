@@ -34,11 +34,12 @@ type Consent struct {
 	Declined Surface `json:"declined,omitempty"`
 }
 
-// Standing returns where the user stands on surface, as c tells. A consent
-// to all of it, for a session, is Consent{Surface: surface}.
+// Standing returns where the user stands on surface, item by item, as c
+// tells: of a project they do not trust, on none of it. A consent to all of
+// it, for a session, is Consent{Surface: surface}.
 func (c Consent) Standing(surface Surface) Standing {
 	if c.Denied {
-		return Standing{Surface: surface, Declined: surface}
+		return Standing{Surface: surface}
 	}
 	return Standing{Surface: surface, Agreed: surface.Intersect(c.Surface), Declined: surface.Intersect(c.Declined)}
 }

@@ -85,6 +85,15 @@ type Trust struct {
 	ForRun bool
 }
 
+// Ask returns what of the surface to ask the user about: what they have
+// yet to decide on, unless they do not trust the project.
+func (t Trust) Ask() Surface {
+	if t.Denied {
+		return nil
+	}
+	return t.Standing.Ask()
+}
+
 // MCPServer is an MCP server and where it is configured: the settings of
 // Scope, or the plugin those declare.
 type MCPServer struct {

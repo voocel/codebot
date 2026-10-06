@@ -170,6 +170,14 @@ func pluginState(pl app.Plugin) string {
 
 func short(commit string) string { return commit[:min(7, len(commit))] }
 
+// versioned names a plugin with its version, where it has one.
+func versioned(name, version string) string {
+	if version == "" {
+		return name
+	}
+	return name + " " + version
+}
+
 // brings counts what a plugin brings: skills, agents, MCP servers and
 // hooks, those it has none of left out but skills and MCP.
 func brings(p *app.PluginContent) string {
@@ -248,9 +256,6 @@ func offerPanel(a *app.App, o *app.PluginOffer, title, accept, done string) tea.
 	pick := func(agreed app.Surface) tea.Cmd {
 		return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.AcceptPlugin(ctx, o, agreed) }, done)
 	}
-	if o.Version != "" {
-		title += " " + o.Version
-	}
 	cells = append(cells, show(panel.NewConsent(new(int), title+"?", lead, o.New, o.New, []panel.Choice{
 		{Label: accept, Pick: pick},
 		{Label: "Cancel", Pick: func(app.Surface) tea.Cmd { return dismiss() }},
@@ -270,7 +275,7 @@ func addPlugin(a *app.App, source string, project bool) tea.Cmd {
 		if project {
 			done += " to the project"
 		}
-		return offerPanel(a, o, "Add "+o.Name, "Add", done)()
+		return offerPanel(a, o, "Add "+versioned(o.Name, o.Version), "Add", done)()
 	}
 	return tea.Sequence(note("Fetching "+source+"…"), fetch)
 }
@@ -288,7 +293,7 @@ func installPlugins(a *app.App) tea.Cmd {
 			cells = append(cells, note("Fetched "+strings.Join(fetched, ", ")+" at the commits you agreed to"))
 		}
 		for _, o := range offers {
-			cells = append(cells, offerPanel(a, o, "Install "+o.Name, "Install", "Installed "+o.Name))
+			cells = append(cells, offerPanel(a, o, "Install "+versioned(o.Name, o.Version), "Install", "Installed "+o.Name))
 		}
 		if len(cells) == 0 {
 			return transcript.Note("Every plugin is installed, all it runs agreed to")
@@ -317,7 +322,11 @@ func updatePlugins(a *app.App, name string) tea.Cmd {
 			case u.Offer == nil:
 				cells = append(cells, note("Updated "+title+" to "+short(u.Commit)))
 			default:
-				cells = append(cells, offerPanel(a, u.Offer, "Update "+title+" "+short(pl.Commit)+" → "+short(u.Commit), "Update", "Updated "+title+" to "+short(u.Commit)))
+				from, to := short(pl.Commit), short(u.Commit)
+				if pl.Version != "" && u.Offer.Version != "" && pl.Version != u.Offer.Version {
+					from, to = pl.Version, u.Offer.Version
+				}
+				cells = append(cells, offerPanel(a, u.Offer, "Update "+title+" "+from+" → "+to, "Update", "Updated "+title+" to "+short(u.Commit)))
 			}
 		}
 		if err != nil {

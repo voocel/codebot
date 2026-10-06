@@ -660,3 +660,22 @@ func TestStatusIsSetOffFromTheConversation(t *testing.T) {
 		t.Errorf("no blank line above the status:\n%s", h.screen())
 	}
 }
+
+// A folder the user distrusted, trusted again from /trust, is trusted to
+// all of it: it was not declined item by item.
+func TestTrustAgainAfterDistrust(t *testing.T) {
+	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}})
+	if _, err := h.app.DenyTrust(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	h.m.remove(commands.IsAsk)
+	h.write("/trust")
+	h.press("enter")
+	h.shows("is not trusted. Trusted, it would turn on:", "[x] allows")
+	h.pause()
+	h.press("1")
+	await[reloadedMsg](h)
+	if trust := h.app.Trust(); trust.Denied || len(trust.Held()) > 0 {
+		t.Errorf("trust %+v", trust)
+	}
+}

@@ -274,7 +274,7 @@ func extensionRows(a *app.App, servers []app.MCPServer) [][2]string {
 		rows = append(rows, [2]string{"Off until you trust them", ""})
 		for _, it := range held {
 			state := " · waiting for you"
-			if t.Declined.Has(it) {
+			if t.Denied || t.Declined.Has(it) {
 				state = " · declined"
 			}
 			rows = append(rows, [2]string{panel.KindLabel(it.Kind), it.Detail + state})
