@@ -618,6 +618,10 @@ func TestItemsAreExact(t *testing.T) {
 	if blocking := hook(`echo a\nb`, true); blocking.same(escaped) || !strings.Contains(blocking.Detail, "blocking") {
 		t.Errorf("a hook made blocking is the same: %q", blocking.Detail)
 	}
+	windows := Hook{Event: "Stop", HookEntry: config.HookEntry{Type: "command", Command: `echo a\nb`, CommandWindows: "Write-Output a", Blocking: new(false)}}.item()
+	if windows.same(escaped) || !strings.Contains(windows.Detail, "on Windows: Write-Output a") {
+		t.Errorf("a hook given a Windows command is the same: %q", windows.Detail)
+	}
 }
 
 // What the user decides of what they were shown takes, the rest of what

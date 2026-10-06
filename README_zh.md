@@ -172,18 +172,19 @@ OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`
 | 子 agent | `~/.codebot/agents/*.md` | 根目录下的 `.codebot/agents/*.md` |
 | MCP 服务器、hooks、插件 | `~/.codebot/settings.json` | 根目录下的 `.codebot/settings.json` |
 
-一个 skill 是一个含 `SKILL.md` 的目录，或者一个 `.md` 文件。同名时项目的优先于你的，你的优先于内置的；`/status` 会列出谁覆盖了谁。hooks 不互相覆盖，你的和项目的都会运行。事件、类型或字段不认识的 hook 会报出来，并且不加载。
+一个 skill 是一个含 `SKILL.md` 的目录，或者一个 `.md` 文件。同名时项目的优先于你的，你的优先于内置的；`/status` 会列出谁覆盖了谁。hooks 不互相覆盖，你的和项目的都会运行。事件、类型或字段不认识的 hook 会报出来，并且不加载。command hook 用 `sh` 运行；在 Windows 上，有 `command_windows` 就改用 PowerShell 运行它，只有 `command` 的需要 `PATH` 上有 `sh`（比如 Git for Windows 带的），否则加载时就报出来。PowerShell 会把 0 和 1 以外的退出码都变成 1，所以 Windows 命令要靠退出码 2 拦截，就以 `exit $LASTEXITCODE` 结尾，或者输出 `{"block": true}`。
 
 **插件。** 插件按 [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) 格式把 skills 和 MCP 服务器打包在一起：一个目录，`plugin.json` 给出插件名，skills 放在 `skills/<name>/SKILL.md`，MCP 服务器写在 `mcp.json`。它的 skill 叫 `/<plugin>:<skill>`，MCP 服务器叫 `<plugin>_<server>`。这个格式不含 hooks 和子 agent，codebot 从 `plugin.json` 里自己的命名空间读取：
 
 ```json
 "extensions": { "io.github.voocel.codebot": {
-  "hooks": { "PreToolUse": [{ "matcher": "bash", "type": "command", "command": "\"$PLUGIN_ROOT\"/guard" }] },
+  "hooks": { "PreToolUse": [{ "matcher": "bash", "type": "command", "command": "\"$PLUGIN_ROOT\"/guard",
+    "command_windows": "& \"$env:PLUGIN_ROOT\\guard.exe\"; exit $LASTEXITCODE" }] },
   "agents": "./agents"
 } }
 ```
 
-`hooks` 的写法和设置里的 hooks 相同，运行时环境变量里有 `PLUGIN_ROOT` 和 `PLUGIN_DATA`。`agents` 指向一个子 agent 目录，格式和 `.codebot/agents/` 相同，名字是 `<plugin>:<agent>`。
+`hooks` 的写法和设置里的 hooks 相同，运行时环境变量里有 `PLUGIN_ROOT` 和 `PLUGIN_DATA`，PowerShell 里写作 `$env:PLUGIN_ROOT`。`agents` 指向一个子 agent 目录，格式和 `.codebot/agents/` 相同，名字是 `<plugin>:<agent>`。
 
 设置里的 `plugins` 列出插件来源：git 仓库（`github.com/acme/tools`、https 或 ssh 地址，可加 `//目录` 指定仓库里的插件目录，加 `#ref` 指定分支、tag 或 commit，比如 `github.com/acme/plugins//tools#main`），或者一个目录，相对于声明它的设置文件。`--plugin-dir <目录>` 可重复使用，只为这一次运行加载插件，它的全部内容直接生效，适合开发插件时用。
 

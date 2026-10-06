@@ -210,6 +210,9 @@ func (h Hook) Detail() string {
 		b.WriteString("POST " + h.URL + pairs(" header", h.Headers))
 	default:
 		b.WriteString(h.Command)
+		if h.CommandWindows != "" {
+			b.WriteString(" · on Windows: " + h.CommandWindows)
+		}
 	}
 	return b.String()
 }

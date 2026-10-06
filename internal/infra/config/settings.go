@@ -140,15 +140,16 @@ func resolveConfiguredProviderType(providers map[string]ProviderConfig, name str
 // HookEntry describes a single hook.
 // Supported types: "command" (shell), "prompt" (LLM evaluation), "http" (POST).
 type HookEntry struct {
-	Type     string            `json:"type"`               // "command", "prompt", or "http"
-	Command  string            `json:"command,omitempty"`  // type=command: shell command
-	Prompt   string            `json:"prompt,omitempty"`   // type=prompt: LLM prompt ($ARGUMENTS = payload)
-	URL      string            `json:"url,omitempty"`      // type=http: POST endpoint
-	Headers  map[string]string `json:"headers,omitempty"`  // type=http: request headers
-	Matcher  string            `json:"matcher,omitempty"`  // tool name filter: exact (case-insensitive) or /regex/
-	If       string            `json:"if,omitempty"`       // tool arguments JSON filter: /regex/, or the exact JSON
-	Blocking *bool             `json:"blocking,omitempty"` // can block execution
-	Timeout  *int              `json:"timeout,omitempty"`  // seconds (default 60)
+	Type           string            `json:"type"`                      // "command", "prompt", or "http"
+	Command        string            `json:"command,omitempty"`         // type=command: sh command
+	CommandWindows string            `json:"command_windows,omitempty"` // type=command: PowerShell command run on Windows instead
+	Prompt         string            `json:"prompt,omitempty"`          // type=prompt: LLM prompt ($ARGUMENTS = payload)
+	URL            string            `json:"url,omitempty"`             // type=http: POST endpoint
+	Headers        map[string]string `json:"headers,omitempty"`         // type=http: request headers
+	Matcher        string            `json:"matcher,omitempty"`         // tool name filter: exact (case-insensitive) or /regex/
+	If             string            `json:"if,omitempty"`              // tool arguments JSON filter: /regex/, or the exact JSON
+	Blocking       *bool             `json:"blocking,omitempty"`        // can block execution
+	Timeout        *int              `json:"timeout,omitempty"`         // seconds (default 60)
 	// Env is set by codebot alone, for a command hook's process: a plugin's
 	// hooks get PLUGIN_ROOT and PLUGIN_DATA.
 	Env map[string]string `json:"-"`

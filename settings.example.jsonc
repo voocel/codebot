@@ -140,6 +140,10 @@
   //   {"additional_context": "..."}      inject context into the turn (UserPromptSubmit)
   // For command hooks, exit code 2 also blocks; any other non-zero exit is a
   // non-blocking error (logged, never stops the run).
+  // A command hook runs in sh. On Windows, command_windows, if given, runs in
+  // PowerShell instead; without it, the hook needs sh on PATH (Git for
+  // Windows has one). PowerShell turns exit codes other than 0 and 1 into 1:
+  // end a command that blocks by exiting 2 with "exit $LASTEXITCODE".
   "hooks": {
     "PreToolUse": [
       { "type": "command", "command": "echo $HOOK_TOOL_NAME >> ~/.codebot/audit.log", "matcher": "bash", "blocking": true, "timeout": 10 }
@@ -151,7 +155,8 @@
       { "type": "command", "command": "echo done" }
     ],
     "Notification": [
-      { "type": "command", "command": "notify-send 'codebot' 'Agent finished'" }
+      { "type": "command", "command": "notify-send 'codebot' 'Agent finished'",
+        "command_windows": "[console]::beep(880, 200)" }
     ]
   },
 

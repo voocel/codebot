@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -239,7 +240,11 @@ func buildExecutor(he config.HookEntry, model func() agentcore.Model) (executor,
 		if he.Command == "" {
 			return nil, "", errors.New("a command hook needs a command")
 		}
-		return &commandExec{command: he.Command}, he.Command, nil
+		c, err := commandFor(he, runtime.GOOS)
+		if err != nil {
+			return nil, "", err
+		}
+		return c, c.command, nil
 	case "prompt":
 		if he.Prompt == "" {
 			return nil, "", errors.New("a prompt hook needs a prompt")

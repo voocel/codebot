@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -334,5 +335,41 @@ func TestHookEnv(t *testing.T) {
 	}})
 	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
 		t.Errorf("the hook went without its environment: %v", err)
+	}
+}
+
+// A command hook runs its command in sh, but on Windows its command_windows,
+// if it has one, in PowerShell; a command alone on a Windows without sh is
+// told as the hook loads.
+func TestCommandFor(t *testing.T) {
+	he := config.HookEntry{Type: "command", Command: "./guard", CommandWindows: `& "$env:PLUGIN_ROOT\guard.ps1"`}
+	for goos, want := range map[string]string{"linux": "sh ./guard", "darwin": "sh ./guard", "windows": "powershell " + he.CommandWindows} {
+		if c, err := commandFor(he, goos); err != nil || c.shell[0]+" "+c.command != want {
+			t.Errorf("%s: %+v %v, want %s", goos, c, err, want)
+		}
+	}
+	he.CommandWindows = ""
+	if c, err := commandFor(he, "windows"); err != nil || c.shell[0] != "sh" {
+		t.Errorf("with sh on PATH: %+v %v", c, err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if _, err := commandFor(he, "windows"); err == nil || !strings.Contains(err.Error(), "command_windows") {
+		t.Errorf("without sh: %v", err)
+	}
+}
+
+// A command hook's timeout holds though what it started holds its output.
+func TestCommandHookTimesOut(t *testing.T) {
+	t.Parallel()
+
+	r := newRunner(config.HooksConfig{"PreToolUse": {
+		{Type: "command", Command: "sleep 30; true", Blocking: boolPtr(true), Timeout: new(1)},
+	}}, nil)
+	start := time.Now()
+	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("a hook timing out blocked: %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("the hook took %s to time out", took)
 	}
 }

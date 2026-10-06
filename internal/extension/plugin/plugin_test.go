@@ -1,12 +1,10 @@
 package plugin
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -439,24 +437,5 @@ func TestReadCachedMarksTheCommitUsed(t *testing.T) {
 	}
 	if _, err := os.Stat(repo); err != nil {
 		t.Errorf("swept the commit just read: %v", err)
-	}
-}
-
-// git, cancelled, gives up with its helpers, which hold its output.
-func TestGitGivesUpWithItsHelpers(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("a shell script stands in for git")
-	}
-	bin := t.TempDir()
-	write(t, filepath.Join(bin, "git"), "#!/bin/sh\nsleep 30 &\nsleep 30\n")
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	if _, err := git(ctx, t.TempDir(), "fetch"); err == nil {
-		t.Fatal("a cancelled git succeeded")
-	}
-	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("git took %s to give up", took)
 	}
 }

@@ -6,12 +6,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/voocel/codebot/internal/lib/detached"
 	"github.com/voocel/codebot/internal/lib/frontmatter"
 	"github.com/voocel/codebot/internal/lib/regular"
 )
@@ -217,7 +217,7 @@ func expandShell(ctx context.Context, body string, vars map[string]string) strin
 	return reShellInjection.ReplaceAllStringFunc(body, func(m string) string {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "sh", "-c", reShellInjection.FindStringSubmatch(m)[1])
+		cmd := detached.Command(ctx, "sh", "-c", reShellInjection.FindStringSubmatch(m)[1])
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {

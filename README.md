@@ -172,18 +172,19 @@ A provider of `type: "gateway"` is a [LiteLLM gateway](https://github.com/voocel
 | Sub-agents | `~/.codebot/agents/*.md` | `.codebot/agents/*.md` at the root |
 | MCP servers, hooks, plugins | `~/.codebot/settings.json` | `.codebot/settings.json` at the root |
 
-A skill is a directory holding a `SKILL.md`, or a single `.md` file. Of two of one name, the project's wins over yours, and yours over a built-in one; `/status` lists what each replaced. Hooks replace none: yours and the project's all run. A hook with an unknown event, type or field is reported and left out.
+A skill is a directory holding a `SKILL.md`, or a single `.md` file. Of two of one name, the project's wins over yours, and yours over a built-in one; `/status` lists what each replaced. Hooks replace none: yours and the project's all run. A hook with an unknown event, type or field is reported and left out. A command hook runs in `sh`; on Windows, its `command_windows`, if it has one, runs in PowerShell instead, and its `command` alone needs an `sh` on `PATH`, such as Git for Windows brings, or the hook is reported as it loads. PowerShell turns an exit code other than 0 or 1 into 1, so a Windows command that blocks by exiting 2 ends with `exit $LASTEXITCODE`, or prints `{"block": true}`.
 
 **Plugins.** A plugin bundles skills and MCP servers in the [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) format: a directory with a `plugin.json` naming it, skills in `skills/<name>/SKILL.md` and MCP servers in `mcp.json`. Its skills become `/<plugin>:<skill>`, its MCP servers `<plugin>_<server>`. Hooks and sub-agents are beyond that format, so codebot reads them from its own namespace in `plugin.json`:
 
 ```json
 "extensions": { "io.github.voocel.codebot": {
-  "hooks": { "PreToolUse": [{ "matcher": "bash", "type": "command", "command": "\"$PLUGIN_ROOT\"/guard" }] },
+  "hooks": { "PreToolUse": [{ "matcher": "bash", "type": "command", "command": "\"$PLUGIN_ROOT\"/guard",
+    "command_windows": "& \"$env:PLUGIN_ROOT\\guard.exe\"; exit $LASTEXITCODE" }] },
   "agents": "./agents"
 } }
 ```
 
-`hooks` takes hooks as the settings do; they run with `PLUGIN_ROOT` and `PLUGIN_DATA` in their environment. `agents` names a directory of sub-agents, as `.codebot/agents/` holds them; they become `<plugin>:<agent>`.
+`hooks` takes hooks as the settings do; they run with `PLUGIN_ROOT` and `PLUGIN_DATA` in their environment, which PowerShell reads as `$env:PLUGIN_ROOT`. `agents` names a directory of sub-agents, as `.codebot/agents/` holds them; they become `<plugin>:<agent>`.
 
 `plugins` in the settings lists where plugins come from: a git repository (`github.com/acme/tools`, an https or ssh URL, with `//dir` for a plugin in a directory of it and `#ref` for a branch, tag or commit, as in `github.com/acme/plugins//tools#main`), or a directory, relative to the settings file naming it. `--plugin-dir <dir>`, repeatable, loads a plugin for one run, all it does in effect: for one you are writing.
 

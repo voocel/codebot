@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/voocel/codebot/internal/lib/detached"
 )
 
 // Source is where a plugin comes from: a directory, or a git repository at
@@ -284,10 +286,11 @@ func SweepCache(cache string, now time.Time) error {
 
 // git runs git in dir and returns its output, trimmed. Of the transports
 // it takes https and ssh alone, nor does it ask for credentials: what the
-// user's git, as they set it up, and ssh agent hold is all it has. Nothing
-// it runs may prompt on the terminal the TUI draws on.
+// user's git, as they set it up, and ssh agent hold is all it has. Detached,
+// ssh cannot ask for a passphrase or a host key, so it fails rather than
+// prompt, and cancelled, git's helpers, git-remote-https and ssh, go too.
 func git(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{
+	cmd := detached.Command(ctx, "git", append([]string{
 		"-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
 		"-c", "core.hooksPath=" + os.DevNull,
 	}, args...)...)
@@ -295,9 +298,6 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	// The user's git-lfs would fetch large files from where the repository's
 	// .lfsconfig says; a plugin has no business with them.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "SSH_ASKPASS_REQUIRE=never")
-	detach(cmd)
-	// Its helpers, git-remote-https and ssh, may hold its output past it.
-	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 		if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {

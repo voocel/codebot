@@ -11,10 +11,14 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm"
+
+	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/lib/detached"
 )
 
 // outcome is the raw result of running a hook's executor.
@@ -29,13 +33,35 @@ type executor interface {
 	execute(ctx context.Context, payload []byte, env []string) outcome
 }
 
-// commandExec runs a shell command with payload on stdin.
+// commandExec runs command in a shell with payload on stdin.
 type commandExec struct {
+	shell   []string // the shell and its options, the command following
 	command string
 }
 
+// commandFor returns how he's command runs on goos: in sh, but on Windows,
+// its command_windows, if it has one, in PowerShell. Windows has no sh of
+// its own: a command alone needs one on PATH there, as Git for Windows
+// brings.
+func commandFor(he config.HookEntry, goos string) (*commandExec, error) {
+	sh := &commandExec{shell: []string{"sh", "-c"}, command: he.Command}
+	switch {
+	case goos != "windows":
+		return sh, nil
+	case he.CommandWindows != "":
+		// powershell.exe comes with Windows; pwsh need not. The user agreed
+		// to the hook, so a script of it runs whatever the local execution
+		// policy; one set by group policy still holds.
+		return &commandExec{shell: []string{"powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"}, command: he.CommandWindows}, nil
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		return nil, errors.New(`no sh on PATH to run it, such as Git for Windows brings; give it a "command_windows" to run in PowerShell`)
+	}
+	return sh, nil
+}
+
 func (c *commandExec) execute(ctx context.Context, payload []byte, env []string) outcome {
-	cmd := exec.CommandContext(ctx, "sh", "-c", c.command)
+	cmd := detached.Command(ctx, c.shell[0], slices.Concat(c.shell[1:], []string{c.command})...)
 	cmd.Env = append(cmd.Environ(), env...)
 	cmd.Stdin = bytes.NewReader(payload)
 
