@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,6 +175,8 @@ func TestParseSource(t *testing.T) {
 		"github.com/acme/plugins//plugins/tools#main": {URL: "https://github.com/acme/plugins", Path: "plugins/tools", Ref: "main"},
 		"https://git.example.com/a/b.git//x#v1":       {URL: "https://git.example.com/a/b.git", Path: "x", Ref: "v1"},
 		"git@github.com:acme/plugins.git//tools":      {URL: "git@github.com:acme/plugins.git", Path: "tools"},
+		"https://github.com/acme/market/":             {URL: "https://github.com/acme/market"},
+		"git.example.com:8443/team/lint#v2":           {URL: "https://git.example.com:8443/team/lint", Ref: "v2"},
 	} {
 		got, err := ParseSource(raw, "/base")
 		if err != nil || got != want {
@@ -186,7 +187,8 @@ func TestParseSource(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{"acme-tools", "http://github.com/acme/tools", "ext::sh -c touch% /tmp/x", "github.com/acme/tools#-upload-pack=x", "file:///tmp/x", "",
-		"github.com/acme/plugins//../x", "github.com/acme/plugins//", "github.com/acme/plugins//a/../b", "github.com/acme/plugins///abs"} {
+		"github.com/acme/plugins//../x", "github.com/acme/plugins//", "github.com/acme/plugins//a/../b", "github.com/acme/plugins///abs",
+		".codebot/plugins/kit", "plugins/kit/x", "-x/acme/tools"} {
 		if _, err := ParseSource(raw, "/base"); err == nil {
 			t.Errorf("%s parsed", raw)
 		}
@@ -339,57 +341,6 @@ func TestCodebotNamespace(t *testing.T) {
 	write(t, filepath.Join(dir, "plugin.json"), manifest+`, "extensions": {"io.github.voocel.codebot": {"hook": {}}}}`)
 	if p, problems, err = Read(dir, "/data"); err != nil || len(problems) != 1 || p.Hooks != nil {
 		t.Errorf("a namespace out of format: %+v, %v, %v", p, problems, err)
-	}
-}
-
-// A marketplace in Codex's format lists plugins as settings are to declare
-// them; what codebot cannot fetch is listed, and says why.
-func TestReadMarketplace(t *testing.T) {
-	root := t.TempDir()
-	write(t, filepath.Join(root, ".agents", "plugins", "marketplace.json"), `{
-		"name": "acme",
-		"interface": {"displayName": "Acme Plugins"},
-		"plugins": [
-			{"name": "here", "source": "./plugins/here", "description": "Here", "category": "Productivity"},
-			{"name": "obj", "source": {"source": "local", "path": "./plugins/obj"}},
-			{"name": "gh", "source": {"source": "url", "url": "acme/tools", "ref": "v1"}},
-			{"name": "sub", "source": {"source": "git-subdir", "url": "https://git.example.com/acme/all.git", "path": "./plugins/sub", "ref": "main", "sha": "abc123"}},
-			{"name": "npm", "source": {"source": "npm", "package": "@acme/x"}},
-			{"name": "rel", "source": {"source": "url", "url": "./repos/x"}},
-			{"name": "hidden", "source": "./plugins/hidden", "policy": {"installation": "NOT_AVAILABLE"}},
-			{"name": "away", "source": "./../away"},
-			{"name": "bare", "source": "plugins/bare"}
-		]
-	}`)
-	m, problems, err := ReadMarketplace(root, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.Name != "acme" || m.Title != "Acme Plugins" || len(problems) != 2 {
-		t.Errorf("marketplace %s %q, problems %v", m.Name, m.Title, problems)
-	}
-	got := map[string]string{}
-	for _, l := range m.Plugins {
-		got[l.Name] = l.Source
-		if l.Source == "" {
-			got[l.Name] = "unsupported"
-		}
-	}
-	want := map[string]string{
-		"here": filepath.Join(root, "plugins", "here"),
-		"obj":  filepath.Join(root, "plugins", "obj"),
-		"gh":   "github.com/acme/tools#v1",
-		"sub":  "https://git.example.com/acme/all.git//plugins/sub#abc123",
-		"npm":  "unsupported",
-		"rel":  "unsupported",
-	}
-	if !maps.Equal(got, want) {
-		t.Errorf("listings %q", got)
-	}
-
-	repo := Source{URL: "https://git.example.com/acme/market", Ref: "main"}
-	if m, _, err = ReadMarketplace(root, &repo); err != nil || m.Plugins[0].Source != "https://git.example.com/acme/market//plugins/here#main" || m.Where != repo.String() {
-		t.Errorf("fetched, %+v, %v", m, err)
 	}
 }
 

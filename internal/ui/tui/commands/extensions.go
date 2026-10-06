@@ -221,10 +221,12 @@ func extensionRows(a *app.App, servers []app.MCPServer) [][2]string {
 		folder = "none: the home directory"
 	case len(t.Surface) == 0:
 		folder += " · nothing to trust"
-	case t.Trusted:
+	case len(t.Held()) == 0:
 		folder += " · trusted"
-	default:
+	case t.Denied || len(t.Agreed) == 0:
 		folder += " · not trusted · /trust"
+	default:
+		folder += fmt.Sprintf(" · %d waiting for trust · /trust", len(t.Held()))
 	}
 	rows := [][2]string{{"Folder", folder}, {"Skills", ""}}
 	for _, s := range ext.Skills {
@@ -266,10 +268,10 @@ func extensionRows(a *app.App, servers []app.MCPServer) [][2]string {
 			rows = append(rows, [2]string{from, h.Detail()})
 		}
 	}
-	if t.Held() {
+	if held := t.Held(); len(held) > 0 {
 		rows = append(rows, [2]string{"Waiting for trust", ""})
-		for _, it := range t.Surface {
-			rows = append(rows, [2]string{it.Kind, it.Detail})
+		for _, it := range held {
+			rows = append(rows, [2]string{panel.KindLabel(it.Kind), it.Detail})
 		}
 	}
 	if len(ext.Shadowed) > 0 {
@@ -294,7 +296,7 @@ func reload(a *app.App) Command {
 			if err != nil {
 				return transcript.Fail("Reload failed: " + err.Error())
 			}
-			return transcript.Note(fmt.Sprintf("Reloaded %d skills and %d plugins", r.Skills, r.Plugins) + connected(r))
+			return transcript.Note(fmt.Sprintf("Reloaded %d skills and %d plugins", r.Skills, r.Plugins) + connected(r.MCP))
 		}
 	}}
 }

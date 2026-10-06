@@ -21,6 +21,7 @@ import (
 	"github.com/voocel/codebot/internal/agent/subagent"
 	"github.com/voocel/codebot/internal/extension/hooks"
 	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/lib/printable"
 	"github.com/voocel/codebot/internal/lib/regular"
 )
 
@@ -164,6 +165,8 @@ func (p *Plugin) readManifest() (problems []error, err error) {
 	if !ValidName(p.Name) {
 		return nil, fmt.Errorf("plugin.json: invalid name %q", p.Name)
 	}
+	// What the user reads of the plugin is what it says.
+	p.Version, p.Description = printable.Escape(p.Version), printable.Escape(p.Description)
 	return problems, nil
 }
 

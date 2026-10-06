@@ -18,12 +18,20 @@ import (
 )
 
 func TestToolName(t *testing.T) {
-	if got := toolName("acme.tools_db", "query"); got != "mcp__acme-tools_db__query" {
+	if got := toolName("acme-tools_db", "query"); got != "mcp__acme-tools_db__query" {
 		t.Errorf("got %s", got)
+	}
+	// Names the vendors refuse, made alike, stay apart.
+	dotted, dashed := toolName("acme.tools_db", "query"), toolName("acme-tools_db", "query")
+	if dotted == dashed || !strings.HasPrefix(dotted, "mcp__acme-tools_db__query_") {
+		t.Errorf("dotted %s, dashed %s", dotted, dashed)
 	}
 	long := toolName("server", strings.Repeat("x", 80))
 	if len(long) != maxToolName || long == toolName("server", strings.Repeat("x", 81)) {
 		t.Errorf("long names %s", long)
+	}
+	if a, b := toolName("s", strings.Repeat("x", 70)+".a"), toolName("s", strings.Repeat("x", 70)+"-a"); a == b {
+		t.Errorf("long names alike: %s", a)
 	}
 }
 

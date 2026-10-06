@@ -65,15 +65,12 @@ func Run(a *app.App, args []string, jsonMode bool) error {
 		return errors.New("print mode requires a prompt (argument or stdin pipe)")
 	}
 
-	// Unlike the TUI there is no later turn to pick plugins and MCP tools
-	// up, so fetch and connect first.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// Unlike the TUI there is no later turn to pick MCP tools up, so
+	// connect first.
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	report := a.Connect(ctx)
 	cancel()
-	for _, e := range report.FetchErrors {
-		fmt.Fprintf(os.Stderr, "plugins: %s\n", e)
-	}
-	for _, e := range report.MCP.Errors {
+	for _, e := range report.Errors {
 		fmt.Fprintf(os.Stderr, "mcp: %s\n", e)
 	}
 

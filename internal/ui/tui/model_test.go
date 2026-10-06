@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -367,34 +368,59 @@ func answered[T any](t *testing.T, reply chan T) T {
 	}
 }
 
-// A folder with something to trust asks first; until trusted, the footer
-// says so.
+// A folder with something to trust asks first, once; until trusted, the
+// footer says so.
 func TestTrustPanel(t *testing.T) {
 	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}})
 	h.shows("Trust this folder?", "would turn on:", "allows", "Bash(make *)", "outside any sandbox", "1. Trust this folder")
 
 	h.pause()
 	h.press("esc")
-	await[reloadedMsg](h)
-	if top := h.m.top(); top != nil && commands.IsTrust(top) || !h.app.Trust().Held() {
-		t.Fatal("esc did not leave the folder untrusted for the session")
+	if top := h.m.top(); top != nil && commands.IsAsk(top) || len(h.app.Trust().Held()) == 0 {
+		t.Fatal("esc did not leave the folder untrusted")
 	}
 	h.shows("folder untrusted · /trust")
+	h.feed(reloadedMsg{})
+	if top := h.m.top(); top != nil && commands.IsAsk(top) {
+		t.Fatal("the folder asks again about what the user was asked about")
+	}
 
 	h.write("/trust")
 	h.press("enter")
-	if top := h.m.top(); top == nil || !commands.IsTrust(top) {
-		t.Fatalf("/trust shows no panel:\n%s", h.screen())
-	}
+	h.shows("Trust this folder?", "Bash(make *)")
 	h.pause()
 	h.press("1")
 	await[reloadedMsg](h)
-	if !h.app.Trust().Trusted {
-		t.Fatal("the folder is not trusted")
+	if held := h.app.Trust().Held(); len(held) > 0 {
+		t.Fatalf("still held: %v", held)
 	}
 	if strings.Contains(h.screen(), "untrusted") {
 		t.Errorf("the trusted folder shows as untrusted:\n%s", h.screen())
 	}
+}
+
+// A trusted folder that comes to run more asks about only that.
+func TestTrustAsksAboutWhatIsNew(t *testing.T) {
+	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}})
+	h.pause()
+	h.press("1")
+	await[reloadedMsg](h)
+
+	settings := filepath.Join(h.app.Cwd(), ".codebot", "settings.json")
+	if err := os.WriteFile(settings, []byte(`{"permissions": {"allow": ["Bash(make *)", "Bash(go *)"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.app.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	await[reloadedMsg](h)
+	h.shows("has more to turn on since you trusted it:", "Bash(go *)")
+	if strings.Contains(h.screen(), "Bash(make *)") {
+		t.Errorf("asks again about what is trusted:\n%s", h.screen())
+	}
+	h.pause()
+	h.press("esc")
+	h.shows("1 waiting for trust · /trust")
 }
 
 // /plugins add shows what the plugin runs before adding it; /plugins lists
@@ -421,44 +447,11 @@ func TestAddAPlugin(t *testing.T) {
 	h.press("1")
 	await[reloadedMsg](h)
 	h.settleNotes()
-	h.shows("Added kit · 1 skill · 1 MCP")
+	h.shows("Added kit")
 
 	h.write("/plugins")
 	h.press("enter")
 	h.shows("Plugins", "kit 0.1.0", "1 skill · 1 MCP · ~/kit · on")
-}
-
-func TestBrowseMarketplaces(t *testing.T) {
-	h := boot(t)
-	home := os.Getenv("HOME")
-	for name, text := range map[string]string{
-		".agents/plugins/marketplace.json": `{"name": "mine", "interface": {"displayName": "My plugins"}, "plugins": [
-			{"name": "kit", "source": "./kit", "description": "release tools"},
-			{"name": "pkg", "source": {"source": "npm", "package": "@acme/pkg"}}]}`,
-		"kit/plugin.json":             `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "kit", "version": "0.1.0"}`,
-		"kit/skills/release/SKILL.md": "---\ndescription: releases\n---\nRelease.\n",
-	} {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(home, name)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(home, name), []byte(text), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	h.write("/plugins browse")
-	h.press("enter")
-	h.shows("Marketplaces", "My plugins", "kit", "release tools", "pkg", "cannot be added: codebot does not install npm packages")
-	h.press("enter")
-	h.shows("Add kit 0.1.0?", "brings 1 skill · 0 MCP")
-	h.pause()
-	h.press("1")
-	await[reloadedMsg](h)
-	h.settleNotes()
-	h.shows("Added kit · 1 skill · 0 MCP")
-
-	h.write("/plugins browse")
-	h.press("enter")
-	h.shows("release tools · added")
 }
 
 func TestPermissionPanel(t *testing.T) {

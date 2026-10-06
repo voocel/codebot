@@ -1,10 +1,8 @@
 package commands
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -17,98 +15,70 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
+// fetchTimeout bounds fetching plugins: git that hangs gives up.
+const fetchTimeout = 5 * time.Minute
+
 func plugins(a *app.App) Command {
 	return Command{
 		Name:        "plugins",
-		Args:        "[browse | add <source or name@marketplace> [--project] | update [name] | remove <name> | marketplace add|remove <source>]",
-		Description: "List, browse, add, update or remove plugins",
+		Args:        "[add <source> [--project] | install | update [name] | remove <name> [--project]]",
+		Description: "List, add, install, update or remove plugins",
 		Idle:        true,
 		Run: func(arg string) tea.Cmd {
-			sub, rest, _ := strings.Cut(arg, " ")
-			rest = strings.TrimSpace(rest)
+			words := strings.Fields(arg)
+			project := slices.Contains(words, "--project")
+			words = slices.DeleteFunc(words, func(w string) bool { return w == "--project" })
+			sub, rest := "", ""
+			if len(words) > 0 {
+				sub, rest = words[0], strings.Join(words[1:], " ")
+			}
 			switch sub {
 			case "":
 				return pluginList(a)
-			case "browse":
-				return browse(a)
 			case "add":
-				words := strings.Fields(rest)
-				project := slices.Contains(words, "--project")
-				source := strings.Join(slices.DeleteFunc(words, func(w string) bool { return w == "--project" }), " ")
-				if source == "" {
-					return fail("Usage: /plugins add <git repository, path or name@marketplace> [--project]")
+				if rest == "" {
+					return fail("Usage: /plugins add <git repository or path> [--project]")
 				}
-				return addPlugin(a, source, project)
+				return addPlugin(a, rest, project)
+			case "install":
+				return installPlugins(a)
 			case "update":
 				return updatePlugins(a, rest)
 			case "remove":
 				if rest == "" {
-					return fail("Usage: /plugins remove <name>")
+					return fail("Usage: /plugins remove <name> [--project]")
 				}
-				return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.RemovePlugin(ctx, rest) }, "Removed "+rest)
-			case "marketplace":
-				verb, source, _ := strings.Cut(rest, " ")
-				switch source = strings.TrimSpace(source); {
-				case source == "":
-				case verb == "add":
-					return addMarketplace(a, source)
-				case verb == "remove":
-					return func() tea.Msg {
-						if err := a.RemoveMarketplace(source); err != nil {
-							return transcript.Fail(err.Error())
-						}
-						return transcript.Note("Removed the marketplace " + source)
-					}
-				}
-				return fail("Usage: /plugins marketplace add|remove <git repository or path>")
+				return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.RemovePlugin(ctx, rest, project) }, "Removed "+rest)
 			}
-			return fail("Unknown /plugins " + sub + ": try /plugins browse, add, update, remove or marketplace.")
+			return fail("Unknown /plugins " + sub + ": try /plugins add, install, update or remove.")
 		},
 	}
 }
 
 // reloaded runs change off the TUI's goroutine and notes done once it has,
-// with what the reload fetched and connected.
+// with what the reload connected.
 func reloaded(change func(context.Context) (app.ReloadReport, error), done string) tea.Cmd {
 	return func() tea.Msg {
 		r, err := change(context.Background())
 		if err != nil {
 			return transcript.Fail(err.Error())
 		}
-		return transcript.Note(done + connected(r))
+		return transcript.Note(done + connected(r.MCP))
 	}
 }
 
-// connected sums up what a reload fetched and connected, "" for nothing.
-func connected(r app.ReloadReport) string {
-	var b strings.Builder
-	if len(r.Fetched) > 0 {
-		b.WriteString(" · fetched " + strings.Join(r.Fetched, ", "))
+// connected sums up what connecting MCP servers did, "" for none.
+func connected(r app.MCPReport) string {
+	if r.Servers == 0 {
+		return ""
 	}
-	for _, e := range r.FetchErrors {
-		b.WriteString(" · could not " + e)
-	}
-	if r.MCP.Servers > 0 {
-		fmt.Fprintf(&b, " · %d MCP tools (%d servers connected, %d failed)", r.MCP.Tools, r.MCP.Connected, len(r.MCP.Errors))
-	}
-	return b.String()
+	return fmt.Sprintf(" · %d MCP tools (%d servers connected, %d failed)", r.Tools, r.Connected, len(r.Errors))
 }
 
-// pluginKey identifies a declared plugin: by the settings declaring it, and
-// its source there.
+// pluginKey identifies a plugin: by whose it is, and its source there.
 type pluginKey struct{ scope, source string }
 
 func keyOf(pl app.Plugin) pluginKey { return pluginKey{string(pl.Scope), pl.Source} }
-
-// findPlugin returns the plugin k identifies, as it stands now.
-func findPlugin(a *app.App, k pluginKey) (app.Plugin, bool) {
-	for _, pl := range a.Plugins() {
-		if keyOf(pl) == k {
-			return pl, true
-		}
-	}
-	return app.Plugin{}, false
-}
 
 func pluginList(a *app.App) tea.Cmd {
 	items := func() []panel.Item {
@@ -120,41 +90,20 @@ func pluginList(a *app.App) tea.Cmd {
 	}
 	first := items()
 	if len(first) == 0 {
-		return note("No plugins. /plugins browse lists those of the marketplaces, /plugins add <git repository or path> adds one; see the README.")
+		return note("No plugins. /plugins add <git repository or path> adds one; see the README.")
 	}
 	return show(&panel.List{
 		Title:  "Plugins",
 		Items:  first,
 		Reload: items,
-		Hint:   theme.Hint("↑↓", "select", "enter", "details", "space", "on/off here", "esc", "close"),
+		Hint:   theme.Hint("↑↓", "select", "enter", "details", "esc", "close"),
 		Select: func(it panel.Item) tea.Cmd {
-			if pl, ok := findPlugin(a, it.Value.(pluginKey)); ok {
-				return show(&panel.Text{Title: it.Title, Tabs: []panel.Tab{{Body: func(w int) []string { return info(pluginRows(pl), w) }}}})
+			plugins := a.Plugins()
+			i := slices.IndexFunc(plugins, func(pl app.Plugin) bool { return keyOf(pl) == it.Value.(pluginKey) })
+			if i < 0 {
+				return nil
 			}
-			return nil
-		},
-		Keys: func(k string, it *panel.Item) (tea.Cmd, bool, bool) {
-			if k != "space" || it == nil {
-				return nil, false, false
-			}
-			selected := it.Value.(pluginKey)
-			return func() tea.Msg {
-				pl, ok := findPlugin(a, selected)
-				switch {
-				case !ok:
-					return nil
-				case pl.State != app.PluginOn && pl.State != app.PluginOff:
-					return transcript.Fail(pluginTitle(pl) + " is " + string(pl.State) + ": it cannot be turned on or off")
-				}
-				on := pl.State == app.PluginOff
-				if _, err := a.SetPluginEnabled(context.Background(), pl.Name, on); err != nil {
-					return transcript.Fail(err.Error())
-				}
-				if on {
-					return transcript.Note("Turned " + pl.Name + " on here")
-				}
-				return transcript.Note("Turned " + pl.Name + " off here")
-			}, true, false
+			return show(&panel.Text{Title: it.Title, Tabs: []panel.Tab{{Body: func(w int) []string { return info(pluginRows(plugins[i]), w) }}}})
 		},
 	})
 }
@@ -171,45 +120,53 @@ func pluginTitle(pl app.Plugin) string {
 func pluginDetail(pl app.Plugin) string {
 	var parts []string
 	if pl.Plugin != nil {
-		parts = append(parts, brings(pl))
-		if pl.Commit != "" {
-			parts = append(parts, pl.Source+" @ "+short(pl.Commit))
-		} else {
-			parts = append(parts, pl.Source)
-		}
+		parts = append(parts, brings(pl.Plugin))
 	}
-	state := string(pl.State)
+	if pl.Commit != "" {
+		parts = append(parts, pl.Source+" @ "+short(pl.Commit))
+	} else {
+		parts = append(parts, pl.Source)
+	}
+	return strings.Join(append(parts, pluginState(pl)), " · ")
+}
+
+// pluginState tells where a plugin stands, and what the user may do about
+// it.
+func pluginState(pl app.Plugin) string {
 	switch pl.State {
-	case app.PluginShadowed:
-		state = "another " + pl.Name + " is on in its stead"
-	case app.PluginHeld:
-		state = "waits for /trust"
-	case app.PluginMissing:
-		if pl.Commit == "" && pl.Scope == "user" {
-			state = "not installed · /plugins add " + pl.Source
-		} else {
-			state = "not fetched · /reload fetches it"
+	case app.PluginOn:
+		if len(pl.Held) > 0 {
+			return fmt.Sprintf("on · %d waiting for you · /plugins install", len(pl.Held))
 		}
+	case app.PluginShadowed:
+		return "another " + pl.Name + " is on in its stead"
+	case app.PluginHeld:
+		return "waits for /trust"
+	case app.PluginMissing:
+		if pl.Commit != "" {
+			return "not cached · /plugins install"
+		}
+		return "not installed · /plugins install"
 	case app.PluginBroken:
-		state = "broken: " + pl.Err.Error()
+		return "broken: " + pl.Err.Error()
 	}
-	return strings.Join(append(parts, state), " · ")
+	return string(pl.State)
 }
 
 func short(commit string) string { return commit[:min(7, len(commit))] }
 
-// brings counts what a plugin read brings: skills, agents, MCP servers and
+// brings counts what a plugin brings: skills, agents, MCP servers and
 // hooks, those it has none of left out but skills and MCP.
-func brings(pl app.Plugin) string {
+func brings(p *app.PluginContent) string {
 	hooks := 0
-	for _, hs := range pl.Hooks {
+	for _, hs := range p.Hooks {
 		hooks += len(hs)
 	}
-	parts := []string{fmt.Sprintf("%d %s", len(pl.Skills), plural(len(pl.Skills), "skill"))}
-	if len(pl.Agents) > 0 {
-		parts = append(parts, fmt.Sprintf("%d %s", len(pl.Agents), plural(len(pl.Agents), "agent")))
+	parts := []string{fmt.Sprintf("%d %s", len(p.Skills), plural(len(p.Skills), "skill"))}
+	if len(p.Agents) > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", len(p.Agents), plural(len(p.Agents), "agent")))
 	}
-	parts = append(parts, fmt.Sprintf("%d MCP", len(pl.MCP)))
+	parts = append(parts, fmt.Sprintf("%d MCP", len(p.MCP)))
 	if hooks > 0 {
 		parts = append(parts, fmt.Sprintf("%d %s", hooks, plural(hooks, "hook")))
 	}
@@ -217,10 +174,7 @@ func brings(pl app.Plugin) string {
 }
 
 func pluginRows(pl app.Plugin) [][2]string {
-	rows := [][2]string{{"Source", pl.Source}, {"Declared by", string(pl.Scope) + " settings"}, {"State", string(pl.State)}}
-	if pl.Err != nil {
-		rows = append(rows, [2]string{"Problem", pl.Err.Error()})
-	}
+	rows := [][2]string{{"Source", pl.Source}, {"Declared by", string(pl.Scope)}, {"State", pluginState(pl)}}
 	if pl.Commit != "" {
 		rows = append(rows, [2]string{"Commit", pl.Commit})
 	}
@@ -243,168 +197,91 @@ func pluginRows(pl app.Plugin) [][2]string {
 			rows = append(rows, [2]string{pl.Name + ":" + d.Name, d.Description})
 		}
 	}
-	if len(pl.Hooks) > 0 {
-		rows = append(rows, [2]string{"Hooks", ""})
-		for _, event := range slices.Sorted(maps.Keys(pl.Hooks)) {
-			for _, h := range pl.Hooks[event] {
-				rows = append(rows, [2]string{event, cmp.Or(h.Command, h.Prompt, h.URL)})
+	if len(pl.Surface) > 0 {
+		rows = append(rows, [2]string{"Runs", ""})
+		for _, it := range pl.Surface {
+			detail := it.Detail
+			if pl.Held.Has(it) {
+				detail += " · waiting for you"
 			}
-		}
-	}
-	if len(pl.MCP) > 0 {
-		rows = append(rows, [2]string{"MCP servers", ""})
-		for _, name := range slices.Sorted(maps.Keys(pl.MCP)) {
-			srv := pl.MCP[name]
-			what := srv.URL
-			if what == "" {
-				what = strings.Join(append([]string{srv.Command}, srv.Args...), " ")
-			}
-			rows = append(rows, [2]string{pl.Name + "_" + name, what})
+			rows = append(rows, [2]string{panel.KindLabel(it.Kind), detail})
 		}
 	}
 	return rows
 }
 
+// offerPanel asks the user, under title, to agree to what the plugin
+// offered runs that they have yet to; accept does, done tells what it did.
+func offerPanel(a *app.App, o *app.PluginOffer, title, accept, done string) tea.Cmd {
+	where := o.Source
+	if o.Commit != "" {
+		where += " @ " + short(o.Commit)
+	}
+	lead := where + " brings " + brings(o.Plugin)
+	if len(o.New) > 0 {
+		lead += ", and would run:"
+	}
+	var cells []tea.Cmd
+	for _, p := range o.Problems {
+		cells = append(cells, fail(p.Error()))
+	}
+	dismiss := func() tea.Cmd { return note("Left " + o.Name + " as it was") }
+	pick := func() tea.Cmd {
+		return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.AcceptPlugin(ctx, o) }, done)
+	}
+	if o.Version != "" {
+		title += " " + o.Version
+	}
+	cells = append(cells, show(panel.NewConsent(new(int), title+"?", lead, o.New, []panel.Choice{
+		{Label: accept, Pick: pick},
+		{Label: "Cancel", Pick: dismiss},
+	}, dismiss)))
+	return tea.Batch(cells...)
+}
+
 func addPlugin(a *app.App, source string, project bool) tea.Cmd {
 	fetch := func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
 		o, err := a.OfferPlugin(ctx, source, project)
 		if err != nil {
 			return transcript.Fail("Could not add " + source + ": " + err.Error())
 		}
-		where := o.Source
-		if o.Commit != "" {
-			where += " @ " + short(o.Commit)
+		done := "Added " + o.Name
+		if project {
+			done += " to the project"
 		}
-		lead := where + " brings " + brings(app.Plugin{Plugin: o.Plugin})
-		if len(o.Surface) > 0 {
-			lead += ", and would run:"
-		}
-		var cells []tea.Cmd
-		for _, p := range o.Problems {
-			cells = append(cells, fail(p.Error()))
-		}
-		dismiss := func() tea.Cmd { return note("Did not add " + o.Name) }
-		add := func() tea.Cmd {
-			return func() tea.Msg {
-				r, err := a.AddPlugin(context.Background(), o)
-				if err != nil {
-					return transcript.Fail(err.Error())
-				}
-				return transcript.Note(added(a, o) + connected(r))
-			}
-		}
-		title := "Add " + o.Name + "?"
-		if o.Version != "" {
-			title = "Add " + o.Name + " " + o.Version + "?"
-		}
-		cells = append(cells, show(panel.NewConsent(new(int), title, lead, o.Surface, []panel.Choice{
-			{Label: "Add", Pick: add},
-			{Label: "Cancel", Pick: dismiss},
-		}, dismiss)))
-		return tea.BatchMsg(cells)
+		return offerPanel(a, o, "Add "+o.Name, "Add", done)()
 	}
 	return tea.Sequence(note("Fetching "+source+"…"), fetch)
 }
 
-// added tells how the plugin offered stands once added.
-func added(a *app.App, o *app.PluginOffer) string {
-	for _, pl := range a.Plugins() {
-		if pl.Plugin == nil || pl.Name != o.Name {
-			continue
-		}
-		switch pl.State {
-		case app.PluginOn:
-			return "Added " + o.Name + " · " + brings(pl)
-		case app.PluginHeld:
-			return "Added " + o.Name + " to the project · it waits for /trust"
-		}
-		return "Added " + o.Name + " · " + pluginDetail(pl)
-	}
-	return "Added " + o.Source
-}
-
-// browse lists the plugins the marketplaces list, to add one: for the
-// user with enter, to the project with tab.
-func browse(a *app.App) tea.Cmd {
-	read := func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+func installPlugins(a *app.App) tea.Cmd {
+	install := func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
-		ms, errs := a.Marketplaces(ctx)
+		offers, fetched, errs := a.InstallPlugins(ctx)
 		var cells []tea.Cmd
 		for _, err := range errs {
-			cells = append(cells, fail(err.Error()))
+			cells = append(cells, fail("Could not install "+err.Error()))
 		}
-		var items []panel.Item
-		for _, m := range ms {
-			for _, l := range m.Plugins {
-				items = append(items, panel.Item{Group: m.Title, Title: l.Name, Detail: listingDetail(a, l), Value: l})
-			}
+		if len(fetched) > 0 {
+			cells = append(cells, note("Fetched "+strings.Join(fetched, ", ")+" at the commits you agreed to"))
 		}
-		if len(items) == 0 {
-			return tea.BatchMsg(append(cells, note("No marketplace lists a plugin. /plugins marketplace add <git repository or path> adds one; see the README.")))
+		for _, o := range offers {
+			cells = append(cells, offerPanel(a, o, "Install "+o.Name, "Install", "Installed "+o.Name))
 		}
-		pick := func(l app.Listing, project bool) tea.Cmd {
-			if l.Source == "" {
-				return fail("Cannot add " + l.Name + ": " + l.Unsupported)
-			}
-			return addPlugin(a, l.Source, project)
+		if len(cells) == 0 {
+			return transcript.Note("Every plugin is installed, all it runs agreed to")
 		}
-		return tea.BatchMsg(append(cells, show(&panel.List{
-			Title:  "Marketplaces",
-			Items:  items,
-			Filter: true,
-			Hint:   theme.Hint("↑↓", "select", "enter", "add", "tab", "add to the project", "esc", "close"),
-			Select: func(it panel.Item) tea.Cmd { return pick(it.Value.(app.Listing), false) },
-			Keys: func(k string, it *panel.Item) (tea.Cmd, bool, bool) {
-				if k != "tab" || it == nil {
-					return nil, false, false
-				}
-				return pick(it.Value.(app.Listing), true), true, true
-			},
-		})))
+		return tea.BatchMsg(cells)
 	}
-	return tea.Sequence(note("Reading the marketplaces…"), read)
-}
-
-// listingDetail sums a listed plugin up for its row.
-func listingDetail(a *app.App, l app.Listing) string {
-	var parts []string
-	for _, p := range []string{l.Description, l.Category} {
-		if p != "" {
-			parts = append(parts, p)
-		}
-	}
-	switch {
-	case l.Source == "":
-		parts = append(parts, "cannot be added: "+l.Unsupported)
-	case a.Declares(l.Source):
-		parts = append(parts, "added")
-	}
-	return strings.Join(parts, " · ")
-}
-
-func addMarketplace(a *app.App, source string) tea.Cmd {
-	read := func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		m, problems, err := a.AddMarketplace(ctx, source)
-		if err != nil {
-			return transcript.Fail("Could not add the marketplace " + source + ": " + err.Error())
-		}
-		var cells []tea.Cmd
-		for _, p := range problems {
-			cells = append(cells, fail(p.Error()))
-		}
-		return tea.BatchMsg(append(cells, note(fmt.Sprintf("Added the marketplace %s · it lists %d %s · /plugins browse", m.Title, len(m.Plugins), plural(len(m.Plugins), "plugin")))))
-	}
-	return tea.Sequence(note("Reading "+source+"…"), read)
+	return tea.Sequence(note("Installing the plugins…"), install)
 }
 
 func updatePlugins(a *app.App, name string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	update := func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
 		updates, err := a.UpdatePlugins(ctx, name)
 		if err != nil && len(updates) == 0 {
@@ -416,22 +293,12 @@ func updatePlugins(a *app.App, name string) tea.Cmd {
 			switch {
 			case u.Err != nil:
 				cells = append(cells, fail("Could not update "+title+": "+u.Err.Error()))
-			case u.Commit == pl.Commit && u.Applied:
-				cells = append(cells, note("Fetched "+title+" at "+short(u.Commit)+" again"))
 			case u.Commit == pl.Commit:
 				cells = append(cells, note(title+" is up to date"))
-			case u.Applied:
+			case u.Offer == nil:
 				cells = append(cells, note("Updated "+title+" to "+short(u.Commit)))
 			default:
-				keep := func() tea.Cmd { return note("Kept " + title + " at " + short(pl.Commit)) }
-				apply := func() tea.Cmd {
-					return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.ApplyUpdate(ctx, u) }, "Updated "+title+" to "+short(u.Commit))
-				}
-				lead := title + " " + short(pl.Commit) + " → " + short(u.Commit) + " would also run:"
-				cells = append(cells, show(panel.NewConsent(new(int), "Update "+title+"?", lead, u.Added, []panel.Choice{
-					{Label: "Update", Pick: apply},
-					{Label: "Keep " + short(pl.Commit), Pick: keep},
-				}, keep)))
+				cells = append(cells, offerPanel(a, u.Offer, "Update "+title+" "+short(pl.Commit)+" → "+short(u.Commit), "Update", "Updated "+title+" to "+short(u.Commit)))
 			}
 		}
 		if err != nil {
@@ -439,4 +306,5 @@ func updatePlugins(a *app.App, name string) tea.Cmd {
 		}
 		return tea.BatchMsg(cells)
 	}
+	return tea.Sequence(note("Fetching…"), update)
 }

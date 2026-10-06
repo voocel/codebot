@@ -232,12 +232,6 @@ type Settings struct {
 	// the settings file declaring it.
 	Plugins []string `json:"plugins,omitempty"`
 
-	// Marketplaces are catalogs of plugins to browse, each a git repository
-	// or a local directory holding .agents/plugins/marketplace.json, as
-	// Codex reads it. The user's alone: a project lists its own in its
-	// directory.
-	Marketplaces []string `json:"marketplaces,omitempty"`
-
 	Permissions *PermissionsConfig `json:"permissions,omitempty"`
 
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"` // OpenTelemetry trace export
@@ -477,30 +471,42 @@ func Load(cwd string) (Layers, error) {
 	l := Layers{Root: ProjectRoot(cwd)}
 	var err error
 	if UserConfigDir() != "" {
-		if l.User, err = loadFile(UserSettingsPath()); err != nil {
+		if l.User, err = loadFile(UserSettingsPath(), regular.ReadFile); err != nil {
 			return Layers{}, err
 		}
 	}
 	if l.Root != "" {
-		if l.Project, err = loadFile(ProjectSettingsPath(l.Root)); err != nil {
+		if l.Project, err = loadFile(ProjectSettingsPath(l.Root), inProject(l.Root)); err != nil {
 			return Layers{}, err
 		}
 	}
 	return l, nil
 }
 
-// Resolve combines the layers, the project's fields over the user's but for
-// those it may not set, applies the defaults and validates the result. The
-// extensions, hooks and MCP servers, are left to the extension package.
-// Model is deliberately never defaulted — hardcoded model names go stale;
-// boot validates it is set.
-func (l Layers) Resolve(cwd string, trusted bool) (Resolved, error) {
-	project, _ := ForProject(l.Project, trusted)
+// inProject reads the files of the project at root, which may not lead
+// outside it: its settings are its own, never a file of the user's.
+func inProject(root string) func(string) ([]byte, error) {
+	return func(path string) ([]byte, error) { return regular.ReadFileIn(root, path) }
+}
+
+// Resolve combines the user's settings and the project's over them: those
+// a project sets as it likes, and of its grants, granted, those the user
+// agreed to (see extension.Load). It applies the defaults and validates the
+// result. The extensions, hooks and MCP servers among them, are left to the
+// extension package. Model is deliberately never defaulted — hardcoded
+// model names go stale; boot validates it is set.
+func (l Layers) Resolve(cwd string, granted Settings) (Resolved, error) {
+	project, _, _ := ForProject(l.Project)
+	var perms PermissionsConfig
 	if p := project.Permissions; p != nil {
+		perms.Deny = p.Deny
+	}
+	if g := granted.Permissions; g != nil {
 		// The project's roots are its own: relative to its root, wherever
 		// in it codebot runs.
-		project.Permissions = &PermissionsConfig{Allow: p.Allow, Deny: p.Deny, ReadRoots: absRoots(l.Root, p.ReadRoots), WriteRoots: absRoots(l.Root, p.WriteRoots)}
+		perms.Allow, perms.ReadRoots, perms.WriteRoots = g.Allow, absRoots(l.Root, g.ReadRoots), absRoots(l.Root, g.WriteRoots)
 	}
+	project.Permissions = &perms
 	r := mergeSettings(l.User, project).resolve()
 	if err := validateResolved(r); err != nil {
 		return Resolved{}, err
@@ -512,38 +518,39 @@ func (l Layers) Resolve(cwd string, trusted bool) (Resolved, error) {
 	return r, nil
 }
 
-// ForProject keeps of a project's settings s what a project may set, and
-// names the fields it may not. Where calls go and whose credentials they
-// carry are the user's alone: the providers, the search provider and its
-// key, and telemetry; so are the marketplaces they browse, which a project
-// keeps in its directory. What lets code run or calls through unasked — hooks,
-// MCP servers, plugins, allow rules, the roots — a project sets only once
-// trusted; the rest, deny rules among it, always.
-func ForProject(s Settings, trusted bool) (kept Settings, refused []string) {
+// ForProject sorts a project's settings s by what a project may do with
+// them. It sets as it likes those that only shape how codebot works, open,
+// deny rules among them. What lets code run or calls through unasked — its
+// hooks, MCP servers, plugins, allow rules and roots — are grants, each of
+// which takes effect once the user agrees to it. Where calls go and whose
+// credentials they carry are the user's alone: the providers, the search
+// provider and its key, and telemetry are refused, named and dropped.
+func ForProject(s Settings) (open, grants Settings, refused []string) {
 	for name, set := range map[string]bool{
 		"providers":       s.Providers != nil,
 		"search_provider": s.SearchProvider != nil,
 		"search_api_key":  s.SearchAPIKey != nil,
 		"telemetry":       s.Telemetry != nil,
-		"marketplaces":    s.Marketplaces != nil,
 	} {
 		if set {
 			refused = append(refused, name)
 		}
 	}
 	slices.Sort(refused)
-	s.Providers, s.SearchProvider, s.SearchAPIKey, s.Telemetry, s.Marketplaces = nil, nil, nil, nil, nil
-	if !trusted {
-		s.Hooks, s.MCPServers, s.Plugins = nil, nil, nil
-		if p := s.Permissions; p != nil {
-			s.Permissions = &PermissionsConfig{Deny: p.Deny}
-		}
+	open = s
+	open.Providers, open.SearchProvider, open.SearchAPIKey, open.Telemetry = nil, nil, nil, nil
+	open.Hooks, open.MCPServers, open.Plugins, open.Permissions = nil, nil, nil, nil
+	grants = Settings{Hooks: s.Hooks, MCPServers: s.MCPServers, Plugins: s.Plugins}
+	if p := s.Permissions; p != nil {
+		open.Permissions = &PermissionsConfig{Deny: p.Deny}
+		grants.Permissions = &PermissionsConfig{Allow: p.Allow, ReadRoots: p.ReadRoots, WriteRoots: p.WriteRoots}
 	}
-	return s, refused
+	return open, grants, refused
 }
 
-// mergeSettings merges two Settings; non-nil fields in override take
-// precedence. Neither changes.
+// mergeSettings merges override over base: of the fields Resolved holds,
+// those set in override take precedence, permission rules and roots add up.
+// The others, the extensions, keep base's. Neither changes.
 func mergeSettings(base, override Settings) Settings {
 	if override.Provider != nil {
 		base.Provider = override.Provider
@@ -608,16 +615,6 @@ func mergeSettings(base, override Settings) Settings {
 	if override.SearchAPIKey != nil {
 		base.SearchAPIKey = override.SearchAPIKey
 	}
-	if len(override.Hooks) > 0 {
-		hooks := maps.Clone(base.Hooks)
-		if hooks == nil {
-			hooks = make(HooksConfig)
-		}
-		for event, entries := range override.Hooks {
-			hooks[event] = slices.Concat(hooks[event], entries)
-		}
-		base.Hooks = hooks
-	}
 	if o := override.Permissions; o != nil {
 		var p PermissionsConfig
 		if base.Permissions != nil {
@@ -636,30 +633,38 @@ func mergeSettings(base, override Settings) Settings {
 	if override.Snapshot != nil {
 		base.Snapshot = override.Snapshot
 	}
-	if len(override.MCPServers) > 0 {
-		servers := maps.Clone(base.MCPServers)
-		if servers == nil {
-			servers = make(map[string]MCPServer)
-		}
-		maps.Copy(servers, override.MCPServers)
-		base.MCPServers = servers
-	}
 	return base
 }
 
-// EditSettings applies edit to the settings file at path, which it creates
+// EditUserSettings applies edit to the user's settings, creating the file
 // if need be.
-func EditSettings(path string, edit func(*Settings)) error {
+func EditUserSettings(edit func(*Settings)) error {
+	return editSettings(UserSettingsPath(), regular.ReadFile, edit)
+}
+
+// EditProjectSettings applies edit to the settings of the project at root,
+// creating the file if need be. A file leading outside the project is not
+// the project's to edit.
+func EditProjectSettings(root string, edit func(*Settings)) error {
+	return editSettings(ProjectSettingsPath(root), inProject(root), edit)
+}
+
+// editSettings applies edit to the settings file at path, read with read.
+// A symlink stays one: the file it leads to is written.
+func editSettings(path string, read func(string) ([]byte, error), edit func(*Settings)) error {
 	unlock, err := LockFile(path)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	s, err := loadFile(path)
+	s, err := loadFile(path, read)
 	if err != nil {
 		return err
 	}
 	edit(&s)
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
@@ -678,7 +683,7 @@ func EditSettings(path string, edit func(*Settings)) error {
 // settings. What the user picks as codebot runs is theirs, never the
 // project's, which is shared.
 func PatchUserSettings(patch Settings) error {
-	return EditSettings(UserSettingsPath(), func(s *Settings) { *s = mergeSettings(*s, patch) })
+	return EditUserSettings(func(s *Settings) { *s = mergeSettings(*s, patch) })
 }
 
 // LockFile takes the lock codebot's processes share to edit the file at
@@ -729,9 +734,10 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-func loadFile(path string) (Settings, error) {
+// loadFile reads the settings file at path with read; none is no settings.
+func loadFile(path string, read func(string) ([]byte, error)) (Settings, error) {
 	var s Settings
-	data, err := regular.ReadFile(path)
+	data, err := read(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return s, nil

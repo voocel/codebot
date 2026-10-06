@@ -172,13 +172,13 @@ func matchSensitiveWrite(p string) string {
 	}
 
 	// codebot's own configuration decides what runs unasked: settings carry
-	// hooks, MCP servers, plugins and permission rules; workspaces.json which
-	// projects are trusted to; skills and plugins may run commands and allow
-	// tools, then sub-agent definitions and stored approvals. The harness-managed data
-	// beside them (sessions, memory, snapshots, worktrees) is not
-	// configuration.
+	// hooks, MCP servers, plugins and permission rules; consent.json what the
+	// user agreed to run; skills and plugins may run commands and allow
+	// tools, then sub-agent definitions and stored approvals. The
+	// harness-managed data beside them (sessions, memory, snapshots,
+	// worktrees) is not configuration.
 	lower := strings.ToLower(filepath.ToSlash(p))
-	if parent == ".codebot" && (base == "settings.json" || base == "workspaces.json") {
+	if parent == ".codebot" && (base == "settings.json" || base == "consent.json") {
 		return "codebot settings"
 	}
 	for _, dir := range []string{".codebot/skills", ".codebot/agents", ".codebot/plugins", ".codebot/approvals", ".agents/skills"} {
@@ -256,11 +256,11 @@ func hasPathSegment(p, name string) bool {
 	return strings.Contains(lower, target)
 }
 
-// dangerousPathCandidates returns the path forms to match against: always the
-// workspace-resolved cleaned path; if EvalSymlinks succeeds AND points
-// somewhere different, the resolved form too. EvalSymlinks failing (e.g.
-// writing to a not-yet-existing file) just means we only check the cleaned
-// form — sufficient for name-based matching.
+// dangerousPathCandidates returns the path forms to match against: the
+// workspace-resolved cleaned path, and where symlinks lead it elsewhere,
+// the resolved form too. A file not yet written resolves through the
+// directories above it: one written through a link to .codebot/skills is
+// written there.
 func dangerousPathCandidates(workspace, raw string) []string {
 	p := raw
 	if !filepath.IsAbs(p) && workspace != "" {
@@ -268,7 +268,7 @@ func dangerousPathCandidates(workspace, raw string) []string {
 	}
 	p = filepath.Clean(p)
 	out := []string{p}
-	if resolved, err := filepath.EvalSymlinks(p); err == nil && resolved != p {
+	if resolved := resolveSymlinks(p); resolved != p {
 		out = append(out, resolved)
 	}
 	return out

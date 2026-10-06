@@ -170,7 +170,8 @@ type setup struct {
 	settings map[string]any
 	project  map[string]any // the project's settings
 	git      bool
-	cacheTTL string // the frontend's, see Options.CacheTTL
+	cacheTTL string   // the frontend's, see Options.CacheTTL
+	plugins  []string // given on the command line, see Options.PluginDirs
 }
 
 // boot starts an App in a throwaway home and workspace, its models scripted.
@@ -216,6 +217,7 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 		UI:          e.ui,
 		Interactive: true,
 		CacheTTL:    s.cacheTTL,
+		PluginDirs:  s.plugins,
 		NewModel: func(spec provider.ModelSpec) (agentcore.Model, error) {
 			var p litellm.Provider = script()
 			if m, ok := models[spec.Model]; ok {

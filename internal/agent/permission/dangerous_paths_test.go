@@ -185,9 +185,8 @@ func TestCheckDangerousPath_IDEAndAgentLoaderDirs(t *testing.T) {
 		{"claude hooks", filepath.Join(home, "proj", ".claude", "hooks.json")},
 		// codebot's own configuration, not its data.
 		{"codebot settings", filepath.Join(home, "proj", ".codebot", "settings.json")},
-		{"codebot trusted folders", filepath.Join(home, ".codebot", "workspaces.json")},
+		{"codebot consents", filepath.Join(home, ".codebot", "consent.json")},
 		{"codebot skill", filepath.Join(home, ".codebot", "skills", "deploy", "SKILL.md")},
-		{"codebot plugin lock", filepath.Join(home, ".codebot", "plugins", "lock.json")},
 		{"codebot plugin cache", filepath.Join(home, ".codebot", "plugins", "cache", "github.com", "a", "b", "c", "mcp.json")},
 		{"shared skill", filepath.Join(home, "proj", "sub", ".agents", "skills", "deploy", "SKILL.md")},
 		{"codebot agent", filepath.Join(home, "proj", ".codebot", "agents", "reviewer.md")},
@@ -200,6 +199,26 @@ func TestCheckDangerousPath_IDEAndAgentLoaderDirs(t *testing.T) {
 				t.Fatalf("expected force-ask, got allow")
 			}
 		})
+	}
+}
+
+// A file not yet written through a link to a directory of codebot's own
+// configuration is written there: it is asked about as if named so.
+func TestCheckDangerousPath_ThroughALinkedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks")
+	}
+	proj := t.TempDir()
+	skills := filepath.Join(proj, ".codebot", "skills")
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(skills, filepath.Join(proj, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	req := mkReq("write", "file_path", filepath.Join(proj, "docs", "evil", "SKILL.md"))
+	if reason := checkDangerousPath(proj, req); reason == "" {
+		t.Fatal("a skill written through a linked directory went unasked")
 	}
 }
 

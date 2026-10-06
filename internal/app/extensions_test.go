@@ -26,12 +26,15 @@ func writeSkill(t *testing.T, dir, name, text string) {
 }
 
 // A project's hooks, MCP servers and allow rules take effect only once the
-// user trusts it; where calls go and whose keys they carry, never.
+// user agrees to them; where calls go and whose keys they carry, never.
+// What the project adds since waits for them again, alone: the rest runs
+// on.
 func TestTheProjectWaitsForTrust(t *testing.T) {
 	model := script(
 		use("b1", "bash", map[string]string{"command": "touch denied"}),
 		text("ok"),
 		use("b2", "bash", map[string]string{"command": "touch allowed"}),
+		text("ok"),
 		text("ok"),
 	)
 	marks := t.TempDir()
@@ -49,10 +52,10 @@ func TestTheProjectWaitsForTrust(t *testing.T) {
 	}
 
 	trust := e.app.Trust()
-	if trust.Root != e.cwd || trust.Trusted || !trust.Held() {
+	if trust.Root != e.cwd || len(trust.Agreed) > 0 || len(trust.Held()) != 3 {
 		t.Fatalf("trust = %+v", trust)
 	}
-	if got := kinds(trust.Ask); !slices.Equal(got, []string{"allow", "hook", "mcp"}) {
+	if got := kinds(trust.Ask()); !slices.Equal(got, []string{"allow", "hook", "mcp"}) {
 		t.Fatalf("asked about %q", got)
 	}
 	if url := e.app.Settings().Providers["anthropic"].BaseURL; url != "" {
@@ -73,7 +76,7 @@ func TestTheProjectWaitsForTrust(t *testing.T) {
 	if _, err := e.app.SetTrust(context.Background(), e.app.Trust().Surface, true, true); err != nil {
 		t.Fatal(err)
 	}
-	if trust := e.app.Trust(); !trust.Trusted || len(trust.Ask) > 0 {
+	if trust := e.app.Trust(); len(trust.Held()) > 0 {
 		t.Fatalf("trusted, trust = %+v", trust)
 	}
 	e.submit("again")
@@ -86,19 +89,25 @@ func TestTheProjectWaitsForTrust(t *testing.T) {
 	if url := e.app.Settings().Providers["anthropic"].BaseURL; url != "" {
 		t.Errorf("the trusted project sent the user's key to %s", url)
 	}
-	if w, _ := extension.ReadWorkspace(e.cwd); w.Trust == nil || !w.Trust.Trusted {
-		t.Errorf("the decision was not kept: %+v", w)
+	if c, _ := extension.ReadConsents(); len(c.Projects[e.cwd].Surface) != 3 {
+		t.Errorf("the decision was not kept: %+v", c)
 	}
 
-	// What the project adds since waits for the user again, alone.
 	project["permissions"] = map[string]any{"allow": []string{"Bash(touch *)", "Bash(rm *)"}}
 	writeJSON(t, config.ProjectSettingsPath(e.cwd), project)
+	if err := os.Remove(filepath.Join(marks, "hook")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := e.app.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	trust = e.app.Trust()
-	if trust.Trusted || len(trust.Ask) != 1 || trust.Ask[0] != (extension.Item{Kind: "allow", Detail: "Bash(rm *)"}) {
-		t.Fatalf("after the project grew, trust = %+v", trust)
+	if ask := trust.Ask(); len(ask) != 1 || ask[0] != (extension.Item{Kind: "allow", Detail: "Bash(rm *)"}) {
+		t.Fatalf("after the project grew, asked about %q", ask)
+	}
+	e.submit("once more")
+	if !ran("hook") {
+		t.Error("the hook agreed to stopped as the project grew")
 	}
 }
 
@@ -109,13 +118,13 @@ func TestADistrustedProjectIsNotAskedAbout(t *testing.T) {
 	if _, err := e.app.SetTrust(context.Background(), e.app.Trust().Surface, false, true); err != nil {
 		t.Fatal(err)
 	}
-	if trust := e.app.Trust(); trust.Trusted || len(trust.Ask) > 0 || !trust.Held() {
+	if trust := e.app.Trust(); !trust.Denied || len(trust.Ask()) > 0 || len(trust.Held()) != 1 {
 		t.Fatalf("trust = %+v", trust)
 	}
 }
 
 // A project's skills are its instructions, in effect untrusted; what they
-// may do only where trusted waits.
+// may do only where agreed to waits.
 func TestProjectSkillsWaitForTrustToRun(t *testing.T) {
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeSkill(t, filepath.Join(e.cwd, ".agents", "skills"), "deploy", "---\ndescription: deploys\n---\nState: !`echo live`\n")
@@ -126,7 +135,7 @@ func TestProjectSkillsWaitForTrustToRun(t *testing.T) {
 	if !ok || spec.Privileged || spec.Source != "project" {
 		t.Fatalf("deploy = %+v, %v", spec, ok)
 	}
-	if got := e.app.Trust().Ask; len(got) != 1 || got[0].Detail != "deploy runs `echo live`" {
+	if got := e.app.Trust().Ask(); len(got) != 1 || got[0].Detail != "deploy runs `echo live`" {
 		t.Fatalf("asked about %+v", got)
 	}
 	if _, err := e.app.SetTrust(context.Background(), e.app.Trust().Surface, true, false); err != nil {
@@ -135,8 +144,8 @@ func TestProjectSkillsWaitForTrustToRun(t *testing.T) {
 	if spec, _ := e.app.skillCatalog().Get("deploy"); !spec.Privileged {
 		t.Fatal("the trusted project's skill may not run its commands")
 	}
-	if w, _ := extension.ReadWorkspace(e.cwd); w.Trust != nil {
-		t.Errorf("a decision for the session was kept: %+v", w)
+	if c, _ := extension.ReadConsents(); c.Projects != nil {
+		t.Errorf("a decision for the session was kept: %+v", c)
 	}
 }
 

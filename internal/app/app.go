@@ -56,8 +56,12 @@ type Options struct {
 	FS agentcoretools.FS
 	// NewModel overrides how models are built; nil uses litellm.
 	NewModel ModelFactory
-	// Trust trusts the project for this process, whatever the user decided.
+	// Trust trusts the project for this process, whatever the user decided:
+	// what it and the plugins it declares run takes effect.
 	Trust bool
+	// PluginDirs are plugins to load for this process alone, what they run
+	// agreed to: directories under development.
+	PluginDirs []string
 }
 
 // App is the process-wide state. See the package documentation.
@@ -83,15 +87,14 @@ type App struct {
 	// waits for the App's.
 	ext     atomic.Pointer[extensions]
 	offered atomic.Pointer[mcpOffer]
-	// reloading, connecting and fetching order reloads, connecting MCP
-	// servers and fetching plugins, so the configuration last read is the
-	// one in effect, and a plugin is fetched once.
-	reloading, connecting, fetching sync.Mutex
+	// reloading and connecting order reloads and connecting MCP servers, so
+	// the configuration last read is the one in effect.
+	reloading, connecting sync.Mutex
 
 	mu sync.Mutex
-	// decision is the user's decision on the project's trust this session,
-	// over the one they keep; nil for none.
-	decision    *extension.Decision
+	// session is what the user agreed to of the project for this session,
+	// over what they keep; nil for none.
+	session     *extension.Consent
 	current     *Conversation
 	unsubscribe func()
 }
@@ -151,6 +154,7 @@ func Boot(opts Options) (*App, error) {
 	}
 	go tools.CleanOldOutputs(config.SessionsDir(cwd))
 	go cleanWorktreeOrphans(cwd)
+	go sweepPluginCache()
 	return a, nil
 }
 
@@ -295,8 +299,8 @@ func filesystemRoots(cwd string, settings config.Resolved, ext *extension.Set) p
 	// What the local plugins hold runs, or decides what does, as they load.
 	var plugins []string
 	for _, pl := range ext.Plugins {
-		if pl.Dir != "" {
-			plugins = append(plugins, pl.Dir)
+		if pl.Src.Dir != "" {
+			plugins = append(plugins, pl.Src.Dir)
 		}
 	}
 	// The sandbox worktrees are part of the workspace even where the

@@ -3,6 +3,7 @@ package prompt
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,37 @@ func TestSystemFiles(t *testing.T) {
 	write("SYSTEM.md", "custom system prompt")
 	if system := System(cwd); system != "custom system prompt\n\nappended rule" {
 		t.Fatalf("system = %q", system)
+	}
+}
+
+// A project's AGENTS.md and SYSTEM.md leading outside it are not read: the
+// user's files are not the project's to read into the prompt.
+func TestProjectFilesStayInTheProject(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks")
+	}
+	home, root := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	secret := filepath.Join(home, ".git-credentials")
+	if err := os.WriteFile(secret, []byte("https://me:SECRET@github.com"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"AGENTS.md", "SYSTEM.md"} {
+		if err := os.Symlink(secret, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "guide.md"), []byte("project rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("guide.md", filepath.Join(root, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	if got := System(root) + loadAgents(root); strings.Contains(got, "SECRET") || !strings.Contains(got, "project rules") {
+		t.Errorf("prompt %q", got)
 	}
 }
 

@@ -1,8 +1,8 @@
 {
   // ~/.codebot/settings.json is yours; .codebot/settings.json at a project's
   // root sets fields over it. A project never sets providers, search_provider,
-  // search_api_key, telemetry or marketplaces, and its hooks, mcp_servers, plugins,
-  // permissions.allow and roots take effect only once you trust the folder
+  // search_api_key or telemetry, and each of its hooks, mcp_servers, plugins,
+  // permissions.allow rules and roots takes effect only once you trust it
   // (/trust).
   //
   // Default provider/model. /model saves its choice here, in your file.
@@ -132,7 +132,8 @@
   },
 
   // Hooks: commands/prompts/http triggered on lifecycle events.
-  // Yours and a trusted project's all run: they are appended, not replaced.
+  // Yours and those of a project you trusted to them all run: they are
+  // appended, not replaced.
   // A hook may print JSON to stdout to influence the run:
   //   {"block": true, "reason": "..."}   block the action (blocking hooks only)
   //   {"updated_input": { ... }}         rewrite tool args (PreToolUse)
@@ -173,7 +174,8 @@
     "deny": []
   },
 
-  // MCP servers: stdio (local process) or http (remote endpoint)
+  // MCP servers: stdio (local process) or http (remote endpoint). ${VAR} in
+  // env and headers takes from codebot's environment in your settings alone.
   "mcp_servers": {
     "context7": {
       "command": "npx",
@@ -188,19 +190,11 @@
 
   // Plugins in the Agent Plugins format: git repositories, //dir naming a
   // plugin's directory in one and #ref a branch, tag or commit, or
-  // directories relative to this file. /plugins add, update and remove
-  // manage the list.
+  // directories relative to this file. /plugins add, install, update and
+  // remove manage the list; what each runs waits for you to agree to it.
   "plugins": [
     "github.com/acme/release-tools#v1.2.0",
     "github.com/acme/plugins//plugins/lint#main",
     "./plugins/local-kit"
-  ],
-
-  // Marketplaces to browse with /plugins browse, besides
-  // ~/.agents/plugins/marketplace.json and the project's: git repositories or
-  // directories holding .agents/plugins/marketplace.json. Yours alone;
-  // /plugins marketplace add and remove manage the list.
-  "marketplaces": [
-    "github.com/acme/plugins"
   ]
 }

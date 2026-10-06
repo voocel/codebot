@@ -12,7 +12,7 @@ import (
 )
 
 // Consent asks the user to agree to what would run as them: a folder's
-// surface, or a plugin's to add or update.
+// surface, or a plugin's to add, install or update.
 type Consent struct {
 	key         any
 	title, lead string
@@ -63,6 +63,9 @@ var kinds = map[string]string{
 	"skill":  "skill",
 	"plugin": "plugin",
 }
+
+// KindLabel names the kind of a surface's item.
+func KindLabel(kind string) string { return kinds[kind] }
 
 func (p *Consent) View(width, height int) string {
 	lines := markdown.Wrap(p.lead, theme.Text, width-2)

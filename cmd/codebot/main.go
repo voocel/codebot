@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -65,7 +66,9 @@ func main() {
 	modeFlag := flag.String("mode", "balanced", "Permission mode: strict, balanced, accept-edits, trust")
 	acpFlag := flag.Bool("acp", false, "Run as an ACP (Agent Client Protocol) agent over stdio")
 	setupFlag := flag.Bool("setup", false, "Run the setup wizard (provider + model + API key)")
-	trustFlag := flag.Bool("trust", false, "Trust this folder for this run: its hooks, MCP servers and allow rules take effect")
+	trustFlag := flag.Bool("trust", false, "Trust this folder for this run: its hooks, MCP servers, plugins and allow rules take effect")
+	var pluginDirs dirs
+	flag.Var(&pluginDirs, "plugin-dir", "Load the plugin in this directory for this run (repeatable)")
 	flag.Parse()
 
 	fillBuildInfo()
@@ -108,7 +111,7 @@ func main() {
 	if err != nil {
 		fail(err, "error")
 	}
-	opts := app.Options{Cwd: cwd, Mode: mode, Resume: resume, Trust: *trustFlag}
+	opts := app.Options{Cwd: cwd, Mode: mode, Resume: resume, Trust: *trustFlag, PluginDirs: pluginDirs}
 	if err := run(opts, printMode, *acpFlag, *jsonFlag); err != nil {
 		fail(err, "error")
 	}
@@ -147,6 +150,23 @@ func boot(opts app.Options) *app.App {
 	return a
 }
 
+// dirs is a repeatable flag of directories, made absolute.
+type dirs []string
+
+func (d *dirs) String() string { return strings.Join(*d, ",") }
+
+func (d *dirs) Set(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return fmt.Errorf("%s is no directory", dir)
+	}
+	*d = append(*d, abs)
+	return nil
+}
+
 // warn tells the user, where nobody can be asked, what of the extensions
 // was left out, and what of the folder is off until they trust it.
 func warn(a *app.App) {
@@ -154,22 +174,26 @@ func warn(a *app.App) {
 		fmt.Fprintln(os.Stderr, "codebot: "+err.Error())
 	}
 	for _, pl := range a.Plugins() {
-		switch pl.State {
-		case app.PluginMissing:
-			// The others are fetched as codebot connects.
-			if pl.Commit == "" && pl.Scope == "user" {
-				fmt.Fprintf(os.Stderr, "codebot: plugin %s is not installed: add it with /plugins add in codebot\n", pl.Source)
-			}
-		case app.PluginBroken:
+		switch {
+		case pl.State == app.PluginMissing:
+			fmt.Fprintf(os.Stderr, "codebot: plugin %s is not installed: /plugins install in codebot installs it\n", pl.Source)
+		case pl.State == app.PluginBroken:
 			fmt.Fprintf(os.Stderr, "codebot: plugin %s is broken: %v\n", pl.Source, pl.Err)
+		case pl.State == app.PluginOn && len(pl.Held) > 0:
+			fmt.Fprintf(os.Stderr, "codebot: plugin %s runs %d more you have yet to agree to: /plugins install in codebot asks\n", pl.Name, len(pl.Held))
 		}
 	}
 	t := a.Trust()
-	if !t.Held() {
+	held := t.Held()
+	if len(held) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "codebot: %s is not trusted, so these are off:\n", t.Root)
-	for _, it := range t.Surface {
+	if len(t.Agreed) > 0 && !t.Denied {
+		fmt.Fprintf(os.Stderr, "codebot: %s has more you have yet to trust, off until you do:\n", t.Root)
+	} else {
+		fmt.Fprintf(os.Stderr, "codebot: %s is not trusted, so these are off:\n", t.Root)
+	}
+	for _, it := range held {
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", it.Kind, it.Detail)
 	}
 	fmt.Fprintln(os.Stderr, "Trust it with /trust in codebot, or pass --trust for this run.")

@@ -4,7 +4,8 @@
 //
 //	ui/         frontends: tui, print, acp
 //	app/        assembly: App and Conversation
-//	extension/  what users plug in: skills, sub-agents, MCP servers, hooks
+//	extension/  what users plug in: skills, sub-agents, MCP servers, hooks,
+//	            plugins, and what of them the user agreed to run
 //	agent/      what the agent runs with: tools, skills, sub-agents, prompt,
 //	            permissions, todos
 //	session/    the conversation actor and its log

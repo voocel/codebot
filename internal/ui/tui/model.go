@@ -34,6 +34,9 @@ type Model struct {
 	status app.Status
 	mode   interact.Mode
 	branch string
+	// asked is what of the folder's surface the user was asked about
+	// unbidden this session: they are not asked about it again.
+	asked app.Surface
 
 	width, height int
 	// mainTop and mainHeight place the conversation, or the page, in the
@@ -106,7 +109,7 @@ type (
 	sessionErrMsg struct{ err error }
 	openedMsg     struct{ conv *app.Conversation }
 	modeMsg       struct{ mode interact.Mode }
-	connectedMsg  struct{ report app.ReloadReport }
+	connectedMsg  struct{ report app.MCPReport }
 	reloadedMsg   struct{}
 	suggestionMsg struct {
 		conv *app.Conversation
@@ -146,12 +149,18 @@ func newModel(a *app.App, version string) *Model {
 }
 
 // askTrust asks the user to decide on what of the folder waits for their
-// trust, if anything does, in place of a question shown before.
+// trust, in place of a question asked before, where it holds what they
+// were not asked about yet this session.
 func (m *Model) askTrust() tea.Cmd {
-	m.remove(commands.IsTrust)
-	if len(m.app.Trust().Ask) == 0 {
+	ask := m.app.Trust().Ask()
+	if len(ask) == 0 {
+		m.remove(commands.IsAsk)
+	}
+	if len(ask.Missing(m.asked)) == 0 {
 		return nil
 	}
+	m.asked = m.asked.With(ask...)
+	m.remove(commands.IsAsk)
 	return m.push(commands.TrustPanel(m.app, false))
 }
 
@@ -238,18 +247,11 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	case reloadedMsg:
 		return m.askTrust()
 	case connectedMsg:
-		r := msg.report
-		if len(r.Fetched) > 0 {
-			m.t.Append(transcript.Note("Fetched plugins: " + strings.Join(r.Fetched, ", ")))
-		}
-		for _, e := range r.FetchErrors {
-			m.t.Append(transcript.Fail("Plugins: " + e))
-		}
-		for _, e := range r.MCP.Errors {
+		for _, e := range msg.report.Errors {
 			m.t.Append(transcript.Fail("MCP: " + e))
 		}
-		if r.MCP.Tools > 0 {
-			return m.notify("MCP connected · " + strconv.Itoa(r.MCP.Tools) + " tools")
+		if n := msg.report.Tools; n > 0 {
+			return m.notify("MCP connected · " + strconv.Itoa(n) + " tools")
 		}
 		return nil
 	case suggestionMsg:

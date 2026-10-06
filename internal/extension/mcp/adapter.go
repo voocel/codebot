@@ -134,19 +134,21 @@ func containsAny(s string, needles ...string) bool {
 const maxToolName = 64
 
 // toolName names the tool of server: mcp__<server>__<tool>, with what the
-// vendors refuse in a tool name made "-", and a name too long cut and told
-// apart by a hash of the whole.
+// vendors refuse in a tool name made "-". A name so changed, or too long and
+// cut, is told apart by a hash of the whole as given: two tools never take
+// one name.
 func toolName(server, tool string) string {
+	given := "mcp__" + server + "__" + tool
 	name := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
 			return r
 		}
 		return '-'
-	}, "mcp__"+server+"__"+tool)
-	if len(name) <= maxToolName {
+	}, given)
+	if name == given && len(name) <= maxToolName {
 		return name
 	}
-	sum := sha256.Sum256([]byte(name))
-	return name[:maxToolName-9] + "_" + hex.EncodeToString(sum[:4])
+	sum := sha256.Sum256([]byte(given))
+	return name[:min(len(name), maxToolName-9)] + "_" + hex.EncodeToString(sum[:4])
 }

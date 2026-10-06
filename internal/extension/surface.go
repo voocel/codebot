@@ -6,20 +6,21 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/voocel/codebot/internal/agent/skill"
 	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/lib/printable"
 )
 
-// Surface is what of a project runs code or lets calls through unasked, so
-// takes effect only once the user trusts it: its hooks, MCP servers, allow
-// rules and roots, and what its skills may do only where trusted. It is the
-// thing itself, not a digest of it, so the user is asked about just what
-// changed since they trusted it. Items are sorted.
+// Surface is what of a project or a plugin runs code or lets calls through
+// unasked, so takes effect only once the user agrees to it: its hooks, MCP
+// servers, allow rules and roots, the plugins a project declares, and what
+// its skills may do only where agreed to. It is the thing itself, not a
+// digest of it: the user agrees to each item, and is asked about just those
+// new since they last did. Items are sorted.
 type Surface []Item
 
-// Item is one thing on a project's surface.
+// Item is one thing on a surface.
 type Item struct {
 	// Kind is "hook", "mcp", "allow", "read", "write", "skill" or "plugin".
 	Kind string `json:"kind"`
@@ -29,74 +30,42 @@ type Item struct {
 }
 
 // With returns s with items, sorted.
-func (s Surface) With(items Surface) Surface {
-	return sorted(slices.Concat(s, items))
+func (s Surface) With(items ...Item) Surface { return sorted(slices.Concat(s, items)) }
+
+// Has reports whether s holds it.
+func (s Surface) Has(it Item) bool { return slices.Contains(s, it) }
+
+// HasAll reports whether s holds each of items.
+func (s Surface) HasAll(items []Item) bool {
+	return !slices.ContainsFunc(items, func(it Item) bool { return !s.Has(it) })
 }
 
-// Missing returns the items of s that trusted lacks.
-func (s Surface) Missing(trusted Surface) Surface {
+// Intersect returns the items of s that other holds too.
+func (s Surface) Intersect(other Surface) Surface {
 	var out Surface
 	for _, it := range s {
-		if !slices.Contains(trusted, it) {
+		if other.Has(it) {
 			out = append(out, it)
 		}
 	}
 	return out
 }
 
-// surface returns the surface of a project of settings p, skills and
-// plugins: the sources of those it declares, and what those read run. A git
-// plugin fetched once the project is trusted adds what it runs, so the user
-// is asked about it before it does.
-func surface(p config.Settings, skills []skill.Spec, plugins []Plugin) Surface {
-	var s Surface
-	add := func(kind, detail string) { s = append(s, NewItem(kind, detail)) }
-	for _, h := range hooksOf(Project, p.Hooks) {
-		add("hook", h.Detail())
-	}
-	for name, srv := range p.MCPServers {
-		add("mcp", MCPServer{Name: name, MCPServer: srv}.Detail())
-	}
-	if perms := p.Permissions; perms != nil {
-		for _, r := range perms.Allow {
-			add("allow", r)
-		}
-		for _, r := range perms.ReadRoots {
-			add("read", r)
-		}
-		for _, r := range perms.WriteRoots {
-			add("write", r)
+// Missing returns the items of s that agreed lacks.
+func (s Surface) Missing(agreed Surface) Surface {
+	var out Surface
+	for _, it := range s {
+		if !agreed.Has(it) {
+			out = append(out, it)
 		}
 	}
-	for _, spec := range skills {
-		for _, p := range spec.Privileges() {
-			add("skill", spec.Name+" "+p)
-		}
-	}
-	for _, raw := range p.Plugins {
-		add("plugin", raw)
-	}
-	for _, pl := range plugins {
-		if pl.Scope == Project && pl.Plugin != nil {
-			s = append(s, PluginSurface(pl.Plugin)...)
-		}
-	}
-	return sorted(s)
+	return out
 }
 
 // NewItem makes an item, what in detail a terminal would act on rather
 // than show escaped: what the user reads is all there is.
 func NewItem(kind, detail string) Item {
-	var b strings.Builder
-	for _, r := range detail {
-		if unicode.IsPrint(r) {
-			b.WriteRune(r)
-			continue
-		}
-		q := strconv.QuoteRune(r)
-		b.WriteString(q[1 : len(q)-1])
-	}
-	return Item{kind, b.String()}
+	return Item{kind, printable.Escape(detail)}
 }
 
 func sorted(s Surface) Surface {
@@ -105,6 +74,84 @@ func sorted(s Surface) Surface {
 	})
 	return slices.Compact(s)
 }
+
+// projectSurface returns the surface of a project of grants and skills: see
+// config.ForProject.
+func projectSurface(grants config.Settings, skills []skill.Spec) Surface {
+	var s Surface
+	for _, h := range hooksOf(Project, grants.Hooks) {
+		s = append(s, h.item())
+	}
+	for name, srv := range grants.MCPServers {
+		s = append(s, MCPServer{Name: name, MCPServer: srv}.item())
+	}
+	for _, raw := range grants.Plugins {
+		s = append(s, NewItem("plugin", raw))
+	}
+	if p := grants.Permissions; p != nil {
+		for kind, rules := range map[string][]string{"allow": p.Allow, "read": p.ReadRoots, "write": p.WriteRoots} {
+			for _, r := range rules {
+				s = append(s, NewItem(kind, r))
+			}
+		}
+	}
+	for _, spec := range skills {
+		s = append(s, skillItems(spec.Name, spec)...)
+	}
+	return sorted(s)
+}
+
+// grant keeps of a project's grants those the user agreed to.
+func grant(grants config.Settings, agreed Surface) config.Settings {
+	var out config.Settings
+	for _, h := range hooksOf(Project, grants.Hooks) {
+		if agreed.Has(h.item()) {
+			if out.Hooks == nil {
+				out.Hooks = config.HooksConfig{}
+			}
+			out.Hooks[h.Event] = append(out.Hooks[h.Event], h.HookEntry)
+		}
+	}
+	for name, srv := range grants.MCPServers {
+		if agreed.Has(MCPServer{Name: name, MCPServer: srv}.item()) {
+			if out.MCPServers == nil {
+				out.MCPServers = map[string]config.MCPServer{}
+			}
+			out.MCPServers[name] = srv
+		}
+	}
+	for _, raw := range grants.Plugins {
+		if agreed.Has(NewItem("plugin", raw)) {
+			out.Plugins = append(out.Plugins, raw)
+		}
+	}
+	if p := grants.Permissions; p != nil {
+		keep := func(kind string, rules []string) []string {
+			return slices.DeleteFunc(slices.Clone(rules), func(r string) bool { return !agreed.Has(NewItem(kind, r)) })
+		}
+		out.Permissions = &config.PermissionsConfig{Allow: keep("allow", p.Allow), ReadRoots: keep("read", p.ReadRoots), WriteRoots: keep("write", p.WriteRoots)}
+	}
+	return out
+}
+
+// skillItems lists what the skill named name may do only where agreed to.
+// They go together: it runs as a whole, or without its privileges.
+func skillItems(name string, spec skill.Spec) []Item {
+	var out []Item
+	for _, p := range spec.Privileges() {
+		out = append(out, NewItem("skill", name+" "+p))
+	}
+	return out
+}
+
+func (h Hook) item() Item {
+	if h.Plugin != "" {
+		return NewItem("hook", h.Plugin+": "+h.Detail())
+	}
+	return NewItem("hook", h.Detail())
+}
+
+func (srv MCPServer) item() Item { return NewItem("mcp", srv.Detail()) }
 
 // Detail tells the hook as "Event(matcher) if …: what it runs".
 func (h Hook) Detail() string {

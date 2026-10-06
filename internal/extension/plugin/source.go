@@ -14,8 +14,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/voocel/codebot/internal/lib/filelock"
 )
 
 // Source is where a plugin comes from: a directory, or a git repository at
@@ -30,6 +28,10 @@ type Source struct {
 // reSCP matches git's scp-like ssh address, user@host:path.
 var reSCP = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/]`)
 
+// reHost matches a host's name with a dot in it, as "host/owner/repo"
+// starts: example.com, not .codebot or a directory's name.
+var reHost = regexp.MustCompile(`^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:[0-9]+)?$`)
+
 // ParseSource parses a plugin's source as settings declare it: a path,
 // absolute or relative to base, or a git repository, "host/owner/repo" or
 // an https or ssh URL, "//dir" naming the plugin's directory in it and
@@ -41,6 +43,7 @@ func ParseSource(raw, base string) (Source, error) {
 	}
 	repo, ref, _ := strings.Cut(raw, "#")
 	repo, sub, ok := cutPath(repo)
+	repo = strings.TrimSuffix(repo, "/")
 	if ok && (sub == "" || path.IsAbs(sub) || path.Clean(sub) != sub || sub == ".." || strings.HasPrefix(sub, "../") || strings.Contains(sub, "\\")) {
 		return Source{}, fmt.Errorf("plugin source %q names no directory in the repository", raw)
 	}
@@ -51,7 +54,7 @@ func ParseSource(raw, base string) (Source, error) {
 			return Source{}, fmt.Errorf("plugin source %q is not a repository URL", raw)
 		}
 	case reSCP.MatchString(repo):
-	case strings.Count(repo, "/") >= 2 && strings.Contains(strings.Split(repo, "/")[0], "."):
+	case strings.Count(repo, "/") >= 2 && reHost.MatchString(strings.Split(repo, "/")[0]):
 		repo = "https://" + repo
 	default:
 		return Source{}, fmt.Errorf("plugin source %q is neither a git repository nor a path", raw)
@@ -250,61 +253,10 @@ func Sweep(cache string, keep map[string]bool, now time.Time) error {
 	return err
 }
 
-// Mirror fetches the repository of the git source s at its ref into dir,
-// which keeps the ref's latest commit alone, and returns its checkout. A
-// plugin stays at the commit locked; a mirror, of a marketplace, follows
-// its ref: it is a catalog to read, not code to run.
-func Mirror(ctx context.Context, s Source, dir string) (string, error) {
-	cache := mirrorCache(s, dir)
-	if err := os.MkdirAll(cache, 0o755); err != nil {
-		return "", err
-	}
-	unlock, err := filelock.Lock(filepath.Join(cache, ".lock"))
-	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	commit, err := Fetch(ctx, s, cache, "")
-	if err != nil {
-		return "", err
-	}
-	checkout := Cached(s, cache, commit)
-	commits, err := os.ReadDir(filepath.Dir(checkout))
-	if err != nil {
-		return "", err
-	}
-	for _, c := range commits {
-		if c.Name() != commit {
-			if err := os.RemoveAll(filepath.Join(filepath.Dir(checkout), c.Name())); err != nil {
-				return "", err
-			}
-		}
-	}
-	return checkout, nil
-}
-
-// Mirrored returns the checkout Mirror fetched last of s into dir, "" for
-// none.
-func Mirrored(s Source, dir string) string {
-	repo := filepath.Dir(Cached(s, mirrorCache(s, dir), "_"))
-	commits, _ := os.ReadDir(repo)
-	for _, c := range commits {
-		if c.IsDir() {
-			return filepath.Join(repo, c.Name())
-		}
-	}
-	return ""
-}
-
-// mirrorCache is where Mirror keeps s in dir: apart for each ref, as one
-// repository may be mirrored at two.
-func mirrorCache(s Source, dir string) string {
-	return filepath.Join(dir, url.PathEscape(cmp.Or(s.Ref, "HEAD")))
-}
-
 // git runs git in dir and returns its output, trimmed. Of the transports
 // it takes https and ssh alone, nor does it ask for credentials: what the
-// user's git and ssh agent hold is all it has.
+// user's git, as they set it up, and ssh agent hold is all it has. Nothing
+// it runs may prompt on the terminal the TUI draws on.
 func git(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{
 		"-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
@@ -313,10 +265,8 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	// The user's git-lfs would fetch large files from where the repository's
 	// .lfsconfig says; a plugin has no business with them.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1")
-	if os.Getenv("GIT_SSH_COMMAND") == "" {
-		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
-	}
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "SSH_ASKPASS_REQUIRE=never")
+	detach(cmd)
 	out, err := cmd.Output()
 	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 		if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {

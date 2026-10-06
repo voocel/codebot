@@ -1,7 +1,7 @@
 package extension
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -16,65 +16,46 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// Plugins live under ~/.codebot/plugins: the commits fetched, in cache/;
-// what each keeps across updates, in data/; and the commit each git source
-// is at, in lock.json.
+// Plugins live under ~/.codebot/plugins: the commits fetched, in cache/,
+// and what each keeps across updates, in data/.
 func pluginsDir() string { return filepath.Join(config.UserConfigDir(), "plugins") }
 
-// CacheDir is where the commits fetched of git plugins are kept.
-func CacheDir() string { return filepath.Join(pluginsDir(), "cache") }
+func cacheDir() string { return filepath.Join(pluginsDir(), "cache") }
 
-// DataDir is where plugins keep their data, each in its own directory.
-func DataDir() string { return filepath.Join(pluginsDir(), "data") }
-
-// MarketplacesDir is where the git marketplaces are mirrored.
-func MarketplacesDir() string { return filepath.Join(pluginsDir(), "marketplaces") }
-
-// SweepCache clears the cache of the commits no source is locked at, two
-// weeks after it finds them so: a session may run one still.
-func SweepCache() error {
-	lock, err := ReadLock()
-	if err != nil {
-		return err
-	}
-	keep := map[string]bool{}
-	for source, l := range lock {
-		src, err := plugin.ParseSource(source, "")
-		if err != nil {
-			return fmt.Errorf("%s: %w", lockPath(), err)
-		}
-		keep[plugin.Cached(src, CacheDir(), l.Commit)] = true
-	}
-	return plugin.Sweep(CacheDir(), keep, time.Now())
-}
+func dataDir() string { return filepath.Join(pluginsDir(), "data") }
 
 // PluginState is where a plugin stands.
 type PluginState string
 
 const (
 	PluginOn       PluginState = "on"
-	PluginOff      PluginState = "off"           // the user turned it off in this project
 	PluginShadowed PluginState = "shadowed"      // another of its name is in its stead
-	PluginHeld     PluginState = "untrusted"     // the project declaring it is not trusted
-	PluginMissing  PluginState = "not installed" // a git source not fetched, or no longer cached
+	PluginHeld     PluginState = "untrusted"     // the project declaring it is not trusted to
+	PluginMissing  PluginState = "not installed" // a git one the user has yet to agree to, or not cached
 	PluginBroken   PluginState = "broken"
 )
 
-// Plugin is a plugin the settings declare, and where it stands.
+// Plugin is a plugin given on the command line or declared in settings,
+// and where it stands.
 type Plugin struct {
-	// Source is the plugin's source as declared, and Scope whose settings
-	// declare it.
+	// Source is the plugin's source as given, and Scope whose settings
+	// declare it, or Session.
 	Source string
 	Scope  Scope
-	// Dir is a local plugin's directory, "" for a git one.
-	Dir string
-	// Commit is the commit a git plugin is locked at, "" for a local one
-	// and one never fetched.
+	// Src is Source parsed, from the directory of the settings declaring
+	// it; zero where it does not parse.
+	Src plugin.Source
+	// Commit is the commit of a git plugin the user agreed to, "" for a
+	// local one and one they have yet to agree to.
 	Commit string
 	State  PluginState
 	// Err says why the plugin is broken.
 	Err error
-	// Plugin is the plugin as read, nil where it is missing or broken.
+	// Surface is what the plugin runs, and Held what of it the user has yet
+	// to agree to: of that, nothing runs.
+	Surface, Held Surface
+	// Plugin is the plugin as read, nil where it is held, missing or
+	// broken.
 	*plugin.Plugin
 }
 
@@ -93,53 +74,6 @@ func (pl Plugin) Is(ref string) bool {
 	return pl.Plugin != nil && pl.Name == ref || pl.Source == ref
 }
 
-// Locked is the commit a git source is at, and the plugin's surface there,
-// which the user agreed to.
-type Locked struct {
-	Commit  string  `json:"commit"`
-	Surface Surface `json:"surface,omitempty"`
-}
-
-func lockPath() string { return filepath.Join(pluginsDir(), "lock.json") }
-
-// ReadLock returns the commit each git source is at, by source.
-func ReadLock() (map[string]Locked, error) {
-	all := map[string]Locked{}
-	data, err := os.ReadFile(lockPath())
-	if errors.Is(err, fs.ErrNotExist) {
-		return all, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(data, &all); err != nil {
-		return nil, fmt.Errorf("%s: %w", lockPath(), err)
-	}
-	return all, nil
-}
-
-// Lock puts the git source at the commit l.
-func Lock(source string, l Locked) error {
-	if err := os.MkdirAll(pluginsDir(), 0o755); err != nil {
-		return err
-	}
-	unlock, err := config.LockFile(lockPath())
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	all, err := ReadLock()
-	if err != nil {
-		return err
-	}
-	all[source] = l
-	data, err := json.MarshalIndent(all, "", "  ")
-	if err != nil {
-		return err
-	}
-	return config.WriteFileAtomic(lockPath(), data, 0o600)
-}
-
 // PluginBase is the directory a scope's plugin paths are relative to: that
 // of the settings file declaring them.
 func PluginBase(scope Scope, root string) string {
@@ -149,86 +83,100 @@ func PluginBase(scope Scope, root string) string {
 	return filepath.Dir(config.UserSettingsPath())
 }
 
-// readPlugins reads the plugins the layers declare, the project's first:
-// those of local directories, and git ones at their locked commit.
-func (s *Set) readPlugins(layers config.Layers, lock map[string]Locked) []Plugin {
-	var out []Plugin
-	for _, l := range []struct {
-		scope   Scope
-		sources []string
-	}{{Project, layers.Project.Plugins}, {User, layers.User.Plugins}} {
-		for _, raw := range l.sources {
-			pl := Plugin{Source: raw, Scope: l.scope}
-			problems, err := pl.read(PluginBase(l.scope, layers.Root), lock)
-			switch {
-			case err != nil:
-				pl.State, pl.Err = PluginBroken, err
-			case pl.Plugin == nil:
-				pl.State = PluginMissing
-			}
-			s.Problems = append(s.Problems, problems...)
-			out = append(out, pl)
-		}
+// loadPlugins loads the plugins given on the command line, then those the
+// project declares, then the user's: of two of one name, the first. Of the
+// project's, those the user has not trusted it to declare are held.
+func (s *Set) loadPlugins(o Options, declared []string) {
+	type decl struct {
+		scope     Scope
+		raw, base string
 	}
-	return out
-}
-
-// read reads the plugin, which it leaves nil when it is not installed.
-func (pl *Plugin) read(base string, lock map[string]Locked) (problems []error, err error) {
-	src, err := plugin.ParseSource(pl.Source, base)
-	if err != nil {
-		return nil, err
+	var decls []decl
+	for _, dir := range o.PluginDirs {
+		decls = append(decls, decl{Session, dir, o.Cwd})
 	}
-	if pl.Dir = src.Dir; pl.Dir != "" {
-		pl.Plugin, problems, err = plugin.Read(pl.Dir, DataDir())
-		return problems, err
+	for _, raw := range declared {
+		decls = append(decls, decl{Project, raw, PluginBase(Project, o.Layers.Root)})
 	}
-	l, ok := lock[src.String()]
-	if !ok {
-		return nil, nil
+	for _, raw := range o.Layers.User.Plugins {
+		decls = append(decls, decl{User, raw, PluginBase(User, "")})
 	}
-	pl.Commit = l.Commit
-	if _, err := os.Stat(plugin.Cached(src, CacheDir(), l.Commit)); errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	pl.Plugin, problems, err = plugin.ReadCached(src, CacheDir(), l.Commit, DataDir())
-	return problems, err
-}
-
-// addPlugins adds the plugins on: those read but for an untrusted
-// project's, the ones the user turned off, and a second of one name.
-func (s *Set) addPlugins(plugins []Plugin, disabled []string) {
 	won := map[string]Plugin{}
-	for _, pl := range plugins {
-		switch {
-		case pl.Scope == Project && !s.Trusted:
+	for _, d := range decls {
+		pl := Plugin{Source: d.raw, Scope: d.scope}
+		var agreed Surface
+		var err error
+		switch pl.Src, err = plugin.ParseSource(d.raw, d.base); {
+		case err != nil:
+			pl.State, pl.Err = PluginBroken, err
+		case d.scope == Project && !slices.Contains(s.Granted.Plugins, d.raw):
 			pl.State = PluginHeld
-		case pl.Plugin == nil:
-		case won[pl.Name].Plugin != nil:
-			pl.State = PluginShadowed
-			s.Shadowed = append(s.Shadowed, Shadow{"plugin", pl.Name, pl.Source, won[pl.Name].Source})
-		case slices.Contains(disabled, "plugin:"+pl.Name):
-			pl.State = PluginOff
 		default:
-			pl.State = PluginOn
-			won[pl.Name] = pl
-			s.contribute(pl)
+			agreed = s.readPlugin(&pl, o)
+		}
+		if pl.State == PluginOn {
+			if w, ok := won[pl.Name]; ok {
+				pl.State = PluginShadowed
+				s.Shadowed = append(s.Shadowed, Shadow{"plugin", pl.Name, pl.Source, w.Source})
+			} else {
+				won[pl.Name] = pl
+				s.contribute(pl, agreed)
+			}
 		}
 		s.Plugins = append(s.Plugins, pl)
 	}
 }
 
+// readPlugin reads the plugin pl declares, and returns what of it the user
+// agreed to run. A local one is read where it is; a git one at the commit
+// the user agreed to, if it is cached. One given on the command line, or
+// one a project trusted for the run declares, runs all it does.
+func (s *Set) readPlugin(pl *Plugin, o Options) (agreed Surface) {
+	src := pl.Src
+	c, ok := o.Consents.Plugins[src.String()]
+	var problems []error
+	var err error
+	switch {
+	case src.Dir != "":
+		pl.Plugin, problems, err = plugin.Read(src.Dir, dataDir())
+	case !ok:
+		pl.State = PluginMissing
+		return nil
+	default:
+		pl.Commit = c.Commit
+		if _, err := os.Stat(plugin.Cached(src, cacheDir(), c.Commit)); errors.Is(err, fs.ErrNotExist) {
+			pl.State = PluginMissing
+			return nil
+		}
+		pl.Plugin, problems, err = plugin.ReadCached(src, cacheDir(), c.Commit, dataDir())
+	}
+	s.problem(problems...)
+	if err != nil {
+		pl.State, pl.Plugin, pl.Err = PluginBroken, nil, err
+		return nil
+	}
+	surface := PluginSurface(pl.Plugin)
+	agreed = c.Surface
+	if pl.Scope == Session || pl.Scope == Project && o.TrustAll {
+		agreed = surface
+	}
+	pl.State, pl.Surface, pl.Held = PluginOn, surface, surface.Missing(agreed)
+	return agreed
+}
+
 // contribute adds what a plugin brings, named after it: skill and agent
 // "<plugin>:<name>", MCP server "<plugin>_<server>". A plugin's name holds
 // no ":" or "_", so these never take another's name, but for a settings
-// server's, which wins. Its hooks run beside the settings'. Its data
-// directory is made for what it runs to keep data in.
-func (s *Set) contribute(pl Plugin) {
+// server's, which wins. Its hooks run beside the settings'. Of what runs,
+// it brings what the user agreed to alone. Its data directory is made for
+// what it runs to keep data in.
+func (s *Set) contribute(pl Plugin, agreed Surface) {
 	if err := os.MkdirAll(pl.Data, 0o700); err != nil {
-		s.Problems = append(s.Problems, err)
+		s.problem(err)
 	}
 	for _, spec := range pl.Skills {
-		spec.Name, spec.Source, spec.Privileged = pl.Name+":"+spec.Name, pl.Name, true
+		name := pl.Name + ":" + spec.Name
+		spec.Name, spec.Source, spec.Privileged = name, "plugin", agreed.HasAll(skillItems(name, spec))
 		s.Skills = append(s.Skills, spec)
 	}
 	for _, def := range pl.Agents {
@@ -236,41 +184,112 @@ func (s *Set) contribute(pl Plugin) {
 		s.Agents = append(s.Agents, def)
 	}
 	for _, name := range slices.Sorted(maps.Keys(pl.MCP)) {
-		full := pl.Name + "_" + name
-		if slices.ContainsFunc(s.MCP, func(m MCPServer) bool { return m.Name == full }) {
-			s.Shadowed = append(s.Shadowed, Shadow{"MCP server", full, pl.Root, "settings"})
+		if !agreed.Has(pluginServer(pl.Plugin, name).item()) {
 			continue
 		}
-		s.MCP = append(s.MCP, MCPServer{Name: full, Scope: pl.Scope, Plugin: pl.Name, MCPServer: pl.MCP[name]})
+		srv := MCPServer{Name: pl.Name + "_" + name, Scope: pl.Scope, Plugin: pl.Name, MCPServer: pl.MCP[name]}
+		if i := slices.IndexFunc(s.MCP, func(m MCPServer) bool { return m.Name == srv.Name }); i >= 0 {
+			s.Shadowed = append(s.Shadowed, Shadow{"MCP server", srv.Name, pl.Root, settingsPath(s.MCP[i].Scope, s.Trust.Root)})
+			continue
+		}
+		s.MCP = append(s.MCP, srv)
 	}
 	for _, h := range hooksOf(pl.Scope, pl.Hooks) {
-		h.Plugin = pl.Name
-		s.Hooks = append(s.Hooks, h)
+		if h.Plugin = pl.Name; agreed.Has(h.item()) {
+			s.Hooks = append(s.Hooks, h)
+		}
 	}
 }
 
+func settingsPath(scope Scope, root string) string {
+	if scope == Project {
+		return config.ProjectSettingsPath(root)
+	}
+	return config.UserSettingsPath()
+}
+
 // PluginSurface is what a plugin runs or lets through: its MCP servers, its
-// hooks, and what its skills may do only where trusted, named as it brings
-// them. Its directory and its data's are told as ${PLUGIN_ROOT} and
+// hooks, and what its skills may do only where agreed to, named as it
+// brings them. Its directory and its data's are told as ${PLUGIN_ROOT} and
 // ${PLUGIN_DATA}: moving to another commit's directory runs nothing new.
-// Its servers run in its directory unless they say otherwise, which goes
-// untold.
 func PluginSurface(p *plugin.Plugin) Surface {
 	var s Surface
-	relative := strings.NewReplacer(p.Root, "${PLUGIN_ROOT}", p.Data, "${PLUGIN_DATA}")
-	for name, srv := range p.MCP {
-		if srv.Cwd == p.Root {
-			srv.Cwd = ""
-		}
-		s = append(s, NewItem("mcp", relative.Replace(MCPServer{Name: p.Name + "_" + name, Plugin: p.Name, MCPServer: srv}.Detail())))
+	for name := range p.MCP {
+		s = append(s, pluginServer(p, name).item())
 	}
 	for _, spec := range p.Skills {
-		for _, priv := range spec.Privileges() {
-			s = append(s, NewItem("skill", p.Name+":"+spec.Name+" "+priv))
-		}
+		s = append(s, skillItems(p.Name+":"+spec.Name, spec)...)
 	}
 	for _, h := range hooksOf("", p.Hooks) {
-		s = append(s, NewItem("hook", p.Name+": "+h.Detail()))
+		h.Plugin = p.Name
+		s = append(s, h.item())
 	}
 	return sorted(s)
+}
+
+// pluginServer is the server name of p as its surface tells it: its paths
+// in the plugin and its data as ${PLUGIN_ROOT} and ${PLUGIN_DATA}, and the
+// plugin's directory, where it runs unless it says otherwise, untold.
+func pluginServer(p *plugin.Plugin, name string) MCPServer {
+	srv := p.MCP[name]
+	relative := strings.NewReplacer(p.Root, "${PLUGIN_ROOT}", p.Data, "${PLUGIN_DATA}").Replace
+	if srv.Cwd == p.Root {
+		srv.Cwd = ""
+	}
+	srv.Command, srv.Cwd = relative(srv.Command), relative(srv.Cwd)
+	srv.Args = slices.Clone(srv.Args)
+	for i, a := range srv.Args {
+		srv.Args[i] = relative(a)
+	}
+	srv.Env = maps.Clone(srv.Env)
+	for k, v := range srv.Env {
+		srv.Env[k] = relative(v)
+	}
+	return MCPServer{Name: p.Name + "_" + name, Plugin: p.Name, MCPServer: srv}
+}
+
+// ReadPlugin reads the plugin at src for the user to agree to what it runs:
+// a local one where it is; a git one at commit or, where that is "", at its
+// ref, fetched into the cache unless it is there. It returns the commit of
+// a git one.
+func ReadPlugin(ctx context.Context, src plugin.Source, commit string) (p *plugin.Plugin, got string, problems []error, err error) {
+	if src.Dir != "" {
+		p, problems, err = plugin.Read(src.Dir, dataDir())
+		return p, "", problems, err
+	}
+	if got, err = plugin.Fetch(ctx, src, cacheDir(), commit); err != nil {
+		return nil, "", nil, err
+	}
+	p, problems, err = plugin.ReadCached(src, cacheDir(), got, dataDir())
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("%s: %w", src, err)
+	}
+	return p, got, problems, nil
+}
+
+// AgreeToPlugin records that the user agreed to the plugin at src running
+// surface, at commit for a git one.
+func AgreeToPlugin(src plugin.Source, commit string, surface Surface) error {
+	return EditConsents(func(c *Consents) { c.Plugins[src.String()] = Consent{Commit: commit, Surface: surface} })
+}
+
+// SweepCache clears the cache of the commits the user agreed to of no
+// plugin, two weeks after it finds them so: a session may run one still.
+func SweepCache() error {
+	c, err := ReadConsents()
+	if err != nil {
+		return err
+	}
+	keep := map[string]bool{}
+	for source, consent := range c.Plugins {
+		if consent.Commit == "" {
+			continue
+		}
+		src, err := plugin.ParseSource(source, "")
+		if err != nil {
+			return fmt.Errorf("%s: %w", consentsPath(), err)
+		}
+		keep[plugin.Cached(src, cacheDir(), consent.Commit)] = true
+	}
+	return plugin.Sweep(cacheDir(), keep, time.Now())
 }

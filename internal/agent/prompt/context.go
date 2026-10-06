@@ -13,9 +13,15 @@ import (
 // filesystem root down to cwd. CLAUDE.md stands in for a directory without
 // an AGENTS.md.
 func loadAgents(cwd string) string {
+	root := config.ProjectRoot(cwd)
 	var parts []string
 	for _, dir := range append([]string{config.UserConfigDir()}, parentChain(cwd)...) {
-		if content := readAgentFile(dir); content != "" {
+		read := readIn(root, dir)
+		content := readText(read, filepath.Join(dir, "AGENTS.md"))
+		if content == "" {
+			content = readText(read, filepath.Join(dir, "CLAUDE.md"))
+		}
+		if content != "" {
 			parts = append(parts, content)
 		}
 	}
@@ -38,16 +44,20 @@ func parentChain(dir string) []string {
 	return chain
 }
 
-// readAgentFile returns the content of AGENTS.md (or CLAUDE.md fallback) in dir.
-func readAgentFile(dir string) string {
-	if content := readFileOr(filepath.Join(dir, "AGENTS.md")); content != "" {
-		return content
+// readIn returns how to read the files of dir. Those of the project at root
+// may not lead outside it: the user's files are not the project's to read
+// into the prompt.
+func readIn(root, dir string) func(string) ([]byte, error) {
+	if root != "" && (dir == root || strings.HasPrefix(dir, root+string(filepath.Separator))) {
+		return func(path string) ([]byte, error) { return regular.ReadFileIn(root, path) }
 	}
-	return readFileOr(filepath.Join(dir, "CLAUDE.md"))
+	return regular.ReadFile
 }
 
-func readFileOr(path string) string {
-	data, err := regular.ReadFile(path)
+// readText returns the file at path, read with read and trimmed; "" for
+// none.
+func readText(read func(string) ([]byte, error), path string) string {
+	data, err := read(path)
 	if err != nil {
 		return ""
 	}

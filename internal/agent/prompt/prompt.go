@@ -37,7 +37,8 @@ const identityPreamble = `You are an expert coding assistant working in the user
 // SYSTEM.md there verbatim, or the built-in prompt, then APPEND_SYSTEM.md
 // there. Tools are described by their specs, never listed here.
 func System(cwd string) string {
-	system := readFileOr(filepath.Join(cwd, "SYSTEM.md"))
+	read := readIn(config.ProjectRoot(cwd), cwd)
+	system := readText(read, filepath.Join(cwd, "SYSTEM.md"))
 	if system == "" {
 		system = strings.Join([]string{
 			identityPreamble,
@@ -48,7 +49,7 @@ func System(cwd string) string {
 			memoryInstructions(config.MemoryDir(cwd)),
 		}, "\n\n")
 	}
-	if extra := readFileOr(filepath.Join(cwd, "APPEND_SYSTEM.md")); extra != "" {
+	if extra := readText(read, filepath.Join(cwd, "APPEND_SYSTEM.md")); extra != "" {
 		system += "\n\n" + extra
 	}
 	return system

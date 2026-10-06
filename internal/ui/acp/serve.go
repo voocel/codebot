@@ -33,14 +33,9 @@ func (s *Server) Serve(a *app.App) error {
 	s.fs.setSession(s.sessionID())
 	unsubscribe := a.Subscribe(s.onEvent)
 	defer unsubscribe()
-	// As in the TUI, the session takes plugins and MCP tools up as they
-	// are fetched and connect.
+	// As in the TUI, the session takes MCP tools up as they connect.
 	go func() {
-		r := a.Connect(context.Background())
-		for _, e := range r.FetchErrors {
-			fmt.Fprintf(os.Stderr, "plugins: %s\n", e)
-		}
-		for _, e := range r.MCP.Errors {
+		for _, e := range a.Connect(context.Background()).Errors {
 			fmt.Fprintf(os.Stderr, "mcp: %s\n", e)
 		}
 	}()
