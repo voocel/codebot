@@ -75,6 +75,24 @@ func connected(r app.MCPReport) string {
 	return fmt.Sprintf(" · %d MCP tools (%d servers connected, %d failed)", r.Tools, r.Connected, len(r.Errors))
 }
 
+// PendingPlugins tells how many plugins wait for /plugins install: to be
+// installed, or to have what they run decided on; "" for none.
+func PendingPlugins(a *app.App) string {
+	n := 0
+	for _, pl := range a.Plugins() {
+		if pl.State == app.PluginNotInstalled || pl.State == app.PluginNotCached || pl.State == app.PluginOn && len(pl.Ask()) > 0 {
+			n++
+		}
+	}
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "1 plugin waits for you · /plugins install"
+	}
+	return fmt.Sprintf("%d plugins wait for you · /plugins install", n)
+}
+
 // pluginKey identifies a plugin: by whose it is, and its source there.
 type pluginKey struct{ scope, source string }
 
@@ -84,7 +102,7 @@ func pluginList(a *app.App) tea.Cmd {
 	items := func() []panel.Item {
 		var out []panel.Item
 		for _, pl := range a.Plugins() {
-			out = append(out, panel.Item{Group: string(pl.Scope), Title: pluginTitle(pl), Detail: pluginDetail(pl), Value: keyOf(pl)})
+			out = append(out, panel.Item{Group: string(pl.Scope), Title: app.Printable(pluginTitle(pl)), Detail: app.Printable(pluginDetail(pl)), Value: keyOf(pl)})
 		}
 		return out
 	}
@@ -135,8 +153,8 @@ func pluginDetail(pl app.Plugin) string {
 func pluginState(pl app.Plugin) string {
 	switch pl.State {
 	case app.PluginOn:
-		if held := pl.Held(); len(held) > 0 {
-			return fmt.Sprintf("on · %d waiting for you · /plugins install", len(held))
+		if ask := pl.Ask(); len(ask) > 0 {
+			return fmt.Sprintf("on · %d waiting for you · /plugins install", len(ask))
 		}
 	case app.PluginShadowed:
 		return "another " + pl.Name + " is on in its stead"
@@ -198,7 +216,10 @@ func pluginRows(pl app.Plugin) [][2]string {
 		rows = append(rows, [2]string{"Runs", ""})
 		for _, it := range pl.Surface {
 			detail := it.Detail
-			if !pl.Agreed.Has(it) {
+			switch {
+			case pl.Declined.Has(it):
+				detail += " · declined"
+			case !pl.Agreed.Has(it):
 				detail += " · waiting for you"
 			}
 			rows = append(rows, [2]string{panel.KindLabel(it.Kind), detail})
@@ -207,8 +228,9 @@ func pluginRows(pl app.Plugin) [][2]string {
 	return rows
 }
 
-// offerPanel asks the user, under title, to agree to what the plugin
-// offered runs that they have yet to; accept does, done tells what it did.
+// offerPanel asks the user, under title, to decide on what the plugin
+// offered runs that they have yet to: accept agrees to what they check and
+// declines the rest; done tells what it did.
 func offerPanel(a *app.App, o *app.PluginOffer, title, accept, done string) tea.Cmd {
 	where := o.Source
 	if o.Commit != "" {
@@ -223,15 +245,15 @@ func offerPanel(a *app.App, o *app.PluginOffer, title, accept, done string) tea.
 		cells = append(cells, fail(p.Error()))
 	}
 	dismiss := func() tea.Cmd { return note("Left " + o.Name + " as it was") }
-	pick := func() tea.Cmd {
-		return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.AcceptPlugin(ctx, o) }, done)
+	pick := func(agreed app.Surface) tea.Cmd {
+		return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.AcceptPlugin(ctx, o, agreed) }, done)
 	}
 	if o.Version != "" {
 		title += " " + o.Version
 	}
-	cells = append(cells, show(panel.NewConsent(new(int), title+"?", lead, o.New, []panel.Choice{
+	cells = append(cells, show(panel.NewConsent(new(int), title+"?", lead, o.New, o.New, []panel.Choice{
 		{Label: accept, Pick: pick},
-		{Label: "Cancel", Pick: dismiss},
+		{Label: "Cancel", Pick: func(app.Surface) tea.Cmd { return dismiss() }},
 	}, dismiss)))
 	return tea.Batch(cells...)
 }

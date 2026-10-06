@@ -22,57 +22,79 @@ func IsAsk(p panel.Panel) bool {
 	return ok && r.Key() == askKey
 }
 
-// TrustPanel asks the user to decide on the folder's trust: on what it
-// asks about, or with all, on its whole surface. Dismissed, it leaves
-// things as they stand.
+// TrustPanel asks the user to decide on the folder's trust: on what they
+// have yet to decide on or, with all, on its whole surface. They trust it
+// to what they check; dismissed, it leaves things as they stand.
 func TrustPanel(a *app.App, all bool) panel.Panel {
 	t := a.Trust()
 	folder := transcript.HomePath(t.Root)
-	key, items, lead := askKey, t.Ask(), folder+" would turn on:"
-	switch held := len(t.Held()); {
+	key, items, checked, lead := askKey, t.Ask(), t.Ask(), folder+" would turn on:"
+	no := panel.Choice{Label: "Don't trust these · keep working without them", Pick: func(app.Surface) tea.Cmd {
+		return decide(a, "Keeping them off; /trust changes that", func(ctx context.Context) (app.ReloadReport, error) {
+			return a.SetTrust(ctx, items, nil, true)
+		})
+	}}
+	switch {
 	case all:
-		key, items = trustKey, t.Surface
+		key, items, checked = trustKey, t.Surface, t.Surface.Missing(t.Declined)
+		no = panel.Choice{Label: "Don't trust this folder", Pick: func(app.Surface) tea.Cmd {
+			return decide(a, "Not trusting "+folder+"; /trust changes that", func(ctx context.Context) (app.ReloadReport, error) {
+				return a.DenyTrust(ctx, true)
+			})
+		}}
 		switch {
+		case t.ForRun:
+			lead = folder + " is trusted for this run by --trust; what you decide here holds from the next:"
 		case t.Denied:
 			lead = folder + " is not trusted. Trusted, it would turn on:"
-		case held == 0:
+		case len(t.Held()) == 0:
 			lead = folder + " is trusted, which turns on:"
 		case len(t.Agreed) > 0:
-			lead = fmt.Sprintf("%s is trusted to %d of these, the rest waiting for you:", folder, len(t.Agreed))
+			lead = fmt.Sprintf("%s is trusted to %d of these:", folder, len(t.Agreed))
 		}
 	case len(t.Agreed) > 0:
 		lead = folder + " has more to turn on since you trusted it:"
 	}
-	decide := func(trusted, remember bool) func() tea.Cmd {
-		return func() tea.Cmd { return setTrust(a, t, trusted, remember) }
+	trust := func(remember bool) func(app.Surface) tea.Cmd {
+		return func(agreed app.Surface) tea.Cmd {
+			done := "Trusted " + folder
+			if n := len(items) - len(agreed); n > 0 {
+				done += fmt.Sprintf(", but for %d you declined", n)
+			}
+			if !remember {
+				done += " for this session"
+			}
+			return decide(a, done, func(ctx context.Context) (app.ReloadReport, error) {
+				return a.SetTrust(ctx, items, agreed, remember)
+			})
+		}
 	}
-	return panel.NewConsent(key, "Trust this folder?", lead, items, []panel.Choice{
-		{Label: "Trust this folder", Pick: decide(true, true)},
-		{Label: "Trust for this session", Pick: decide(true, false)},
-		{Label: "Don't trust · keep working without them", Pick: decide(false, true)},
+	return panel.NewConsent(key, "Trust this folder?", lead, items, checked, []panel.Choice{
+		{Label: "Trust this folder", Pick: trust(true)},
+		{Label: "Trust for this session", Pick: trust(false)},
+		no,
 	}, func() tea.Cmd { return nil })
 }
 
-func setTrust(a *app.App, t app.Trust, trusted, remember bool) tea.Cmd {
+// decide puts what the user decided of the folder in effect off the TUI's
+// goroutine, then notes done, with what it connected and the plugins that
+// wait for them now.
+func decide(a *app.App, done string, change func(context.Context) (app.ReloadReport, error)) tea.Cmd {
 	return func() tea.Msg {
-		r, err := a.SetTrust(context.Background(), t.Surface, trusted, remember)
+		r, err := change(context.Background())
 		if err != nil {
 			return transcript.Fail("Could not change the folder's trust: " + err.Error())
 		}
-		folder := transcript.HomePath(t.Root)
-		if !trusted {
-			return transcript.Note("Not trusting " + folder + "; /trust changes that")
+		text := done + connected(r.MCP)
+		if p := PendingPlugins(a); p != "" {
+			text += " · " + p
 		}
-		text := "Trusted " + folder
-		if !remember {
-			text += " for this session"
-		}
-		return transcript.Note(text + connected(r.MCP))
+		return transcript.Note(text)
 	}
 }
 
 func trust(a *app.App) Command {
-	return Command{Name: "trust", Description: "Decide whether this folder's hooks, MCP servers, plugins and allow rules take effect", Run: func(string) tea.Cmd {
+	return Command{Name: "trust", Description: "Decide what of this folder's hooks, MCP servers, plugins and allow rules take effect", Run: func(string) tea.Cmd {
 		t := a.Trust()
 		switch {
 		case t.Root == "":

@@ -423,6 +423,27 @@ func TestTrustAsksAboutWhatIsNew(t *testing.T) {
 	h.shows("1 waiting for trust · /trust")
 }
 
+// Unchecked, an item is declined: the rest takes effect, and it is not
+// asked about again.
+func TestTrustPanelDeclinesWhatIsUnchecked(t *testing.T) {
+	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)", "Bash(rm *)"}}})
+	h.shows("[x] allows", "Bash(rm *)", "space check")
+	h.pause()
+	h.press("up", " ")
+	h.shows("[ ] allows")
+	h.press("1")
+	await[reloadedMsg](h)
+	trust := h.app.Trust()
+	if len(trust.Agreed) != 1 || trust.Agreed[0].Detail != "Bash(make *)" || len(trust.Declined) != 1 || len(trust.Ask()) > 0 {
+		t.Fatalf("trust %+v", trust)
+	}
+	h.settleNotes()
+	h.shows("but for 1 you declined")
+	if top := h.m.top(); top != nil && commands.IsAsk(top) {
+		t.Error("asked again about what was declined")
+	}
+}
+
 // /plugins add shows what the plugin runs before adding it; /plugins lists
 // it.
 func TestAddAPlugin(t *testing.T) {

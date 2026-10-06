@@ -643,10 +643,17 @@ func EditUserSettings(edit func(*Settings)) error {
 }
 
 // EditProjectSettings applies edit to the settings of the project at root,
-// creating the file if need be. A file leading outside the project is not
-// the project's to edit.
+// creating the file if need be. A file, or its directory, leading outside
+// the project is not the project's to edit.
 func EditProjectSettings(root string, edit func(*Settings)) error {
-	return editSettings(ProjectSettingsPath(root), inProject(root), edit)
+	path := ProjectSettingsPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if _, err := regular.Within(root, filepath.Dir(path)); err != nil {
+		return err
+	}
+	return editSettings(path, inProject(root), edit)
 }
 
 // editSettings applies edit to the settings file at path, read with read.

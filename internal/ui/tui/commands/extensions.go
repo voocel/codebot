@@ -221,12 +221,14 @@ func extensionRows(a *app.App, servers []app.MCPServer) [][2]string {
 		folder = "none: the home directory"
 	case len(t.Surface) == 0:
 		folder += " · nothing to trust"
-	case len(t.Held()) == 0:
-		folder += " · trusted"
+	case t.ForRun:
+		folder += " · trusted for this run by --trust"
 	case t.Denied || len(t.Agreed) == 0:
 		folder += " · not trusted · /trust"
+	case len(t.Held()) == 0:
+		folder += " · trusted"
 	default:
-		folder += fmt.Sprintf(" · %d waiting for trust · /trust", len(t.Held()))
+		folder += fmt.Sprintf(" · trusted to %d of %d · /trust", len(t.Agreed), len(t.Surface))
 	}
 	rows := [][2]string{{"Folder", folder}, {"Skills", ""}}
 	for _, s := range ext.Skills {
@@ -269,9 +271,13 @@ func extensionRows(a *app.App, servers []app.MCPServer) [][2]string {
 		}
 	}
 	if held := t.Held(); len(held) > 0 {
-		rows = append(rows, [2]string{"Waiting for trust", ""})
+		rows = append(rows, [2]string{"Off until you trust them", ""})
 		for _, it := range held {
-			rows = append(rows, [2]string{panel.KindLabel(it.Kind), it.Detail})
+			state := " · waiting for you"
+			if t.Declined.Has(it) {
+				state = " · declined"
+			}
+			rows = append(rows, [2]string{panel.KindLabel(it.Kind), it.Detail + state})
 		}
 	}
 	if len(ext.Shadowed) > 0 {

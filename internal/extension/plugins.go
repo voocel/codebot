@@ -52,17 +52,13 @@ type Plugin struct {
 	State  PluginState
 	// Err says why the plugin is broken.
 	Err error
-	// Surface is what the plugin runs, and Agreed what of it the user agreed
-	// to: of the rest, nothing runs.
-	Surface, Agreed Surface
+	// Standing is where the user stands on what the plugin runs: of what
+	// they did not agree to, nothing runs.
+	Standing
 	// Plugin is the plugin as read, nil where it is held, missing or
 	// broken.
 	*plugin.Plugin
 }
-
-// Held returns what of the plugin's surface waits for the user to agree to
-// it.
-func (pl Plugin) Held() Surface { return pl.Surface.Missing(pl.Agreed) }
 
 // Title names the plugin: by its name, or where it was not read, its
 // source.
@@ -164,7 +160,7 @@ func (s *Set) readPlugin(pl *Plugin, o Options) {
 	if pl.Scope == Session || pl.Scope == Project && o.TrustAll {
 		c = Consent{Surface: surface}
 	}
-	pl.State, pl.Surface, pl.Agreed = PluginOn, surface, c.agreed(surface)
+	pl.State, pl.Standing = PluginOn, c.Standing(surface)
 }
 
 // contribute adds what a plugin brings, named after it: skill and agent
@@ -271,43 +267,15 @@ func ReadPlugin(ctx context.Context, src plugin.Source, commit string) (p *plugi
 	return p, got, problems, nil
 }
 
-// AgreeToPlugin records that the user agreed to the plugin at src running
-// surface, at commit for a git one.
-func AgreeToPlugin(src plugin.Source, commit string, surface Surface) error {
-	return EditConsents(func(c *Consents) { c.Plugins[src.String()] = Consent{Commit: commit, Surface: surface} })
+// DecidePlugin records what the user decided of the plugin at src, at
+// commit for a git one, of its surface: see Consent.Decided.
+func DecidePlugin(src plugin.Source, commit string, surface, shown, agreed Surface) error {
+	return EditConsents(func(c *Consents) {
+		d := c.Plugins[src.String()].Decided(surface, shown, agreed)
+		d.Commit = commit
+		c.Plugins[src.String()] = d
+	})
 }
 
-// SweepPlugins clears what of the plugins the user agreed to of none: the
-// commits cached, and the data of the sources, two weeks after it finds
-// them so, as a session may use one still. The data of the plugins given
-// on the command line, in pluginDirs, stays too.
-func SweepPlugins(pluginDirs []string) error {
-	c, err := ReadConsents()
-	if err != nil {
-		return err
-	}
-	commits, data := map[string]bool{}, map[string]bool{}
-	keep := func(source string, commit string) error {
-		src, err := plugin.ParseSource(source, "")
-		if err != nil {
-			return err
-		}
-		data[plugin.DataDir(src, dataDir())] = true
-		if commit != "" {
-			commits[plugin.Cached(src, cacheDir(), commit)] = true
-		}
-		return nil
-	}
-	for _, dir := range pluginDirs {
-		if err := keep(dir, ""); err != nil {
-			return err
-		}
-	}
-	for source, consent := range c.Plugins {
-		if err := keep(source, consent.Commit); err != nil {
-			return fmt.Errorf("%s: %w", consentsPath(), err)
-		}
-	}
-	now := time.Now()
-	return errors.Join(plugin.SweepCache(cacheDir(), commits, now), plugin.SweepData(dataDir(), data, now))
-}
+// SweepCache clears the cache of the commits no one read for two weeks.
+func SweepCache() error { return plugin.SweepCache(cacheDir(), time.Now()) }

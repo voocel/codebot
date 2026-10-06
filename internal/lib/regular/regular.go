@@ -35,7 +35,7 @@ func Within(root, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator)) {
+	if rel, _ := filepath.Rel(realRoot, real); rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%s leads outside %s", path, root)
 	}
 	return real, nil

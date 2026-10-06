@@ -250,6 +250,9 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		for _, e := range msg.report.Errors {
 			m.t.Append(transcript.Fail("MCP: " + e))
 		}
+		if p := commands.PendingPlugins(m.app); p != "" {
+			m.t.Append(transcript.Note(p))
+		}
 		if n := msg.report.Tools; n > 0 {
 			return m.notify("MCP connected · " + strconv.Itoa(n) + " tools")
 		}

@@ -107,7 +107,7 @@ func (s Source) String() string {
 	return out
 }
 
-// key is where a git source's commits are cached: under its host and path.
+// key is a git source's repository, one key however the URL names it.
 func (s Source) key() string {
 	repo := s.URL
 	if reSCP.MatchString(repo) {
@@ -128,29 +128,41 @@ func (s Source) key() string {
 }
 
 // Cached returns the directory the cache under cache keeps the commit of a
-// git source's repository in: the plugins of one repository share it.
+// git source's repository in, cache/<repository>/<commit>: the plugins of
+// one repository share it.
 func Cached(s Source, cache, commit string) string {
-	return filepath.Join(cache, filepath.FromSlash(s.key()), commit)
+	key := s.key()
+	return filepath.Join(cache, named(path.Base(key), key), commit)
 }
 
 // DataDir returns the directory under root the plugin from s keeps its data
-// in: one for each source, whatever its ref, so that updates keep it. It is
-// named after the source's last element, for the user to tell, and its
-// digest, for no two sources to share it.
+// in: one for each source, whatever its ref, so that updates keep it.
 func DataDir(s Source, root string) string {
-	s.Ref = ""
-	sum := sha256.Sum256([]byte(s.String()))
 	hint := filepath.Base(s.Dir)
 	if s.Dir == "" {
 		hint = path.Base(cmp.Or(s.Path, s.key()))
 	}
-	return filepath.Join(root, strings.TrimLeft(hint, ".")+"-"+hex.EncodeToString(sum[:4]))
+	s.Ref = ""
+	return filepath.Join(root, named(hint, s.String()))
+}
+
+// named names a directory for id: after hint, for the user to tell, and
+// id's digest, for no two to share it. It starts with no dot: that marks
+// what is under way.
+func named(hint, id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return strings.TrimLeft(hint, ".") + "-" + hex.EncodeToString(sum[:4])
 }
 
 // ReadCached reads the plugin of the git source s from the checkout of its
-// commit under cache, which the plugin's directory may not lead out of.
+// commit under cache, which the plugin's directory may not lead out of, and
+// marks the checkout used now: see SweepCache.
 func ReadCached(s Source, cache, commit, data string) (*Plugin, []error, error) {
 	repo := Cached(s, cache, commit)
+	now := time.Now()
+	if err := os.Chtimes(repo, now, now); err != nil {
+		return nil, nil, err
+	}
 	dir := filepath.Join(repo, filepath.FromSlash(s.Path))
 	realRepo, err := filepath.EvalSymlinks(repo)
 	if err != nil {
@@ -224,76 +236,48 @@ func Fetch(ctx context.Context, s Source, cache, commit string) (string, error) 
 	return got, nil
 }
 
-// orphanAge is how long a commit, or a plugin's data, that no one holds
-// stays: a session that loaded it before may use it still.
-const orphanAge = 14 * 24 * time.Hour
+// unusedAge is how long a commit no one reads stays cached: a session that
+// read it before may run it still.
+const unusedAge = 14 * 24 * time.Hour
 
-// reCommit matches a commit's name, SHA-1 or SHA-256.
-var reCommit = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
-
-// SweepCache clears the cache under cache of the checkouts keep does not
-// hold: see sweep.
-func SweepCache(cache string, keep map[string]bool, now time.Time) error {
-	err := filepath.WalkDir(cache, func(p string, d fs.DirEntry, err error) error {
-		switch {
-		case err != nil:
-			return err
-		case p == cache || !d.IsDir():
-			return nil
-		case strings.HasPrefix(d.Name(), "."):
-			return filepath.SkipDir // a fetch under way
-		case !reCommit.MatchString(d.Name()):
-			return nil // a repository's path
-		}
-		if err := sweep(p, keep[p], now); err != nil {
-			return err
-		}
-		return filepath.SkipDir
-	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
-// SweepData clears the plugins' data under data of the directories keep
-// does not hold: see sweep.
-func SweepData(data string, keep map[string]bool, now time.Time) error {
-	entries, err := os.ReadDir(data)
+// SweepCache clears the cache under cache of the commits no one read for
+// unusedAge, and of the repositories left with none. A fetch under way,
+// named with a dot, stays.
+func SweepCache(cache string, now time.Time) error {
+	repos, err := os.ReadDir(cache)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	for _, e := range entries {
-		if p := filepath.Join(data, e.Name()); e.IsDir() {
-			if err := sweep(p, keep[p], now); err != nil {
+	for _, r := range repos {
+		if !r.IsDir() || strings.HasPrefix(r.Name(), ".") {
+			continue
+		}
+		repo := filepath.Join(cache, r.Name())
+		commits, err := os.ReadDir(repo)
+		if err != nil {
+			return err
+		}
+		left := len(commits)
+		for _, c := range commits {
+			info, err := c.Info()
+			if err != nil {
+				return err
+			}
+			if now.Sub(info.ModTime()) >= unusedAge {
+				if err := os.RemoveAll(filepath.Join(repo, c.Name())); err != nil {
+					return err
+				}
+				left--
+			}
+		}
+		if left == 0 {
+			if err := os.Remove(repo); err != nil {
 				return err
 			}
 		}
-	}
-	return nil
-}
-
-// sweep marks the directory p, beside it, where it is not held, and removes
-// it once it was marked orphanAge ago: a session may use it still. Held
-// again, it loses its mark.
-func sweep(p string, held bool, now time.Time) error {
-	marker := p + ".orphaned"
-	marked, err := os.Stat(marker)
-	switch {
-	case held:
-		err = os.Remove(marker)
-	case errors.Is(err, fs.ErrNotExist):
-		err = os.WriteFile(marker, nil, 0o600)
-	case err == nil && now.Sub(marked.ModTime()) >= orphanAge:
-		if err = os.RemoveAll(p); err == nil {
-			err = os.Remove(marker)
-		}
-	}
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
 	}
 	return nil
 }
@@ -312,6 +296,8 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	// .lfsconfig says; a plugin has no business with them.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "SSH_ASKPASS_REQUIRE=never")
 	detach(cmd)
+	// Its helpers, git-remote-https and ssh, may hold its output past it.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 		if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {

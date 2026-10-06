@@ -135,6 +135,15 @@ func (h *head) key(k string) bool {
 	return true
 }
 
+// follow scrolls, as fit last laid lines out, so that line shows.
+func (h *head) follow(line int) {
+	if line < h.top {
+		h.top = line
+	} else if h.room > 0 && line >= h.top+h.room {
+		h.top = line - h.room + 1
+	}
+}
+
 // fit lays lines out above tail in height lines, a line between them, from
 // the line scrolled to. It reports whether lines were cut.
 func (h *head) fit(lines, tail []string, height int) (body []string, cut bool) {

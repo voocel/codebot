@@ -1,10 +1,12 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -195,18 +197,28 @@ func TestParseSource(t *testing.T) {
 	}
 }
 
+// A repository's commits are cached a level under it, however its URL
+// names it, apart from any other repository's.
 func TestCachedKeepsSourcesApart(t *testing.T) {
-	for raw, want := range map[string]string{
-		"github.com/acme/tools#v1":             "/c/github.com/acme/tools/abc",
-		"git@github.com:acme/tools.git":        "/c/github.com/acme/tools/abc",
-		"https://git.example.com:8443/a/b.git": "/c/git.example.com/a/b/abc",
-		"https://h/x/...git":                   "/c/h/abc",
-		"git@..:...git":                        "/c/abc",
-	} {
-		s, _ := ParseSource(raw, "/")
-		if got := Cached(s, "/c", "abc"); got != filepath.FromSlash(want) {
-			t.Errorf("%s: %s", raw, got)
+	cached := func(raw string) string {
+		s, err := ParseSource(raw, "/")
+		if err != nil {
+			t.Fatal(err)
 		}
+		return Cached(s, "/c", "abc")
+	}
+	tools := cached("github.com/acme/tools#v1")
+	if rel, _ := filepath.Rel("/c", tools); !strings.HasPrefix(rel, "tools-") || filepath.Base(rel) != "abc" || strings.Count(rel, string(filepath.Separator)) != 1 {
+		t.Errorf("tools at %s", rel)
+	}
+	if cached("git@github.com:acme/tools.git") != tools || cached("github.com/acme/tools//plugins/lint") != tools {
+		t.Error("one repository is cached twice")
+	}
+	if cached("github.com/fork/tools") == tools {
+		t.Error("two repositories share their cache")
+	}
+	if name := filepath.Base(filepath.Dir(cached("github.com/acme/.github"))); strings.HasPrefix(name, ".") {
+		t.Errorf("a repository named with a dot is cached as a fetch under way: %s", name)
 	}
 }
 
@@ -370,70 +382,81 @@ func TestDataDir(t *testing.T) {
 	}
 }
 
-// Data no one holds is marked, then removed.
-func TestSweepData(t *testing.T) {
-	data := t.TempDir()
-	held, left := filepath.Join(data, "kit-1"), filepath.Join(data, "kit-2")
-	for _, d := range []string{held, left} {
+// The cache keeps the commits read within unusedAge, and removes the
+// others, and the repositories left with none; a fetch under way stays.
+func TestSweepCache(t *testing.T) {
+	cache := t.TempDir()
+	hex := strings.Repeat("d", 40)
+	tools, _ := ParseSource("example.test/acme/tools", "")
+	dotted, _ := ParseSource("example.test/acme/.github", "")
+	hexed, _ := ParseSource("example.test/"+hex+"/kit", "")
+	used, unused := Cached(tools, cache, strings.Repeat("a", 40)), Cached(tools, cache, strings.Repeat("b", 40))
+	gone := Cached(dotted, cache, strings.Repeat("c", 40))
+	kept := Cached(hexed, cache, strings.Repeat("e", 40))
+	fetching := filepath.Join(cache, ".fetch-1")
+	for _, d := range []string{used, unused, gone, kept, fetching} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	keep := map[string]bool{held: true}
 	now := time.Now()
-	for _, at := range []time.Time{now, now.Add(orphanAge + time.Hour)} {
-		if err := SweepData(data, keep, at); err != nil {
+	old := now.Add(-unusedAge - time.Hour)
+	for _, d := range []string{unused, gone, fetching} {
+		if err := os.Chtimes(d, old, old); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := os.Stat(left); err == nil {
-		t.Error("the data no one holds stays")
+	if err := SweepCache(cache, now); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(held); err != nil {
-		t.Errorf("the data held is gone: %v", err)
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+	if exists(unused) || exists(gone) || exists(filepath.Dir(gone)) {
+		t.Error("kept commits no one read, or a repository left with none")
 	}
-	if err := SweepData(filepath.Join(data, "none"), keep, now); err != nil {
-		t.Errorf("no data yet: %v", err)
+	if !exists(used) || !exists(kept) || !exists(fetching) {
+		t.Error("swept a commit read lately, or a fetch under way")
+	}
+	if err := SweepCache(filepath.Join(cache, "none"), now); err != nil {
+		t.Errorf("no cache yet: %v", err)
 	}
 }
 
-func TestSweepCache(t *testing.T) {
+// Reading a commit marks it used.
+func TestReadCachedMarksTheCommitUsed(t *testing.T) {
 	cache := t.TempDir()
-	repo := filepath.Join(cache, "example.test", "acme", "kit")
-	held, left := filepath.Join(repo, strings.Repeat("a", 40)), filepath.Join(repo, strings.Repeat("b", 40))
-	fetching := filepath.Join(cache, ".fetch-1", strings.Repeat("c", 40))
-	for _, d := range []string{held, left, fetching} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
+	src, _ := ParseSource("github.com/acme/tools", "")
+	repo := Cached(src, cache, "abc")
+	write(t, filepath.Join(repo, "plugin.json"), manifest+"}")
+	old := time.Now().Add(-unusedAge - time.Hour)
+	if err := os.Chtimes(repo, old, old); err != nil {
+		t.Fatal(err)
 	}
-	keep := map[string]bool{held: true}
-	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+	if _, _, err := ReadCached(src, cache, "abc", "/data"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SweepCache(cache, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(repo); err != nil {
+		t.Errorf("swept the commit just read: %v", err)
+	}
+}
 
-	now := time.Now()
-	if err := SweepCache(cache, keep, now); err != nil {
-		t.Fatal(err)
+// git, cancelled, gives up with its helpers, which hold its output.
+func TestGitGivesUpWithItsHelpers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script stands in for git")
 	}
-	if !exists(left+".orphaned") || exists(held+".orphaned") || !exists(left) {
-		t.Fatal("the commit no longer held is not marked, or the held one is")
+	bin := t.TempDir()
+	write(t, filepath.Join(bin, "git"), "#!/bin/sh\nsleep 30 &\nsleep 30\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := git(ctx, t.TempDir(), "fetch"); err == nil {
+		t.Fatal("a cancelled git succeeded")
 	}
-	if err := SweepCache(cache, keep, now.Add(orphanAge-time.Hour)); err != nil || !exists(left) {
-		t.Fatalf("removed before its time: %v", err)
-	}
-	if err := SweepCache(cache, keep, now.Add(orphanAge+time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if exists(left) || exists(left+".orphaned") || !exists(held) || !exists(fetching) {
-		t.Error("swept the wrong checkouts")
-	}
-
-	if err := os.WriteFile(held+".orphaned", nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := SweepCache(cache, keep, now.Add(2*orphanAge)); err != nil || !exists(held) || exists(held+".orphaned") {
-		t.Errorf("a commit held again was removed or kept its mark: %v", err)
-	}
-	if err := SweepCache(filepath.Join(cache, "none"), keep, now); err != nil {
-		t.Errorf("no cache yet: %v", err)
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("git took %s to give up", took)
 	}
 }

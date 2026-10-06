@@ -38,8 +38,16 @@ func writeKit(t *testing.T, dir string, servers ...string) {
 	}
 }
 
-func mcpItem(name string) extension.Item {
-	return extension.Item{Kind: "mcp", Detail: "kit_" + name + ": " + name + "-mcp"}
+// mcpDetail tells the server name of a kit as the user reads it.
+func mcpDetail(name string) string { return "kit_" + name + ": " + name + "-mcp" }
+
+// details tells the items of s as the user reads them.
+func details(s Surface) []string {
+	var out []string
+	for _, it := range s {
+		out = append(out, it.Detail)
+	}
+	return out
 }
 
 func skillNames(e *env) []string {
@@ -58,8 +66,8 @@ func servers(e *env) []string {
 	return out
 }
 
-// The user adds a plugin of theirs and removes it, which forgets what they
-// agreed to.
+// The user adds a plugin of theirs and removes it from their settings: what
+// they decided of it stays, as another project may declare it still.
 func TestPluginLifecycle(t *testing.T) {
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeKit(t, filepath.Join(os.Getenv("HOME"), "kit"), "db")
@@ -69,10 +77,10 @@ func TestPluginLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Name != "kit" || !slices.Equal(o.Surface, Surface{mcpItem("db")}) || !slices.Equal(o.New, o.Surface) {
+	if o.Name != "kit" || !slices.Equal(details(o.Surface), []string{mcpDetail("db")}) || !slices.Equal(o.New, o.Surface) {
 		t.Fatalf("offer %+v", o)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
 		t.Fatal(err)
 	}
 	if layers, _ := config.Load(e.cwd); !slices.Equal(layers.User.Plugins, []string{"~/kit"}) {
@@ -91,8 +99,8 @@ func TestPluginLifecycle(t *testing.T) {
 	if len(e.app.Plugins()) > 0 || slices.Contains(skillNames(e), "kit:release") {
 		t.Errorf("removed, plugins %+v", e.app.Plugins())
 	}
-	if c, _ := extension.ReadConsents(); len(c.Plugins) > 0 {
-		t.Errorf("what the user agreed to of the plugin removed is kept: %+v", c.Plugins)
+	if c, _ := extension.ReadConsents(); len(c.Plugins) != 1 {
+		t.Errorf("what the user agreed to of the plugin removed is forgotten: %+v", c.Plugins)
 	}
 }
 
@@ -107,7 +115,7 @@ func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,17 +123,17 @@ func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	if _, err := e.app.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if pl := e.app.Plugins()[0]; pl.State != PluginOn || !slices.Equal(pl.Held(), Surface{mcpItem("shell")}) {
+	if pl := e.app.Plugins()[0]; pl.State != PluginOn || !slices.Equal(details(pl.Held()), []string{mcpDetail("shell")}) {
 		t.Fatalf("plugin %+v", pl)
 	}
 	if !slices.Equal(servers(e), []string{"kit_db"}) {
 		t.Fatalf("servers %q", servers(e))
 	}
 	offers, fetched, errs := e.app.InstallPlugins(ctx)
-	if len(offers) != 1 || len(fetched) > 0 || len(errs) > 0 || !slices.Equal(offers[0].New, Surface{mcpItem("shell")}) {
+	if len(offers) != 1 || len(fetched) > 0 || len(errs) > 0 || !slices.Equal(details(offers[0].New), []string{mcpDetail("shell")}) {
 		t.Fatalf("install: %+v, %q, %v", offers, fetched, errs)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, offers[0]); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, offers[0], offers[0].New); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(servers(e), []string{"kit_db", "kit_shell"}) || len(e.app.Plugins()[0].Held()) > 0 {
@@ -172,7 +180,7 @@ func TestGitPluginUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginOn || pl.Commit != o.Commit {
@@ -192,13 +200,13 @@ func TestGitPluginUpdates(t *testing.T) {
 	writeKit(t, repo, "db")
 	commit("db")
 	updates, err = e.app.UpdatePlugins(ctx, "kit")
-	if err != nil || len(updates) != 1 || updates[0].Offer == nil || !slices.Equal(updates[0].Offer.New, Surface{mcpItem("db")}) {
+	if err != nil || len(updates) != 1 || updates[0].Offer == nil || !slices.Equal(details(updates[0].Offer.New), []string{mcpDetail("db")}) {
 		t.Fatalf("updates %+v, %v", updates, err)
 	}
 	if pl := e.app.Plugins()[0]; pl.Commit != quiet || len(servers(e)) > 0 {
 		t.Fatalf("the update ran something new unasked: %+v", pl)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, updates[0].Offer); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, updates[0].Offer, updates[0].Offer.New); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.Commit != updates[0].Commit || !slices.Equal(servers(e), []string{"kit_db"}) {
@@ -224,27 +232,27 @@ func TestProjectPlugins(t *testing.T) {
 	if _, _, errs := e.app.InstallPlugins(ctx); len(errs) > 0 || e.app.Plugins()[0].State != PluginUntrusted {
 		t.Fatalf("installed the untrusted project's plugin: %v", errs)
 	}
-	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, true, false); err != nil {
+	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface, false); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginNotInstalled || len(e.app.Trust().Ask()) > 0 {
 		t.Fatalf("trusted, plugin %+v, trust %+v", pl, e.app.Trust())
 	}
 	offers, _, errs := e.app.InstallPlugins(ctx)
-	if len(offers) != 1 || len(errs) > 0 || !slices.Equal(offers[0].New, Surface{mcpItem("db")}) {
+	if len(offers) != 1 || len(errs) > 0 || !slices.Equal(details(offers[0].New), []string{mcpDetail("db")}) {
 		t.Fatalf("install: %+v, %v", offers, errs)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginNotInstalled {
 		t.Fatalf("offered, the plugin is %s", pl.State)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, offers[0]); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, offers[0], offers[0].New); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginOn || !slices.Equal(servers(e), []string{"kit_db"}) {
 		t.Errorf("plugin %+v, servers %q", pl, servers(e))
 	}
 
-	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, false, false); err != nil {
+	if _, err := e.app.DenyTrust(ctx, false); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginUntrusted || len(servers(e)) > 0 {
@@ -264,7 +272,7 @@ func TestAgreedPluginsComeBackAtTheirCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
 		t.Fatal(err)
 	}
 	writeKit(t, repo, "db")
@@ -306,7 +314,7 @@ func TestDeclaredPluginsWaitToBeInstalled(t *testing.T) {
 	if len(offers) != 1 || len(errs) > 0 {
 		t.Fatalf("install: %+v, %v", offers, errs)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, offers[0]); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, offers[0], offers[0].New); err != nil {
 		t.Fatal(err)
 	}
 	if layers, _ := config.Load(e.cwd); len(layers.User.Plugins) != 1 || e.app.Plugins()[0].State != PluginOn {
@@ -320,7 +328,7 @@ func TestPluginsAddedToTheProject(t *testing.T) {
 	e := boot(t, setup{git: true, project: map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}}}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeKit(t, filepath.Join(e.cwd, "tools", "kit"), "db")
 	ctx := context.Background()
-	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, true, true); err != nil {
+	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.app.OfferPlugin(ctx, "tools/kit", true); err == nil {
@@ -333,15 +341,16 @@ func TestPluginsAddedToTheProject(t *testing.T) {
 	if o.Source != "../tools/kit" {
 		t.Errorf("declared as %q, not from the settings' directory", o.Source)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
 		t.Fatal(err)
 	}
 	c, err := extension.ReadConsents()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (Surface{{Kind: "allow", Detail: "Bash(make *)"}, {Kind: "plugin", Detail: "../tools/kit"}}); !slices.Equal(c.Projects[e.cwd].Surface, want) {
-		t.Errorf("trust kept %q", c.Projects[e.cwd].Surface)
+	kept := c.Projects[e.cwd].Surface
+	if want := (Surface{extension.NewItem("allow", "Bash(make *)"), extension.NewItem("plugin", "../tools/kit")}); len(kept) != len(want) || !kept.HasAll(want) {
+		t.Errorf("trust kept %q", kept)
 	}
 	if len(e.app.Trust().Ask()) > 0 || e.app.Plugins()[0].State != PluginOn || !slices.Equal(servers(e), []string{"kit_db"}) {
 		t.Errorf("trust %+v, plugin %+v", e.app.Trust(), e.app.Plugins()[0])
@@ -355,7 +364,7 @@ func TestPluginsOfOneName(t *testing.T) {
 	writeKit(t, filepath.Join(os.Getenv("HOME"), "kit"))
 	writeKit(t, filepath.Join(e.cwd, "tools", "kit"))
 	ctx := context.Background()
-	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, true, false); err != nil {
+	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface, false); err != nil {
 		t.Fatal(err)
 	}
 	var states []string
@@ -419,10 +428,10 @@ func TestPluginHooksRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(o.Surface, extension.Item{Kind: "hook", Detail: `kit: UserPromptSubmit: touch "$PLUGIN_DATA/ran"`}) {
+	if !slices.Contains(details(o.Surface), `kit: UserPromptSubmit: touch "$PLUGIN_DATA/ran"`) {
 		t.Errorf("the offer hides the hook: %q", o.Surface)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(e.app.Extensions().Agents, func(d subagent.AgentDefinition) bool { return d.Name == "kit:reviewer" }) {

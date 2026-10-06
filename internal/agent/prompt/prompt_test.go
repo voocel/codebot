@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/voocel/codebot/internal/infra/config"
 )
 
 func TestSystemHoldsTheConventions(t *testing.T) {
@@ -81,6 +83,26 @@ func TestProjectFilesStayInTheProject(t *testing.T) {
 	}
 	if got := System(root) + loadAgents(root); strings.Contains(got, "SECRET") || !strings.Contains(got, "project rules") {
 		t.Errorf("prompt %q", got)
+	}
+
+	// A repository the project is checked out in reads nothing outside it
+	// either, while the user's own file leads where they like.
+	sub := filepath.Join(root, "vendor", "sub")
+	if err := os.MkdirAll(filepath.Join(sub, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dotfiles := filepath.Join(home, "dotfiles.md")
+	if err := os.WriteFile(dotfiles, []byte("my rules"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(config.UserConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dotfiles, filepath.Join(config.UserConfigDir(), "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadAgents(sub); strings.Contains(got, "SECRET") || !strings.Contains(got, "my rules") || !strings.Contains(got, "project rules") {
+		t.Errorf("agents %q", got)
 	}
 }
 

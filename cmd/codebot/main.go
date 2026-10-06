@@ -174,26 +174,30 @@ func warn(a *app.App) {
 		fmt.Fprintln(os.Stderr, "codebot: "+err.Error())
 	}
 	for _, pl := range a.Plugins() {
-		switch held := pl.Held(); {
+		source := app.Printable(pl.Source)
+		switch ask := pl.Ask(); {
 		case pl.State == app.PluginNotInstalled, pl.State == app.PluginNotCached:
-			fmt.Fprintf(os.Stderr, "codebot: plugin %s is %s: /plugins install in codebot installs it\n", pl.Source, pl.State)
+			fmt.Fprintf(os.Stderr, "codebot: plugin %s is %s: /plugins install in codebot installs it\n", source, pl.State)
 		case pl.State == app.PluginBroken:
-			fmt.Fprintf(os.Stderr, "codebot: plugin %s is broken: %v\n", pl.Source, pl.Err)
-		case len(held) > 0:
-			fmt.Fprintf(os.Stderr, "codebot: plugin %s runs %d more you have yet to agree to: /plugins install in codebot asks\n", pl.Name, len(held))
+			fmt.Fprintf(os.Stderr, "codebot: plugin %s is broken: %v\n", source, pl.Err)
+		case len(ask) > 0:
+			fmt.Fprintf(os.Stderr, "codebot: plugin %s runs %d more you have yet to decide on: /plugins install in codebot asks\n", pl.Name, len(ask))
 		}
 	}
 	t := a.Trust()
-	held := t.Held()
-	if len(held) == 0 {
+	ask := t.Ask()
+	switch {
+	case t.Denied:
+		fmt.Fprintf(os.Stderr, "codebot: %s is not trusted, so what it runs is off; /trust in codebot changes that.\n", t.Root)
 		return
-	}
-	if len(t.Agreed) > 0 && !t.Denied {
+	case len(ask) == 0:
+		return
+	case len(t.Agreed) > 0:
 		fmt.Fprintf(os.Stderr, "codebot: %s has more you have yet to trust, off until you do:\n", t.Root)
-	} else {
+	default:
 		fmt.Fprintf(os.Stderr, "codebot: %s is not trusted, so these are off:\n", t.Root)
 	}
-	for _, it := range held {
+	for _, it := range ask {
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", it.Kind, it.Detail)
 	}
 	fmt.Fprintln(os.Stderr, "Trust it with /trust in codebot, or pass --trust for this run.")

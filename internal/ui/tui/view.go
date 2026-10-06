@@ -156,11 +156,10 @@ func (m *Model) footer() string {
 		right = append(right, lipgloss.NewStyle().Foreground(theme.Agent).Render(fmt.Sprintf("%d %s · /agents", n, plural(n, "agent"))))
 	}
 	switch t := m.app.Trust(); {
-	case len(t.Held()) == 0:
-	case len(t.Agreed) == 0:
+	case t.Denied || len(t.Agreed) == 0 && len(t.Ask()) > 0:
 		right = append(right, theme.WarmText.Render("folder untrusted · /trust"))
-	default:
-		right = append(right, theme.WarmText.Render(fmt.Sprintf("%d waiting for trust · /trust", len(t.Held()))))
+	case len(t.Ask()) > 0:
+		right = append(right, theme.WarmText.Render(fmt.Sprintf("%d waiting for trust · /trust", len(t.Ask()))))
 	}
 	r := strings.Join(right, theme.FaintText.Render(" · "))
 

@@ -248,6 +248,7 @@ func info(rows [][2]string, width int) []string {
 	}
 	var out []string
 	for _, r := range rows {
+		r = [2]string{app.Printable(r[0]), app.Printable(r[1])}
 		if r[1] == "" {
 			if len(out) > 0 {
 				out = append(out, "")

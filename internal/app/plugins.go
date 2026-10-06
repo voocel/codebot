@@ -47,7 +47,7 @@ type PluginOffer struct {
 	Commit string
 	*plugin.Plugin
 	// Surface is all the plugin runs, and New what of it the user has yet
-	// to agree to.
+	// to decide on.
 	Surface, New Surface
 	// Problems are what of it failed to load, left out.
 	Problems []error
@@ -69,7 +69,7 @@ func (a *App) offer(ctx context.Context, src plugin.Source, commit string) (*Plu
 		return nil, err
 	}
 	surface := extension.PluginSurface(p)
-	return &PluginOffer{Commit: got, Plugin: p, Surface: surface, New: surface.Missing(consents.Plugins[src.String()].Surface), Problems: problems, src: src}, nil
+	return &PluginOffer{Commit: got, Plugin: p, Surface: surface, New: consents.Plugins[src.String()].Standing(surface).Ask(), Problems: problems, src: src}, nil
 }
 
 // OfferPlugin reads the plugin at source, a git repository fetched at its
@@ -79,7 +79,7 @@ func (a *App) offer(ctx context.Context, src plugin.Source, commit string) (*Plu
 func (a *App) OfferPlugin(ctx context.Context, source string, project bool) (*PluginOffer, error) {
 	scope := extension.User
 	if project {
-		if a.root == "" {
+		if a.Trust().Root == "" {
 			return nil, errors.New("the home directory is no project: add the plugin for yourself")
 		}
 		scope = extension.Project
@@ -112,11 +112,12 @@ func (a *App) OfferPlugin(ctx context.Context, source string, project bool) (*Pl
 // so that they hold wherever it is checked out; another given relative to
 // the working directory as its absolute path; the rest as given.
 func (a *App) declare(source string, src plugin.Source, scope extension.Scope) string {
+	root := a.Trust().Root
 	switch {
 	case src.Dir == "":
 		return source
-	case scope == extension.Project && (src.Dir == a.root || strings.HasPrefix(src.Dir, a.root+string(filepath.Separator))):
-		rel, _ := filepath.Rel(extension.PluginBase(scope, a.root), src.Dir)
+	case scope == extension.Project && (src.Dir == root || strings.HasPrefix(src.Dir, root+string(filepath.Separator))):
+		rel, _ := filepath.Rel(extension.PluginBase(scope, root), src.Dir)
 		if rel = filepath.ToSlash(rel); rel != ".." && !strings.HasPrefix(rel, "../") {
 			rel = "./" + rel
 		}
@@ -129,9 +130,9 @@ func (a *App) declare(source string, src plugin.Source, scope extension.Scope) s
 
 // InstallPlugins readies the plugins the settings declare that wait for
 // the user. A git one they agreed to is fetched at its commit where it is
-// not cached; the others are offered for them to agree to what they run: a
-// git one they have yet to agree to, fetched at its ref, and one that runs
-// what they have yet to agree to. It reloads when it fetched any.
+// not cached; the others are offered for them to decide on what they run:
+// a git one they have yet to agree to, fetched at its ref, and one that
+// runs what they have yet to decide on. It reloads when it fetched any.
 func (a *App) InstallPlugins(ctx context.Context) (offers []*PluginOffer, fetched []string, errs []error) {
 	for _, pl := range a.Plugins() {
 		var o *PluginOffer
@@ -143,7 +144,7 @@ func (a *App) InstallPlugins(ctx context.Context) (offers []*PluginOffer, fetche
 			}
 		case pl.State == PluginNotInstalled:
 			o, err = a.offer(ctx, pl.Src, "")
-		case pl.State == PluginOn && len(pl.Held()) > 0:
+		case pl.State == PluginOn && len(pl.Ask()) > 0:
 			o, err = a.offer(ctx, pl.Src, pl.Commit)
 		}
 		if err != nil {
@@ -197,7 +198,7 @@ func (a *App) UpdatePlugins(ctx context.Context, ref string) ([]PluginUpdate, er
 			o.Source, o.Scope = pl.Source, pl.Scope
 			u.Commit, u.Offer = o.Commit, o
 		default:
-			u.Commit, u.Err = o.Commit, extension.AgreeToPlugin(pl.Src, o.Commit, o.Surface)
+			u.Commit, u.Err = o.Commit, extension.DecidePlugin(pl.Src, o.Commit, o.Surface, nil, nil)
 			applied = applied || u.Err == nil
 		}
 		out = append(out, u)
@@ -216,12 +217,13 @@ func (a *App) UpdatePlugins(ctx context.Context, ref string) ([]PluginUpdate, er
 	return out, nil
 }
 
-// AcceptPlugin records that the user agreed to what the plugin offered
-// runs, at its commit, declares it in the settings where it is to be, then
-// puts it in effect. A plugin the user adds to the project the project
-// declares as they trust it: they wrote it there.
-func (a *App) AcceptPlugin(ctx context.Context, o *PluginOffer) (ReloadReport, error) {
-	if err := extension.AgreeToPlugin(o.src, o.Commit, o.Surface); err != nil {
+// AcceptPlugin records what the user decided of the plugin offered, at its
+// commit: of what it runs new, they agreed to agreed and declined the rest.
+// It declares the plugin in the settings where it is to be, then puts it in
+// effect. A plugin the user adds to the project the project declares as
+// they trust it: they wrote it there.
+func (a *App) AcceptPlugin(ctx context.Context, o *PluginOffer, agreed Surface) (ReloadReport, error) {
+	if err := extension.DecidePlugin(o.src, o.Commit, o.Surface, o.New, agreed); err != nil {
 		return ReloadReport{}, err
 	}
 	if o.declare {
@@ -238,9 +240,9 @@ func (a *App) AcceptPlugin(ctx context.Context, o *PluginOffer) (ReloadReport, e
 }
 
 // RemovePlugin removes the plugin ref names, by name or source, from the
-// user's settings or, with project, the project's, and forgets what the
-// user agreed to of it unless another declares it; then puts the change in
-// effect.
+// user's settings or, with project, the project's, then puts the change in
+// effect. What the user decided of the plugin, and its data, stay: another
+// project may declare it still.
 func (a *App) RemovePlugin(ctx context.Context, ref string, project bool) (ReloadReport, error) {
 	scope := extension.User
 	if project {
@@ -257,25 +259,20 @@ func (a *App) RemovePlugin(ctx context.Context, ref string, project bool) (Reloa
 	}); err != nil {
 		return ReloadReport{}, err
 	}
-	if !slices.ContainsFunc(plugins, func(o Plugin) bool { return o.Src == pl.Src && o.Scope != scope }) {
-		if err := extension.EditConsents(func(c *extension.Consents) { delete(c.Plugins, pl.Src.String()) }); err != nil {
-			return ReloadReport{}, err
-		}
-	}
 	return a.refresh(ctx)
 }
 
 // editSettings applies edit to the settings of scope.
 func (a *App) editSettings(scope extension.Scope, edit func(*config.Settings)) error {
 	if scope == extension.Project {
-		return config.EditProjectSettings(a.root, edit)
+		return config.EditProjectSettings(a.Trust().Root, edit)
 	}
 	return config.EditUserSettings(edit)
 }
 
-// sweepPlugins clears the commits and the data the plugins left behind.
-func (a *App) sweepPlugins() {
-	if err := extension.SweepPlugins(a.opts.PluginDirs); err != nil {
-		log.Printf("sweep the plugins: %v", err)
+// sweepPluginCache clears the cache of the commits no one runs any longer.
+func sweepPluginCache() {
+	if err := extension.SweepCache(); err != nil {
+		log.Printf("sweep the plugin cache: %v", err)
 	}
 }

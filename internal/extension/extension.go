@@ -76,24 +76,13 @@ type Set struct {
 type Trust struct {
 	// Root is the project's, "" for none: the home directory is no project.
 	Root string
-	// Surface is all of the project's surface, and Agreed what of it is in
-	// effect: what the user agreed to.
-	Surface, Agreed Surface
+	Standing
 	// Denied says the user does not trust the project: none of its surface
 	// is in effect, nor are they asked about it.
 	Denied bool
-}
-
-// Held returns what of the surface waits for the user to agree to it.
-func (t Trust) Held() Surface { return t.Surface.Missing(t.Agreed) }
-
-// Ask returns what of the surface to ask the user about: what is held,
-// unless they do not trust the project.
-func (t Trust) Ask() Surface {
-	if t.Denied {
-		return nil
-	}
-	return t.Held()
+	// ForRun says --trust trusts the project for this run, whatever the user
+	// decided.
+	ForRun bool
 }
 
 // MCPServer is an MCP server and where it is configured: the settings of
@@ -153,7 +142,7 @@ func Load(o Options) *Set {
 	if o.TrustAll {
 		c = Consent{Surface: surface}
 	}
-	s.Trust = Trust{Root: l.Root, Surface: surface, Agreed: c.agreed(surface), Denied: c.Denied}
+	s.Trust = Trust{Root: l.Root, Standing: c.Standing(surface), Denied: c.Denied, ForRun: o.TrustAll}
 	for i, spec := range s.Skills {
 		if spec.Source == string(Project) {
 			s.Skills[i].Privileged = s.Trust.Agreed.HasAll(skillItems(spec.Name, spec))

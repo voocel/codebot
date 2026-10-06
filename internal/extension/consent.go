@@ -21,24 +21,38 @@ type Consents struct {
 	Plugins  map[string]Consent `json:"plugins,omitempty"`
 }
 
-// Consent is what the user agreed to of a project or a plugin.
+// Consent is what the user decided of a project or a plugin.
 type Consent struct {
 	// Denied says the user does not trust the project: none of its surface
 	// is in effect, nor are they asked about it.
 	Denied bool `json:"denied,omitempty"`
 	// Commit is the commit of a git plugin they agreed to.
 	Commit string `json:"commit,omitempty"`
-	// Surface is what they agreed to run.
-	Surface Surface `json:"surface,omitempty"`
+	// Surface is what they agreed to run, and Declined what they would not:
+	// they are not asked about it again.
+	Surface  Surface `json:"surface,omitempty"`
+	Declined Surface `json:"declined,omitempty"`
 }
 
-// agreed returns what of surface the user agreed to. A consent to all of
-// it, for a session, is Consent{Surface: surface}.
-func (c Consent) agreed(surface Surface) Surface {
+// Standing returns where the user stands on surface, as c tells. A consent
+// to all of it, for a session, is Consent{Surface: surface}.
+func (c Consent) Standing(surface Surface) Standing {
 	if c.Denied {
-		return nil
+		return Standing{Surface: surface, Declined: surface}
 	}
-	return surface.Intersect(c.Surface)
+	return Standing{Surface: surface, Agreed: surface.Intersect(c.Surface), Declined: surface.Intersect(c.Declined)}
+}
+
+// Decided returns c with what the user decided of shown, of surface: they
+// agreed to agreed and declined the rest of shown. What else of surface
+// they decided on stands; what is no longer on it is forgotten.
+func (c Consent) Decided(surface, shown, agreed Surface) Consent {
+	declined := shown.Missing(agreed)
+	return Consent{
+		Commit:   c.Commit,
+		Surface:  surface.Intersect(c.Surface).Missing(declined).With(agreed...),
+		Declined: surface.Intersect(c.Declined).Missing(agreed).With(declined...),
+	}
 }
 
 func consentsPath() string { return filepath.Join(config.UserConfigDir(), "consent.json") }

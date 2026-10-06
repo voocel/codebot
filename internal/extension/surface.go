@@ -2,6 +2,8 @@ package extension
 
 import (
 	"cmp"
+	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -24,16 +26,33 @@ type Surface []Item
 type Item struct {
 	// Kind is "hook", "mcp", "allow", "read", "write", "skill" or "plugin".
 	Kind string `json:"kind"`
-	// Detail is what runs or goes through, in full: two items alike are the
-	// same thing.
-	Detail string `json:"detail"`
+	// Key is the thing itself, exactly: of a kind, two items of one key are
+	// the same, and one changed in any way is another.
+	Key string `json:"key"`
+	// Detail tells the thing in full for the user to read, as a terminal is
+	// to show it.
+	Detail string `json:"-"`
 }
+
+// Standing is where the user stands on a surface: what of it they agreed
+// to, in effect, and what they declined.
+type Standing struct {
+	Surface, Agreed, Declined Surface
+}
+
+// Held returns what of the surface is not in effect.
+func (s Standing) Held() Surface { return s.Surface.Missing(s.Agreed) }
+
+// Ask returns what of the surface the user has yet to decide on.
+func (s Standing) Ask() Surface { return s.Held().Missing(s.Declined) }
+
+func (it Item) same(other Item) bool { return it.Kind == other.Kind && it.Key == other.Key }
 
 // With returns s with items, sorted.
 func (s Surface) With(items ...Item) Surface { return sorted(slices.Concat(s, items)) }
 
 // Has reports whether s holds it.
-func (s Surface) Has(it Item) bool { return slices.Contains(s, it) }
+func (s Surface) Has(it Item) bool { return slices.ContainsFunc(s, it.same) }
 
 // HasAll reports whether s holds each of items.
 func (s Surface) HasAll(items []Item) bool {
@@ -62,17 +81,23 @@ func (s Surface) Missing(agreed Surface) Surface {
 	return out
 }
 
-// NewItem makes an item, what in detail a terminal would act on rather
-// than show escaped: what the user reads is all there is.
-func NewItem(kind, detail string) Item {
-	return Item{kind, printable.Escape(detail)}
+// NewItem makes an item of the string it is: a rule, a root, a source.
+func NewItem(kind, s string) Item { return Item{kind, s, printable.Escape(s)} }
+
+// valueItem makes an item of v, told by detail.
+func valueItem(kind string, v any, detail string) Item {
+	key, err := json.Marshal(v)
+	if err != nil {
+		panic(err) // v is plain data
+	}
+	return Item{kind, string(key), printable.Escape(detail)}
 }
 
 func sorted(s Surface) Surface {
 	slices.SortFunc(s, func(a, b Item) int {
-		return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.Detail, b.Detail))
+		return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.Key, b.Key))
 	})
-	return slices.Compact(s)
+	return slices.CompactFunc(s, Item.same)
 }
 
 // grantItem is one of a project's grants: its item, and how it takes
@@ -143,13 +168,23 @@ func skillItems(name string, spec skill.Spec) []Item {
 }
 
 func (h Hook) item() Item {
+	detail := h.Detail()
 	if h.Plugin != "" {
-		return NewItem("hook", h.Plugin+": "+h.Detail())
+		detail = h.Plugin + ": " + detail
 	}
-	return NewItem("hook", h.Detail())
+	return valueItem("hook", struct {
+		Event  string `json:"event"`
+		Plugin string `json:"plugin,omitempty"`
+		config.HookEntry
+	}{h.Event, h.Plugin, h.HookEntry}, detail)
 }
 
-func (srv MCPServer) item() Item { return NewItem("mcp", srv.Detail()) }
+func (srv MCPServer) item() Item {
+	return valueItem("mcp", struct {
+		Name string `json:"name"`
+		config.MCPServer
+	}{srv.Name, srv.MCPServer}, srv.Detail())
+}
 
 // Detail tells the hook as "Event(matcher) if …: what it runs".
 func (h Hook) Detail() string {
@@ -160,6 +195,12 @@ func (h Hook) Detail() string {
 	}
 	if h.If != "" {
 		b.WriteString(" if " + h.If)
+	}
+	if h.Blocking != nil && *h.Blocking {
+		b.WriteString(" blocking")
+	}
+	if h.Timeout != nil {
+		fmt.Fprintf(&b, " timeout %ds", *h.Timeout)
 	}
 	b.WriteString(": ")
 	switch h.Type {

@@ -66,4 +66,8 @@ func TestWithin(t *testing.T) {
 	if _, err := Within(root, filepath.Join(root, "dir", "secret")); err == nil {
 		t.Error("a file under a directory leading out stayed within")
 	}
+	// Everything is within the filesystem's root.
+	if _, err := Within("/", secret); err != nil {
+		t.Errorf("within /: %v", err)
+	}
 }

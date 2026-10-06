@@ -73,7 +73,7 @@ func TestTheProjectWaitsForTrust(t *testing.T) {
 		t.Fatalf("approvals = %q: the project's allow rule let bash through", got)
 	}
 
-	if _, err := e.app.SetTrust(context.Background(), e.app.Trust().Surface, true, true); err != nil {
+	if _, err := e.app.SetTrust(context.Background(), e.app.Trust().Surface, e.app.Trust().Surface, true); err != nil {
 		t.Fatal(err)
 	}
 	if trust := e.app.Trust(); len(trust.Held()) > 0 {
@@ -102,7 +102,7 @@ func TestTheProjectWaitsForTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	trust = e.app.Trust()
-	if ask := trust.Ask(); len(ask) != 1 || ask[0] != (extension.Item{Kind: "allow", Detail: "Bash(rm *)"}) {
+	if ask := trust.Ask(); len(ask) != 1 || ask[0].Detail != "Bash(rm *)" {
 		t.Fatalf("after the project grew, asked about %q", ask)
 	}
 	e.submit("once more")
@@ -111,11 +111,36 @@ func TestTheProjectWaitsForTrust(t *testing.T) {
 	}
 }
 
+// What the user declines of a project stays off, unasked, while what they
+// agreed to runs; they may agree to it later.
+func TestDeclinedItemsAreNotAskedAgain(t *testing.T) {
+	project := map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)", "Bash(rm *)"}}}
+	e := boot(t, setup{project: project}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
+	ctx := context.Background()
+	surface := e.app.Trust().Surface
+	if _, err := e.app.SetTrust(ctx, surface, surface[:1], true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.app.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	trust := e.app.Trust()
+	if len(trust.Ask()) > 0 || !slices.Equal(details(trust.Agreed), []string{"Bash(make *)"}) || !slices.Equal(details(trust.Declined), []string{"Bash(rm *)"}) {
+		t.Fatalf("trust %+v", trust)
+	}
+	if _, err := e.app.SetTrust(ctx, trust.Declined, trust.Declined, true); err != nil {
+		t.Fatal(err)
+	}
+	if trust := e.app.Trust(); len(trust.Held()) > 0 {
+		t.Errorf("agreed later, still held: %+v", trust)
+	}
+}
+
 // A project the user distrusted stays so, unasked.
 func TestADistrustedProjectIsNotAskedAbout(t *testing.T) {
 	project := map[string]any{"permissions": map[string]any{"allow": []string{"Bash(touch *)"}}}
 	e := boot(t, setup{project: project}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
-	if _, err := e.app.SetTrust(context.Background(), e.app.Trust().Surface, false, true); err != nil {
+	if _, err := e.app.DenyTrust(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
 	if trust := e.app.Trust(); !trust.Denied || len(trust.Ask()) > 0 || len(trust.Held()) != 1 {
@@ -138,7 +163,7 @@ func TestProjectSkillsWaitForTrustToRun(t *testing.T) {
 	if got := e.app.Trust().Ask(); len(got) != 1 || got[0].Detail != "deploy runs `echo live`" {
 		t.Fatalf("asked about %+v", got)
 	}
-	if _, err := e.app.SetTrust(context.Background(), e.app.Trust().Surface, true, false); err != nil {
+	if _, err := e.app.SetTrust(context.Background(), e.app.Trust().Surface, e.app.Trust().Surface, false); err != nil {
 		t.Fatal(err)
 	}
 	if spec, _ := e.app.skillCatalog().Get("deploy"); !spec.Privileged {

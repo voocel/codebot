@@ -68,7 +68,6 @@ type Options struct {
 type App struct {
 	opts Options
 	cwd  string
-	root string // the project's, "" for none; see config.ProjectRoot
 	// settings are as Boot loaded them, but for the model selection
 	// (Provider, Model, ReasoningEffort), which SetModel changes under mu.
 	settings    config.Resolved
@@ -92,11 +91,11 @@ type App struct {
 	reloading, connecting sync.Mutex
 
 	mu sync.Mutex
-	// session is what the user agreed to of the project for this session,
-	// over what they keep; nil for none.
-	session     *extension.Consent
-	current     *Conversation
-	unsubscribe func()
+	// sessionTrust is what the user decided of projects for this session
+	// alone, over what they keep, by root.
+	sessionTrust map[string]extension.Consent
+	current      *Conversation
+	unsubscribe  func()
 }
 
 // Boot loads the configuration and opens the first conversation.
@@ -112,7 +111,6 @@ func Boot(opts Options) (*App, error) {
 	a := &App{
 		opts:     opts,
 		cwd:      cwd,
-		root:     layers.Root,
 		models:   provider.NewModels(),
 		newModel: opts.NewModel,
 		sessions: storage.NewManager(config.SessionsDir(cwd)),
@@ -154,7 +152,7 @@ func Boot(opts Options) (*App, error) {
 	}
 	go tools.CleanOldOutputs(config.SessionsDir(cwd))
 	go cleanWorktreeOrphans(cwd)
-	go a.sweepPlugins()
+	go sweepPluginCache()
 	return a, nil
 }
 

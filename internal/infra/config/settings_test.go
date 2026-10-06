@@ -253,6 +253,21 @@ func TestProjectSettingsStayInTheProject(t *testing.T) {
 	if data, _ := os.ReadFile(UserSettingsPath()); strings.Contains(string(data), "kit") {
 		t.Errorf("the user's settings changed: %s", data)
 	}
+	// Nor through its directory, where no file is yet: the file it would
+	// make is not the project's.
+	other, away := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(other, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(away, filepath.Join(other, ConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := EditProjectSettings(other, func(s *Settings) { s.Plugins = []string{"./kit"} }); err == nil {
+		t.Error("edited project settings in a directory leading out")
+	}
+	if _, err := os.Stat(filepath.Join(away, "settings.json")); err == nil {
+		t.Error("the project's settings were written outside it")
+	}
 
 	// The user's settings may be a link, to their dotfiles say, which stays.
 	dotfiles := filepath.Join(home, "dotfiles.json")

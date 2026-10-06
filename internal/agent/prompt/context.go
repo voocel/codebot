@@ -44,14 +44,20 @@ func parentChain(dir string) []string {
 	return chain
 }
 
-// readIn returns how to read the files of dir. Those of the project at root
-// may not lead outside it: the user's files are not the project's to read
-// into the prompt.
+// readIn returns how to read the files of dir into the prompt: the user's
+// own, in ~/.codebot, wherever they lead; those of the project at root,
+// within it; another directory's, within that directory. The user's other
+// files are not a repository's to read into the prompt, the project's nor
+// one it is checked out in.
 func readIn(root, dir string) func(string) ([]byte, error) {
-	if root != "" && (dir == root || strings.HasPrefix(dir, root+string(filepath.Separator))) {
-		return func(path string) ([]byte, error) { return regular.ReadFileIn(root, path) }
+	within := dir
+	switch {
+	case dir == config.UserConfigDir():
+		return regular.ReadFile
+	case root != "" && (dir == root || strings.HasPrefix(dir, root+string(filepath.Separator))):
+		within = root
 	}
-	return regular.ReadFile
+	return func(path string) ([]byte, error) { return regular.ReadFileIn(within, path) }
 }
 
 // readText returns the file at path, read with read and trimmed; "" for

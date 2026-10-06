@@ -9,17 +9,12 @@ import (
 	"unicode"
 )
 
-// Escape returns s with each character a terminal would act on rather than
-// show written as its Go escape.
+// Escape returns s as a terminal is to show it: as it is where it shows
+// every character it holds and starts with no quote, else Go-quoted, what a
+// terminal would act on written as its escape. No two strings show alike.
 func Escape(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if unicode.IsPrint(r) {
-			b.WriteRune(r)
-			continue
-		}
-		q := strconv.QuoteRune(r)
-		b.WriteString(q[1 : len(q)-1])
+	if !strings.HasPrefix(s, `"`) && !strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) {
+		return s
 	}
-	return b.String()
+	return strconv.Quote(s)
 }
