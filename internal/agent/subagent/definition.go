@@ -2,12 +2,9 @@ package subagent
 
 import (
 	"fmt"
-	"log"
-	"path/filepath"
 	"slices"
 
 	"github.com/voocel/codebot/internal/agent/prompt"
-	"github.com/voocel/codebot/internal/infra/config"
 )
 
 const generalPurposeAgentName = "general-purpose"
@@ -62,7 +59,7 @@ func (d *AgentDefinition) Validate() error {
 }
 
 // mergeAgents combines definitions from several sources, later groups
-// replacing earlier ones by name: built-in, then project, then user.
+// replacing earlier ones by name.
 //
 // A replacement is the WHOLE definition, not a field-level merge: a user
 // file that re-declares `explore` but omits `disallowedTools` drops the
@@ -91,8 +88,8 @@ func mergeAgents(groups ...[]AgentDefinition) []AgentDefinition {
 // a hint, the tool list is the law.
 var readOnlyDisallowed = []string{"write", "edit", "bash"}
 
-// builtinDefinitions returns the sub-agents that ship with codebot. A
-// project or user file of the same name replaces one.
+// builtinDefinitions returns the sub-agents that ship with codebot. A loaded
+// definition of the same name replaces one.
 func builtinDefinitions(cwd string) []AgentDefinition {
 	return []AgentDefinition{
 		{
@@ -121,26 +118,15 @@ func builtinDefinitions(cwd string) []AgentDefinition {
 	}
 }
 
-// Definitions loads the sub-agents available in cwd: the built-in ones,
-// overridden by project (.codebot/agents/) and then user (~/.codebot/agents/)
-// definitions. A broken file is logged and skipped rather than blocking
-// startup. smallModel runs the built-in explore agent.
-func Definitions(cwd, smallModel string) []AgentDefinition {
+// Definitions returns the sub-agents available in cwd: the built-in ones,
+// replaced by name by those loaded from the user's and the project's agents
+// (see LoadDir). smallModel runs the built-in explore agent.
+func Definitions(cwd, smallModel string, loaded []AgentDefinition) []AgentDefinition {
 	builtin := builtinDefinitions(cwd)
 	for i := range builtin {
 		if builtin[i].Name == "explore" {
 			builtin[i].Model = smallModel
 		}
 	}
-	project, errs := loadAgentsDir(filepath.Join(cwd, config.ConfigDir, "agents"))
-	logLoadErrors(errs)
-	user, errs := loadAgentsDir(filepath.Join(config.UserConfigDir(), "agents"))
-	logLoadErrors(errs)
-	return mergeAgents(builtin, project, user)
-}
-
-func logLoadErrors(errs []error) {
-	for _, err := range errs {
-		log.Printf("agent load error: %v", err)
-	}
+	return mergeAgents(builtin, loaded)
 }

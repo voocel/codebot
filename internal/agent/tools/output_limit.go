@@ -45,7 +45,7 @@ var unlimitedTools = map[string]struct{}{
 // preview and a path in the transcript.
 //
 // It is middleware rather than part of each tool so that it covers every
-// tool, MCP and plugin tools included, and so that hooks and telemetry,
+// tool, MCP tools included, and so that hooks and telemetry,
 // installed outside it, observe the same shortened result the model will see.
 type OutputLimiter struct {
 	dir string

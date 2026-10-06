@@ -58,7 +58,7 @@ This split matters. The agent loop stays small and reusable, while long-running 
 
 **Extensibility**
 - Skills (Agent Skills `SKILL.md`), sub-agents, MCP servers and hooks, from you and from the project
-- Plugins in the [Agent Plugins](https://github.com/agentplugins/agent-plugins-spec) format bundle skills and MCP servers, from git or a directory, locked at the commit you agreed to
+- Plugins in the [Agent Plugins](https://github.com/agentplugins/agent-plugins-spec) format bundle skills, MCP servers, hooks and sub-agents, from git, a directory or a marketplace, locked at the commit you agreed to
 - Reads `.agents/skills`, shared with other coding agents
 - Custom slash commands are skills: add `disable-model-invocation: true` to keep one user-only
 - `/reload` picks up changes; `/status` shows where each extension comes from
@@ -172,15 +172,29 @@ A provider of `type: "gateway"` is a [LiteLLM gateway](https://github.com/voocel
 | Sub-agents | `~/.codebot/agents/*.md` | `.codebot/agents/*.md` at the root |
 | MCP servers, hooks, plugins | `~/.codebot/settings.json` | `.codebot/settings.json` at the root |
 
-A skill is a directory holding a `SKILL.md`, or a single `.md` file. Of two of one name, the project's wins over yours, and yours over a built-in one; `/status` lists what each replaced. Hooks replace none: yours and the project's all run.
+A skill is a directory holding a `SKILL.md`, or a single `.md` file. Of two of one name, the project's wins over yours, and yours over a built-in one; `/status` lists what each replaced. Hooks replace none: yours and the project's all run. A hook with an unknown event, type or field is reported and left out.
 
-**Plugins.** A plugin bundles skills and MCP servers in the [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) format: a directory with a `plugin.json` naming it, skills in `skills/<name>/SKILL.md` and MCP servers in `mcp.json`. Its skills become `/<plugin>:<skill>`, its MCP servers `<plugin>_<server>`. `plugins` in the settings lists where they come from: a git repository (`github.com/acme/tools`, an https or ssh URL, with `#ref` for a branch, tag or commit), or a directory, relative to the settings file naming it.
+**Plugins.** A plugin bundles skills and MCP servers in the [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) format: a directory with a `plugin.json` naming it, skills in `skills/<name>/SKILL.md` and MCP servers in `mcp.json`. Its skills become `/<plugin>:<skill>`, its MCP servers `<plugin>_<server>`. Hooks and sub-agents are beyond that format, so codebot reads them from its own namespace in `plugin.json`:
 
-- `/plugins add <source> [--project]` fetches a plugin, shows what it would run, and once you agree adds it to your settings, or the project's. A relative path is taken from where you are. A plugin your settings declare that you never added is not installed until you add it this way.
+```json
+"extensions": { "io.github.voocel.codebot": {
+  "hooks": { "PreToolUse": [{ "matcher": "bash", "type": "command", "command": "\"$PLUGIN_ROOT\"/guard" }] },
+  "agents": "./agents"
+} }
+```
+
+`hooks` takes hooks as the settings do; they run with `PLUGIN_ROOT` and `PLUGIN_DATA` in their environment. `agents` names a directory of sub-agents, as `.codebot/agents/` holds them; they become `<plugin>:<agent>`.
+
+`plugins` in the settings lists where plugins come from: a git repository (`github.com/acme/tools`, an https or ssh URL, with `//dir` for a plugin in a directory of it and `#ref` for a branch, tag or commit, as in `github.com/acme/plugins//tools#main`), or a directory, relative to the settings file naming it.
+
+- `/plugins add <source> [--project]` fetches a plugin, shows what it would run, and once you agree adds it to your settings, or the project's. A relative path is taken from where you are; one in the project goes into its settings relative to them, so it holds wherever the project is checked out. A plugin your settings declare that you never added is not installed until you add it this way.
 - `/plugins update [name]` fetches git plugins anew at their ref. An update that runs nothing new applies at once; one that does waits for you to agree to what it adds.
 - `/plugins remove <name>` removes one. `/plugins` lists them; space turns one off in this project, for you alone.
+- `/plugins browse` lists the plugins of the marketplaces: enter adds one for you, tab adds it to the project. `/plugins add <plugin>@<marketplace>` does the same.
 
-A git plugin is fetched into `~/.codebot/plugins/cache/` and locked at that commit in `~/.codebot/plugins/lock.json`: it changes only when you update it. One no longer cached is fetched again at that commit. Its MCP servers keep their data in `~/.codebot/plugins/data/<plugin>/` (`${PLUGIN_DATA}`), which updates leave alone. A project's plugins wait for you to trust the folder; once trusted, those not fetched yet are fetched, and codebot asks about what they run before it runs. Writes into a local plugin's directory are confirmed every time. Of two plugins of one name, the project's wins; an MCP server in the settings wins over a plugin's of the same name.
+A git plugin is fetched into `~/.codebot/plugins/cache/` and locked at that commit in `~/.codebot/plugins/lock.json`: it changes only when you update it. One no longer cached is fetched again at that commit; a commit no plugin is locked at any longer is removed two weeks later, as a session may run it still. Its MCP servers keep their data in `~/.codebot/plugins/data/<plugin>/` (`${PLUGIN_DATA}`), which updates leave alone. A project's plugins wait for you to trust the folder; once trusted, those not fetched yet are fetched, and codebot asks about what they run before it runs. Writes into a local plugin's directory are confirmed every time. Of two plugins of one name, the project's wins; an MCP server in the settings wins over a plugin's of the same name.
+
+**Marketplaces.** A marketplace lists plugins in Codex's format, a `.agents/plugins/marketplace.json`. codebot reads yours in your home directory, the project's at its root, and those `marketplaces` in your settings names, each a git repository or a directory: `/plugins marketplace add|remove <source>` edits it. A git marketplace is fetched anew as you browse it, and shown as fetched last when it cannot be. A name is one marketplace's: of two of one name, the second is left out. The settings record where a plugin added from one comes from, not the marketplace, so a marketplace changing or going away leaves it be. Plugins a marketplace has on npm are listed, but cannot be added.
 
 **Workspace trust.** A repository may come from anyone, so what in it runs code or lets calls through unasked takes effect only once you trust the folder: its hooks, MCP servers, plugins, allow rules, read and write roots, and the commands, allowed tools and model its skills declare. Its skills and sub-agents themselves load either way; they are instructions for the model. A project's skills are read as they load, so what runs is what you trusted; `/reload` picks up their edits. The first time, codebot lists all of it and asks; once trusted, it asks again only about what was added. `/trust` shows and changes the decision, which is kept in `~/.codebot/workspaces.json`, never in the repository. Print mode and ACP have nobody to ask: an undecided folder stays untrusted, they say on stderr what is off, and `--trust` trusts it for that run.
 

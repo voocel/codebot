@@ -168,6 +168,7 @@ type setup struct {
 	mode     interact.Mode
 	model    string // default claude-sonnet-4-5
 	settings map[string]any
+	project  map[string]any // the project's settings
 	git      bool
 	cacheTTL string // the frontend's, see Options.CacheTTL
 }
@@ -204,6 +205,10 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 		t.Fatal(err)
 	}
 
+	if s.project != nil {
+		writeJSON(t, config.ProjectSettingsPath(cwd), s.project)
+	}
+
 	e := &env{t: t, cwd: cwd, ui: &fakeUI{choice: interact.AllowOnce}, models: models, idle: make(chan struct{}, 64)}
 	a, err := Boot(Options{
 		Cwd:         cwd,
@@ -234,6 +239,17 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 	})
 	e.app = a
 	return e
+}
+
+func writeJSON(t *testing.T, path string, v any) {
+	t.Helper()
+	data, _ := json.Marshal(v)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func gitInit(t *testing.T, dir string) {
@@ -351,7 +367,7 @@ func TestContextChangesAreAppended(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(e.cwd, "AGENTS.md"), []byte("project rule"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.app.ReloadPlugins(context.Background()); err != nil {
+	if _, err := e.app.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	e.submit("three")
@@ -549,22 +565,8 @@ func TestSkillGrantsLastForTheRun(t *testing.T) {
 	)
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
 	e.ui.choice = interact.Deny
-	root := filepath.Join(os.Getenv("HOME"), ".codebot", "plugins", "kit")
-	if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, body := range map[string]string{
-		"plugin.json":       `{"id":"kit","name":"kit","version":"0.1.0","skillsDir":"./skills"}`,
-		"skills/toucher.md": "---\ndescription: touches files\nallowed-tools: [\"Bash(touch *)\"]\n---\nTouch the file.\n",
-	} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := e.app.ReloadPlugins(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.app.SetPluginTrusted(context.Background(), "kit", true); err != nil {
+	writeSkill(t, filepath.Join(os.Getenv("HOME"), ".codebot", "skills"), "toucher", "---\ndescription: touches files\nallowed-tools: [\"Bash(touch *)\"]\n---\nTouch the file.\n")
+	if _, err := e.app.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -638,12 +640,12 @@ func TestSetModelAppliesToTheNextRun(t *testing.T) {
 	if st := c.Status(); st.Model != "claude-opus-4-5" {
 		t.Fatalf("status model = %q", st.Model)
 	}
-	settings, err := config.Load(e.cwd)
+	layers, err := config.Load(e.cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.Model != "claude-opus-4-5" {
-		t.Fatalf("settings model = %q, want the new model remembered", settings.Model)
+	if m := layers.User.Model; m == nil || *m != "claude-opus-4-5" {
+		t.Fatalf("the user's model = %v, want the new model remembered", m)
 	}
 
 	// The session records the model it ran on; resuming picks it up.
@@ -790,24 +792,13 @@ func TestWorktreeMovesTheConversation(t *testing.T) {
 // A skill gated on paths follows the conversation into a worktree.
 func TestWorktreeSkillsFollowTheWorkspace(t *testing.T) {
 	e := boot(t, setup{git: true}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
-	root := filepath.Join(os.Getenv("HOME"), ".codebot", "plugins", "gated")
-	if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, body := range map[string]string{
-		"plugin.json":      `{"id":"gated","name":"gated","version":"0.1.0","skillsDir":"./skills"}`,
-		"skills/marked.md": "---\ndescription: only where marker.txt is\npaths: [marker.txt]\n---\nbody\n",
-	} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeSkill(t, filepath.Join(os.Getenv("HOME"), ".codebot", "skills"), "marked", "---\ndescription: only where marker.txt is\npaths: [marker.txt]\n---\nbody\n")
 	// The marker is in the workspace, but not in git: a worktree has none.
 	if err := os.WriteFile(filepath.Join(e.cwd, "marker.txt"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reload := func() {
-		if _, err := e.app.ReloadPlugins(context.Background()); err != nil {
+		if _, err := e.app.Reload(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}

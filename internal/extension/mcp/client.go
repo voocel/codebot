@@ -4,11 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/voocel/codebot/internal/infra/config"
+	"log"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/voocel/codebot/internal/infra/config"
 
 	mcpclient "github.com/voocel/mcp-sdk-go/client"
 	"github.com/voocel/mcp-sdk-go/protocol"
@@ -33,7 +39,8 @@ type Client struct {
 // connect establishes an MCP connection using the transport specified in cfg.
 // onChange is called when the server sends a tools/list_changed notification.
 func connect(ctx context.Context, name string, cfg config.MCPServer, onChange func()) (*Client, error) {
-	tr, err := buildTransport(cfg)
+	stderr := &tail{}
+	tr, err := buildTransport(cfg, stderr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s: %w", name, err)
 	}
@@ -54,7 +61,7 @@ func connect(ctx context.Context, name string, cfg config.MCPServer, onChange fu
 
 	discover, err := sdk.Discover(connectCtx)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("connect to %s: %w", name, err), c.Close())
+		return nil, errors.Join(fmt.Errorf("connect to %s: %w%s", name, err, stderr.said()), c.Close())
 	}
 	c.discover = discover
 
@@ -96,28 +103,60 @@ func connect(ctx context.Context, name string, cfg config.MCPServer, onChange fu
 	}
 }
 
-func buildTransport(cfg config.MCPServer) (transport.Transport, error) {
+// buildTransport returns the transport cfg configures, taken as written:
+// whatever cfg refers to is expanded already. A server it runs inherits
+// codebot's environment, cfg.Env over it, and writes its stderr to stderr.
+func buildTransport(cfg config.MCPServer, stderr *tail) (transport.Transport, error) {
 	if cfg.Type == "http" {
 		return buildHTTPTransport(cfg), nil
 	}
-	return buildStdioTransport(cfg)
+	cmd := exec.Command(cfg.Command, cfg.Args...)
+	cmd.Dir = cfg.Cwd
+	if len(cfg.Env) > 0 {
+		cmd.Env = os.Environ()
+		for _, k := range slices.Sorted(maps.Keys(cfg.Env)) {
+			cmd.Env = append(cmd.Env, k+"="+cfg.Env[k])
+		}
+	}
+	return stdio.NewCommand(cmd, &stdio.CommandOptions{Stderr: stderr})
 }
 
-func buildStdioTransport(cfg config.MCPServer) (*stdio.Command, error) {
-	cmd := exec.Command(cfg.Command, cfg.Args...)
-	if len(cfg.Env) > 0 {
-		cmd.Env = expandEnv(cfg.Env)
+// tail keeps the end of what a server writes to its stderr, which says why
+// it failed. The terminal never sees it: a TUI draws there.
+type tail struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+const tailSize = 2048
+
+func (t *tail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if over := len(t.buf) - tailSize; over > 0 {
+		t.buf = append(t.buf[:0], t.buf[over:]...)
 	}
-	return stdio.NewCommand(cmd, nil)
+	return len(p), nil
+}
+
+// said returns the last lines written, after a newline; "" for none.
+func (t *tail) said() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	lines := strings.Split(strings.TrimSpace(string(t.buf)), "\n")
+	if lines[0] == "" {
+		return ""
+	}
+	return "\n" + strings.Join(lines[max(len(lines)-3, 0):], "\n")
 }
 
 func buildHTTPTransport(cfg config.MCPServer) *streamhttp.Transport {
 	var opts *streamhttp.TransportOptions
 	if len(cfg.Headers) > 0 {
-		expanded := expandHeaders(cfg.Headers)
 		opts = &streamhttp.TransportOptions{
 			HTTPClient: &http.Client{Transport: &headerTransport{
-				headers: expanded,
+				headers: cfg.Headers,
 				base:    http.DefaultTransport,
 			}},
 		}
@@ -135,10 +174,10 @@ func (c *Client) watchToolChanges(ctx context.Context) {
 		return
 	}
 	if err := c.subscription.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: MCP tool-change subscription %s ended: %v\n", c.name, err)
+		log.Printf("mcp: the tool-change subscription of %s ended: %v", c.name, err)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "warning: MCP tool-change subscription %s ended\n", c.name)
+	log.Printf("mcp: the tool-change subscription of %s ended", c.name)
 }
 
 // headerTransport injects custom headers into every HTTP request.

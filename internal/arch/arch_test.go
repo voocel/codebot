@@ -4,7 +4,7 @@
 //
 //	ui/         frontends: tui, print, acp
 //	app/        assembly: App and Conversation
-//	extension/  what users plug in: plugins, MCP servers, hooks
+//	extension/  what users plug in: skills, sub-agents, MCP servers, hooks
 //	agent/      what the agent runs with: tools, skills, sub-agents, prompt,
 //	            permissions, todos
 //	session/    the conversation actor and its log
@@ -166,7 +166,7 @@ func TestCheckCatchesViolations(t *testing.T) {
 		{"internal/agent/tools", module + "internal/workspace/worktree"},
 		{"internal/workspace/snapshot", module + "internal/agent/permission"},
 		{"internal/infra/config", module + "internal/agent/prompt"},
-		{"internal/extension/plugin", module + "internal/ui/tui"},
+		{"internal/extension", module + "internal/ui/tui"},
 		{"internal/session", module + "internal/infra/config"},
 		{"internal/session", "github.com/charmbracelet/bubbletea"},
 		{"internal/ui/tui/transcript", "charm.land/bubbletea/v2"},

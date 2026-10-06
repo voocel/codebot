@@ -3,13 +3,16 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/agent/permission"
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
@@ -61,7 +64,7 @@ type evalResult struct {
 	decision  Decision
 	blocked   bool
 	reason    string
-	err       error  // non-blocking execution or approval error, for logging
+	err       error  // non-blocking execution error, for logging
 	rawStdout []byte // raw hook stdout, used for PostStopValidation feedback
 }
 
@@ -73,23 +76,30 @@ type entry struct {
 	argFilter matcher // if-condition: matches against tool args JSON; nil = no filter
 	blocking  bool
 	timeout   time.Duration
+	env       []string // the hook's own environment, as K=V
 }
 
-// Runner manages and executes hooks.
+// Runner runs a conversation's hooks. They are the user's own or a trusted
+// project's, so they run unasked; Set replaces them as the extensions
+// reload.
 type Runner struct {
-	hooks     map[EventType][]entry
 	sessionID string
-	perms     *permission.Engine
+	model     func() agentcore.Model
+	hooks     atomic.Pointer[map[EventType][]entry]
 }
 
-// New compiles the configured hooks, or returns nil when there are none.
-// Prompt hooks ask whatever model returns at the time they run.
-func New(cfg config.HooksConfig, sessionID string, engine *permission.Engine, model func() agentcore.Model) *Runner {
-	hooks := compileConfig(cfg, model)
-	if len(hooks) == 0 {
-		return nil
-	}
-	return &Runner{hooks: hooks, sessionID: sessionID, perms: engine}
+// New returns the runner of a conversation's hooks, none until Set. Prompt
+// hooks ask whatever model returns at the time they run.
+func New(sessionID string, model func() agentcore.Model) *Runner {
+	r := &Runner{sessionID: sessionID, model: model}
+	r.Set(nil)
+	return r
+}
+
+// Set compiles cfg into the hooks that run from now on.
+func (r *Runner) Set(cfg config.HooksConfig) {
+	hooks := compileConfig(cfg, r.model)
+	r.hooks.Store(&hooks)
 }
 
 // preToolUse evaluates PreToolUse hooks. A blocking hook that signals a block
@@ -109,8 +119,8 @@ func (r *Runner) RunNotification(message string) {
 }
 
 // runPostStopValidation executes matching PostStopValidation hooks synchronously.
-// Returns the output of the first failing hook (non-zero exit, exit-2 block, or
-// approval denial), or "" when every validation passes.
+// Returns the output of the first failing hook (non-zero exit or exit-2
+// block), or "" when every validation passes.
 func (r *Runner) runPostStopValidation(ctx context.Context) (failOutput string) {
 	payload := Payload{Event: PostStopValidation, Message: "post-stop validation"}
 	for _, e := range r.matching(PostStopValidation, "", nil) {
@@ -162,7 +172,7 @@ func (r *Runner) fireAsync(toolName string, args json.RawMessage, payload Payloa
 // and whose if-condition, if any, accepts the arguments.
 func (r *Runner) matching(event EventType, toolName string, args json.RawMessage) []entry {
 	var result []entry
-	for _, e := range r.hooks[event] {
+	for _, e := range (*r.hooks.Load())[event] {
 		if e.matcher.Match(toolName) && (e.argFilter == nil || e.argFilter.Match(string(args))) {
 			result = append(result, e)
 		}
@@ -173,81 +183,75 @@ func (r *Runner) matching(event EventType, toolName string, args json.RawMessage
 func compileConfig(cfg config.HooksConfig, model func() agentcore.Model) map[EventType][]entry {
 	hooks := make(map[EventType][]entry)
 	for event, entries := range cfg {
-		et := EventType(event)
-		if !isKnownEvent(et) {
-			log.Printf("hooks: unknown event %q, skipped", event)
-			continue
-		}
 		for _, he := range entries {
-			exec, label := buildExecutor(he, model)
-			if exec == nil {
-				continue
+			// The extensions checked the hooks as they loaded; see Check.
+			if e, err := compile(he, model); err == nil {
+				hooks[EventType(event)] = append(hooks[EventType(event)], e)
 			}
-			m, err := parseMatcher(he.Matcher)
-			if err != nil {
-				log.Printf("hooks: bad matcher %q: %v, skipped", he.Matcher, err)
-				continue
-			}
-			var af matcher
-			if he.If != "" {
-				af, err = parseMatcher(he.If)
-				if err != nil {
-					log.Printf("hooks: bad if-condition %q: %v, skipped", he.If, err)
-					continue
-				}
-			}
-			e := entry{
-				exec:      exec,
-				label:     label,
-				matcher:   m,
-				argFilter: af,
-				timeout:   defaultTimeout,
-			}
-			if he.Blocking != nil {
-				e.blocking = *he.Blocking
-			}
-			if he.Timeout != nil && *he.Timeout > 0 {
-				e.timeout = time.Duration(*he.Timeout) * time.Second
-			}
-			hooks[et] = append(hooks[et], e)
 		}
 	}
 	return hooks
 }
 
-func isKnownEvent(et EventType) bool {
-	switch et {
+// Check checks a hook of event as settings give it: an event that fires, a
+// type that runs, what the type needs, and matchers that compile.
+func Check(event string, he config.HookEntry) error {
+	switch EventType(event) {
 	case PreToolUse, PostToolUse, Notification, PostStopValidation,
 		SessionStart, SessionEnd, UserPromptSubmit:
-		return true
+	default:
+		return fmt.Errorf("unknown event %q", event)
 	}
-	return false
+	_, err := compile(he, nil)
+	return err
 }
 
-func buildExecutor(he config.HookEntry, model func() agentcore.Model) (executor, string) {
+// compile makes he ready to run.
+func compile(he config.HookEntry, model func() agentcore.Model) (entry, error) {
+	exec, label, err := buildExecutor(he, model)
+	if err != nil {
+		return entry{}, err
+	}
+	e := entry{exec: exec, label: label, timeout: defaultTimeout}
+	if e.matcher, err = parseMatcher(he.Matcher); err != nil {
+		return entry{}, fmt.Errorf("bad matcher %q: %w", he.Matcher, err)
+	}
+	if he.If != "" {
+		if e.argFilter, err = parseMatcher(he.If); err != nil {
+			return entry{}, fmt.Errorf("bad if-condition %q: %w", he.If, err)
+		}
+	}
+	if he.Blocking != nil {
+		e.blocking = *he.Blocking
+	}
+	if he.Timeout != nil && *he.Timeout > 0 {
+		e.timeout = time.Duration(*he.Timeout) * time.Second
+	}
+	for _, k := range slices.Sorted(maps.Keys(he.Env)) {
+		e.env = append(e.env, k+"="+he.Env[k])
+	}
+	return e, nil
+}
+
+func buildExecutor(he config.HookEntry, model func() agentcore.Model) (executor, string, error) {
 	switch he.Type {
 	case "command":
 		if he.Command == "" {
-			return nil, ""
+			return nil, "", errors.New("a command hook needs a command")
 		}
-		return &commandExec{command: he.Command}, he.Command
+		return &commandExec{command: he.Command}, he.Command, nil
 	case "prompt":
 		if he.Prompt == "" {
-			return nil, ""
+			return nil, "", errors.New("a prompt hook needs a prompt")
 		}
-		label := "prompt:" + truncate(he.Prompt, 40)
-		return &promptExec{prompt: he.Prompt, model: model}, label
+		return &promptExec{prompt: he.Prompt, model: model}, "prompt:" + truncate(he.Prompt, 40), nil
 	case "http":
 		if he.URL == "" {
-			return nil, ""
+			return nil, "", errors.New("an http hook needs a url")
 		}
-		return &httpExec{url: he.URL, headers: he.Headers}, "http:" + he.URL
-	default:
-		if he.Type != "" {
-			log.Printf("hooks: unknown type %q, skipped", he.Type)
-		}
-		return nil, ""
+		return &httpExec{url: he.URL, headers: he.Headers}, "http:" + he.URL, nil
 	}
+	return nil, "", fmt.Errorf("unknown type %q", he.Type)
 }
 
 func truncate(s string, n int) string {
@@ -258,17 +262,8 @@ func truncate(s string, n int) string {
 	return string(r[:n]) + "..."
 }
 
-// runOne applies the approval gate then runs the hook, returning its evaluated
-// result. An approval denial counts as a block.
+// runOne runs the hook and evaluates its outcome.
 func (r *Runner) runOne(ctx context.Context, e entry, payload Payload) evalResult {
-	if err := r.perms.ApproveHook(ctx, permission.HookRequest{
-		Event:    string(payload.Event),
-		Tool:     payload.Tool,
-		Command:  e.label,
-		Blocking: e.blocking,
-	}); err != nil {
-		return evalResult{blocked: true, reason: err.Error(), err: err}
-	}
 	return interpret(r.execEntry(ctx, e, payload))
 }
 
@@ -347,11 +342,11 @@ func (r *Runner) execEntry(ctx context.Context, e entry, payload Payload) outcom
 		return outcome{exitCode: 1, err: fmt.Errorf("marshal hook payload: %w", err)}
 	}
 
-	env := []string{
+	env := append([]string{
 		"HOOK_EVENT=" + string(payload.Event),
 		"HOOK_TOOL_NAME=" + payload.Tool,
 		"HOOK_SESSION_ID=" + r.sessionID,
-	}
+	}, e.env...)
 
 	return e.exec.execute(ctx, data, env)
 }

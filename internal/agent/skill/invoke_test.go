@@ -2,12 +2,13 @@ package skill
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// fileSkill writes a skill file and loads it as from source.
-func fileSkill(t *testing.T, content, source string) Spec {
+// fileSkill writes a skill file and loads it, privileged or not.
+func fileSkill(t *testing.T, content string, privileged bool) Spec {
 	t.Helper()
 	dir := t.TempDir()
 	writeSkillFile(t, dir+"/s.md", content)
@@ -15,7 +16,7 @@ func fileSkill(t *testing.T, content, source string) Spec {
 	if len(errs) > 0 {
 		t.Fatal(errs)
 	}
-	specs[0].Source = source
+	specs[0].Privileged = privileged
 	return specs[0]
 }
 
@@ -32,7 +33,7 @@ func invoke(t *testing.T, spec Spec, in InvokeInput) *Invocation {
 func TestInvokeExpandsVariablesAndShell(t *testing.T) {
 	t.Parallel()
 
-	spec := fileSkill(t, "log to ${CODEBOT_SESSION_ID}.log, ${CLAUDE_SKILL_DIR}/run.sh\ncount: !`echo 42`\nfail: !`false`", "project")
+	spec := fileSkill(t, "log to ${CODEBOT_SESSION_ID}.log, ${CLAUDE_SKILL_DIR}/run.sh\ncount: !`echo 42`\nfail: !`false`", true)
 	inv := invoke(t, spec, InvokeInput{SessionID: "sess-abc", By: ByUser})
 	for _, want := range []string{"sess-abc.log", spec.BaseDir + "/run.sh", "count: 42", "fail: [error:", `<skill name="s">`} {
 		if !strings.Contains(inv.Prompt, want) {
@@ -41,16 +42,16 @@ func TestInvokeExpandsVariablesAndShell(t *testing.T) {
 	}
 }
 
-// What an untrusted plugin's skill may do is decided by its source when it
-// is invoked, also for a skill loaded from a trusted one first.
+// A skill without privileges keeps its text but neither runs its commands
+// nor allows tools nor picks a model.
 func TestUntrustedSkillLosesPrivileges(t *testing.T) {
 	t.Parallel()
 
-	spec := fileSkill(t, "---\nmodel: gpt-5\nallowed-tools: bash\n---\nresult: !`echo 42`", "bundled")
+	spec := fileSkill(t, "---\nmodel: gpt-5\nallowed-tools: bash\n---\nresult: !`echo 42`", true)
 	if inv := invoke(t, spec, InvokeInput{By: ByUser}); !strings.Contains(inv.Prompt, "result: 42") || inv.Model != "gpt-5" || len(inv.AllowedTools) != 1 {
 		t.Fatalf("a trusted skill keeps its privileges, got %+v", inv)
 	}
-	spec.Source = "remote"
+	spec.Privileged = false
 	inv := invoke(t, spec, InvokeInput{By: ByUser})
 	if len(inv.AllowedTools) != 0 || inv.Model != "" {
 		t.Fatalf("expected allowed tools and model stripped, got %+v", inv)
@@ -152,5 +153,43 @@ func TestExpandSkillArgs(t *testing.T) {
 				t.Errorf("expandArgs(%q, %q)\n  got:  %q\n  want: %q", tc.body, tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPrivileges(t *testing.T) {
+	t.Parallel()
+
+	spec := fileSkill(t, "---\nmodel: gpt-5\nallowed-tools: [\"Bash(git *)\"]\n---\nDiff: !`git diff`", false)
+	want := []string{"runs `git diff`", "allows `Bash(git *)`", "picks gpt-5"}
+	if got := spec.Privileges(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("privileges = %q, want %q", got, want)
+	}
+	if got := fileSkill(t, "Just text.", false).Privileges(); len(got) != 0 {
+		t.Errorf("a plain skill has privileges %q", got)
+	}
+}
+
+// What a skill runs is what its text holds, as Privileges lists it: the
+// name of its directory, put in by a variable, runs nothing, and reaches
+// the commands as an environment variable.
+func TestSkillDirectoryRunsNothing(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "h!`echo PWNED`")
+	writeSkillFile(t, filepath.Join(dir, "SKILL.md"), "---\nname: helper\n---\nNotes are in ${CODEBOT_SKILL_DIR}.\nfile: !`printf %s \"$CODEBOT_SKILL_DIR\"`")
+	spec, err := LoadFile(filepath.Join(dir, "SKILL.md"), "helper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Privileged = true
+	inv := invoke(t, spec, InvokeInput{By: ByUser})
+	if strings.Contains(inv.Prompt, "PWNED") && !strings.Contains(inv.Prompt, "Notes are in "+spec.BaseDir+".") {
+		t.Fatalf("the directory's name ran:\n%s", inv.Prompt)
+	}
+	if !strings.Contains(inv.Prompt, "file: "+spec.BaseDir) {
+		t.Errorf("the command did not get the directory:\n%s", inv.Prompt)
+	}
+	if got := spec.Privileges(); len(got) != 1 {
+		t.Errorf("privileges %q", got)
 	}
 }

@@ -57,8 +57,8 @@ func TestListingIsStableAsUsageChanges(t *testing.T) {
 	if first != second {
 		t.Fatalf("listing moved with usage:\n--- first ---\n%s\n--- second ---\n%s", first, second)
 	}
-	if !strings.Contains(first, "- zeta: Z\n- mid: M\n- alpha: A\n") {
-		t.Fatalf("expected project, user, bundled order:\n%s", first)
+	if !strings.Contains(first, "- alpha: A\n- mid: M\n- zeta: Z\n") {
+		t.Fatalf("expected the skills by name:\n%s", first)
 	}
 }
 

@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,24 +98,13 @@ func TestLoadDirReportsInvalidSkill(t *testing.T) {
 	}
 }
 
-// Of two skills with one name, the more trusted source wins, whichever came
-// first; among equals, the later one.
-func TestCatalogPrefersTheMoreTrustedSource(t *testing.T) {
+// Of two skills with one name, the first wins: the caller orders them.
+func TestCatalogKeepsTheFirstOfAName(t *testing.T) {
 	t.Parallel()
 
-	for _, order := range [][]Spec{
-		{{Name: "review", Source: "bundled"}, {Name: "review", Source: "project"}},
-		{{Name: "review", Source: "project"}, {Name: "review", Source: "remote"}},
-		{{Name: "review", Source: "project", Description: "first"}, {Name: "review", Source: "project", Description: "later"}},
-	} {
-		spec, _ := NewCatalog(order).Get("review")
-		want := order[1]
-		if order[1].Source == "remote" {
-			want = order[0]
-		}
-		if spec.Source != want.Source || spec.Description != want.Description {
-			t.Errorf("from %+v got %+v", order, spec)
-		}
+	spec, _ := NewCatalog([]Spec{{Name: "review", Source: "project"}, {Name: "review", Source: "user"}}).Get("review")
+	if spec.Source != "project" {
+		t.Errorf("got the %s skill", spec.Source)
 	}
 }
 
@@ -166,5 +156,26 @@ func writeSkillFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A frozen skill runs as it was when frozen, whatever its file says since.
+func TestFreeze(t *testing.T) {
+	spec := fileSkill(t, "---\ndescription: d\n---\nbefore\n", false)
+	frozen, err := spec.Freeze()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(spec.FilePath, []byte("---\ndescription: d\n---\nafter !`touch x`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := frozen.prompt(t.Context(), "", ""); !strings.Contains(got, "before") {
+		t.Errorf("the frozen skill reads %q", got)
+	}
+	if got := frozen.Privileges(); len(got) > 0 {
+		t.Errorf("the frozen skill has the file's new privileges %q", got)
+	}
+	if got, _ := spec.prompt(t.Context(), "", ""); !strings.Contains(got, "after") {
+		t.Errorf("the skill reads %q", got)
 	}
 }

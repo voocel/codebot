@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/voocel/codebot/internal/lib/frontmatter"
+	"github.com/voocel/codebot/internal/lib/regular"
 )
 
 // Spec is a skill.
@@ -21,15 +22,17 @@ type Spec struct {
 	Description string
 	WhenToUse   string
 
-	// FilePath is the skill's file, read afresh at every invocation; empty
-	// for a bundled skill, whose text is built in.
+	// FilePath is the skill's file, read afresh at every invocation unless
+	// the skill is frozen; empty for a bundled skill, whose text is built in.
 	FilePath string
 	// BaseDir is the directory the skill's references are relative to.
 	BaseDir string
-	// Source is where the skill comes from: "bundled", "project" or "user",
-	// or "remote" for an untrusted plugin, whose skills may not run shell
-	// commands, grant tools or choose a model.
+	// Source says where the skill comes from, for the user: "builtin",
+	// "user" or "project".
 	Source string
+	// Privileged lets the skill do what it may only where trusted: run the
+	// commands its text holds, allow tools and pick a model. See Privileges.
+	Privileged bool
 
 	DisableModelInvocation bool
 	DisableUserInvocation  bool
@@ -46,37 +49,66 @@ type Spec struct {
 	// match.
 	Paths []string
 
-	text string // a bundled skill's file
+	text   string // the skill's file, if fixed
+	frozen bool   // text is the file, which is not read afresh
 }
 
-// trusted reports whether the skill comes from somewhere the user trusts.
 // Forked reports whether the skill runs in a sub-agent rather than in the
 // conversation.
 func (s Spec) Forked() bool { return s.Context == "fork" }
 
-func (s Spec) trusted() bool {
-	switch s.Source {
-	case "bundled", "project", "user":
-		return true
+// Privileges lists what the skill does that it may only where trusted: the
+// commands its text runs as it is invoked, the tools it allows unasked and
+// the model it picks.
+func (s Spec) Privileges() []string {
+	var out []string
+	if text, err := s.read(); err == nil {
+		for _, m := range reShellInjection.FindAllStringSubmatch(stripFrontmatter(text), -1) {
+			out = append(out, "runs `"+m[1]+"`")
+		}
 	}
-	return false
+	for _, tool := range s.AllowedTools {
+		out = append(out, "allows `"+tool+"`")
+	}
+	if s.Model != "" {
+		out = append(out, "picks "+s.Model)
+	}
+	return out
+}
+
+// Freeze returns the skill fixed to its file as it is now: invoking it no
+// longer reads the file afresh. A project's skills are frozen as they load,
+// so that what runs is what the user trusted.
+func (s Spec) Freeze() (Spec, error) {
+	text, err := s.read()
+	if err != nil {
+		return Spec{}, err
+	}
+	s.text, s.frozen = text, true
+	return s, nil
+}
+
+// read returns the skill's file: its text, if frozen, else read afresh.
+func (s Spec) read() (string, error) {
+	if s.frozen {
+		return s.text, nil
+	}
+	data, err := regular.ReadFile(s.FilePath)
+	return string(data), err
 }
 
 // prompt renders the skill for an invocation with args.
 func (s Spec) prompt(ctx context.Context, args, sessionID string) (string, error) {
-	text := s.text
-	if s.FilePath != "" {
-		data, err := os.ReadFile(s.FilePath)
-		if err != nil {
-			return "", err
-		}
-		text = string(data)
+	text, err := s.read()
+	if err != nil {
+		return "", err
 	}
-	body := expandVars(stripFrontmatter(text), s.BaseDir, sessionID)
-	if s.trusted() {
-		body = expandShell(ctx, body)
+	vars := variables(s.BaseDir, sessionID)
+	body := stripFrontmatter(text)
+	if s.Privileged {
+		body = expandShell(ctx, body, vars)
 	}
-	body = expandArgs(body, args)
+	body = expandArgs(expandVars(body, vars), args)
 	return fmt.Sprintf("<skill name=%q>\nReferences are relative to %s.\n\n%s\n</skill>", s.Name, s.BaseDir, strings.TrimSpace(body)), nil
 }
 
@@ -152,24 +184,42 @@ func expandArgs(body, rawArgs string) string {
 	return result
 }
 
-func expandVars(body, skillDir, sessionID string) string {
-	r := strings.NewReplacer(
-		"${CODEBOT_SKILL_DIR}", skillDir,
-		"${CODEBOT_SESSION_ID}", sessionID,
-		"${CLAUDE_SKILL_DIR}", skillDir,
-		"${CLAUDE_SESSION_ID}", sessionID,
-	)
-	return r.Replace(body)
+// variables are what a skill's text names as ${NAME}, and its commands as
+// environment variables.
+func variables(skillDir, sessionID string) map[string]string {
+	return map[string]string{
+		"CODEBOT_SKILL_DIR":  skillDir,
+		"CODEBOT_SESSION_ID": sessionID,
+		"CLAUDE_SKILL_DIR":   skillDir,
+		"CLAUDE_SESSION_ID":  sessionID,
+	}
+}
+
+func expandVars(body string, vars map[string]string) string {
+	var pairs []string
+	for k, v := range vars {
+		pairs = append(pairs, "${"+k+"}", v)
+	}
+	return strings.NewReplacer(pairs...).Replace(body)
 }
 
 var reShellInjection = regexp.MustCompile("!`([^`]+)`")
 
 // expandShell replaces each !`command` in body with the command's output.
-func expandShell(ctx context.Context, body string) string {
+// It runs the commands as the text holds them, which Privileges lists;
+// vars reach them in their environment, as values put in their text would
+// run as part of them.
+func expandShell(ctx context.Context, body string, vars map[string]string) string {
+	env := os.Environ()
+	for k, v := range vars {
+		env = append(env, k+"="+v)
+	}
 	return reShellInjection.ReplaceAllStringFunc(body, func(m string) string {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "sh", "-c", reShellInjection.FindStringSubmatch(m)[1]).CombinedOutput()
+		cmd := exec.CommandContext(ctx, "sh", "-c", reShellInjection.FindStringSubmatch(m)[1])
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Sprintf("[error: %s]", err)
 		}

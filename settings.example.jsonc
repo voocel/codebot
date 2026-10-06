@@ -1,5 +1,11 @@
 {
-  // Default provider/model. Runtime model switches only affect the current session and are not written back here.
+  // ~/.codebot/settings.json is yours; .codebot/settings.json at a project's
+  // root sets fields over it. A project never sets providers, search_provider,
+  // search_api_key, telemetry or marketplaces, and its hooks, mcp_servers, plugins,
+  // permissions.allow and roots take effect only once you trust the folder
+  // (/trust).
+  //
+  // Default provider/model. /model saves its choice here, in your file.
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
   "reasoning_effort": "",   // "" = provider default; off | low | medium | high | xhigh | max
@@ -126,7 +132,7 @@
   },
 
   // Hooks: commands/prompts/http triggered on lifecycle events.
-  // Global + project-level hooks are merged (appended, not replaced).
+  // Yours and a trusted project's all run: they are appended, not replaced.
   // A hook may print JSON to stdout to influence the run:
   //   {"block": true, "reason": "..."}   block the action (blocking hooks only)
   //   {"updated_input": { ... }}         rewrite tool args (PreToolUse)
@@ -151,6 +157,8 @@
   // Filesystem authorization roots.
   // Defaults: read_roots / write_roots both contain only the current working directory ".".
   // Add extra directories explicitly; write_roots should usually be stricter than read_roots.
+  // Relative roots are taken from the working directory in your settings, and from the
+  // project's root in a project's.
   // Note: roots strictly govern file tools (read/write/edit/glob/grep/ls).
   // bash is only constrained at launch (workdir) and never guarantees actual access scope — always requires approval.
   "permissions": {
@@ -176,5 +184,23 @@
       "url": "https://mcp.deepwiki.com/mcp",
       "headers": { "Authorization": "Bearer your-token-here" }
     }
-  }
+  },
+
+  // Plugins in the Agent Plugins format: git repositories, //dir naming a
+  // plugin's directory in one and #ref a branch, tag or commit, or
+  // directories relative to this file. /plugins add, update and remove
+  // manage the list.
+  "plugins": [
+    "github.com/acme/release-tools#v1.2.0",
+    "github.com/acme/plugins//plugins/lint#main",
+    "./plugins/local-kit"
+  ],
+
+  // Marketplaces to browse with /plugins browse, besides
+  // ~/.agents/plugins/marketplace.json and the project's: git repositories or
+  // directories holding .agents/plugins/marketplace.json. Yours alone;
+  // /plugins marketplace add and remove manage the list.
+  "marketplaces": [
+    "github.com/acme/plugins"
+  ]
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,20 +17,13 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-func TestExpandEnv(t *testing.T) {
-	t.Setenv("TEST_MCP_VAR", "hello")
-
-	result := expandEnv(map[string]string{
-		"KEY":  "${TEST_MCP_VAR}_world",
-		"MISS": "${NONEXISTENT_MCP_TEST_VAR}",
-	})
-
-	want := map[string]string{"KEY": "hello_world", "MISS": ""}
-	for k, v := range want {
-		entry := k + "=" + v
-		if !slices.Contains(result, entry) {
-			t.Errorf("expected %s in result", entry)
-		}
+func TestToolName(t *testing.T) {
+	if got := toolName("acme.tools_db", "query"); got != "mcp__acme-tools_db__query" {
+		t.Errorf("got %s", got)
+	}
+	long := toolName("server", strings.Repeat("x", 80))
+	if len(long) != maxToolName || long == toolName("server", strings.Repeat("x", 81)) {
+		t.Errorf("long names %s", long)
 	}
 }
 
@@ -154,7 +148,7 @@ func TestClientUsesStatelessSDK(t *testing.T) {
 	}
 }
 
-func TestManagerReconfigureClearsFailures(t *testing.T) {
+func TestManagerConfigureClearsFailures(t *testing.T) {
 	t.Parallel()
 
 	m := NewManager(nil)
@@ -162,12 +156,50 @@ func TestManagerReconfigureClearsFailures(t *testing.T) {
 
 	m.failures["broken"] = "boom"
 
-	errs := m.Reconfigure(t.Context(), nil)
+	errs := m.Configure(t.Context(), nil)
 	if len(errs) != 0 {
-		t.Fatalf("expected no reconfigure errors, got %v", errs)
+		t.Fatalf("expected no configure errors, got %v", errs)
 	}
 	if len(m.failures) != 0 {
 		t.Fatalf("expected failures to be cleared, got %v", m.failures)
+	}
+}
+
+// A server configured as before stays connected through Configure; one
+// changed reconnects, one gone disconnects.
+func TestManagerConfigureKeepsWhatDidNotChange(t *testing.T) {
+	backend := sdkserver.New(&sdkserver.Options{Impl: sdkmcp.Implementation{Name: "s", Version: "1"}})
+	srv := httptest.NewServer(sdkhttp.NewHandler(backend, nil))
+	defer srv.Close()
+	m := NewManager(nil)
+	defer m.Close()
+
+	cfg := config.MCPServer{Type: "http", URL: srv.URL}
+	changed := config.MCPServer{Type: "http", URL: srv.URL, Headers: map[string]string{"X-Test": "1"}}
+	if errs := m.Configure(t.Context(), map[string]config.MCPServer{"kept": cfg, "changed": cfg, "gone": cfg}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	kept, before := m.clients["kept"], m.clients["changed"]
+	if errs := m.Configure(t.Context(), map[string]config.MCPServer{"kept": cfg, "changed": changed}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if m.clients["kept"] != kept {
+		t.Error("an unchanged server reconnected")
+	}
+	if c := m.clients["changed"]; c == nil || c == before {
+		t.Error("a changed server kept its connection")
+	}
+	if _, ok := m.clients["gone"]; ok {
+		t.Error("a server no longer configured stayed")
+	}
+}
+
+// What a server that fails to start says on stderr explains the failure,
+// and stays off the terminal.
+func TestConnectTellsWhatTheServerSaid(t *testing.T) {
+	_, err := connect(t.Context(), "broken", config.MCPServer{Command: "sh", Args: []string{"-c", "echo first >&2; echo 404 Not Found >&2; exit 1"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "first\n404 Not Found") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

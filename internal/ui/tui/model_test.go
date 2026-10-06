@@ -20,6 +20,7 @@ import (
 	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
+	"github.com/voocel/codebot/internal/ui/tui/commands"
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
@@ -33,6 +34,12 @@ type harness struct {
 }
 
 func boot(t *testing.T, replies ...litellmtest.Reply) *harness {
+	t.Helper()
+	return bootIn(t, nil, replies...)
+}
+
+// bootIn boots in a folder whose own settings are project, nil for none.
+func bootIn(t *testing.T, project map[string]any, replies ...litellmtest.Reply) *harness {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -52,6 +59,15 @@ func boot(t *testing.T, replies ...litellmtest.Reply) *harness {
 	}
 	if err := os.WriteFile(filepath.Join(cwd, "README.md"), []byte("# demo\n\nA demo project.\n"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if project != nil {
+		data, _ := json.Marshal(project)
+		if err := os.MkdirAll(filepath.Join(cwd, ".codebot"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cwd, ".codebot", "settings.json"), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	fake := litellmtest.New(replies...)
@@ -185,6 +201,21 @@ func await[T tea.Msg](h *harness) {
 			}
 		case <-timeout:
 			h.t.Fatalf("no %T came", *new(T))
+		}
+	}
+}
+
+// settleNotes feeds the App's messages to the model for a moment, for what
+// commands left running to land.
+func (h *harness) settleNotes() {
+	h.t.Helper()
+	timeout := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case msg := <-h.msgs:
+			h.take(msg)
+		case <-timeout:
+			return
 		}
 	}
 }
@@ -334,6 +365,100 @@ func answered[T any](t *testing.T, reply chan T) T {
 		t.Fatal("no answer")
 		return *new(T)
 	}
+}
+
+// A folder with something to trust asks first; until trusted, the footer
+// says so.
+func TestTrustPanel(t *testing.T) {
+	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}})
+	h.shows("Trust this folder?", "would turn on:", "allows", "Bash(make *)", "outside any sandbox", "1. Trust this folder")
+
+	h.pause()
+	h.press("esc")
+	await[reloadedMsg](h)
+	if top := h.m.top(); top != nil && commands.IsTrust(top) || !h.app.Trust().Held() {
+		t.Fatal("esc did not leave the folder untrusted for the session")
+	}
+	h.shows("folder untrusted · /trust")
+
+	h.write("/trust")
+	h.press("enter")
+	if top := h.m.top(); top == nil || !commands.IsTrust(top) {
+		t.Fatalf("/trust shows no panel:\n%s", h.screen())
+	}
+	h.pause()
+	h.press("1")
+	await[reloadedMsg](h)
+	if !h.app.Trust().Trusted {
+		t.Fatal("the folder is not trusted")
+	}
+	if strings.Contains(h.screen(), "untrusted") {
+		t.Errorf("the trusted folder shows as untrusted:\n%s", h.screen())
+	}
+}
+
+// /plugins add shows what the plugin runs before adding it; /plugins lists
+// it.
+func TestAddAPlugin(t *testing.T) {
+	h := boot(t)
+	dir := filepath.Join(os.Getenv("HOME"), "kit")
+	for name, text := range map[string]string{
+		"plugin.json":             `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "kit", "version": "0.1.0"}`,
+		"skills/release/SKILL.md": "---\ndescription: releases\n---\nRelease.\n",
+		"mcp.json":                `{"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", "mcpServers": {"db": {"type": "stdio", "command": "db-mcp"}}}`,
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.write("/plugins add ~/kit")
+	h.press("enter")
+	h.shows("Add kit 0.1.0?", "~/kit brings 1 skill · 1 MCP, and would run:", "MCP server", "kit_db: db-mcp", "1. Add")
+	h.pause()
+	h.press("1")
+	await[reloadedMsg](h)
+	h.settleNotes()
+	h.shows("Added kit · 1 skill · 1 MCP")
+
+	h.write("/plugins")
+	h.press("enter")
+	h.shows("Plugins", "kit 0.1.0", "1 skill · 1 MCP · ~/kit · on")
+}
+
+func TestBrowseMarketplaces(t *testing.T) {
+	h := boot(t)
+	home := os.Getenv("HOME")
+	for name, text := range map[string]string{
+		".agents/plugins/marketplace.json": `{"name": "mine", "interface": {"displayName": "My plugins"}, "plugins": [
+			{"name": "kit", "source": "./kit", "description": "release tools"},
+			{"name": "pkg", "source": {"source": "npm", "package": "@acme/pkg"}}]}`,
+		"kit/plugin.json":             `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "kit", "version": "0.1.0"}`,
+		"kit/skills/release/SKILL.md": "---\ndescription: releases\n---\nRelease.\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(home, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.write("/plugins browse")
+	h.press("enter")
+	h.shows("Marketplaces", "My plugins", "kit", "release tools", "pkg", "cannot be added: codebot does not install npm packages")
+	h.press("enter")
+	h.shows("Add kit 0.1.0?", "brings 1 skill · 0 MCP")
+	h.pause()
+	h.press("1")
+	await[reloadedMsg](h)
+	h.settleNotes()
+	h.shows("Added kit · 1 skill · 0 MCP")
+
+	h.write("/plugins browse")
+	h.press("enter")
+	h.shows("release tools · added")
 }
 
 func TestPermissionPanel(t *testing.T) {

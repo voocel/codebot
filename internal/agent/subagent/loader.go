@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/voocel/codebot/internal/lib/frontmatter"
+	"github.com/voocel/codebot/internal/lib/regular"
 )
 
 // agentFrontmatter is the strict schema for the YAML block at the top of a
@@ -28,14 +29,14 @@ type agentFrontmatter struct {
 	MaxTurns        int      `yaml:"maxTurns,omitempty"`
 }
 
-// loadAgentsDir reads every *.md file under dir and parses them as agent
+// LoadDir reads every *.md file under dir and parses them as agent
 // definitions. Files that fail to parse are reported but do not abort the
 // load — a single broken file should not block the user from using the rest
 // of their agent library. The returned errors slice has one entry per
 // broken file; the returned definitions slice excludes those files.
 //
 // A dir that does not exist holds no agents.
-func loadAgentsDir(dir string) (defs []AgentDefinition, errs []error) {
+func LoadDir(dir string) (defs []AgentDefinition, errs []error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -53,7 +54,7 @@ func loadAgentsDir(dir string) (defs []AgentDefinition, errs []error) {
 			continue
 		}
 		path := filepath.Join(dir, name)
-		def, err := loadAgentFile(path, name)
+		def, err := LoadFile(path)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", path, err))
 			continue
@@ -63,10 +64,10 @@ func loadAgentsDir(dir string) (defs []AgentDefinition, errs []error) {
 	return defs, errs
 }
 
-// loadAgentFile reads a single agent file end-to-end: file I/O, frontmatter
+// LoadFile reads a single agent file end-to-end: file I/O, frontmatter
 // extraction, YAML decoding, post-validation.
-func loadAgentFile(path, filename string) (AgentDefinition, error) {
-	raw, err := os.ReadFile(path)
+func LoadFile(path string) (AgentDefinition, error) {
+	raw, err := regular.ReadFile(path)
 	if err != nil {
 		return AgentDefinition{}, err
 	}
@@ -88,7 +89,7 @@ func loadAgentFile(path, filename string) (AgentDefinition, error) {
 	// repeating the name — convention over configuration.
 	name := fm.Name
 	if name == "" {
-		name = strings.TrimSuffix(filename, ".md")
+		name = strings.TrimSuffix(filepath.Base(path), ".md")
 	}
 
 	def := AgentDefinition{

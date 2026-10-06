@@ -58,7 +58,7 @@
 
 **扩展**
 - Skills（Agent Skills 的 `SKILL.md`）、子 agent、MCP 服务器、hooks，来自你自己，也可以来自项目
-- [Agent Plugins](https://github.com/agentplugins/agent-plugins-spec) 格式的插件，把 skills 和 MCP 服务器打包在一起，来自 git 或本地目录，锁定在你同意过的 commit
+- [Agent Plugins](https://github.com/agentplugins/agent-plugins-spec) 格式的插件，把 skills、MCP 服务器、hooks 和子 agent 打包在一起，来自 git、本地目录或插件市场，锁定在你同意过的 commit
 - 读取 `.agents/skills`，和其他 coding agent 共用
 - 自定义斜杠命令就是 skill：加 `disable-model-invocation: true` 即只供用户调用
 - `/reload` 重新加载改动；`/status` 显示每项扩展的来源
@@ -172,15 +172,29 @@ OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`
 | 子 agent | `~/.codebot/agents/*.md` | 根目录下的 `.codebot/agents/*.md` |
 | MCP 服务器、hooks、插件 | `~/.codebot/settings.json` | 根目录下的 `.codebot/settings.json` |
 
-一个 skill 是一个含 `SKILL.md` 的目录，或者一个 `.md` 文件。同名时项目的优先于你的，你的优先于内置的；`/status` 会列出谁覆盖了谁。hooks 不互相覆盖，你的和项目的都会运行。
+一个 skill 是一个含 `SKILL.md` 的目录，或者一个 `.md` 文件。同名时项目的优先于你的，你的优先于内置的；`/status` 会列出谁覆盖了谁。hooks 不互相覆盖，你的和项目的都会运行。事件、类型或字段不认识的 hook 会报出来，并且不加载。
 
-**插件。** 插件按 [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) 格式把 skills 和 MCP 服务器打包在一起：一个目录，`plugin.json` 给出插件名，skills 放在 `skills/<name>/SKILL.md`，MCP 服务器写在 `mcp.json`。它的 skill 叫 `/<plugin>:<skill>`，MCP 服务器叫 `<plugin>_<server>`。设置里的 `plugins` 列出插件来源：git 仓库（`github.com/acme/tools`、https 或 ssh 地址，可加 `#ref` 指定分支、tag 或 commit），或者一个目录，相对于声明它的设置文件。
+**插件。** 插件按 [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) 格式把 skills 和 MCP 服务器打包在一起：一个目录，`plugin.json` 给出插件名，skills 放在 `skills/<name>/SKILL.md`，MCP 服务器写在 `mcp.json`。它的 skill 叫 `/<plugin>:<skill>`，MCP 服务器叫 `<plugin>_<server>`。这个格式不含 hooks 和子 agent，codebot 从 `plugin.json` 里自己的命名空间读取：
 
-- `/plugins add <source> [--project]` 拉取插件，列出它会运行的东西，你同意后写进你的设置，或项目的设置。相对路径从当前目录算起。设置里声明了、但你从没添加过的插件，显示为未安装，同样用它添加。
+```json
+"extensions": { "io.github.voocel.codebot": {
+  "hooks": { "PreToolUse": [{ "matcher": "bash", "type": "command", "command": "\"$PLUGIN_ROOT\"/guard" }] },
+  "agents": "./agents"
+} }
+```
+
+`hooks` 的写法和设置里的 hooks 相同，运行时环境变量里有 `PLUGIN_ROOT` 和 `PLUGIN_DATA`。`agents` 指向一个子 agent 目录，格式和 `.codebot/agents/` 相同，名字是 `<plugin>:<agent>`。
+
+设置里的 `plugins` 列出插件来源：git 仓库（`github.com/acme/tools`、https 或 ssh 地址，可加 `//目录` 指定仓库里的插件目录，加 `#ref` 指定分支、tag 或 commit，比如 `github.com/acme/plugins//tools#main`），或者一个目录，相对于声明它的设置文件。
+
+- `/plugins add <source> [--project]` 拉取插件，列出它会运行的东西，你同意后写进你的设置，或项目的设置。相对路径从当前目录算起；项目里的目录写进项目设置时换算成相对路径，项目在哪里检出都能用。设置里声明了、但你从没添加过的插件，显示为未安装，同样用它添加。
 - `/plugins update [name]` 按 ref 重新拉取 git 插件。没有新增可执行内容的更新直接生效；有新增的，要等你同意新增部分。
 - `/plugins remove <name>` 移除插件。`/plugins` 列出所有插件，空格键在当前项目里为你一个人开关某个插件。
+- `/plugins browse` 列出各个市场里的插件：回车添加给你自己，tab 添加到项目。也可以用 `/plugins add <插件>@<市场>`。
 
-git 插件拉取到 `~/.codebot/plugins/cache/`，并在 `~/.codebot/plugins/lock.json` 里锁定在那个 commit：只有你更新时才会变。缓存丢了会按锁定的 commit 重新拉取。它的 MCP 服务器把数据放在 `~/.codebot/plugins/data/<plugin>/`（`${PLUGIN_DATA}`），更新不会动它。项目的插件要等你信任这个目录；信任后拉取还没拉取的插件，并在它们运行前，就它们要运行的东西再问你一次。往本地插件目录里写文件，每次都要确认。两个插件同名时项目的优先；设置里的 MCP 服务器和插件的同名时，设置里的优先。
+git 插件拉取到 `~/.codebot/plugins/cache/`，并在 `~/.codebot/plugins/lock.json` 里锁定在那个 commit：只有你更新时才会变。缓存丢了会按锁定的 commit 重新拉取；不再被任何插件锁定的 commit，两周后删除，因为可能还有会话在用它。它的 MCP 服务器把数据放在 `~/.codebot/plugins/data/<plugin>/`（`${PLUGIN_DATA}`），更新不会动它。项目的插件要等你信任这个目录；信任后拉取还没拉取的插件，并在它们运行前，就它们要运行的东西再问你一次。往本地插件目录里写文件，每次都要确认。两个插件同名时项目的优先；设置里的 MCP 服务器和插件的同名时，设置里的优先。
+
+**插件市场。** 市场按 Codex 的格式列出插件，文件是 `.agents/plugins/marketplace.json`。codebot 读取你家目录里的、项目根目录里的，以及你的设置里 `marketplaces` 登记的市场（git 仓库或目录），用 `/plugins marketplace add|remove <source>` 登记和删除。git 市场在浏览时重新拉取，拉不到时显示上次拉到的内容。市场名不能重复：同名的第二个会被排除。从市场添加的插件，设置里记的是它的实际来源，不是市场，所以市场改了或没了都不影响它。市场里来自 npm 的插件会列出来，但不能添加。
 
 **工作区信任。** 仓库可能来自任何人，所以其中会执行代码、或者能免确认放行调用的东西，要等你信任这个目录后才生效：它的 hooks、MCP 服务器、插件、allow 规则、读写目录，以及它的 skills 声明的命令、预授权工具和模型。它的 skills 和子 agent 本身照常加载，那只是给模型的指令。项目的 skill 在加载时读取一次，所以执行的就是你信任过的内容；改了要 `/reload` 才生效。第一次进入时，codebot 会列出这些内容并询问；信任之后，只在新增内容时再问。`/trust` 可以查看和修改这个决定，决定保存在 `~/.codebot/workspaces.json`，不会写进仓库。print 模式和 ACP 没有人可问：没决定过的目录按未信任处理，并在 stderr 说明哪些没生效；加 `--trust` 只信任这一次运行。
 

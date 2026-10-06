@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
 )
 
 // setup.go — first-run configuration logic. The interactive wizard itself
@@ -25,11 +26,12 @@ type SetupOutcome struct {
 	Path     string // settings.json that was written
 }
 
-// NeedsSetup reports whether no settings file exists (global or project).
-// Credentials come exclusively from settings.json, so a missing file means
-// the interactive frontend must run onboarding before booting the runtime.
-func NeedsSetup(cwd string) bool {
-	return !globalConfigExists() && !projectConfigExists(cwd)
+// NeedsSetup reports whether the user has no settings file. Credentials come
+// from it alone, never from a project's, so without it the interactive
+// frontend runs onboarding before booting the runtime.
+func NeedsSetup() bool {
+	_, err := os.Stat(UserSettingsPath())
+	return err != nil
 }
 
 // ApplySetup persists the choice into ~/.codebot/settings.json. It patches
@@ -61,12 +63,12 @@ func ApplySetup(c SetupChoice) (SetupOutcome, error) {
 		Model:     &c.Model,
 		Providers: map[string]*ProviderConfig{c.Provider: pc},
 	}
-	if err := patchSettingsFile(globalSettingsPath(), patch); err != nil {
+	if err := PatchUserSettings(patch); err != nil {
 		return SetupOutcome{}, fmt.Errorf("save settings: %w", err)
 	}
 	return SetupOutcome{
 		Provider: c.Provider,
 		Model:    c.Model,
-		Path:     globalSettingsPath(),
+		Path:     UserSettingsPath(),
 	}, nil
 }

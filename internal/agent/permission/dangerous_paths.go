@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -171,17 +172,18 @@ func matchSensitiveWrite(p string) string {
 	}
 
 	// codebot's own configuration decides what runs unasked: settings carry
-	// hooks, MCP servers and permission rules; plugins carry MCP servers and
-	// skills whose allowed-tools pre-approve tools; then sub-agent
-	// definitions and stored approvals. The harness-managed data beside them
-	// (sessions, memory, snapshots, worktrees) is not configuration.
+	// hooks, MCP servers, plugins and permission rules; workspaces.json which
+	// projects are trusted to; skills and plugins may run commands and allow
+	// tools, then sub-agent definitions and stored approvals. The harness-managed data
+	// beside them (sessions, memory, snapshots, worktrees) is not
+	// configuration.
 	lower := strings.ToLower(filepath.ToSlash(p))
-	if parent == ".codebot" && (base == "settings.json" || base == "plugins-state.json") {
+	if parent == ".codebot" && (base == "settings.json" || base == "workspaces.json") {
 		return "codebot settings"
 	}
-	for _, dir := range []string{"plugins", "agents", "approvals"} {
-		if strings.Contains(lower, "/.codebot/"+dir+"/") {
-			return "codebot " + dir
+	for _, dir := range []string{".codebot/skills", ".codebot/agents", ".codebot/plugins", ".codebot/approvals", ".agents/skills"} {
+		if strings.Contains(lower, "/"+dir+"/") {
+			return "codebot " + path.Base(dir)
 		}
 	}
 

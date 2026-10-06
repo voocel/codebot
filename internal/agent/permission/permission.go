@@ -7,7 +7,6 @@ package permission
 
 import (
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/voocel/codebot/internal/interact"
@@ -19,7 +18,6 @@ const (
 	CapabilityRead     Capability = "read"
 	CapabilityWrite    Capability = "write"
 	CapabilityExec     Capability = "exec"
-	CapabilityHook     Capability = "hook"
 	CapabilityNetwork  Capability = "network"
 	CapabilityInternal Capability = "internal"
 	CapabilityUnknown  Capability = "unknown"
@@ -66,6 +64,10 @@ type FilesystemRoots struct {
 	WriteRoots       []string
 	InternalReadable []string
 	InternalWritable []string
+	// Protected are directories whose files decide what codebot runs, such
+	// as the local plugins the settings declare: each write in them is
+	// confirmed, whatever the mode.
+	Protected []string
 }
 
 type Metadata struct {
@@ -134,39 +136,4 @@ func ParseGrants(raw []string) []Rule {
 		}
 	}
 	return rules
-}
-
-// HookRequest is a hook command about to run.
-type HookRequest struct {
-	Event    string
-	Tool     string
-	Command  string
-	Blocking bool
-}
-
-// request is how the engine sees a hook command: a tool of its own, with the
-// hook capability, remembered per event and command.
-func (h HookRequest) request() Request {
-	event := strings.ToLower(strings.TrimSpace(firstNonEmpty(h.Event, "unknown")))
-	command := strings.TrimSpace(h.Command)
-	summary := command
-	switch {
-	case h.Tool != "":
-		summary = h.Event + " (" + h.Tool + ") -> " + command
-	case h.Event != "":
-		summary = h.Event + " -> " + command
-	}
-	reason := "hook command requires approval"
-	if h.Blocking {
-		reason = "blocking hook command requires approval"
-	}
-	return Request{
-		ToolName: "hook/" + event,
-		Summary:  summary,
-		Reason:   reason,
-		Metadata: Metadata{
-			Capability: CapabilityHook,
-			Key:        "hook:" + event + ":" + command,
-		},
-	}
 }

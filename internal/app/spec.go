@@ -38,18 +38,11 @@ func (c *Conversation) configureLocked() { c.session.Configure(c.specLocked()) }
 // the model will see.
 func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 	a := c.app
-	var out []agentcore.ToolMiddleware
-	if c.hooks != nil {
-		out = append(out, c.hooks.PreToolUse())
-	}
-	out = append(out, a.permissions.Middleware(c.skillGrants, a.toolPermission))
+	out := []agentcore.ToolMiddleware{c.hooks.PreToolUse(), a.permissions.Middleware(c.skillGrants, a.toolPermission)}
 	if mw := a.tracer.ToolMiddleware(); mw != nil {
 		out = append(out, mw)
 	}
-	if c.hooks != nil {
-		out = append(out, c.hooks.PostToolUse(), c.validation.Track)
-	}
-	return append(out, c.limiter.Middleware())
+	return append(out, c.hooks.PostToolUse(), c.validation.Track, c.limiter.Middleware())
 }
 
 // specLocked builds the RunSpec for the conversation's current state. It is
@@ -76,10 +69,8 @@ func (c *Conversation) specLocked() session.RunSpec {
 		CompactAt:          c.model.compactAt,
 		// Breakpoints on the freshest message and where the call before
 		// ended, so each call reads the one before from the cache.
-		Cache: a.cache(),
-	}
-	if c.hooks != nil {
-		cfg.OnStop = c.stop
+		Cache:  a.cache(),
+		OnStop: c.stop,
 	}
 	return session.RunSpec{
 		Provider: c.model.provider,

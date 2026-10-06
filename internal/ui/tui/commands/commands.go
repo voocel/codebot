@@ -65,6 +65,7 @@ func New(a *app.App, version string) *Registry {
 		settings(a),
 		mcp(a),
 		plugins(a),
+		trust(a),
 		copyReply(a),
 		reload(a),
 		memory(a),

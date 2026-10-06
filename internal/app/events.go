@@ -19,6 +19,9 @@ const (
 	ModeChanged
 	// MCPChanged says the MCP tools or instructions changed.
 	MCPChanged
+	// Reloaded says the extensions reloaded, the project's trust among
+	// them; see App.Trust.
+	Reloaded
 )
 
 // Event is an App event.

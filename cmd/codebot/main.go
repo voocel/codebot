@@ -65,6 +65,7 @@ func main() {
 	modeFlag := flag.String("mode", "balanced", "Permission mode: strict, balanced, accept-edits, trust")
 	acpFlag := flag.Bool("acp", false, "Run as an ACP (Agent Client Protocol) agent over stdio")
 	setupFlag := flag.Bool("setup", false, "Run the setup wizard (provider + model + API key)")
+	trustFlag := flag.Bool("trust", false, "Trust this folder for this run: its hooks, MCP servers and allow rules take effect")
 	flag.Parse()
 
 	fillBuildInfo()
@@ -84,7 +85,7 @@ func main() {
 	// First-run onboarding happens before Boot: the wizard writes
 	// ~/.codebot/settings.json, then the normal boot path picks it up.
 	if interactive {
-		if *setupFlag || config.NeedsSetup(cwd) {
+		if *setupFlag || config.NeedsSetup() {
 			result, err := onboarding.Run()
 			if err != nil {
 				fail(err, "error")
@@ -107,7 +108,7 @@ func main() {
 	if err != nil {
 		fail(err, "error")
 	}
-	opts := app.Options{Cwd: cwd, Mode: mode, Resume: resume}
+	opts := app.Options{Cwd: cwd, Mode: mode, Resume: resume, Trust: *trustFlag}
 	if err := run(opts, printMode, *acpFlag, *jsonFlag); err != nil {
 		fail(err, "error")
 	}
@@ -121,11 +122,13 @@ func run(opts app.Options, printMode, acpMode, jsonMode bool) error {
 		opts.UI, opts.FS, opts.CacheTTL = srv, srv.FS(), "1h"
 		a := boot(opts)
 		defer a.Close()
+		warn(a)
 		return srv.Serve(a)
 	case printMode:
 		opts.UI = print.UI{}
 		a := boot(opts)
 		defer a.Close()
+		warn(a)
 		return print.Run(a, flag.Args(), jsonMode)
 	default:
 		screen := &tui.UI{}
@@ -142,6 +145,34 @@ func boot(opts app.Options) *app.App {
 		fail(err, "boot error")
 	}
 	return a
+}
+
+// warn tells the user, where nobody can be asked, what of the extensions
+// was left out, and what of the folder is off until they trust it.
+func warn(a *app.App) {
+	for _, err := range a.Extensions().Problems {
+		fmt.Fprintln(os.Stderr, "codebot: "+err.Error())
+	}
+	for _, pl := range a.Plugins() {
+		switch pl.State {
+		case app.PluginMissing:
+			// The others are fetched as codebot connects.
+			if pl.Commit == "" && pl.Scope == "user" {
+				fmt.Fprintf(os.Stderr, "codebot: plugin %s is not installed: add it with /plugins add in codebot\n", pl.Source)
+			}
+		case app.PluginBroken:
+			fmt.Fprintf(os.Stderr, "codebot: plugin %s is broken: %v\n", pl.Source, pl.Err)
+		}
+	}
+	t := a.Trust()
+	if !t.Held() {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "codebot: %s is not trusted, so these are off:\n", t.Root)
+	for _, it := range t.Surface {
+		fmt.Fprintf(os.Stderr, "  %s  %s\n", it.Kind, it.Detail)
+	}
+	fmt.Fprintln(os.Stderr, "Trust it with /trust in codebot, or pass --trust for this run.")
 }
 
 func fail(err error, prefix string) {

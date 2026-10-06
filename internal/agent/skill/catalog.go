@@ -1,7 +1,9 @@
 package skill
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/voocel/codebot/internal/lib/frontmatter"
+	"github.com/voocel/codebot/internal/lib/regular"
 )
 
 // Catalog is the skills available, by name. It does not change; reloading
@@ -20,16 +23,14 @@ type Catalog struct {
 	byName map[string]Spec
 }
 
-// NewCatalog collects skills. Of several with one name, the one from the most
-// trusted source wins: project, then user, then bundled, then remote; among
-// equals, the later one.
+// NewCatalog collects skills. Of several with one name the first wins: the
+// caller lists them by precedence.
 func NewCatalog(specs []Spec) *Catalog {
 	c := &Catalog{byName: make(map[string]Spec, len(specs))}
 	for _, spec := range specs {
-		if cur, ok := c.byName[spec.Name]; ok && sourcePriority(cur.Source) < sourcePriority(spec.Source) {
-			continue
+		if _, ok := c.byName[spec.Name]; !ok {
+			c.byName[spec.Name] = spec
 		}
-		c.byName[spec.Name] = spec
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.byName)) {
 		c.list = append(c.list, c.byName[name])
@@ -63,9 +64,13 @@ func (c *Catalog) Active(cwd string) *Catalog {
 
 // LoadDir loads the skills in dir: each *.md file, and each subdirectory
 // holding a SKILL.md, at any depth, named after the subdirectory. What fails
-// to load is reported, and left out.
+// to load is reported, and left out. A dir that does not exist holds no
+// skills.
 func LoadDir(dir string) ([]Spec, []error) {
 	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, []error{err}
 	}
@@ -85,7 +90,7 @@ func LoadDir(dir string) ([]Spec, []error) {
 		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
 			continue
 		}
-		spec, err := loadSkillFile(path, strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())))
+		spec, err := LoadFile(path, strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", path, err))
 			continue
@@ -98,7 +103,7 @@ func LoadDir(dir string) ([]Spec, []error) {
 // findSkillInDir finds the SKILL.md in dir or, failing that, the first one
 // below it.
 func findSkillInDir(dir, name string) (Spec, bool) {
-	if spec, err := loadSkillFile(filepath.Join(dir, "SKILL.md"), name); err == nil {
+	if spec, err := LoadFile(filepath.Join(dir, "SKILL.md"), name); err == nil {
 		return spec, true
 	}
 	entries, err := os.ReadDir(dir)
@@ -116,8 +121,10 @@ func findSkillInDir(dir, name string) (Spec, bool) {
 	return Spec{}, false
 }
 
-func loadSkillFile(path, name string) (Spec, error) {
-	data, err := os.ReadFile(path)
+// LoadFile loads the skill file at path, named name unless it names
+// itself.
+func LoadFile(path, name string) (Spec, error) {
+	data, err := regular.ReadFile(path)
 	if err != nil {
 		return Spec{}, err
 	}

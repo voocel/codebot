@@ -37,10 +37,10 @@ type Conversation struct {
 	tasks      *task.Runtime
 	agents     *AgentHub         // background sub-agent runs
 	snapshots  *snapshot.Tracker // nil when checkpoints are off
-	hooks      *hooks.Runner     // nil without hooks
+	hooks      *hooks.Runner
 	files      *agentcoretools.FileReadState
 	limiter    *tools.OutputLimiter
-	validation *hooks.Validation // nil without hooks
+	validation *hooks.Validation
 
 	system []litellm.Block // the system prompt; see context.go
 
@@ -85,9 +85,9 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 	if a.settings.Snapshot && worktree.IsRepo(a.cwd) {
 		c.snapshots = snapshot.New(config.SnapshotDir(a.cwd), a.cwd, config.UndoStatePath(a.cwd, id))
 	}
-	if c.hooks = hooks.New(a.settings.Hooks, id, a.permissions, c.hookModel); c.hooks != nil {
-		c.validation = hooks.NewValidation(c.hooks)
-	}
+	c.hooks = hooks.New(id, c.hookModel)
+	c.hooks.Set(a.Extensions().HooksConfig())
+	c.validation = hooks.NewValidation(c.hooks)
 	config.EnsureMemoryDir(a.cwd)
 	c.skills, c.workspace = a.workspace(a.cwd)
 	c.tools = c.buildTools()
@@ -106,9 +106,6 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 func (c *Conversation) start() {
 	c.mcpChanged()
 	c.app.tracer.SetSession(c.id)
-	if c.hooks == nil {
-		return
-	}
 	c.hooks.RunSessionStart()
 	c.session.Subscribe(func(ev session.Event) {
 		if ev.Kind == session.Idle {
@@ -129,9 +126,7 @@ func (c *Conversation) close() {
 	if c.snapshots != nil {
 		c.snapshots.Close()
 	}
-	if c.hooks != nil {
-		c.hooks.RunSessionEnd()
-	}
+	c.hooks.RunSessionEnd()
 }
 
 // ID is the session ID.
@@ -166,9 +161,6 @@ func (c *Conversation) Submit(ctx context.Context, blocks []litellm.Block) error
 // returns what to post: the context they add, then the input.
 func (c *Conversation) promptSubmit(ctx context.Context, blocks []litellm.Block) ([]agentcore.Message, error) {
 	input := agentcore.User(blocks...)
-	if c.hooks == nil {
-		return []agentcore.Message{input}, nil
-	}
 	dec, err := c.hooks.RunUserPromptSubmit(ctx, input.Text())
 	if err != nil {
 		return nil, err
@@ -329,12 +321,15 @@ func (c *Conversation) mcpChanged() {
 	c.configureLocked()
 }
 
-// Reload re-reads the workspace the model is told about, after the user
-// reloaded plugins. The model is told what changed as the next run starts.
+// Reload takes the extensions the App reloaded, and re-reads the workspace
+// the model is told about. The model is told what changed as the next run
+// starts.
 func (c *Conversation) Reload() {
+	c.hooks.Set(c.app.Extensions().HooksConfig())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.skills, c.workspace = c.app.workspace(c.cwd)
+	c.tools = c.buildTools()
 	c.configureLocked()
 }
 

@@ -64,7 +64,7 @@ func model(a *app.App) Command {
 			}
 		}
 		if len(items) == 0 {
-			return fail("No models configured: add them to a provider in " + config.SettingsPath(a.Cwd()))
+			return fail("No models configured: add them to a provider in " + transcript.ShortPath(config.UserSettingsPath()))
 		}
 		conv := a.Current()
 		return show(&panel.List{
@@ -121,7 +121,10 @@ func settings(a *app.App) Command {
 			{"Model", st.Model},
 			{"API key", maskKey(pc.APIKey)},
 			{"Base URL", base},
-			{"File", transcript.ShortPath(config.SettingsPath(a.Cwd()))},
+			{"File", transcript.ShortPath(config.UserSettingsPath())},
+		}
+		if root := a.Trust().Root; root != "" {
+			general = append(general, [2]string{"Project file", transcript.ShortPath(config.ProjectSettingsPath(root))})
 		}
 		effort := st.Effort
 		if effort == "" {
@@ -207,22 +210,91 @@ func mcpState(s app.MCPServer) string {
 	return fmt.Sprintf("%d tools", s.ToolCount)
 }
 
-func hooks(a *app.App) string {
-	h := a.Settings().Hooks
-	if len(h) == 0 {
-		return "none"
+// extensionRows lists the extensions in effect and where each comes from,
+// then what of the folder waits for trust, what is replaced and what failed
+// to load.
+func extensionRows(a *app.App, servers []app.MCPServer) [][2]string {
+	ext, t := a.Extensions(), a.Trust()
+	folder := transcript.HomePath(t.Root)
+	switch {
+	case t.Root == "":
+		folder = "none: the home directory"
+	case len(t.Surface) == 0:
+		folder += " · nothing to trust"
+	case t.Trusted:
+		folder += " · trusted"
+	default:
+		folder += " · not trusted · /trust"
 	}
-	return strings.Join(slices.Sorted(maps.Keys(h)), " · ")
+	rows := [][2]string{{"Folder", folder}, {"Skills", ""}}
+	for _, s := range ext.Skills {
+		rows = append(rows, [2]string{s.Name, s.Source})
+	}
+	if len(ext.Agents) > 0 {
+		rows = append(rows, [2]string{"Agents", ""})
+		for _, d := range ext.Agents {
+			rows = append(rows, [2]string{d.Name, transcript.ShortPath(d.Origin)})
+		}
+	}
+	if len(ext.MCP) > 0 {
+		rows = append(rows, [2]string{"MCP servers", ""})
+		for _, srv := range ext.MCP {
+			state := "not connected"
+			if i := slices.IndexFunc(servers, func(s app.MCPServer) bool { return s.Name == srv.Name }); i >= 0 {
+				state = mcpState(servers[i])
+			}
+			from := string(srv.Scope)
+			if srv.Plugin != "" {
+				from = "plugin " + srv.Plugin
+			}
+			rows = append(rows, [2]string{srv.Name, from + " · " + state})
+		}
+	}
+	if len(ext.Plugins) > 0 {
+		rows = append(rows, [2]string{"Plugins", ""})
+		for _, pl := range ext.Plugins {
+			rows = append(rows, [2]string{pluginTitle(pl), string(pl.Scope) + " · " + pluginDetail(pl)})
+		}
+	}
+	if len(ext.Hooks) > 0 {
+		rows = append(rows, [2]string{"Hooks", ""})
+		for _, h := range ext.Hooks {
+			from := string(h.Scope)
+			if h.Plugin != "" {
+				from = "plugin " + h.Plugin
+			}
+			rows = append(rows, [2]string{from, h.Detail()})
+		}
+	}
+	if t.Held() {
+		rows = append(rows, [2]string{"Waiting for trust", ""})
+		for _, it := range t.Surface {
+			rows = append(rows, [2]string{it.Kind, it.Detail})
+		}
+	}
+	if len(ext.Shadowed) > 0 {
+		rows = append(rows, [2]string{"Replaced", ""})
+		for _, s := range ext.Shadowed {
+			rows = append(rows, [2]string{s.Kind + " " + s.Name, transcript.ShortPath(s.Lost) + " by " + transcript.ShortPath(s.Won)})
+		}
+	}
+	if len(ext.Problems) > 0 {
+		rows = append(rows, [2]string{"Problems", ""})
+		for _, err := range ext.Problems {
+			rows = append(rows, [2]string{"!", err.Error()})
+		}
+	}
+	return rows
 }
 
 func reload(a *app.App) Command {
-	return Command{Name: "reload", Description: "Reload skills, plugins and MCP servers", Idle: true, Run: func(string) tea.Cmd {
+	return Command{Name: "reload", Description: "Reload skills, agents, plugins, hooks, MCP servers and permission rules", Idle: true, Run: func(string) tea.Cmd {
 		return func() tea.Msg {
-			r, err := a.ReloadPlugins(context.Background())
+			r, err := a.Reload(context.Background())
 			if err != nil {
 				return transcript.Fail("Reload failed: " + err.Error())
 			}
-			return transcript.Note(fmt.Sprintf("Reloaded %d skills and %d MCP tools (%d servers connected, %d failed)", r.Skills, r.MCP.Tools, r.MCP.Connected, len(r.MCP.Errors)))
+			return transcript.Note(fmt.Sprintf("Reloaded %d skills and %d plugins", r.Skills, r.Plugins) + connected(r))
 		}
 	}}
 }

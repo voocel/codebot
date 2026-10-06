@@ -261,26 +261,12 @@ func status(a *app.App, version string) Command {
 			if effort == "" {
 				effort = "provider default"
 			}
-			runtime := [][2]string{{"Reasoning", effort}, {"Sub-agent model", st.SmallModel}, {"Extensions", ""}}
-			runtime = append(runtime, [2]string{"MCP", mcpSummary(servers)})
-			for _, s := range servers {
-				runtime = append(runtime, [2]string{"  " + s.Name, mcpState(s)})
-			}
-			enabled := 0
-			for _, p := range a.Plugins() {
-				if p.State.Enabled {
-					enabled++
-				}
-			}
-			runtime = append(runtime,
-				[2]string{"Plugins", fmt.Sprintf("%d enabled of %d", enabled, len(a.Plugins()))},
-				[2]string{"Skills", strconv.Itoa(len(conv.Skills()))},
-				[2]string{"Hooks", hooks(a)})
+			runtime := [][2]string{{"Reasoning", effort}, {"Sub-agent model", st.SmallModel}}
 
 			tab := func(name string, rows [][2]string) panel.Tab {
 				return panel.Tab{Name: name, Body: func(w int) []string { return info(rows, w) }}
 			}
-			return []panel.Tab{tab("overview", overview), tab("session", session), tab("usage", usage), tab("runtime", runtime)}
+			return []panel.Tab{tab("overview", overview), tab("session", session), tab("usage", usage), tab("runtime", runtime), tab("extensions", extensionRows(a, servers))}
 		}
 		return show(&panel.Text{Title: "Status", Load: load})
 	}}

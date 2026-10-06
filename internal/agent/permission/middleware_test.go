@@ -133,39 +133,6 @@ func TestDangerousPathsAreConfirmedEachTime(t *testing.T) {
 	}
 }
 
-func TestApproveHookAllowAlwaysPersists(t *testing.T) {
-	calls := 0
-	e := newEngine(t, Config{
-		Mode: interact.ModeBalanced,
-		UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
-			calls++
-			return interact.Verdict{Choice: interact.AllowAlways}, nil
-		}),
-	})
-	req := HookRequest{Event: "PreToolUse", Tool: "bash", Command: "echo ok", Blocking: true}
-	for range 2 {
-		if err := e.ApproveHook(context.Background(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if calls != 1 {
-		t.Fatalf("asked %d times, want 1", calls)
-	}
-}
-
-func TestApproveHookFollowsTheMode(t *testing.T) {
-	req := HookRequest{Event: "Stop", Command: "make lint"}
-	if err := newEngine(t, Config{Mode: interact.ModeTrust}).ApproveHook(context.Background(), req); err != nil {
-		t.Fatalf("trust: %v", err)
-	}
-	if err := newEngine(t, Config{Mode: interact.ModeStrict}).ApproveHook(context.Background(), req); err == nil {
-		t.Fatal("strict allowed a hook")
-	}
-	if err := newEngine(t, Config{Mode: interact.ModeBalanced}).ApproveHook(context.Background(), req); err == nil {
-		t.Fatal("balanced allowed a hook nobody approved")
-	}
-}
-
 func TestDecideAskUserHonorsDenyRules(t *testing.T) {
 	rules, err := ParseRuleSet(nil, []string{"ask_user"})
 	if err != nil {

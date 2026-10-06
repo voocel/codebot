@@ -7,6 +7,8 @@
 package acp
 
 import (
+	"context"
+	"fmt"
 	"os"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -31,6 +33,17 @@ func (s *Server) Serve(a *app.App) error {
 	s.fs.setSession(s.sessionID())
 	unsubscribe := a.Subscribe(s.onEvent)
 	defer unsubscribe()
+	// As in the TUI, the session takes plugins and MCP tools up as they
+	// are fetched and connect.
+	go func() {
+		r := a.Connect(context.Background())
+		for _, e := range r.FetchErrors {
+			fmt.Fprintf(os.Stderr, "plugins: %s\n", e)
+		}
+		for _, e := range r.MCP.Errors {
+			fmt.Fprintf(os.Stderr, "mcp: %s\n", e)
+		}
+	}()
 	conn := acp.NewAgentSideConnection(s, os.Stdout, os.Stdin)
 	s.conn.Store(conn)
 	s.fs.bindConn(conn)

@@ -155,6 +155,9 @@ func (m *Model) footer() string {
 	if n := len(m.conv.Agents().ActiveAgents()); n > 0 {
 		right = append(right, lipgloss.NewStyle().Foreground(theme.Agent).Render(fmt.Sprintf("%d %s · /agents", n, plural(n, "agent"))))
 	}
+	if m.app.Trust().Held() {
+		right = append(right, theme.WarmText.Render("folder untrusted · /trust"))
+	}
 	r := strings.Join(right, theme.FaintText.Render(" · "))
 
 	room := m.width - 2

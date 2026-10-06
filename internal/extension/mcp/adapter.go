@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -19,7 +21,7 @@ func newTool(c *Client, t *protocol.Tool) agentcore.Tool {
 		schema = map[string]any{"type": "object"}
 	}
 	return agentcore.Tool{
-		Name:        "mcp__" + c.Name() + "__" + t.Name,
+		Name:        toolName(c.Name(), t.Name),
 		Label:       label(t),
 		Description: t.Description,
 		Schema:      schema,
@@ -125,4 +127,26 @@ func containsAny(s string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+// maxToolName is the longest tool name the vendors take, of letters,
+// digits, "_" and "-".
+const maxToolName = 64
+
+// toolName names the tool of server: mcp__<server>__<tool>, with what the
+// vendors refuse in a tool name made "-", and a name too long cut and told
+// apart by a hash of the whole.
+func toolName(server, tool string) string {
+	name := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			return r
+		}
+		return '-'
+	}, "mcp__"+server+"__"+tool)
+	if len(name) <= maxToolName {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return name[:maxToolName-9] + "_" + hex.EncodeToString(sum[:4])
 }

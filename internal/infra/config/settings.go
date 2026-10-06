@@ -1,7 +1,10 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -9,9 +12,10 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/voocel/codebot/internal/infra/provider"
+	"github.com/voocel/codebot/internal/lib/filelock"
+	"github.com/voocel/codebot/internal/lib/regular"
 	llmprovider "github.com/voocel/litellm/provider"
 	"github.com/voocel/litellm/provider/bedrock"
 )
@@ -145,6 +149,9 @@ type HookEntry struct {
 	If       string            `json:"if,omitempty"`       // tool arguments JSON filter: /regex/, or the exact JSON
 	Blocking *bool             `json:"blocking,omitempty"` // can block execution
 	Timeout  *int              `json:"timeout,omitempty"`  // seconds (default 60)
+	// Env is set by codebot alone, for a command hook's process: a plugin's
+	// hooks get PLUGIN_ROOT and PLUGIN_DATA.
+	Env map[string]string `json:"-"`
 }
 
 // HooksConfig maps event names to their hook entries.
@@ -164,8 +171,33 @@ type MCPServer struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	Cwd     string            `json:"cwd,omitempty"` // a stdio server's working directory
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// Check checks that s is one kind of server: a stdio one runs a command and
+// calls no URL; an http one calls a URL and runs nothing.
+func (s MCPServer) Check() error {
+	switch s.Type {
+	case "", "stdio":
+		if s.Command == "" {
+			return errors.New(`a stdio server needs a command; a remote one, "type": "http"`)
+		}
+		if s.URL != "" || s.Headers != nil {
+			return errors.New("a stdio server takes no url or headers")
+		}
+	case "http":
+		if s.URL == "" {
+			return errors.New("an http server needs a url")
+		}
+		if s.Command != "" || s.Args != nil || s.Env != nil || s.Cwd != "" {
+			return errors.New("an http server takes no command, args, env or cwd")
+		}
+	default:
+		return fmt.Errorf("unknown type %q", s.Type)
+	}
+	return nil
 }
 
 // Settings holds application-level configuration.
@@ -193,6 +225,18 @@ type Settings struct {
 	// MCPServers are the MCP servers to connect, by name; a project entry
 	// replaces the global one of the same name.
 	MCPServers map[string]MCPServer `json:"mcp_servers,omitempty"`
+
+	// Plugins are the plugins to load, each a git repository
+	// ("host/owner/repo", or an https or ssh URL, "#ref" pinning a tag,
+	// branch or commit) or a local directory, relative to the directory of
+	// the settings file declaring it.
+	Plugins []string `json:"plugins,omitempty"`
+
+	// Marketplaces are catalogs of plugins to browse, each a git repository
+	// or a local directory holding .agents/plugins/marketplace.json, as
+	// Codex reads it. The user's alone: a project lists its own in its
+	// directory.
+	Marketplaces []string `json:"marketplaces,omitempty"`
 
 	Permissions *PermissionsConfig `json:"permissions,omitempty"`
 
@@ -223,10 +267,6 @@ type Resolved struct {
 	MaxTurns        int
 	SearchProvider  string
 	SearchAPIKey    string
-
-	Hooks HooksConfig // lifecycle hooks
-
-	MCPServers map[string]MCPServer
 
 	Permissions PermissionsConfig // user-defined permission rules
 
@@ -282,10 +322,6 @@ func (s Settings) resolve() Resolved {
 	if s.SearchAPIKey != nil {
 		r.SearchAPIKey = *s.SearchAPIKey
 	}
-	if len(s.Hooks) > 0 {
-		r.Hooks = s.Hooks
-	}
-	r.MCPServers = s.MCPServers
 	if s.Permissions != nil {
 		r.Permissions = *s.Permissions
 	}
@@ -342,26 +378,37 @@ func validateProviderAPI(name string, pc ProviderConfig) error {
 	return nil
 }
 
-// SettingsPath returns <cwd>/.codebot/settings.json.
-func SettingsPath(cwd string) string {
-	return filepath.Join(cwd, ConfigDir, "settings.json")
+// ProjectSettingsPath returns <root>/.codebot/settings.json.
+func ProjectSettingsPath(root string) string {
+	return filepath.Join(root, ConfigDir, "settings.json")
 }
 
-// projectConfigExists reports whether <cwd>/.codebot/settings.json exists.
-func projectConfigExists(cwd string) bool {
-	_, err := os.Stat(SettingsPath(cwd))
-	return err == nil
-}
-
-// globalSettingsPath returns ~/.codebot/settings.json.
-func globalSettingsPath() string {
+// UserSettingsPath returns ~/.codebot/settings.json.
+func UserSettingsPath() string {
 	return filepath.Join(UserConfigDir(), "settings.json")
 }
 
-// globalConfigExists reports whether ~/.codebot/settings.json exists.
-func globalConfigExists() bool {
-	_, err := os.Stat(globalSettingsPath())
-	return err == nil
+// ProjectRoot returns the root of the project cwd is in: the top of the git
+// repository holding it, else cwd itself. The home directory is no project:
+// its .codebot is the user's, so there ProjectRoot returns "".
+func ProjectRoot(cwd string) string {
+	cwd = filepath.Clean(cwd)
+	root := cwd
+	for dir := cwd; ; {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			root = dir
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	if home, _ := os.UserHomeDir(); root == home {
+		return ""
+	}
+	return root
 }
 
 // SessionsDir returns ~/.codebot/projects/<projectID>/.
@@ -394,7 +441,6 @@ func AuditLogPath() string {
 }
 
 var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]+`)
-var settingsWriteMu sync.Mutex
 
 // projectID returns a stable, human-readable directory name for a project path.
 // Format: non-alphanumeric characters replaced with "-" (e.g. /Users/me/proj → -Users-me-proj).
@@ -415,25 +461,47 @@ func UserConfigDir() string {
 	return filepath.Join(home, ConfigDir)
 }
 
-// Load merges the global (~/.codebot/settings.json) and project
-// (<cwd>/.codebot/settings.json) settings, the project's winning, and applies
-// defaults. It fails when a settings file exists and cannot be parsed or holds
-// an unsupported value. Model is deliberately never defaulted — hardcoded
-// model names go stale; boot validates it is set.
-func Load(cwd string) (Resolved, error) {
-	var global Settings
+// Layers are the settings as their files hold them: the user's, in
+// ~/.codebot/settings.json, and the project's, in .codebot/settings.json at
+// the project's root. A project is shared and may come from anyone, so it
+// sets only some of the fields, some only once trusted; see ForProject.
+type Layers struct {
+	Root    string // the project's root, "" for none; see ProjectRoot
+	User    Settings
+	Project Settings
+}
+
+// Load reads the user's and the project's settings. It fails when a
+// settings file exists and cannot be parsed.
+func Load(cwd string) (Layers, error) {
+	l := Layers{Root: ProjectRoot(cwd)}
+	var err error
 	if UserConfigDir() != "" {
-		var err error
-		if global, err = loadFile(globalSettingsPath()); err != nil {
-			return Resolved{}, err
+		if l.User, err = loadFile(UserSettingsPath()); err != nil {
+			return Layers{}, err
 		}
 	}
-	project, err := loadFile(SettingsPath(cwd))
-	if err != nil {
-		return Resolved{}, err
+	if l.Root != "" {
+		if l.Project, err = loadFile(ProjectSettingsPath(l.Root)); err != nil {
+			return Layers{}, err
+		}
 	}
+	return l, nil
+}
 
-	r := mergeSettings(global, project).resolve()
+// Resolve combines the layers, the project's fields over the user's but for
+// those it may not set, applies the defaults and validates the result. The
+// extensions, hooks and MCP servers, are left to the extension package.
+// Model is deliberately never defaulted — hardcoded model names go stale;
+// boot validates it is set.
+func (l Layers) Resolve(cwd string, trusted bool) (Resolved, error) {
+	project, _ := ForProject(l.Project, trusted)
+	if p := project.Permissions; p != nil {
+		// The project's roots are its own: relative to its root, wherever
+		// in it codebot runs.
+		project.Permissions = &PermissionsConfig{Allow: p.Allow, Deny: p.Deny, ReadRoots: absRoots(l.Root, p.ReadRoots), WriteRoots: absRoots(l.Root, p.WriteRoots)}
+	}
+	r := mergeSettings(l.User, project).resolve()
 	if err := validateResolved(r); err != nil {
 		return Resolved{}, err
 	}
@@ -444,7 +512,38 @@ func Load(cwd string) (Resolved, error) {
 	return r, nil
 }
 
-// mergeSettings merges two Settings; non-nil fields in override take precedence.
+// ForProject keeps of a project's settings s what a project may set, and
+// names the fields it may not. Where calls go and whose credentials they
+// carry are the user's alone: the providers, the search provider and its
+// key, and telemetry; so are the marketplaces they browse, which a project
+// keeps in its directory. What lets code run or calls through unasked — hooks,
+// MCP servers, plugins, allow rules, the roots — a project sets only once
+// trusted; the rest, deny rules among it, always.
+func ForProject(s Settings, trusted bool) (kept Settings, refused []string) {
+	for name, set := range map[string]bool{
+		"providers":       s.Providers != nil,
+		"search_provider": s.SearchProvider != nil,
+		"search_api_key":  s.SearchAPIKey != nil,
+		"telemetry":       s.Telemetry != nil,
+		"marketplaces":    s.Marketplaces != nil,
+	} {
+		if set {
+			refused = append(refused, name)
+		}
+	}
+	slices.Sort(refused)
+	s.Providers, s.SearchProvider, s.SearchAPIKey, s.Telemetry, s.Marketplaces = nil, nil, nil, nil, nil
+	if !trusted {
+		s.Hooks, s.MCPServers, s.Plugins = nil, nil, nil
+		if p := s.Permissions; p != nil {
+			s.Permissions = &PermissionsConfig{Deny: p.Deny}
+		}
+	}
+	return s, refused
+}
+
+// mergeSettings merges two Settings; non-nil fields in override take
+// precedence. Neither changes.
 func mergeSettings(base, override Settings) Settings {
 	if override.Provider != nil {
 		base.Provider = override.Provider
@@ -453,6 +552,7 @@ func mergeSettings(base, override Settings) Settings {
 		base.Model = override.Model
 	}
 	if len(override.Providers) > 0 {
+		base.Providers = maps.Clone(base.Providers)
 		if base.Providers == nil {
 			base.Providers = make(map[string]*ProviderConfig)
 		}
@@ -460,11 +560,11 @@ func mergeSettings(base, override Settings) Settings {
 			if v == nil {
 				continue
 			}
-			existing, ok := base.Providers[k]
-			if !ok || existing == nil {
+			if base.Providers[k] == nil {
 				base.Providers[k] = v
 				continue
 			}
+			existing := new(*base.Providers[k])
 			// Field-level merge: override only non-zero fields.
 			if v.Type != "" {
 				existing.Type = v.Type
@@ -509,21 +609,26 @@ func mergeSettings(base, override Settings) Settings {
 		base.SearchAPIKey = override.SearchAPIKey
 	}
 	if len(override.Hooks) > 0 {
-		if base.Hooks == nil {
-			base.Hooks = make(HooksConfig)
+		hooks := maps.Clone(base.Hooks)
+		if hooks == nil {
+			hooks = make(HooksConfig)
 		}
 		for event, entries := range override.Hooks {
-			base.Hooks[event] = append(base.Hooks[event], entries...)
+			hooks[event] = slices.Concat(hooks[event], entries)
 		}
+		base.Hooks = hooks
 	}
-	if override.Permissions != nil {
-		if base.Permissions == nil {
-			base.Permissions = &PermissionsConfig{}
+	if o := override.Permissions; o != nil {
+		var p PermissionsConfig
+		if base.Permissions != nil {
+			p = *base.Permissions
 		}
-		base.Permissions.Allow = append(base.Permissions.Allow, override.Permissions.Allow...)
-		base.Permissions.Deny = append(base.Permissions.Deny, override.Permissions.Deny...)
-		base.Permissions.ReadRoots = append(base.Permissions.ReadRoots, override.Permissions.ReadRoots...)
-		base.Permissions.WriteRoots = append(base.Permissions.WriteRoots, override.Permissions.WriteRoots...)
+		base.Permissions = &PermissionsConfig{
+			Allow:      slices.Concat(p.Allow, o.Allow),
+			Deny:       slices.Concat(p.Deny, o.Deny),
+			ReadRoots:  slices.Concat(p.ReadRoots, o.ReadRoots),
+			WriteRoots: slices.Concat(p.WriteRoots, o.WriteRoots),
+		}
 	}
 	if override.Telemetry != nil {
 		base.Telemetry = override.Telemetry
@@ -531,48 +636,72 @@ func mergeSettings(base, override Settings) Settings {
 	if override.Snapshot != nil {
 		base.Snapshot = override.Snapshot
 	}
-	for name, server := range override.MCPServers {
-		if base.MCPServers == nil {
-			base.MCPServers = make(map[string]MCPServer)
+	if len(override.MCPServers) > 0 {
+		servers := maps.Clone(base.MCPServers)
+		if servers == nil {
+			servers = make(map[string]MCPServer)
 		}
-		base.MCPServers[name] = server
+		maps.Copy(servers, override.MCPServers)
+		base.MCPServers = servers
 	}
 	return base
 }
 
-// patchSettingsFile applies the non-nil fields of patch to the settings file
-// at path.
-func patchSettingsFile(path string, patch Settings) error {
-	settingsWriteMu.Lock()
-	defer settingsWriteMu.Unlock()
-	existing, err := loadFile(path)
+// EditSettings applies edit to the settings file at path, which it creates
+// if need be.
+func EditSettings(path string, edit func(*Settings)) error {
+	unlock, err := LockFile(path)
 	if err != nil {
 		return err
 	}
+	defer unlock()
+	s, err := loadFile(path)
+	if err != nil {
+		return err
+	}
+	edit(&s)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	data, err := json.MarshalIndent(mergeSettings(existing, patch), "", "  ")
+	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
-	return writeFileAtomic(path, data, 0o600)
-}
-
-// PatchEffectiveSettings writes to the project settings file when it exists,
-// otherwise to the global settings file. Runtime UI changes should use this
-// so the visible state matches the settings layer Load reads.
-func PatchEffectiveSettings(cwd string, patch Settings) error {
-	path := globalSettingsPath()
-	if projectConfigExists(cwd) {
-		path = SettingsPath(cwd)
+	perm := os.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
 	}
-	return patchSettingsFile(path, patch)
+	return WriteFileAtomic(path, data, perm)
 }
 
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+// PatchUserSettings applies the non-nil fields of patch to the user's
+// settings. What the user picks as codebot runs is theirs, never the
+// project's, which is shared.
+func PatchUserSettings(patch Settings) error {
+	return EditSettings(UserSettingsPath(), func(s *Settings) { *s = mergeSettings(*s, patch) })
+}
+
+// LockFile takes the lock codebot's processes share to edit the file at
+// path, so that none of them loses another's edit. The locks are kept in
+// the user's config directory, never in a project.
+func LockFile(path string) (unlock func(), err error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(UserConfigDir(), "locks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return filelock.Lock(filepath.Join(dir, filepath.Base(abs)+"-"+hex.EncodeToString(sum[:6])+".lock"))
+}
+
+// WriteFileAtomic writes data to path whole or not at all: a reader never sees
+// it half written.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".settings-*.tmp")
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return err
 	}
@@ -602,7 +731,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 func loadFile(path string) (Settings, error) {
 	var s Settings
-	data, err := os.ReadFile(path)
+	data, err := regular.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return s, nil
@@ -627,21 +756,28 @@ func normalizePermissionRoots(cwd string, perms PermissionsConfig) PermissionsCo
 // roots means cwd.
 func normalizeRoots(cwd string, roots []string) []string {
 	var out []string
-	for _, root := range roots {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
-		}
-		root = expandHome(root)
-		if !filepath.IsAbs(root) {
-			root = filepath.Join(cwd, root)
-		}
-		if root = filepath.Clean(root); !slices.Contains(out, root) {
+	for _, root := range absRoots(cwd, roots) {
+		if !slices.Contains(out, root) {
 			out = append(out, root)
 		}
 	}
 	if len(out) == 0 {
 		return []string{filepath.Clean(cwd)}
+	}
+	return out
+}
+
+// absRoots returns roots absolute, those relative taken from base.
+func absRoots(base string, roots []string) []string {
+	var out []string
+	for _, root := range roots {
+		if root = strings.TrimSpace(root); root == "" {
+			continue
+		}
+		if root = expandHome(root); !filepath.IsAbs(root) {
+			root = filepath.Join(base, root)
+		}
+		out = append(out, filepath.Clean(root))
 	}
 	return out
 }

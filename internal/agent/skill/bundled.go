@@ -22,7 +22,7 @@ func Bundled(baseDir string) []Spec {
 		if err != nil {
 			panic(fmt.Sprintf("bundled skill %s: %v", file, err))
 		}
-		spec.BaseDir, spec.Source, spec.text = baseDir, "bundled", string(data)
+		spec.BaseDir, spec.Privileged, spec.text, spec.frozen = baseDir, true, string(data), true
 		specs = append(specs, spec)
 	}
 	return specs

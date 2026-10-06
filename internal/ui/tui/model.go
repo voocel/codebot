@@ -106,7 +106,8 @@ type (
 	sessionErrMsg struct{ err error }
 	openedMsg     struct{ conv *app.Conversation }
 	modeMsg       struct{ mode interact.Mode }
-	mcpMsg        struct{ report app.MCPReport }
+	connectedMsg  struct{ report app.ReloadReport }
+	reloadedMsg   struct{}
 	suggestionMsg struct {
 		conv *app.Conversation
 		text string
@@ -140,7 +141,18 @@ func newModel(a *app.App, version string) *Model {
 	m.editor = editor.New(m.commands, func() string { return m.conv.Cwd() })
 	m.editor.SetHistory(editor.NewHistory(filepath.Join(config.UserConfigDir(), "history.jsonl"), a.Cwd()))
 	m.open(a.Current())
+	m.askTrust()
 	return m
+}
+
+// askTrust asks the user to decide on what of the folder waits for their
+// trust, if anything does, in place of a question shown before.
+func (m *Model) askTrust() tea.Cmd {
+	m.remove(commands.IsTrust)
+	if len(m.app.Trust().Ask) == 0 {
+		return nil
+	}
+	return m.push(commands.TrustPanel(m.app, false))
 }
 
 // open shows conv, replacing what the TUI showed.
@@ -162,7 +174,9 @@ func (m *Model) open(conv *app.Conversation) {
 func (m *Model) commands() []editor.Completion {
 	var out []editor.Completion
 	for _, c := range m.cmds.Commands() {
-		out = append(out, editor.Completion{Name: c.Name, Aliases: c.Aliases, Description: c.Description, Run: c.Args == ""})
+		// A command whose arguments are optional runs as picked.
+		run := c.Args == "" || strings.HasPrefix(c.Args, "[")
+		out = append(out, editor.Completion{Name: c.Name, Aliases: c.Aliases, Description: c.Description, Run: run})
 	}
 	return out
 }
@@ -221,12 +235,21 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.mode = msg.mode
 		m.editor.SetAccent(modeColor(m.mode))
 		return nil
-	case mcpMsg:
-		for _, e := range msg.report.Errors {
+	case reloadedMsg:
+		return m.askTrust()
+	case connectedMsg:
+		r := msg.report
+		if len(r.Fetched) > 0 {
+			m.t.Append(transcript.Note("Fetched plugins: " + strings.Join(r.Fetched, ", ")))
+		}
+		for _, e := range r.FetchErrors {
+			m.t.Append(transcript.Fail("Plugins: " + e))
+		}
+		for _, e := range r.MCP.Errors {
 			m.t.Append(transcript.Fail("MCP: " + e))
 		}
-		if msg.report.Tools > 0 {
-			return m.notify("MCP connected · " + strconv.Itoa(msg.report.Tools) + " tools")
+		if r.MCP.Tools > 0 {
+			return m.notify("MCP connected · " + strconv.Itoa(r.MCP.Tools) + " tools")
 		}
 		return nil
 	case suggestionMsg:

@@ -3,7 +3,6 @@ package permission
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -31,19 +30,20 @@ type Config struct {
 	OnAudit func(AuditEntry)
 }
 
-// Engine decides tool calls and hook commands. Only its mode and the
-// approvals given while it runs change; what one conversation allows on top
-// travels with its requests, see Middleware.
+// Engine decides tool calls. Its mode, its rules and roots, which follow
+// the settings as reloaded, and the approvals given while it runs change;
+// what one conversation allows on top travels with its requests, see
+// Middleware.
 type Engine struct {
 	workspace string
-	rules     *RuleSet
-	roots     FilesystemRoots
 	store     *Store
 	ui        interact.UI
 	onAudit   func(AuditEntry)
 
-	mu   sync.RWMutex
-	mode interact.Mode
+	mu    sync.RWMutex
+	mode  interact.Mode
+	rules *RuleSet
+	roots FilesystemRoots
 }
 
 func NewEngine(cfg Config) (*Engine, error) {
@@ -90,16 +90,12 @@ func (e *Engine) Middleware(grants func() []Rule, meta func(tool string) Metadat
 	}
 }
 
-// ApproveHook decides whether a hook command may run.
-func (e *Engine) ApproveHook(ctx context.Context, req HookRequest) error {
-	decision, err := e.Decide(ctx, req.request())
-	if err != nil {
-		return err
-	}
-	if !decision.Allowed() {
-		return errors.New(decision.Reason)
-	}
-	return nil
+// Configure replaces the rules and the roots, from the next decision on.
+func (e *Engine) Configure(rules *RuleSet, roots FilesystemRoots) {
+	roots = normalizeFilesystemRoots(e.workspace, roots)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.rules, e.roots = rules, roots
 }
 
 func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
@@ -107,14 +103,17 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 	// wins over the engine's construction-time workspace, so relative operand
 	// paths are normalized, checked, and audited against the directory the
 	// tool actually runs in. Empty preserves the original behaviour.
-	info := inspectRequest(firstNonEmpty(req.Workspace, e.workspace), e.roots, req)
+	e.mu.RLock()
+	rules, roots := e.rules, e.roots
+	e.mu.RUnlock()
+	info := inspectRequest(firstNonEmpty(req.Workspace, e.workspace), roots, req)
 	if info.hardDeny != "" {
 		decision := denyDecision(DecisionSourceRoots, info, info.hardDeny)
 		e.audit(info, decision)
 		return decision, nil
 	}
 
-	rule := e.rules.evaluate(info)
+	rule := rules.evaluate(info)
 	if rule == ruleDeny {
 		decision := denyDecision(DecisionSourceRule, info, "denied by permission rule")
 		e.audit(info, decision)
@@ -402,6 +401,9 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 		if info.reason == "" {
 			info.reason = "file modification requires approval"
 		}
+		if pathInRoots(path, roots.Protected) {
+			c.confirm = "a directory deciding what codebot runs (" + path + ") requires per-invocation approval"
+		}
 		if deny != "" {
 			switch {
 			case pathInRoots(path, roots.InternalWritable):
@@ -466,9 +468,6 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 	if meta.Key != "" || meta.KeyPrefix != "" {
 		info.keys = []string{cmp.Or(meta.Key, meta.KeyPrefix+":"+req.ToolName)}
 		info.remember = "`" + firstNonEmpty(req.ToolLabel, meta.SummaryHint, req.ToolName) + "`"
-		if info.capability == CapabilityHook {
-			info.remember = "this hook command"
-		}
 	}
 	if info.remember != "" {
 		info.remember += " in this project"
@@ -590,6 +589,7 @@ func normalizeFilesystemRoots(workspace string, roots FilesystemRoots) Filesyste
 		WriteRoots:       writeRoots,
 		InternalReadable: dedup(roots.InternalReadable),
 		InternalWritable: dedup(roots.InternalWritable),
+		Protected:        dedup(roots.Protected),
 	}
 }
 

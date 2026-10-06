@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"sync"
 
@@ -17,8 +18,9 @@ import (
 type Manager struct {
 	mu       sync.Mutex
 	clients  map[string]*Client
-	failures map[string]string // server name → error message
-	onChange func()            // a server signalled tools/list_changed
+	configs  map[string]config.MCPServer // what each client connected with
+	failures map[string]string           // server name → error message
+	onChange func()                      // a server signalled tools/list_changed
 }
 
 // NewManager creates an empty Manager. onChange is called, on a goroutine of
@@ -26,57 +28,64 @@ type Manager struct {
 func NewManager(onChange func()) *Manager {
 	return &Manager{
 		clients:  make(map[string]*Client),
+		configs:  make(map[string]config.MCPServer),
 		failures: make(map[string]string),
 		onChange: onChange,
 	}
 }
 
-// StartAll connects to all configured MCP servers in parallel.
-// Partial failures are collected; successful servers remain active.
-func (m *Manager) StartAll(ctx context.Context, servers map[string]config.MCPServer) []error {
+// Configure makes the connected servers those of servers. It disconnects
+// those gone or changed, then connects, in parallel, the new, the changed
+// and those that failed before; a server connected as configured stays
+// connected. It returns the servers that failed to connect. Calls must not
+// overlap: the caller orders them.
+func (m *Manager) Configure(ctx context.Context, servers map[string]config.MCPServer) []error {
+	m.mu.Lock()
+	var stale []*Client
+	for name, c := range m.clients {
+		if cfg, ok := servers[name]; !ok || !reflect.DeepEqual(cfg, m.configs[name]) {
+			stale = append(stale, c)
+			delete(m.clients, name)
+			delete(m.configs, name)
+		}
+	}
+	clear(m.failures)
+	pending := map[string]config.MCPServer{}
+	for name, cfg := range servers {
+		if _, ok := m.clients[name]; !ok {
+			pending[name] = cfg
+		}
+	}
+	m.mu.Unlock()
+	for _, c := range stale {
+		_ = c.Close()
+	}
+
 	type result struct {
 		name   string
 		client *Client
 		err    error
 	}
-
-	ch := make(chan result, len(servers))
-	for name, cfg := range servers {
-		go func(name string, cfg config.MCPServer) {
+	ch := make(chan result, len(pending))
+	for name, cfg := range pending {
+		go func() {
 			c, err := connect(ctx, name, cfg, m.onChange)
-			ch <- result{name: name, client: c, err: err}
-		}(name, cfg)
+			ch <- result{name, c, err}
+		}()
 	}
-
 	var errs []error
-	for range len(servers) {
+	for range len(pending) {
 		r := <-ch
+		m.mu.Lock()
 		if r.err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", r.name, r.err))
-			m.mu.Lock()
 			m.failures[r.name] = r.err.Error()
-			m.mu.Unlock()
-			continue
+		} else {
+			m.clients[r.name], m.configs[r.name] = r.client, pending[r.name]
 		}
-		m.mu.Lock()
-		m.clients[r.name] = r.client
 		m.mu.Unlock()
 	}
 	return errs
-}
-
-// Reconfigure replaces the active MCP server set with a new configuration.
-// Existing clients are closed and connection failures are reset.
-func (m *Manager) Reconfigure(ctx context.Context, servers map[string]config.MCPServer) []error {
-	oldClients := m.reset()
-	for _, c := range oldClients {
-		_ = c.Close()
-	}
-
-	if len(servers) == 0 {
-		return nil
-	}
-	return m.StartAll(ctx, servers)
 }
 
 // sortedClients returns connected clients in deterministic (server name)
@@ -188,17 +197,4 @@ func (m *Manager) Status(ctx context.Context) []ServerStatus {
 		out = append(out, ServerStatus{Name: name, Error: errMsg})
 	}
 	return out
-}
-
-func (m *Manager) reset() []*Client {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	oldClients := make([]*Client, 0, len(m.clients))
-	for _, c := range m.clients {
-		oldClients = append(oldClients, c)
-	}
-	m.clients = make(map[string]*Client)
-	m.failures = make(map[string]string)
-	return oldClients
 }

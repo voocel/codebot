@@ -5,7 +5,10 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
 	"github.com/voocel/codebot/internal/ui/tui/theme"
@@ -61,6 +65,7 @@ func (u *UI) Ask(ctx context.Context, qs []interact.Question) (interact.Answers,
 // Run shows a's conversations until the user quits, then leaves the
 // conversation in the terminal. ui must be the UI a was booted with.
 func Run(a *app.App, ui *UI, version string) error {
+	defer logTo(filepath.Join(config.UserConfigDir(), "codebot.log"))()
 	theme.Detect()
 	m := newModel(a, version)
 	p := tea.NewProgram(m)
@@ -80,11 +85,7 @@ func Run(a *app.App, ui *UI, version string) error {
 	})
 	defer unsubscribe()
 
-	go func() {
-		if r := a.ConnectMCP(context.Background()); r.Servers > 0 {
-			q.push(mcpMsg{r})
-		}
-	}()
+	go func() { q.push(connectedMsg{a.Connect(context.Background())}) }()
 
 	_, err := p.Run()
 	if m.shell != nil {
@@ -95,6 +96,22 @@ func Run(a *app.App, ui *UI, version string) error {
 	}
 	m.goodbye()
 	return nil
+}
+
+// logTo sends the standard logger, which writes to the terminal the TUI
+// draws on, to the file at path until restore; nowhere when it cannot be
+// opened.
+func logTo(path string) (restore func()) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return func() { log.SetOutput(os.Stderr) }
+	}
+	log.SetOutput(f)
+	return func() {
+		log.SetOutput(os.Stderr)
+		f.Close()
+	}
 }
 
 // goodbye prints the conversation to the terminal the TUI leaves.
@@ -116,6 +133,8 @@ func message(a *app.App, ev app.Event) tea.Msg {
 		return openedMsg{ev.Conversation}
 	case app.ModeChanged:
 		return modeMsg{ev.Mode}
+	case app.Reloaded:
+		return reloadedMsg{}
 	case app.SessionEvent:
 		switch ev.Session.Kind {
 		case session.Agent:

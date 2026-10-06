@@ -64,7 +64,7 @@ func (c *Conversation) buildSubagents(pool []agentcore.Tool, ws agentcoretools.W
 		Emit:       agentEmit(c.agents),
 	}
 	var agents []coresub.Agent
-	for _, def := range subagent.Definitions(c.cwd, model.small) {
+	for _, def := range subagent.Definitions(c.cwd, model.small, a.Extensions().Agents) {
 		agent, err := def.Agent(deps)
 		if err != nil {
 			log.Printf("subagent %q: skipped (%v)", def.Name, err)

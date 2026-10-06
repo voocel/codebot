@@ -411,3 +411,28 @@ func TestGrantsAllowTheirRequestOnly(t *testing.T) {
 		t.Fatalf("grant beat a deny rule: %#v", d)
 	}
 }
+
+// A write in a protected directory, one whose files decide what codebot
+// runs, is confirmed each time, though the mode lets edits through.
+func TestProtectedWritesAskEachTime(t *testing.T) {
+	workspace := t.TempDir()
+	kit := filepath.Join(workspace, "kit")
+	var asked []string
+	engine := newEngine(t, Config{
+		Cwd:   workspace,
+		Mode:  interact.ModeAcceptEdits,
+		Roots: FilesystemRoots{Protected: []string{kit}},
+		UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+			asked = append(asked, p.Summary)
+			return interact.Verdict{Choice: interact.AllowOnce}, nil
+		}),
+	})
+	for _, path := range []string{filepath.Join(kit, "mcp.json"), filepath.Join(workspace, "main.go")} {
+		if _, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": path})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(asked) != 1 || !strings.Contains(asked[0], "mcp.json") {
+		t.Errorf("asked about %q, want the plugin's file alone", asked)
+	}
+}

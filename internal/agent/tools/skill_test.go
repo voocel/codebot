@@ -13,7 +13,7 @@ import (
 	"github.com/voocel/codebot/internal/agent/skill"
 )
 
-// skillCatalog loads the skill files given, by name, as project skills.
+// skillCatalog loads the skill files given, by name, as privileged skills.
 func skillCatalog(t *testing.T, files map[string]string) func() *skill.Catalog {
 	t.Helper()
 	dir := t.TempDir()
@@ -27,7 +27,7 @@ func skillCatalog(t *testing.T, files map[string]string) func() *skill.Catalog {
 		t.Fatalf("load skills: %v", errs)
 	}
 	for i := range specs {
-		specs[i].Source = "project"
+		specs[i].Privileged = true
 	}
 	catalog := skill.NewCatalog(specs)
 	return func() *skill.Catalog { return catalog }

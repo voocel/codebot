@@ -35,7 +35,7 @@ type Invocation struct {
 	// Fork runs the skill in a sub-agent, Agent, instead of the conversation.
 	Fork  bool
 	Agent string
-	// AllowedTools and Model are the skill's, if its source is trusted.
+	// AllowedTools and Model are the skill's, if it is privileged.
 	AllowedTools []string
 	Model        string
 }
@@ -66,7 +66,7 @@ func (c *Catalog) Invoke(ctx context.Context, in InvokeInput) (*Invocation, erro
 	if inv.Agent == "" {
 		inv.Agent = "general-purpose"
 	}
-	if spec.trusted() {
+	if spec.Privileged {
 		inv.AllowedTools, inv.Model = spec.AllowedTools, spec.Model
 	}
 	return inv, nil

@@ -39,7 +39,7 @@ You are a code reviewer.
 Look for null pointer risks and unhandled errors.
 `)
 
-	defs, errs := loadAgentsDir(dir)
+	defs, errs := LoadDir(dir)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -87,7 +87,7 @@ description: Summarises long files.
 You summarise.
 `)
 
-	defs, errs := loadAgentsDir(dir)
+	defs, errs := LoadDir(dir)
 	if len(errs) != 0 || len(defs) != 1 {
 		t.Fatalf("load failed: errs=%v defs=%d", errs, len(defs))
 	}
@@ -109,7 +109,7 @@ tooLs: [read]
 Body.
 `)
 
-	defs, errs := loadAgentsDir(dir)
+	defs, errs := LoadDir(dir)
 	if len(defs) != 0 {
 		t.Errorf("definition should not have loaded, got %v", defs)
 	}
@@ -129,7 +129,7 @@ func TestLoadAgent_MissingFrontmatterFails(t *testing.T) {
 	writeAgentFile(t, dir, "naked.md", `Just a body, no frontmatter.
 `)
 
-	_, errs := loadAgentsDir(dir)
+	_, errs := LoadDir(dir)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
@@ -148,7 +148,7 @@ description: never closes
 body without delimiter
 `)
 
-	_, errs := loadAgentsDir(dir)
+	_, errs := LoadDir(dir)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
@@ -167,7 +167,7 @@ description: has no body
 ---
 `)
 
-	_, errs := loadAgentsDir(dir)
+	_, errs := LoadDir(dir)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
@@ -191,7 +191,7 @@ Body.
 unclosed
 `)
 
-	defs, errs := loadAgentsDir(dir)
+	defs, errs := LoadDir(dir)
 	if len(defs) != 1 || defs[0].Name != "good" {
 		t.Errorf("good agent should have loaded, got %v", defs)
 	}
@@ -203,7 +203,7 @@ unclosed
 // A directory that does not exist holds no agents: most projects have no
 // .codebot/agents/.
 func TestLoadAgent_MissingDirIsOK(t *testing.T) {
-	defs, errs := loadAgentsDir(filepath.Join(t.TempDir(), "agents"))
+	defs, errs := LoadDir(filepath.Join(t.TempDir(), "agents"))
 	if defs != nil {
 		t.Errorf("expected nil defs, got %v", defs)
 	}
@@ -225,7 +225,7 @@ description: works
 Body.
 `)
 
-	defs, errs := loadAgentsDir(dir)
+	defs, errs := LoadDir(dir)
 	if len(errs) != 0 {
 		t.Errorf("unexpected errors: %v", errs)
 	}

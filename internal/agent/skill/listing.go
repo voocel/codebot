@@ -76,11 +76,8 @@ func Listing(skills []Spec, usage map[string]float64) string {
 	return sb.String()
 }
 
-// compareStable orders skills by source, then name: nothing that changes
-// with time.
-func compareStable(a, b Spec) int {
-	return cmp.Or(cmp.Compare(sourcePriority(a.Source), sourcePriority(b.Source)), strings.Compare(a.Name, b.Name))
-}
+// compareStable orders skills by name: nothing that changes with time.
+func compareStable(a, b Spec) int { return strings.Compare(a.Name, b.Name) }
 
 func skillIsActive(spec Spec, cwd string) bool {
 	if len(spec.Paths) == 0 {
@@ -177,19 +174,6 @@ func globToRegexp(pattern string) string {
 	}
 	b.WriteString("$")
 	return b.String()
-}
-
-func sourcePriority(source string) int {
-	switch source {
-	case "project":
-		return 0
-	case "user":
-		return 1
-	case "bundled":
-		return 2
-	default:
-		return 3
-	}
 }
 
 func truncate(s string, max int) string {

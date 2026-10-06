@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/codebot/internal/agent/permission"
 	"github.com/voocel/codebot/internal/infra/config"
-	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/litellmtest"
 )
@@ -60,8 +57,8 @@ func TestParseMatcher(t *testing.T) {
 func TestNewRunner(t *testing.T) {
 	t.Parallel()
 
-	if r := New(nil, "sess1", nil, nil); r != nil {
-		t.Fatal("nil config should return nil runner")
+	if r := New("sess1", nil); len(r.matching(PreToolUse, "bash", nil)) != 0 {
+		t.Fatal("a new runner has hooks")
 	}
 
 	cfg := config.HooksConfig{
@@ -74,12 +71,13 @@ func TestNewRunner(t *testing.T) {
 			{Type: "command", Command: "echo bad"},
 		},
 	}
-	r := newRunner(t, cfg, nil)
-	if r == nil {
-		t.Fatal("expected valid hook runner")
-	}
-	if got := len(r.hooks[PreToolUse]); got != 1 {
+	r := newRunner(cfg, nil)
+	if got := len(r.matching(PreToolUse, "", nil)); got != 1 {
 		t.Fatalf("expected 1 compiled hook, got %d", got)
+	}
+	r.Set(nil)
+	if got := len(r.matching(PreToolUse, "", nil)); got != 0 {
+		t.Fatalf("Set(nil) left %d hooks", got)
 	}
 }
 
@@ -91,7 +89,7 @@ func TestRunPreToolUse(t *testing.T) {
 			{Type: "command", Command: `echo '{"block":true,"reason":"not allowed"}'`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	r := newRunner(t, cfg, nil)
+	r := newRunner(cfg, nil)
 
 	if _, err := r.preToolUse(context.Background(), "write", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("non-matching hook should be skipped: %v", err)
@@ -114,7 +112,7 @@ func TestRunPostToolUse_FireAndForget(t *testing.T) {
 			{Type: "command", Command: "touch " + filepath.ToSlash(marker)},
 		},
 	}
-	r := newRunner(t, cfg, nil)
+	r := newRunner(cfg, nil)
 	r.postToolUse("bash", nil, json.RawMessage(`"ok"`), false)
 
 	waitFor(t, "expected PostToolUse hook to run", func() bool {
@@ -132,7 +130,7 @@ func TestPostToolUseMiddleware(t *testing.T) {
 	cfg := config.HooksConfig{
 		"PostToolUse": {{Type: "command", Command: "cat > " + filepath.ToSlash(payload)}},
 	}
-	mw := newRunner(t, cfg, nil).PostToolUse()
+	mw := newRunner(cfg, nil).PostToolUse()
 	res, err := mw(context.Background(), agentcore.ToolCall{Name: "bash", Args: json.RawMessage(`{"command":"false"}`)},
 		func(context.Context, agentcore.ToolCall) (agentcore.Result, error) {
 			return agentcore.ErrorResult("exit 1"), nil
@@ -166,33 +164,6 @@ func waitFor(t *testing.T, desc string, ok func() bool) {
 	}
 }
 
-func TestRunPreToolUse_DeniedByApproval(t *testing.T) {
-	t.Parallel()
-
-	// A denial stores nothing, so the user's approvals file is only read.
-	engine, err := permission.NewEngine(permission.Config{
-		Cwd:  t.TempDir(),
-		Mode: interact.ModeBalanced,
-		UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
-			return interact.Verdict{Choice: interact.Deny}, nil
-		}),
-	})
-	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
-	}
-
-	cfg := config.HooksConfig{
-		"PreToolUse": {
-			{Type: "command", Command: "echo ok", Blocking: boolPtr(true)},
-		},
-	}
-	r := New(cfg, "test", engine, nil)
-	_, err = r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`))
-	if err == nil || !strings.HasPrefix(err.Error(), "hook: The user denied this") {
-		t.Fatalf("expected approval denial, got %v", err)
-	}
-}
-
 func TestPreToolUse_UpdatedInput(t *testing.T) {
 	t.Parallel()
 
@@ -201,7 +172,7 @@ func TestPreToolUse_UpdatedInput(t *testing.T) {
 			{Type: "command", Command: `echo '{"updated_input":{"path":"/safe"}}'`, Matcher: "write"},
 		},
 	}
-	r := newRunner(t, cfg, nil)
+	r := newRunner(cfg, nil)
 
 	dec, err := r.preToolUse(context.Background(), "write", json.RawMessage(`{"path":"/raw"}`))
 	if err != nil {
@@ -221,7 +192,7 @@ func TestPreToolUseMiddleware(t *testing.T) {
 			{Type: "command", Command: `echo '{"block":true,"reason":"nope"}'`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	mw := newRunner(t, cfg, nil).PreToolUse()
+	mw := newRunner(cfg, nil).PreToolUse()
 
 	// The rewrite is what the rest of the chain decides on and runs.
 	var seen json.RawMessage
@@ -253,7 +224,7 @@ func TestPreToolUse_ExitCode2Blocks(t *testing.T) {
 			{Type: "command", Command: `echo "denied" >&2; exit 2`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	r := newRunner(t, cfg, nil)
+	r := newRunner(cfg, nil)
 
 	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("expected exit-2 hook to block")
@@ -268,7 +239,7 @@ func TestPreToolUse_ExitCode1NonBlocking(t *testing.T) {
 			{Type: "command", Command: `echo "oops" >&2; exit 1`, Matcher: "bash", Blocking: boolPtr(true)},
 		},
 	}
-	r := newRunner(t, cfg, nil)
+	r := newRunner(cfg, nil)
 
 	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("exit-1 should be a non-blocking error, got block: %v", err)
@@ -283,7 +254,7 @@ func TestUserPromptSubmit_AdditionalContext(t *testing.T) {
 			{Type: "command", Command: `echo '{"additional_context":"remember: be concise"}'`},
 		},
 	}
-	r := newRunner(t, cfg, nil)
+	r := newRunner(cfg, nil)
 
 	dec, err := r.RunUserPromptSubmit(context.Background(), "hello")
 	if err != nil {
@@ -303,7 +274,7 @@ func TestPromptHookUsesTheCurrentModel(t *testing.T) {
 		"PreToolUse": {{Type: "prompt", Prompt: "May this run? $ARGUMENTS", Blocking: boolPtr(true)}},
 	}
 	current := answerModel(t, `{"ok":true}`)
-	r := newRunner(t, cfg, func() agentcore.Model { return current })
+	r := newRunner(cfg, func() agentcore.Model { return current })
 	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("first model allows: %v", err)
 	}
@@ -313,14 +284,11 @@ func TestPromptHookUsesTheCurrentModel(t *testing.T) {
 	}
 }
 
-// newRunner compiles cfg with an engine that lets every hook run.
-func newRunner(t *testing.T, cfg config.HooksConfig, model func() agentcore.Model) *Runner {
-	t.Helper()
-	engine, err := permission.NewEngine(permission.Config{Cwd: t.TempDir(), Mode: interact.ModeTrust})
-	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
-	}
-	return New(cfg, "test", engine, model)
+// newRunner returns a runner of cfg.
+func newRunner(cfg config.HooksConfig, model func() agentcore.Model) *Runner {
+	r := New("test", model)
+	r.Set(cfg)
+	return r
 }
 
 // answerModel is a model that always answers with text.
@@ -337,13 +305,34 @@ func answerModel(t *testing.T, text string) agentcore.Model {
 	return agentcore.Model{Client: client, Request: litellm.Request{Model: "m"}}
 }
 
-// approveFunc is a UI that answers approvals with itself.
-type approveFunc func(context.Context, interact.Approval) (interact.Verdict, error)
-
-func (f approveFunc) Approve(ctx context.Context, a interact.Approval) (interact.Verdict, error) {
-	return f(ctx, a)
+// A hook that would not run is told so: its event, type, what the type
+// needs, and its matchers are checked.
+func TestCheck(t *testing.T) {
+	ok := config.HookEntry{Type: "command", Command: "true", Matcher: "/^ba/"}
+	if err := Check("PreToolUse", ok); err != nil {
+		t.Errorf("a good hook: %v", err)
+	}
+	for event, he := range map[string]config.HookEntry{
+		"PreToolUs":    ok,
+		"Stop":         ok,
+		"PostToolUse":  {Type: "commnd", Command: "true"},
+		"SessionStart": {Type: "command"},
+		"Notification": {Type: "http"},
+		"SessionEnd":   {Type: "command", Command: "true", Matcher: "/(/"},
+	} {
+		if err := Check(event, he); err == nil {
+			t.Errorf("%s %+v passed", event, he)
+		}
+	}
 }
 
-func (approveFunc) Ask(context.Context, []interact.Question) (interact.Answers, error) {
-	return interact.Answers{}, interact.ErrUnsupported
+// A command hook runs with its own environment.
+func TestHookEnv(t *testing.T) {
+	r := New("sess", nil)
+	r.Set(config.HooksConfig{"PreToolUse": {
+		{Type: "command", Command: `test "$PLUGIN_ROOT" = /plug || exit 2`, Blocking: boolPtr(true), Env: map[string]string{"PLUGIN_ROOT": "/plug"}},
+	}})
+	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
+		t.Errorf("the hook went without its environment: %v", err)
+	}
 }

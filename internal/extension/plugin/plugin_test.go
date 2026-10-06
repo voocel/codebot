@@ -1,0 +1,437 @@
+package plugin
+
+import (
+	"fmt"
+	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/voocel/codebot/internal/infra/config"
+)
+
+func write(t *testing.T, path, text string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const manifest = `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "acme-tools", "version": "1.2.0"`
+
+// plugin writes a plugin of the given files into a new directory.
+func plugin(t *testing.T, files map[string]string) string {
+	dir := t.TempDir()
+	for name, text := range files {
+		write(t, filepath.Join(dir, name), text)
+	}
+	return dir
+}
+
+func TestReadsAPlugin(t *testing.T) {
+	dir := plugin(t, map[string]string{
+		"plugin.json":             manifest + `, "description": "Tools", "author": {"name": "Acme"}, "extensions": {"com.example": {"x": 1}}}`,
+		"skills/release/SKILL.md": "---\ndescription: releases\n---\nRun !`make release`\n",
+		"skills/empty/README.md":  "not a skill",
+		"skills/deep/x/SKILL.md":  "---\ndescription: too deep\n---\n",
+		"skills/broken/SKILL.md":  "---\nname: Not A Name!\n---\n",
+		"bin/db":                  "#!/bin/sh\n",
+		"mcp.json": `{"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", "mcpServers": {
+			"db": {"type": "stdio", "command": "./bin/db", "args": ["--data", "${PLUGIN_DATA}/db", "${HOME}"], "env": {"CONFIG": "${PLUGIN_ROOT}/c.json"}},
+			"api": {"type": "streamable-http", "url": "https://api.example/mcp", "headers": {"X-Tenant": "${TENANT}"}},
+			"old": {"type": "sse", "url": "https://old.example/sse"},
+			"npx": {"type": "stdio", "command": "npx", "cwd": "${PLUGIN_DATA}"}
+		}}`,
+	})
+	p, problems, err := Read(dir, "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := filepath.EvalSymlinks(dir)
+	if p.Name != "acme-tools" || p.Version != "1.2.0" || p.Description != "Tools" || p.Root != root || p.Data != "/data/acme-tools" {
+		t.Errorf("plugin %+v", p)
+	}
+	if len(p.Skills) != 1 || p.Skills[0].Name != "release" || len(p.Skills[0].Privileges()) != 1 {
+		t.Errorf("skills %+v", p.Skills)
+	}
+	want := map[string]config.MCPServer{
+		"db": {Type: "stdio", Command: filepath.Join(root, "bin", "db"), Cwd: root,
+			Args: []string{"--data", "/data/acme-tools/db", "${HOME}"},
+			Env:  map[string]string{"CONFIG": root + "/c.json", "PLUGIN_ROOT": root, "PLUGIN_DATA": "/data/acme-tools"}},
+		"api": {Type: "http", URL: "https://api.example/mcp", Headers: map[string]string{"X-Tenant": "${TENANT}"}},
+		"npx": {Type: "stdio", Command: "npx", Cwd: "/data/acme-tools", Env: map[string]string{"PLUGIN_ROOT": root, "PLUGIN_DATA": "/data/acme-tools"}},
+	}
+	if got, want := fmt.Sprint(p.MCP), fmt.Sprint(want); got != want {
+		t.Errorf("MCP\n got %s\nwant %s", got, want)
+	}
+	if got := fmt.Sprint(problems); !strings.Contains(got, "broken") || !strings.Contains(got, "sse") || len(problems) != 2 {
+		t.Errorf("problems %v", problems)
+	}
+}
+
+func TestManifestViolations(t *testing.T) {
+	for _, c := range []struct {
+		manifest string
+		fatal    bool
+	}{
+		{`{"name": "acme"}`, true},
+		{`{"$schema": "https://agent-plugins.org/schemas/2.0.0/plugin.schema.json", "name": "acme"}`, true},
+		{manifest[:strings.Index(manifest, `"name"`)] + `"name": "Acme"}`, true},
+		{manifest[:strings.Index(manifest, `"name"`)] + `"name": "a--b"}`, true},
+		{manifest[:strings.Index(manifest, `"name"`)] + `"name": "a_b"}`, true},
+		{manifest + `, "version": 2}`, true},
+		{manifest + `, "author": {"name": "a", "phone": "1"}}`, true},
+		{manifest + `, "extensions": {"com.example": 1}}`, true},
+		{manifest + `, "hooks": {}}`, false},
+		{manifest + `, "extensions": []}`, false},
+	} {
+		_, problems, err := Read(plugin(t, map[string]string{"plugin.json": c.manifest}), "/data")
+		if (err != nil) != c.fatal || !c.fatal && len(problems) != 1 {
+			t.Errorf("%s: err %v, problems %v", c.manifest, err, problems)
+		}
+	}
+}
+
+func TestMCPViolations(t *testing.T) {
+	for _, server := range []string{
+		`{"type": "stdio", "command": "npx -y x"}`,
+		`{"type": "stdio", "command": "/bin/sh"}`,
+		`{"type": "stdio", "command": "${PLUGIN_ROOT}/bin/db"}`,
+		`{"type": "stdio", "command": "./../escape"}`,
+		`{"type": "stdio", "command": "npx", "env": {"PLUGIN_ROOT": "/x"}}`,
+		`{"type": "stdio", "command": "npx", "cwd": "/tmp"}`,
+		`{"type": "stdio", "command": "npx", "cwd": "${PLUGIN_DATA}/../x"}`,
+		`{"type": "stdio", "command": "npx", "url": "https://x"}`,
+		`{"type": "stdio", "command": "npx", "shell": true}`,
+		`{"type": "streamable-http", "url": "http://api.example/mcp"}`,
+		`{"type": "streamable-http", "url": "https://u:p@api.example/mcp"}`,
+		`{"type": "streamable-http", "url": "https://api.example/mcp", "headers": {"X-A": "1", "x-a": "2"}}`,
+		`{"type": "websocket", "url": "wss://x"}`,
+	} {
+		dir := plugin(t, map[string]string{
+			"plugin.json": manifest + "}",
+			"mcp.json":    `{"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", "mcpServers": {"s": ` + server + `}}`,
+		})
+		p, problems, err := Read(dir, "/data")
+		if err != nil || len(p.MCP) > 0 || len(problems) != 1 {
+			t.Errorf("%s: MCP %v, problems %v, err %v", server, p.MCP, problems, err)
+		}
+	}
+	// A loopback server may go without TLS.
+	dir := plugin(t, map[string]string{
+		"plugin.json": manifest + "}",
+		"mcp.json":    `{"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", "mcpServers": {"s": {"type": "streamable-http", "url": "http://127.0.0.1:8080/mcp"}}}`,
+	})
+	if p, _, _ := Read(dir, "/data"); len(p.MCP) != 1 {
+		t.Error("a loopback server was refused")
+	}
+}
+
+// What a symlink leads to outside the plugin is not read.
+func TestSymlinksStayInside(t *testing.T) {
+	outside := plugin(t, map[string]string{"SKILL.md": "---\ndescription: outside\n---\n"})
+	dir := plugin(t, map[string]string{
+		"plugin.json":        manifest + "}",
+		"skills/in/SKILL.md": "---\ndescription: in\n---\n",
+		"real/SKILL.md":      "---\ndescription: linked\n---\n",
+	})
+	for link, target := range map[string]string{"skills/out": outside, "skills/linked": filepath.Join(dir, "real")} {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, problems, err := Read(dir, "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, s := range p.Skills {
+		names = append(names, s.Name)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"in", "linked"}) || len(problems) != 1 {
+		t.Errorf("skills %q, problems %v", names, problems)
+	}
+}
+
+func TestParseSource(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	for raw, want := range map[string]Source{
+		"github.com/acme/tools":                       {URL: "https://github.com/acme/tools"},
+		"github.com/acme/tools#v1.2.0":                {URL: "https://github.com/acme/tools", Ref: "v1.2.0"},
+		"https://git.example.com/team/lint.git#main":  {URL: "https://git.example.com/team/lint.git", Ref: "main"},
+		"git@github.com:acme/tools.git":               {URL: "git@github.com:acme/tools.git"},
+		"ssh://git@host/acme/tools":                   {URL: "ssh://git@host/acme/tools"},
+		"./tools/plugin":                              {Dir: "/base/tools/plugin"},
+		"../plugin":                                   {Dir: "/plugin"},
+		"/abs/plugin":                                 {Dir: "/abs/plugin"},
+		"~/plugins/x":                                 {Dir: filepath.Join(home, "plugins/x")},
+		"github.com/acme/plugins//plugins/tools#main": {URL: "https://github.com/acme/plugins", Path: "plugins/tools", Ref: "main"},
+		"https://git.example.com/a/b.git//x#v1":       {URL: "https://git.example.com/a/b.git", Path: "x", Ref: "v1"},
+		"git@github.com:acme/plugins.git//tools":      {URL: "git@github.com:acme/plugins.git", Path: "tools"},
+	} {
+		got, err := ParseSource(raw, "/base")
+		if err != nil || got != want {
+			t.Errorf("%s: %+v, %v", raw, got, err)
+		}
+		if again, err := ParseSource(got.String(), "/base"); got.Dir == "" && (err != nil || again != got) {
+			t.Errorf("%s told as %s reads %+v, %v", raw, got, again, err)
+		}
+	}
+	for _, raw := range []string{"acme-tools", "http://github.com/acme/tools", "ext::sh -c touch% /tmp/x", "github.com/acme/tools#-upload-pack=x", "file:///tmp/x", "",
+		"github.com/acme/plugins//../x", "github.com/acme/plugins//", "github.com/acme/plugins//a/../b", "github.com/acme/plugins///abs"} {
+		if _, err := ParseSource(raw, "/base"); err == nil {
+			t.Errorf("%s parsed", raw)
+		}
+	}
+}
+
+func TestCachedKeepsSourcesApart(t *testing.T) {
+	for raw, want := range map[string]string{
+		"github.com/acme/tools#v1":             "/c/github.com/acme/tools/abc",
+		"git@github.com:acme/tools.git":        "/c/github.com/acme/tools/abc",
+		"https://git.example.com:8443/a/b.git": "/c/git.example.com/a/b/abc",
+		"https://h/x/...git":                   "/c/h/abc",
+		"git@..:...git":                        "/c/abc",
+	} {
+		s, _ := ParseSource(raw, "/")
+		if got := Cached(s, "/c", "abc"); got != filepath.FromSlash(want) {
+			t.Errorf("%s: %s", raw, got)
+		}
+	}
+}
+
+// Fetch takes the ref's commit, or the commit given, into the cache,
+// without its history.
+func TestFetch(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q", "-b", "main")
+	write(t, filepath.Join(repo, "plugin.json"), manifest+"}")
+	run("add", ".")
+	run("commit", "-q", "-m", "v1")
+	run("tag", "v1")
+	v1 := run("rev-parse", "HEAD")
+	write(t, filepath.Join(repo, "plugin.json"), manifest+`, "description": "two"}`)
+	run("commit", "-qam", "v2")
+
+	// The test's repository is local, which codebot's fetch refuses.
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	cache := t.TempDir()
+	src := Source{URL: "file://" + repo, Ref: "v1"}
+	commit, err := Fetch(t.Context(), src, cache, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := Cached(src, cache, commit)
+	if commit != v1 {
+		t.Errorf("fetched %s, want %s", commit, v1)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		t.Error("the cache kept the history")
+	}
+	if p, _, err := Read(dir, "/data"); err != nil || p.Description != "" {
+		t.Errorf("read %+v, %v", p, err)
+	}
+	if _, err := Fetch(t.Context(), Source{URL: src.URL, Ref: "nope"}, cache, ""); err == nil {
+		t.Error("a missing ref fetched")
+	}
+	head := Source{URL: src.URL, Ref: "main"}
+	if err := os.RemoveAll(Cached(head, cache, v1)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Fetch(t.Context(), head, cache, v1); err != nil || got != v1 {
+		t.Errorf("fetched %s, %v; want %s, the commit given over the ref's", got, err, v1)
+	}
+	if _, err := Fetch(t.Context(), head, cache, strings.Repeat("0", 40)); err == nil {
+		t.Error("a missing commit fetched")
+	}
+	entries, _ := os.ReadDir(cache)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".fetch-") {
+			t.Errorf("a failed fetch left %s", e.Name())
+		}
+	}
+}
+
+// A plugin in a repository's directory is read from the commit fetched,
+// which its directory may not lead out of.
+func TestReadCachedStaysInTheRepository(t *testing.T) {
+	cache := t.TempDir()
+	src, err := ParseSource("github.com/acme/plugins//plugins/tools", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := Cached(src, cache, "abc")
+	write(t, filepath.Join(repo, "plugins", "tools", "plugin.json"), manifest+"}")
+	if p, _, err := ReadCached(src, cache, "abc", "/data"); err != nil || p.Name != "acme-tools" {
+		t.Fatalf("read %+v, %v", p, err)
+	}
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "plugin.json"), manifest+"}")
+	if err := os.Symlink(outside, filepath.Join(repo, "plugins", "away")); err != nil {
+		t.Fatal(err)
+	}
+	away := src
+	away.Path = "plugins/away"
+	if _, _, err := ReadCached(away, cache, "abc", "/data"); err == nil {
+		t.Error("read a plugin outside the repository")
+	}
+}
+
+// codebot's namespace brings hooks and agents; another client's is not
+// looked into.
+func TestCodebotNamespace(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "plugin.json"), manifest+`, "extensions": {
+		"com.openai": {"hooks": "./hooks/hooks.json"},
+		"io.github.voocel.codebot": {
+			"hooks": {
+				"PreToolUse": [
+					{"type": "command", "command": "\"$PLUGIN_ROOT\"/bin/guard", "matcher": "bash"},
+					{"type": "http", "url": "http://hooks.example/x"}
+				],
+				"Stop": [{"type": "command", "command": "true"}],
+				"SessionStart": [{"type": "command", "command": "true", "env": {"PLUGIN_ROOT": "/x"}}]
+			},
+			"agents": "./agents"
+		}
+	}}`)
+	write(t, filepath.Join(dir, "agents", "reviewer.md"), "---\ndescription: Reviews\n---\nReview the change.\n")
+	write(t, filepath.Join(dir, "agents", "notes.txt"), "not an agent")
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	write(t, outside, "---\ndescription: x\n---\nx\n")
+	if err := os.Symlink(outside, filepath.Join(dir, "agents", "away.md")); err != nil {
+		t.Fatal(err)
+	}
+	p, problems, err := Read(dir, "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 4 {
+		t.Errorf("problems %v: want the http, Stop, env and outside ones", problems)
+	}
+	hooks := p.Hooks["PreToolUse"]
+	if len(p.Hooks) != 1 || len(hooks) != 1 || hooks[0].Env["PLUGIN_ROOT"] != p.Root || hooks[0].Env["PLUGIN_DATA"] != "/data/acme-tools" {
+		t.Errorf("hooks %+v", p.Hooks)
+	}
+	if len(p.Agents) != 1 || p.Agents[0].Name != "reviewer" {
+		t.Errorf("agents %+v", p.Agents)
+	}
+
+	write(t, filepath.Join(dir, "plugin.json"), manifest+`, "extensions": {"io.github.voocel.codebot": {"hook": {}}}}`)
+	if p, problems, err = Read(dir, "/data"); err != nil || len(problems) != 1 || p.Hooks != nil {
+		t.Errorf("a namespace out of format: %+v, %v, %v", p, problems, err)
+	}
+}
+
+// A marketplace in Codex's format lists plugins as settings are to declare
+// them; what codebot cannot fetch is listed, and says why.
+func TestReadMarketplace(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, ".agents", "plugins", "marketplace.json"), `{
+		"name": "acme",
+		"interface": {"displayName": "Acme Plugins"},
+		"plugins": [
+			{"name": "here", "source": "./plugins/here", "description": "Here", "category": "Productivity"},
+			{"name": "obj", "source": {"source": "local", "path": "./plugins/obj"}},
+			{"name": "gh", "source": {"source": "url", "url": "acme/tools", "ref": "v1"}},
+			{"name": "sub", "source": {"source": "git-subdir", "url": "https://git.example.com/acme/all.git", "path": "./plugins/sub", "ref": "main", "sha": "abc123"}},
+			{"name": "npm", "source": {"source": "npm", "package": "@acme/x"}},
+			{"name": "rel", "source": {"source": "url", "url": "./repos/x"}},
+			{"name": "hidden", "source": "./plugins/hidden", "policy": {"installation": "NOT_AVAILABLE"}},
+			{"name": "away", "source": "./../away"},
+			{"name": "bare", "source": "plugins/bare"}
+		]
+	}`)
+	m, problems, err := ReadMarketplace(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "acme" || m.Title != "Acme Plugins" || len(problems) != 2 {
+		t.Errorf("marketplace %s %q, problems %v", m.Name, m.Title, problems)
+	}
+	got := map[string]string{}
+	for _, l := range m.Plugins {
+		got[l.Name] = l.Source
+		if l.Source == "" {
+			got[l.Name] = "unsupported"
+		}
+	}
+	want := map[string]string{
+		"here": filepath.Join(root, "plugins", "here"),
+		"obj":  filepath.Join(root, "plugins", "obj"),
+		"gh":   "github.com/acme/tools#v1",
+		"sub":  "https://git.example.com/acme/all.git//plugins/sub#abc123",
+		"npm":  "unsupported",
+		"rel":  "unsupported",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("listings %q", got)
+	}
+
+	repo := Source{URL: "https://git.example.com/acme/market", Ref: "main"}
+	if m, _, err = ReadMarketplace(root, &repo); err != nil || m.Plugins[0].Source != "https://git.example.com/acme/market//plugins/here#main" || m.Where != repo.String() {
+		t.Errorf("fetched, %+v, %v", m, err)
+	}
+}
+
+// A commit no longer held is marked, and removed two weeks after; one held
+// again loses its mark, and a fetch under way is left alone.
+func TestSweep(t *testing.T) {
+	cache := t.TempDir()
+	repo := filepath.Join(cache, "example.test", "acme", "kit")
+	held, left := filepath.Join(repo, strings.Repeat("a", 40)), filepath.Join(repo, strings.Repeat("b", 40))
+	fetching := filepath.Join(cache, ".fetch-1", strings.Repeat("c", 40))
+	for _, d := range []string{held, left, fetching} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := map[string]bool{held: true}
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+
+	now := time.Now()
+	if err := Sweep(cache, keep, now); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(left+".orphaned") || exists(held+".orphaned") || !exists(left) {
+		t.Fatal("the commit no longer held is not marked, or the held one is")
+	}
+	if err := Sweep(cache, keep, now.Add(orphanAge-time.Hour)); err != nil || !exists(left) {
+		t.Fatalf("removed before its time: %v", err)
+	}
+	if err := Sweep(cache, keep, now.Add(orphanAge+time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if exists(left) || exists(left+".orphaned") || !exists(held) || !exists(fetching) {
+		t.Error("swept the wrong checkouts")
+	}
+
+	if err := os.WriteFile(held+".orphaned", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sweep(cache, keep, now.Add(2*orphanAge)); err != nil || !exists(held) || exists(held+".orphaned") {
+		t.Errorf("a commit held again was removed or kept its mark: %v", err)
+	}
+	if err := Sweep(filepath.Join(cache, "none"), keep, now); err != nil {
+		t.Errorf("no cache yet: %v", err)
+	}
+}

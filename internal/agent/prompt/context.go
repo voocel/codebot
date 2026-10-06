@@ -1,11 +1,11 @@
 package prompt
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/lib/regular"
 )
 
 // loadAgents returns the AGENTS.md files that apply in cwd, joined from the
@@ -47,7 +47,7 @@ func readAgentFile(dir string) string {
 }
 
 func readFileOr(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := regular.ReadFile(path)
 	if err != nil {
 		return ""
 	}

@@ -1,5 +1,5 @@
 // Package app assembles codebot. An App holds what lives as long as the
-// process — settings, models, permissions, MCP, plugins and skills — and the
+// process — settings, models, permissions, extensions and MCP — and the
 // current Conversation, which holds what lives as long as one session.
 // Frontends talk to these two types only.
 package app
@@ -8,11 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,8 +22,8 @@ import (
 	"github.com/voocel/codebot/internal/agent/permission"
 	"github.com/voocel/codebot/internal/agent/skill"
 	"github.com/voocel/codebot/internal/agent/tools"
+	"github.com/voocel/codebot/internal/extension"
 	"github.com/voocel/codebot/internal/extension/mcp"
-	"github.com/voocel/codebot/internal/extension/plugin"
 	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/infra/telemetry"
@@ -58,12 +56,15 @@ type Options struct {
 	FS agentcoretools.FS
 	// NewModel overrides how models are built; nil uses litellm.
 	NewModel ModelFactory
+	// Trust trusts the project for this process, whatever the user decided.
+	Trust bool
 }
 
 // App is the process-wide state. See the package documentation.
 type App struct {
 	opts Options
 	cwd  string
+	root string // the project's, "" for none; see config.ProjectRoot
 	// settings are as Boot loaded them, but for the model selection
 	// (Provider, Model, ReasoningEffort), which SetModel changes under mu.
 	settings    config.Resolved
@@ -77,46 +78,52 @@ type App struct {
 	tracer      *telemetry.Tracer
 	shutdown    func(context.Context) error
 	events      broadcaster
-	// skills and offered are replaced whole on reload and refresh. They are
+	// ext and offered are replaced whole on reload and refresh. They are
 	// read without mu, so that a Conversation holding its own lock never
 	// waits for the App's.
-	skills  atomic.Pointer[skill.Catalog]
+	ext     atomic.Pointer[extensions]
 	offered atomic.Pointer[mcpOffer]
+	// reloading, connecting and fetching order reloads, connecting MCP
+	// servers and fetching plugins, so the configuration last read is the
+	// one in effect, and a plugin is fetched once.
+	reloading, connecting, fetching sync.Mutex
 
-	mu          sync.Mutex
-	plugins     *plugin.Catalog
-	mcpServers  map[string]config.MCPServer
+	mu sync.Mutex
+	// decision is the user's decision on the project's trust this session,
+	// over the one they keep; nil for none.
+	decision    *extension.Decision
 	current     *Conversation
 	unsubscribe func()
-}
-
-// mcpOffer is what the connected MCP servers offer.
-type mcpOffer struct {
-	tools        []agentcore.Tool
-	permissions  map[string]permission.Metadata
-	instructions string
 }
 
 // Boot loads the configuration and opens the first conversation.
 func Boot(opts Options) (*App, error) {
 	cwd := opts.Cwd
-	settings, err := config.Load(cwd)
+	if config.NeedsSetup() {
+		return nil, fmt.Errorf("no configuration found; run codebot -setup to create one")
+	}
+	layers, err := config.Load(cwd)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkProviderSetup(cwd, settings); err != nil {
-		return nil, err
-	}
-
 	a := &App{
 		opts:     opts,
 		cwd:      cwd,
-		settings: settings,
+		root:     layers.Root,
 		models:   provider.NewModels(),
 		newModel: opts.NewModel,
 		sessions: storage.NewManager(config.SessionsDir(cwd)),
 		shutdown: func(context.Context) error { return nil },
 	}
+	ext, settings, err := a.load(layers)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkProviderSetup(settings); err != nil {
+		return nil, err
+	}
+	a.settings = settings
+	a.ext.Store(ext)
 	a.offered.Store(&mcpOffer{})
 	if a.newModel == nil {
 		a.models.Refresh(config.UserConfigDir())
@@ -134,10 +141,7 @@ func Boot(opts Options) (*App, error) {
 	if a.usage, err = skill.NewUsageTracker(filepath.Join(config.UserConfigDir(), "skill-usage.json")); err != nil {
 		return nil, fmt.Errorf("skill usage: %w", err)
 	}
-	if a.permissions, err = newPermissionEngine(cwd, opts, settings); err != nil {
-		return nil, err
-	}
-	if err := a.loadPlugins(); err != nil {
+	if a.permissions, err = newPermissionEngine(cwd, opts, settings, ext.Set); err != nil {
 		return nil, err
 	}
 	a.mcp = mcp.NewManager(func() { go a.refreshMCP() })
@@ -241,9 +245,9 @@ func (a *App) defaultModel() storage.Model {
 }
 
 // rememberModel makes a model the default for new conversations, in the
-// settings file and in the settings the App runs on.
+// user's settings and in the settings the App runs on.
 func (a *App) rememberModel(prov, name, effort string) error {
-	if err := config.PatchEffectiveSettings(a.cwd, config.Settings{Provider: &prov, Model: &name, ReasoningEffort: &effort}); err != nil {
+	if err := config.PatchUserSettings(config.Settings{Provider: &prov, Model: &name, ReasoningEffort: &effort}); err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -266,135 +270,16 @@ func (a *App) SetMode(m interact.Mode) {
 	a.events.publish(Event{Kind: ModeChanged, Mode: m})
 }
 
-// Skill is a loaded skill.
-type Skill = skill.Spec
-
-func (a *App) skillCatalog() *skill.Catalog { return a.skills.Load() }
-
-func (a *App) loadPlugins() error {
-	plugins, err := plugin.LoadAll(a.cwd)
-	if err != nil {
-		return fmt.Errorf("plugins: %w", err)
-	}
-	contrib := plugins.Contributions()
-	// Read afresh, so a reload picks up servers added to settings.json.
-	settings, err := config.Load(a.cwd)
-	if err != nil {
-		return err
-	}
-	// A server in the settings wins over a plugin's of the same name.
-	servers := contrib.MCPServers
-	maps.Copy(servers, settings.MCPServers)
-
-	a.skills.Store(skill.NewCatalog(contrib.Skills))
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.plugins = plugins
-	a.mcpServers = servers
-	return nil
-}
-
-// MCPReport summarizes connecting MCP servers.
-type MCPReport struct {
-	Servers   int
-	Connected int
-	Tools     int
-	Errors    []string
-}
-
-// ConnectMCP connects the configured MCP servers. Their tools join the
-// conversation from its next run.
-func (a *App) ConnectMCP(ctx context.Context) MCPReport {
-	a.mu.Lock()
-	servers := a.mcpServers
-	a.mu.Unlock()
-	if len(servers) == 0 {
-		return MCPReport{}
-	}
-	return a.mcpReport(len(servers), a.mcp.StartAll(ctx, servers))
-}
-
-func (a *App) mcpReport(servers int, errs []error) MCPReport {
-	tools := a.refreshMCP()
-	report := MCPReport{Servers: servers, Connected: servers - len(errs), Tools: tools}
-	for _, err := range errs {
-		report.Errors = append(report.Errors, err.Error())
-	}
-	return report
-}
-
-// refreshMCP reloads what the MCP servers offer into the conversation and
-// returns the number of tools.
-func (a *App) refreshMCP() int {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	tools, perms := a.mcp.Tools(ctx)
-	a.offered.Store(&mcpOffer{tools: tools, permissions: perms, instructions: strings.Join(a.mcp.Instructions(), "\n\n")})
-	if c := a.Current(); c != nil {
-		c.mcpChanged()
-	}
-	a.events.publish(Event{Kind: MCPChanged})
-	return len(tools)
-}
-
-// toolPermission is how the permission engine sees a tool that classifies
-// itself, an MCP tool; zero for the others.
-func (a *App) toolPermission(name string) permission.Metadata {
-	return a.offered.Load().permissions[name]
-}
-
-// MCPServer is the state of a configured MCP server.
-type MCPServer = mcp.ServerStatus
-
-// MCPStatus reports each configured MCP server.
-func (a *App) MCPStatus(ctx context.Context) []MCPServer { return a.mcp.Status(ctx) }
-
-// ReloadReport summarizes ReloadPlugins.
-type ReloadReport struct {
-	Skills int
-	MCP    MCPReport
-}
-
-// ReloadPlugins reloads plugins, skills and MCP servers from disk; the
-// conversation picks them up from its next run.
-func (a *App) ReloadPlugins(ctx context.Context) (ReloadReport, error) {
-	if err := a.loadPlugins(); err != nil {
-		return ReloadReport{}, err
-	}
-	a.mu.Lock()
-	servers := a.mcpServers
-	a.mu.Unlock()
-	report := ReloadReport{
-		Skills: len(a.skillCatalog().List()),
-		MCP:    a.mcpReport(len(servers), a.mcp.Reconfigure(ctx, servers)),
-	}
-	if c := a.Current(); c != nil {
-		c.Reload()
-	}
-	return report, nil
-}
-
-func newPermissionEngine(cwd string, opts Options, settings config.Resolved) (*permission.Engine, error) {
+func newPermissionEngine(cwd string, opts Options, settings config.Resolved, ext *extension.Set) (*permission.Engine, error) {
 	rules, err := permission.ParseRuleSet(settings.Permissions.Allow, settings.Permissions.Deny)
 	if err != nil {
 		return nil, fmt.Errorf("parse permission rules: %w", err)
 	}
-	memoryDir := config.MemoryDir(cwd)
-	// The sandbox worktrees are part of the workspace even where the
-	// configured roots leave them out.
-	worktrees := worktree.Root(cwd)
 	engine, err := permission.NewEngine(permission.Config{
-		Cwd:   cwd,
-		Mode:  opts.Mode,
-		Rules: rules,
-		Roots: permission.FilesystemRoots{
-			ReadRoots:  append(slices.Clone(settings.Permissions.ReadRoots), config.SessionsDir(cwd), worktrees),
-			WriteRoots: append(slices.Clone(settings.Permissions.WriteRoots), worktrees),
-			// Auto-memory lives outside the workspace; as a harness-managed
-			// path it skips the outside-roots prompt.
-			InternalReadable: []string{memoryDir},
-			InternalWritable: []string{memoryDir},
-		},
+		Cwd:     cwd,
+		Mode:    opts.Mode,
+		Rules:   rules,
+		Roots:   filesystemRoots(cwd, settings, ext),
 		UI:      opts.UI,
 		OnAudit: auditor(config.AuditLogPath()),
 	})
@@ -402,6 +287,30 @@ func newPermissionEngine(cwd string, opts Options, settings config.Resolved) (*p
 		return nil, fmt.Errorf("permission engine: %w", err)
 	}
 	return engine, nil
+}
+
+// filesystemRoots are where tools read and write unasked under settings.
+func filesystemRoots(cwd string, settings config.Resolved, ext *extension.Set) permission.FilesystemRoots {
+	memoryDir := config.MemoryDir(cwd)
+	// What the local plugins hold runs, or decides what does, as they load.
+	var plugins []string
+	for _, pl := range ext.Plugins {
+		if pl.Dir != "" {
+			plugins = append(plugins, pl.Dir)
+		}
+	}
+	// The sandbox worktrees are part of the workspace even where the
+	// configured roots leave them out.
+	worktrees := worktree.Root(cwd)
+	return permission.FilesystemRoots{
+		ReadRoots:  append(slices.Clone(settings.Permissions.ReadRoots), config.SessionsDir(cwd), worktrees),
+		WriteRoots: append(slices.Clone(settings.Permissions.WriteRoots), worktrees),
+		// Auto-memory lives outside the workspace; as a harness-managed
+		// path it skips the outside-roots prompt.
+		InternalReadable: []string{memoryDir},
+		InternalWritable: []string{memoryDir},
+		Protected:        plugins,
+	}
 }
 
 // auditor appends permission decisions to the audit log.
@@ -441,10 +350,7 @@ func auditor(path string) func(permission.AuditEntry) {
 // checkProviderSetup validates that settings.json configures the active
 // provider. The first-run wizard runs before Boot, so anything missing here
 // is an error.
-func checkProviderSetup(cwd string, settings config.Resolved) error {
-	if config.NeedsSetup(cwd) {
-		return fmt.Errorf("no configuration found; run codebot -setup to create one")
-	}
+func checkProviderSetup(settings config.Resolved) error {
 	if pc, ok := settings.Providers[settings.Provider]; !ok || !pc.HasCredentials() {
 		return fmt.Errorf("configuration error: settings.provider=%q is missing or not configured in settings.json", settings.Provider)
 	}

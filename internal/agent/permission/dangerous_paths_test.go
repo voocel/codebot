@@ -185,9 +185,11 @@ func TestCheckDangerousPath_IDEAndAgentLoaderDirs(t *testing.T) {
 		{"claude hooks", filepath.Join(home, "proj", ".claude", "hooks.json")},
 		// codebot's own configuration, not its data.
 		{"codebot settings", filepath.Join(home, "proj", ".codebot", "settings.json")},
-		{"codebot plugin state", filepath.Join(home, ".codebot", "plugins-state.json")},
-		{"codebot plugin manifest", filepath.Join(home, "proj", ".codebot", "plugins", "x", "plugin.json")},
-		{"codebot plugin skill", filepath.Join(home, ".codebot", "plugins", "x", "skills", "deploy.md")},
+		{"codebot trusted folders", filepath.Join(home, ".codebot", "workspaces.json")},
+		{"codebot skill", filepath.Join(home, ".codebot", "skills", "deploy", "SKILL.md")},
+		{"codebot plugin lock", filepath.Join(home, ".codebot", "plugins", "lock.json")},
+		{"codebot plugin cache", filepath.Join(home, ".codebot", "plugins", "cache", "github.com", "a", "b", "c", "mcp.json")},
+		{"shared skill", filepath.Join(home, "proj", "sub", ".agents", "skills", "deploy", "SKILL.md")},
 		{"codebot agent", filepath.Join(home, "proj", ".codebot", "agents", "reviewer.md")},
 		{"codebot approvals", filepath.Join(home, ".codebot", "approvals", "p1.json")},
 	}
