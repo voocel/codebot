@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/voocel/codebot/internal/extension"
 	"github.com/voocel/codebot/internal/extension/plugin"
@@ -215,6 +216,33 @@ func (a *App) UpdatePlugins(ctx context.Context, ref string) ([]PluginUpdate, er
 		}
 	}
 	return out, nil
+}
+
+// PluginUpdates names the plugins in effect from git whose ref has moved
+// off the commit agreed to: what /plugins update would update. It asks the
+// remotes for their commits alone, fetching nothing; one that does not
+// answer is left out, untold.
+func (a *App) PluginUpdates(ctx context.Context) []string {
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		names []string
+	)
+	for _, pl := range a.Plugins() {
+		if pl.State != PluginOn || pl.Commit == "" {
+			continue
+		}
+		wg.Go(func() {
+			if latest, err := extension.LatestCommit(ctx, pl.Src); err == nil && latest != "" && latest != pl.Commit {
+				mu.Lock()
+				names = append(names, pl.Name)
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	slices.Sort(names)
+	return names
 }
 
 // AcceptPlugin records what the user decided of the plugin offered, at its

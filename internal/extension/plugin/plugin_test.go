@@ -283,6 +283,42 @@ func TestFetch(t *testing.T) {
 	}
 }
 
+// Latest tells the commit a fetch of the ref would take, fetching nothing.
+func TestLatest(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q", "-b", "main")
+	write(t, filepath.Join(repo, "plugin.json"), manifest+"}")
+	run("add", ".")
+	run("commit", "-q", "-m", "v1")
+	run("tag", "-a", "-m", "v1", "v1")
+	run("branch", "feature/main")
+	v1 := run("rev-parse", "HEAD")
+	run("commit", "-q", "--allow-empty", "-m", "v2")
+	v2 := run("rev-parse", "HEAD")
+
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	cache := t.TempDir()
+	for ref, want := range map[string]string{"": v2, "main": v2, "v1": v1, "feature/main": v1, v1: "", "nope": ""} {
+		if got, err := Latest(t.Context(), Source{URL: "file://" + repo, Ref: ref}, cache); err != nil || got != want {
+			t.Errorf("%q: %s, %v; want %s", ref, got, err, want)
+		}
+	}
+	if entries, _ := os.ReadDir(cache); len(entries) > 0 {
+		t.Errorf("the cache holds %v", entries)
+	}
+}
+
 // A plugin in a repository's directory is read from the commit fetched,
 // which its directory may not lead out of.
 func TestReadCachedStaysInTheRepository(t *testing.T) {

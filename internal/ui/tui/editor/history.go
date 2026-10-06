@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+
+	"github.com/voocel/codebot/internal/infra/config"
 )
 
 const (
@@ -88,11 +90,8 @@ type stored struct {
 	record
 }
 
-func (h *History) load() {
-	data, err := os.ReadFile(h.path)
-	if err != nil {
-		return
-	}
+// parse reads the entries of a history file's data.
+func parse(data []byte) []stored {
 	var lines []stored
 	for _, raw := range bytes.Split(data, []byte("\n")) {
 		var r record
@@ -100,8 +99,16 @@ func (h *History) load() {
 			lines = append(lines, stored{raw, r})
 		}
 	}
+	return lines
+}
+
+func (h *History) load() {
+	data, err := os.ReadFile(h.path)
+	if err != nil {
+		return
+	}
 	seen := map[string]bool{}
-	for _, l := range slices.Backward(lines) {
+	for _, l := range slices.Backward(parse(data)) {
 		if l.Project != h.project || seen[l.Display] {
 			continue
 		}
@@ -112,14 +119,25 @@ func (h *History) load() {
 		}
 	}
 	if len(data) > maxHistoryFile {
-		h.compact(lines)
+		h.compact()
 	}
 }
 
 // compact rewrites the history file with the newest entries of each project
-// that fit in half of maxHistoryFile. Another codebot appending meanwhile
-// may lose its entry, which is only history.
-func (h *History) compact(lines []stored) {
+// that fit in half of maxHistoryFile. It reads the file and replaces it
+// under the lock appends take, so that what another codebot adds meanwhile
+// is kept.
+func (h *History) compact() {
+	unlock, err := config.LockFile(h.path)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	data, err := os.ReadFile(h.path)
+	if err != nil || len(data) <= maxHistoryFile {
+		return // another codebot compacted it first
+	}
+	lines := parse(data)
 	type key struct{ project, text string }
 	seen := map[key]bool{}
 	kept := map[string]int{}
@@ -164,6 +182,11 @@ func (h *History) append(r record) {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(h.path), 0o755)
+	unlock, err := config.LockFile(h.path)
+	if err != nil {
+		return
+	}
+	defer unlock()
 	// What the user typed is theirs alone.
 	f, err := os.OpenFile(h.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {

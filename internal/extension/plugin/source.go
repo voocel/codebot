@@ -284,6 +284,36 @@ func SweepCache(cache string, now time.Time) error {
 	return nil
 }
 
+// Latest returns the commit at the git source's ref, as Fetch would take
+// it, asking the remote alone and fetching nothing: "" when the remote has
+// no such ref, as for a ref that is a commit. It runs git in cache, apart
+// from any repository.
+func Latest(ctx context.Context, s Source, cache string) (string, error) {
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		return "", err
+	}
+	want := cmp.Or(s.Ref, "HEAD")
+	out, err := git(ctx, cache, "ls-remote", "--", s.URL, want, want+"^{}")
+	if err != nil {
+		return "", err
+	}
+	refs := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if commit, ref, ok := strings.Cut(line, "\t"); ok {
+			refs[ref] = commit
+		}
+	}
+	// A fetch takes the first of these the remote has; a tag, at the
+	// commit it points to.
+	for _, f := range []string{"%s", "refs/%s", "refs/tags/%s", "refs/heads/%s", "refs/remotes/%s", "refs/remotes/%s/HEAD"} {
+		ref := fmt.Sprintf(f, want)
+		if commit := cmp.Or(refs[ref+"^{}"], refs[ref]); commit != "" {
+			return commit, nil
+		}
+	}
+	return "", nil
+}
+
 // git runs git in dir and returns its output, trimmed. Of the transports
 // it takes https and ssh alone, nor does it ask for credentials: what the
 // user's git, as they set it up, and ssh agent hold is all it has. Detached,

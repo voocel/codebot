@@ -8,7 +8,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/voocel/codebot/internal/infra/config"
 )
+
+// TestMain keeps the locks the history takes, in the user's config
+// directory, apart from the user's.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "editor-test-home")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
 
 // writeHistory writes n entries of each project, with a paste of size
 // bytes, oldest first.
@@ -82,5 +98,64 @@ func TestHistoryCapsEntriesPerProject(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte(`"project":"/big"`)) {
 		t.Error("the room left was not given to older entries")
+	}
+}
+
+// What another codebot appends as this one compacts the file is kept:
+// compacting waits for the lock appends take, and reads the file under it.
+func TestHistoryCompactingKeepsWhatIsAppended(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	writeHistory(t, path, 60, 100<<10, "/a", "/b")
+	unlock, err := config.LockFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		NewHistory(path, "/a")
+		close(done)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if info, _ := os.Stat(path); info.Size() <= maxHistoryFile {
+		t.Fatal("compacted the file as another codebot appended to it")
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(record{Display: "/b fresh", Project: "/b"})
+	f.Write(append(data, '\n'))
+	f.Close()
+	unlock()
+	<-done
+	if info, _ := os.Stat(path); info.Size() > maxHistoryFile/2 {
+		t.Errorf("the file is %d bytes after compacting", info.Size())
+	}
+	if h := NewHistory(path, "/b"); h.get(0).text != "/b fresh" {
+		t.Errorf("the newest of /b is %q", h.get(0).text)
+	}
+}
+
+// Adding waits for the lock compacting takes.
+func TestHistoryAddWaitsForTheLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	h := NewHistory(path, "/a")
+	unlock, err := config.LockFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		h.Add("hello", nil)
+		close(done)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("appended while another codebot held the lock")
+	}
+	unlock()
+	<-done
+	if again := NewHistory(path, "/a"); again.Len() != 1 || again.get(0).text != "hello" {
+		t.Errorf("read %d entries", again.Len())
 	}
 }

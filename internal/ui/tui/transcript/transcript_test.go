@@ -186,3 +186,30 @@ func TestHomePath(t *testing.T) {
 		}
 	}
 }
+
+// What a command adds goes under it, after what it added before and before
+// what the user sent since; of a command no longer shown, at the end.
+func TestUnder(t *testing.T) {
+	tr := New()
+	a, b := &Prompt{Text: "/a", Kind: ToCommand}, &Prompt{Text: "/b", Kind: ToCommand}
+	tr.Append(a)
+	tr.Under(a, Note("a started"))
+	tr.Append(b)
+	tr.Under(b, Note("b done"))
+	if i := tr.Under(a, Note("a done")); i != 2 {
+		t.Errorf("a's reply went at %d", i)
+	}
+	tr.Under(&Prompt{Text: "/gone"}, Note("gone done"))
+	var got []string
+	for _, c := range tr.Cells() {
+		switch c := c.(type) {
+		case *Prompt:
+			got = append(got, c.Text)
+		case *Notice:
+			got = append(got, c.Text)
+		}
+	}
+	if want := []string{"/a", "a started", "a done", "/b", "b done", "gone done"}; !slices.Equal(got, want) {
+		t.Errorf("cells %q", got)
+	}
+}

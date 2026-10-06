@@ -277,7 +277,7 @@ func addPlugin(a *app.App, source string, project bool) tea.Cmd {
 		}
 		return offerPanel(a, o, "Add "+versioned(o.Name, o.Version), "Add", done)()
 	}
-	return tea.Sequence(note("Fetching "+source+"…"), fetch)
+	return working("Fetching "+source+"…", fetch)
 }
 
 func installPlugins(a *app.App) tea.Cmd {
@@ -300,7 +300,7 @@ func installPlugins(a *app.App) tea.Cmd {
 		}
 		return tea.BatchMsg(cells)
 	}
-	return tea.Sequence(note("Installing the plugins…"), install)
+	return working("Installing the plugins…", install)
 }
 
 func updatePlugins(a *app.App, name string) tea.Cmd {
@@ -334,5 +334,5 @@ func updatePlugins(a *app.App, name string) tea.Cmd {
 		}
 		return tea.BatchMsg(cells)
 	}
-	return tea.Sequence(note("Fetching…"), update)
+	return working("Fetching…", update)
 }

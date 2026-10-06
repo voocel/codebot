@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -48,6 +49,8 @@ type Model struct {
 	page   *page
 	editor *editor.Editor
 	panels []panel.Panel
+	// replyTo is the command line each panel a command shows answers.
+	replyTo map[panel.Panel]*transcript.Prompt
 
 	// A request comes unasked for, maybe while the user types: the one on
 	// top takes keys once it has shown, since shownAt, with none pressed
@@ -110,6 +113,7 @@ type (
 	openedMsg     struct{ conv *app.Conversation }
 	modeMsg       struct{ mode interact.Mode }
 	connectedMsg  struct{ report app.MCPReport }
+	updatesMsg    struct{ plugins []string }
 	reloadedMsg   struct{}
 	suggestionMsg struct {
 		conv *app.Conversation
@@ -172,7 +176,7 @@ func (m *Model) open(conv *app.Conversation) {
 	m.t = transcript.Load(conv.History())
 	m.chat = newChatView(func() []transcript.Cell { return m.t.Cells() }, m.welcome)
 	m.closePage()
-	m.panels = nil
+	m.panels, m.replyTo = nil, map[panel.Panel]*transcript.Prompt{}
 	m.pending, m.stopped = nil, false
 	m.run = run{todos: todo.FromHistory(conv.History())}
 	m.editor.SetSession(conv.ID())
@@ -257,6 +261,11 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 			return m.notify("MCP connected · " + strconv.Itoa(n) + " tools")
 		}
 		return nil
+	case updatesMsg:
+		if len(msg.plugins) > 0 {
+			m.t.Append(transcript.Note("Updates for " + strings.Join(msg.plugins, ", ") + " · /plugins update"))
+		}
+		return nil
 	case suggestionMsg:
 		if msg.conv == m.conv && !m.run.active && m.editor.Empty() {
 			m.editor.SetSuggestion(msg.text)
@@ -319,8 +328,14 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	case transcript.Cell:
 		m.t.Append(msg)
 		return nil
+	case commands.Reply:
+		m.chat.inserted(m.t.Under(msg.To, msg.Cell))
+		return nil
 	case panel.Panel:
 		return m.push(msg)
+	case commands.Asked:
+		m.replyTo[msg.Panel] = msg.To
+		return m.push(msg.Panel)
 	case commands.OpenAgent:
 		return m.openAgent(msg.Name)
 	case commands.Copy:
@@ -578,6 +593,7 @@ func (m *Model) push(p panel.Panel) tea.Cmd {
 
 func (m *Model) remove(match func(panel.Panel) bool) {
 	m.panels = slices.DeleteFunc(m.panels, match)
+	maps.DeleteFunc(m.replyTo, func(p panel.Panel, _ *transcript.Prompt) bool { return match(p) })
 	m.restack()
 }
 
@@ -623,6 +639,9 @@ func (m *Model) ready(p panel.Panel, now time.Time) bool {
 
 func (m *Model) updatePanel(p panel.Panel, msg tea.Msg) tea.Cmd {
 	cmd, done := p.Update(msg)
+	if to := m.replyTo[p]; to != nil {
+		cmd = commands.Under(to, cmd)
+	}
 	if done {
 		m.remove(func(q panel.Panel) bool { return q == p })
 	}

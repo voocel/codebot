@@ -3,6 +3,7 @@ package transcript
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -56,6 +57,24 @@ func (t *Transcript) Cells() []Cell { return t.cells }
 
 // Append adds c at the end.
 func (t *Transcript) Append(c Cell) { t.cells = append(t.cells, c) }
+
+// Under adds c under the command line to, after what was added under it
+// before rather than after what came since, and returns where c went. With
+// to no longer in the transcript, c goes at the end.
+func (t *Transcript) Under(to *Prompt, c Cell) int {
+	after := to.tail
+	if after == nil {
+		after = to
+	}
+	to.tail = c
+	i := slices.Index(t.cells, after)
+	if i < 0 {
+		t.Append(c)
+		return len(t.cells) - 1
+	}
+	t.cells = slices.Insert(t.cells, i+1, c)
+	return i + 1
+}
 
 // Apply takes an event of a run.
 func (t *Transcript) Apply(ev agentcore.Event) {

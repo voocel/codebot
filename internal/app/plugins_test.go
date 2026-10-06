@@ -217,6 +217,42 @@ func TestGitPluginUpdates(t *testing.T) {
 	}
 }
 
+// A git plugin whose ref has moved on is told to have an update, fetching
+// nothing, until it is updated.
+func TestPluginUpdates(t *testing.T) {
+	repo, commit := remote(t)
+	writeKit(t, repo)
+	commit("v1")
+	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
+	ctx := context.Background()
+	o, err := e.app.OfferPlugin(ctx, "example.test/acme/kit", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
+		t.Fatal(err)
+	}
+	if names := e.app.PluginUpdates(ctx); len(names) > 0 {
+		t.Fatalf("up to date, updates for %q", names)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("docs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit("docs")
+	if names := e.app.PluginUpdates(ctx); !slices.Equal(names, []string{"kit"}) {
+		t.Fatalf("updates for %q", names)
+	}
+	if pl := e.app.Plugins()[0]; pl.Commit != o.Commit {
+		t.Fatalf("checking for updates moved the plugin to %s", pl.Commit)
+	}
+	if _, err := e.app.UpdatePlugins(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if names := e.app.PluginUpdates(ctx); len(names) > 0 {
+		t.Errorf("updated, updates for %q", names)
+	}
+}
+
 // A project's plugins wait for the user to trust the project to declare
 // them, and are fetched as they install them, never before: what they run
 // is the user's to agree to.

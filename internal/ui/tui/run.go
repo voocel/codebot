@@ -86,6 +86,11 @@ func Run(a *app.App, ui *UI, version string) error {
 	defer unsubscribe()
 
 	go func() { q.push(connectedMsg{a.Connect(context.Background())}) }()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		q.push(updatesMsg{a.PluginUpdates(ctx)})
+	}()
 
 	_, err := p.Run()
 	if m.shell != nil {

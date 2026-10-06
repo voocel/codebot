@@ -20,6 +20,7 @@ type Prompt struct {
 	Images  int
 	Kind    PromptKind
 	toggled bool
+	tail    Cell // the last cell added under a command line
 }
 
 // PromptKind says what a prompt went to.

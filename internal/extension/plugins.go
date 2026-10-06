@@ -267,6 +267,12 @@ func ReadPlugin(ctx context.Context, src plugin.Source, commit string) (p *plugi
 	return p, got, problems, nil
 }
 
+// LatestCommit returns the commit at the ref of the git source src, asking
+// its remote alone: see plugin.Latest.
+func LatestCommit(ctx context.Context, src plugin.Source) (string, error) {
+	return plugin.Latest(ctx, src, cacheDir())
+}
+
 // DecidePlugin records what the user decided of the plugin at src, at
 // commit for a git one, of its surface: see Consent.Decided.
 func DecidePlugin(src plugin.Source, commit string, surface, shown, agreed Surface) error {

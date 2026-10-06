@@ -475,6 +475,44 @@ func TestAddAPlugin(t *testing.T) {
 	h.shows("Plugins", "kit 0.1.0", "1 skill · 1 MCP · ~/kit · on")
 }
 
+// What a command adds once it is done goes under it, though the user sent
+// another command meanwhile.
+func TestRepliesStayUnderTheirCommand(t *testing.T) {
+	h := boot(t)
+	dir := filepath.Join(os.Getenv("HOME"), "slow")
+	for name, text := range map[string]string{
+		"plugin.json": `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "slow"}`,
+		// A server that never answers holds connecting up for a second.
+		"mcp.json": `{"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", "mcpServers": {"db": {"type": "stdio", "command": "sleep", "args": ["1"]}}}`,
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.write("/plugins add ~/slow")
+	h.press("enter")
+	h.pause()
+	h.press("1")
+	h.write("/nope")
+	h.press("enter")
+	await[commands.Reply](h)
+	var order []string
+	for _, c := range h.m.t.Cells() {
+		switch c := c.(type) {
+		case *transcript.Prompt:
+			order = append(order, c.Text)
+		case *transcript.Notice:
+			order = append(order, strings.Fields(c.Text)[0])
+		}
+	}
+	if want := []string{"/plugins add ~/slow", "Fetching", "Added", "/nope", "Unknown"}; !slices.Equal(order, want) {
+		t.Errorf("cells %q", order)
+	}
+}
+
 func TestPermissionPanel(t *testing.T) {
 	h := boot(t)
 	reply := make(chan interact.Verdict, 1)
