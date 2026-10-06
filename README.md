@@ -44,6 +44,7 @@ This split matters. The agent loop stays small and reusable, while long-running 
 - Four permission modes: `strict` / `balanced` / `accept-edits` / `trust` (Shift+Tab cycles)
 - Destructive commands (rm -rf, git reset --hard, ...) flagged in the approval prompt
 - Touching credentials, or changing shell startup files or git hooks, is confirmed every time, in every mode
+- Workspace trust: a repository's hooks, MCP servers, plugins and allow rules stay off until you trust the folder, and you are asked again when they change
 - Workspace-scoped file access
 - JSON audit log for every tool decision
 
@@ -56,11 +57,11 @@ This split matters. The agent loop stays small and reusable, while long-running 
 - Slash commands: `/model`, `/compact`, `/resume`, `/copy`, ...; every skill is also a `/` command
 
 **Extensibility**
-- Plugin-first architecture with project and user plugin scopes
-- Plugin contributions: skills and MCP servers
+- Skills (Agent Skills `SKILL.md`), sub-agents, MCP servers and hooks, from you and from the project
+- Plugins in the [Agent Plugins](https://github.com/agentplugins/agent-plugins-spec) format bundle skills and MCP servers, from git or a directory, locked at the commit you agreed to
+- Reads `.agents/skills`, shared with other coding agents
 - Custom slash commands are skills: add `disable-model-invocation: true` to keep one user-only
-- `/plugins create`, `/plugins install`, and `/plugins remove` for local plugin lifecycle
-- Trust / enable / disable governance with runtime reload
+- `/reload` picks up changes; `/status` shows where each extension comes from
 
 ## Installation
 
@@ -147,7 +148,7 @@ This means codebot is not just "an agent with tools". It is an agent plus a harn
 
 ## Configuration
 
-Config files: `~/.codebot/settings.json` (global) or `.codebot/settings.json` (project-level, takes precedence).
+Config files: `~/.codebot/settings.json` (yours) and `.codebot/settings.json` at the project's root, the top of its git repository. The project's fields take precedence over yours, except those it may not set: `providers`, `search_provider`, `search_api_key` and `telemetry` are yours alone, so a repository can never send your keys or your conversations elsewhere. `/model` saves its choice to your file.
 
 All fields are optional. See [settings.example.jsonc](settings.example.jsonc) for the full reference with comments.
 
@@ -163,7 +164,25 @@ OpenAI-protocol providers also support `api: "chat"` (default) or `api: "respons
 
 A provider of `type: "gateway"` is a [LiteLLM gateway](https://github.com/voocel/litellm#gateway): codebot runs the agent, say in a sandbox, while the gateway at `base_url` holds the provider keys, makes the model calls and bills them; `api_key` is codebot's token for the gateway. Reasoning effort, prompt caching and retries work as with a direct provider.
 
-To start a plugin, run `/plugins create <plugin-id> [project|user]`: it writes a skeleton to fill in, and `/plugins validate <plugin-id>` checks it.
+## Extensions
+
+| | Yours | The project's |
+|---|---|---|
+| Skills | `~/.codebot/skills/`, `~/.agents/skills/` | `.codebot/skills/` at the root, `.agents/skills/` from the working directory up to the root |
+| Sub-agents | `~/.codebot/agents/*.md` | `.codebot/agents/*.md` at the root |
+| MCP servers, hooks, plugins | `~/.codebot/settings.json` | `.codebot/settings.json` at the root |
+
+A skill is a directory holding a `SKILL.md`, or a single `.md` file. Of two of one name, the project's wins over yours, and yours over a built-in one; `/status` lists what each replaced. Hooks replace none: yours and the project's all run.
+
+**Plugins.** A plugin bundles skills and MCP servers in the [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) format: a directory with a `plugin.json` naming it, skills in `skills/<name>/SKILL.md` and MCP servers in `mcp.json`. Its skills become `/<plugin>:<skill>`, its MCP servers `<plugin>_<server>`. `plugins` in the settings lists where they come from: a git repository (`github.com/acme/tools`, an https or ssh URL, with `#ref` for a branch, tag or commit), or a directory, relative to the settings file naming it.
+
+- `/plugins add <source> [--project]` fetches a plugin, shows what it would run, and once you agree adds it to your settings, or the project's. A relative path is taken from where you are. A plugin your settings declare that you never added is not installed until you add it this way.
+- `/plugins update [name]` fetches git plugins anew at their ref. An update that runs nothing new applies at once; one that does waits for you to agree to what it adds.
+- `/plugins remove <name>` removes one. `/plugins` lists them; space turns one off in this project, for you alone.
+
+A git plugin is fetched into `~/.codebot/plugins/cache/` and locked at that commit in `~/.codebot/plugins/lock.json`: it changes only when you update it. One no longer cached is fetched again at that commit. Its MCP servers keep their data in `~/.codebot/plugins/data/<plugin>/` (`${PLUGIN_DATA}`), which updates leave alone. A project's plugins wait for you to trust the folder; once trusted, those not fetched yet are fetched, and codebot asks about what they run before it runs. Writes into a local plugin's directory are confirmed every time. Of two plugins of one name, the project's wins; an MCP server in the settings wins over a plugin's of the same name.
+
+**Workspace trust.** A repository may come from anyone, so what in it runs code or lets calls through unasked takes effect only once you trust the folder: its hooks, MCP servers, plugins, allow rules, read and write roots, and the commands, allowed tools and model its skills declare. Its skills and sub-agents themselves load either way; they are instructions for the model. A project's skills are read as they load, so what runs is what you trusted; `/reload` picks up their edits. The first time, codebot lists all of it and asks; once trusted, it asks again only about what was added. `/trust` shows and changes the decision, which is kept in `~/.codebot/workspaces.json`, never in the repository. Print mode and ACP have nobody to ask: an undecided folder stays untrusted, they say on stderr what is off, and `--trust` trusts it for that run.
 
 ## Requirements
 
