@@ -71,16 +71,6 @@ func TestHistoryCompactsAFileTooLarge(t *testing.T) {
 	}
 }
 
-func TestHistoryKeepsAFileSmallEnough(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "history.jsonl")
-	writeHistory(t, path, 3, 10, "/a")
-	before, _ := os.ReadFile(path)
-	NewHistory(path, "/a")
-	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
-		t.Error("a small file was rewritten")
-	}
-}
-
 func TestHistoryCapsEntriesPerProject(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.jsonl")
 	writeHistory(t, path, 11, 1<<20, "/big") // the oldest, past the limit

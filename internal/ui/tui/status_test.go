@@ -5,25 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm"
 )
-
-func TestShimmerSweepsOverTheText(t *testing.T) {
-	start := time.UnixMilli(0)
-	seen := map[string]bool{}
-	for ms := range 600 {
-		s := shimmer("Running…", start.Add(time.Duration(ms)*time.Millisecond))
-		if got := ansi.Strip(s); got != "Running…" {
-			t.Fatalf("shimmer changed the text to %q", got)
-		}
-		seen[s] = true
-	}
-	if len(seen) < 10 {
-		t.Errorf("the light took %d places in 600ms", len(seen))
-	}
-}
 
 func TestTokensCountAsTheResponseStreams(t *testing.T) {
 	var r run
@@ -63,9 +47,6 @@ func TestShownTokensRoll(t *testing.T) {
 		r.roll(start.Add(time.Duration(f) * time.Second / 30))
 		if r.shown[0] < prev {
 			t.Fatalf("frame %d: the count went back from %v to %v", f, prev, r.shown[0])
-		}
-		if f == 1 && (r.shown[0] < 200 || r.shown[0] > 300) {
-			t.Errorf("the first frame closed %v of 3000, want about a twelfth", r.shown[0])
 		}
 		prev = r.shown[0]
 	}

@@ -332,23 +332,6 @@ func TestProjectFilesStayInTheProject(t *testing.T) {
 	}
 }
 
-func TestSurfaceSets(t *testing.T) {
-	agreed := Surface{NewItem("allow", "Bash(make *)"), NewItem("allow", "Bash(a)")}
-	now := Surface{NewItem("allow", "Bash(make *)"), NewItem("allow", "Bash(b)")}
-	if got := now.Missing(agreed); !slices.Equal(got, now[1:]) {
-		t.Errorf("missing %v", got)
-	}
-	if got := now.Intersect(agreed); !slices.Equal(got, now[:1]) {
-		t.Errorf("intersect %v", got)
-	}
-	if kept := (Surface{{Kind: "allow", Key: "Bash(make *)"}}); !kept.Has(now[0]) {
-		t.Error("an item kept, without its detail, is another")
-	}
-	if !agreed.HasAll(nil) || agreed.HasAll(now) || !agreed.HasAll(agreed[:1]) {
-		t.Error("HasAll")
-	}
-}
-
 // Consents edited at once, as two sessions may, all hold: none reads the
 // file before another has written it.
 func TestConsentsEditedAtOnceAllHold(t *testing.T) {

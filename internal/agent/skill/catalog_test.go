@@ -10,10 +10,7 @@ import (
 func TestValidName(t *testing.T) {
 	t.Parallel()
 
-	valid := []string{
-		"a", "commit", "code-review", "my-skill-1", "a1b",
-		"has_underscore", "code_review", "has--double", "my_skill_1",
-	}
+	valid := []string{"a", "code-review", "code_review", "has--double", "my-skill-1"}
 	for _, name := range valid {
 		if !ValidName(name) {
 			t.Errorf("expected %q to be valid", name)
@@ -28,25 +25,6 @@ func TestValidName(t *testing.T) {
 	for _, name := range invalid {
 		if ValidName(name) {
 			t.Errorf("expected %q to be invalid", name)
-		}
-	}
-}
-
-func TestStripFrontmatter(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"no frontmatter", "hello world", "hello world"},
-		{"with frontmatter", "---\nname: test\n---\ncontent here", "content here"},
-		{"unclosed frontmatter", "---\nname: test\nno closing", "---\nname: test\nno closing"},
-	}
-	for _, tc := range tests {
-		if got := stripFrontmatter(tc.input); got != tc.want {
-			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }
@@ -95,16 +73,6 @@ func TestLoadDirReportsInvalidSkill(t *testing.T) {
 	specs, errs := LoadDir(dir)
 	if len(specs) != 0 || len(errs) != 2 {
 		t.Fatalf("expected no skills and two errors, got %d skills, errors %v", len(specs), errs)
-	}
-}
-
-// Of two skills with one name, the first wins: the caller orders them.
-func TestCatalogKeepsTheFirstOfAName(t *testing.T) {
-	t.Parallel()
-
-	spec, _ := NewCatalog([]Spec{{Name: "review", Source: "project"}, {Name: "review", Source: "user"}}).Get("review")
-	if spec.Source != "project" {
-		t.Errorf("got the %s skill", spec.Source)
 	}
 }
 

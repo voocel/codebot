@@ -3,6 +3,7 @@ package subagent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -43,142 +44,28 @@ Look for null pointer risks and unhandled errors.
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	if len(defs) != 1 {
-		t.Fatalf("expected 1 definition, got %d", len(defs))
-	}
-	d := defs[0]
-	if d.Name != "code-reviewer" {
-		t.Errorf("Name = %q", d.Name)
-	}
-	if d.Description != "Independent code reviewer agent." {
-		t.Errorf("Description = %q", d.Description)
-	}
-	if !strings.Contains(d.SystemPrompt, "You are a code reviewer.") {
-		t.Errorf("SystemPrompt missing body, got %q", d.SystemPrompt)
-	}
-	if strings.HasPrefix(d.SystemPrompt, "\n") {
-		t.Errorf("SystemPrompt should be left-trimmed, got %q", d.SystemPrompt[:10])
-	}
-	if got := d.Tools; len(got) != 3 || got[0] != "read" {
-		t.Errorf("Tools = %v", got)
-	}
-	if got := d.DisallowedTools; len(got) != 1 || got[0] != "bash" {
-		t.Errorf("DisallowedTools = %v", got)
-	}
-	if d.Model != "inherit" {
-		t.Errorf("Model = %q", d.Model)
-	}
-	if d.MaxTurns != 25 {
-		t.Errorf("MaxTurns = %d", d.MaxTurns)
-	}
-	if d.Origin != filepath.Join(dir, "reviewer.md") {
-		t.Errorf("Origin = %q", d.Origin)
+	want := []AgentDefinition{{
+		Name:            "code-reviewer",
+		Description:     "Independent code reviewer agent.",
+		SystemPrompt:    "You are a code reviewer.\n\nLook for null pointer risks and unhandled errors.",
+		Tools:           []string{"read", "grep", "glob"},
+		DisallowedTools: []string{"bash"},
+		Model:           "inherit",
+		MaxTurns:        25,
+		Origin:          filepath.Join(dir, "reviewer.md"),
+	}}
+	if !reflect.DeepEqual(defs, want) {
+		t.Errorf("loaded %+v\nwant   %+v", defs, want)
 	}
 }
 
-// Filename fallback: when frontmatter omits `name`, the loader infers it
-// from the filename stem. This is a deliberate ergonomic shortcut for
-// single-purpose files.
-func TestLoadAgent_NameDefaultsToFilename(t *testing.T) {
-	dir := t.TempDir()
-	writeAgentFile(t, dir, "summariser.md", `---
-description: Summarises long files.
----
-You summarise.
-`)
-
-	defs, errs := LoadDir(dir)
-	if len(errs) != 0 || len(defs) != 1 {
-		t.Fatalf("load failed: errs=%v defs=%d", errs, len(defs))
-	}
-	if defs[0].Name != "summariser" {
-		t.Errorf("Name fallback failed, got %q", defs[0].Name)
-	}
-}
-
-// Strict schema: an unknown key (typo `tooLs:` instead of `tools:`) must
-// produce a load error, not silently load an agent without the intended
-// tools list. This is the whole point of KnownFields(true).
-func TestLoadAgent_UnknownFieldFails(t *testing.T) {
-	dir := t.TempDir()
-	writeAgentFile(t, dir, "typo.md", `---
-name: typo
-description: has a typo
-tooLs: [read]
----
-Body.
-`)
-
-	defs, errs := LoadDir(dir)
-	if len(defs) != 0 {
-		t.Errorf("definition should not have loaded, got %v", defs)
-	}
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
-	}
-	if !strings.Contains(errs[0].Error(), "tooLs") {
-		t.Errorf("error should mention the unknown field, got %v", errs[0])
-	}
-}
-
-// Missing frontmatter is an error: every agent must declare its metadata
-// explicitly. We never infer everything from filename + body because that
-// would create files that "work" by accident and fail mysteriously later.
-func TestLoadAgent_MissingFrontmatterFails(t *testing.T) {
-	dir := t.TempDir()
-	writeAgentFile(t, dir, "naked.md", `Just a body, no frontmatter.
-`)
-
-	_, errs := LoadDir(dir)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
-	}
-	if !strings.Contains(errs[0].Error(), "frontmatter") {
-		t.Errorf("error should mention frontmatter, got %v", errs[0])
-	}
-}
-
-// Unclosed frontmatter is also an error — guards against an editor that
-// stripped the closing delimiter or a copy-paste mistake.
-func TestLoadAgent_UnclosedFrontmatterFails(t *testing.T) {
-	dir := t.TempDir()
-	writeAgentFile(t, dir, "unclosed.md", `---
-name: oops
-description: never closes
-body without delimiter
-`)
-
-	_, errs := LoadDir(dir)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
-	}
-	if !strings.Contains(errs[0].Error(), "frontmatter") {
-		t.Errorf("error should mention closure, got %v", errs[0])
-	}
-}
-
-// Empty body is an error — Validate() catches it. An agent with no system
-// prompt is meaningless and almost certainly a user mistake.
-func TestLoadAgent_EmptyBodyFails(t *testing.T) {
-	dir := t.TempDir()
-	writeAgentFile(t, dir, "empty.md", `---
-name: empty
-description: has no body
----
-`)
-
-	_, errs := LoadDir(dir)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
-	}
-	if !strings.Contains(errs[0].Error(), "system prompt") {
-		t.Errorf("error should mention system prompt, got %v", errs[0])
-	}
-}
-
-// One bad file shouldn't poison the directory: good files alongside a bad
-// one still load successfully. This is critical for the "iterate on a
+// One bad file shouldn't poison the directory: good files alongside bad
+// ones still load successfully. This is critical for the "iterate on a
 // custom agent" workflow — the user should still have their other agents.
+// Each bad file is reported for what is wrong with it: frontmatter missing
+// or never closed, an unknown key (the schema is strict, so a typo like
+// `tooLs:` fails loud instead of loading an agent without the intended
+// tools), or no system prompt.
 func TestLoadAgent_PartialFailureIsolated(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "good.md", `---
@@ -187,16 +74,27 @@ description: works fine
 ---
 Body.
 `)
-	writeAgentFile(t, dir, "bad.md", `---
-unclosed
-`)
+	bad := []struct{ name, content, want string }{ // by name, as LoadDir reads them
+		{"empty.md", "---\nname: empty\ndescription: has no body\n---\n", "system prompt"},
+		{"naked.md", "Just a body, no frontmatter.\n", "frontmatter"},
+		{"typo.md", "---\nname: typo\ndescription: has a typo\ntooLs: [read]\n---\nBody.\n", "tooLs"},
+		{"unclosed.md", "---\nunclosed\n", "frontmatter"},
+	}
+	for _, b := range bad {
+		writeAgentFile(t, dir, b.name, b.content)
+	}
 
 	defs, errs := LoadDir(dir)
 	if len(defs) != 1 || defs[0].Name != "good" {
 		t.Errorf("good agent should have loaded, got %v", defs)
 	}
-	if len(errs) != 1 {
-		t.Errorf("expected exactly 1 error from bad.md, got %d: %v", len(errs), errs)
+	if len(errs) != len(bad) {
+		t.Fatalf("expected one error per bad file, got %d: %v", len(errs), errs)
+	}
+	for i, b := range bad {
+		if err := errs[i].Error(); !strings.Contains(err, b.name) || !strings.Contains(err, b.want) {
+			t.Errorf("%s: error %q should mention %q", b.name, err, b.want)
+		}
 	}
 }
 
@@ -214,12 +112,12 @@ func TestLoadAgent_MissingDirIsOK(t *testing.T) {
 
 // Non-markdown files are ignored. A README.md in the agents dir would be
 // rejected (it has no frontmatter), but a README.txt should be skipped
-// entirely so users can document their agent library inline.
+// entirely so users can document their agent library inline. A file that
+// omits `name` is named by its filename stem.
 func TestLoadAgent_IgnoresNonMarkdown(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "README.txt", "not an agent\n")
 	writeAgentFile(t, dir, "good.md", `---
-name: good
 description: works
 ---
 Body.

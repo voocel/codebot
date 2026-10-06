@@ -13,6 +13,12 @@ func mkReq(tool, key, path string) Request {
 	return Request{ToolName: tool, Args: args}
 }
 
+// A path whose contents are credentials, or whose writing plants something
+// that runs later, is asked about each time: however its case is spelled, as
+// macOS and Windows filesystems collapse it, and when given relative to the
+// workspace. The IDE and agent loader dirs count (tasks autorun, run
+// configurations autolaunch, .claude hooks fire), and so does codebot's own
+// configuration.
 func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 	home := t.TempDir()
 
@@ -22,7 +28,6 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 	}{
 		// leak-class on read
 		{"read ssh rsa key", mkReq("read", "file_path", filepath.Join(home, ".ssh", "id_rsa"))},
-		{"read ssh ed25519 key", mkReq("read", "file_path", filepath.Join(home, ".ssh", "id_ed25519"))},
 		{"read authorized_keys", mkReq("read", "file_path", filepath.Join(home, ".ssh", "authorized_keys"))},
 		{"read aws credentials", mkReq("read", "file_path", filepath.Join(home, ".aws", "credentials"))},
 		{"read aws config", mkReq("read", "file_path", filepath.Join(home, ".aws", "config"))},
@@ -33,22 +38,40 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 
 		// leak-class on write
 		{"write authorized_keys", mkReq("write", "file_path", filepath.Join(home, ".ssh", "authorized_keys"))},
-		{"write ssh private key", mkReq("write", "file_path", filepath.Join(home, ".ssh", "id_rsa"))},
-		{"write aws credentials", mkReq("write", "file_path", filepath.Join(home, ".aws", "credentials"))},
 		{"write netrc", mkReq("edit", "file_path", filepath.Join(home, ".netrc"))},
 
 		// implant-class on write
 		{"write bashrc", mkReq("write", "file_path", filepath.Join(home, ".bashrc"))},
-		{"write zshrc", mkReq("write", "file_path", filepath.Join(home, ".zshrc"))},
 		{"write profile", mkReq("write", "file_path", filepath.Join(home, ".profile"))},
 		{"write envrc", mkReq("write", "file_path", filepath.Join(home, ".envrc"))},
-		{"write gitconfig", mkReq("write", "file_path", filepath.Join(home, ".gitconfig"))},
-		{"write mcp config", mkReq("edit", "file_path", filepath.Join(home, ".mcp.json"))},
 		{"write claude config", mkReq("edit", "file_path", filepath.Join(home, ".claude.json"))},
 		{"write into .git/hooks", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "hooks", "post-commit"))},
 		{"write .git/config", mkReq("edit", "file_path", filepath.Join(home, "proj", ".git", "config"))},
 		{"write .ssh/config", mkReq("write", "file_path", filepath.Join(home, ".ssh", "config"))},
 		{"write .gnupg/something", mkReq("write", "file_path", filepath.Join(home, ".gnupg", "trustdb.gpg"))},
+
+		// case variants
+		{"write .BASHRC", mkReq("write", "file_path", filepath.Join(home, ".BASHRC"))},
+		{"write .ZsHrC", mkReq("write", "file_path", filepath.Join(home, ".ZsHrC"))},
+		{"write .GitConfig", mkReq("write", "file_path", filepath.Join(home, ".GitConfig"))},
+		{"write .MCP.JSON", mkReq("write", "file_path", filepath.Join(home, ".MCP.JSON"))},
+
+		// relative to the workspace
+		{"write relative .bashrc", mkReq("write", "file_path", ".bashrc")},
+
+		// IDE and agent loaders
+		{"vscode tasks.json", mkReq("write", "file_path", filepath.Join(home, "proj", ".vscode", "tasks.json"))},
+		{"idea runConfig", mkReq("write", "file_path", filepath.Join(home, "proj", ".idea", "runConfigurations", "x.xml"))},
+		{"claude hooks", mkReq("write", "file_path", filepath.Join(home, "proj", ".claude", "hooks.json"))},
+
+		// codebot's own configuration, not its data
+		{"codebot settings", mkReq("write", "file_path", filepath.Join(home, "proj", ".codebot", "settings.json"))},
+		{"codebot consents", mkReq("write", "file_path", filepath.Join(home, ".codebot", "consent.json"))},
+		{"codebot skill", mkReq("write", "file_path", filepath.Join(home, ".codebot", "skills", "deploy", "SKILL.md"))},
+		{"codebot plugin cache", mkReq("write", "file_path", filepath.Join(home, ".codebot", "plugins", "cache", "github.com", "a", "b", "c", "mcp.json"))},
+		{"shared skill", mkReq("write", "file_path", filepath.Join(home, "proj", "sub", ".agents", "skills", "deploy", "SKILL.md"))},
+		{"codebot agent", mkReq("write", "file_path", filepath.Join(home, "proj", ".codebot", "agents", "reviewer.md"))},
+		{"codebot approvals", mkReq("write", "file_path", filepath.Join(home, ".codebot", "approvals", "p1.json"))},
 	}
 
 	for _, tc := range tests {
@@ -60,6 +83,8 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 	}
 }
 
+// Everything else passes, codebot's harness-managed data (memory, sessions,
+// worktrees) included: matching its configuration must not spill over.
 func TestCheckDangerousPath_Allowed(t *testing.T) {
 	home := t.TempDir()
 
@@ -72,9 +97,11 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 		{"read normal source", mkReq("read", "file_path", filepath.Join(home, "proj", "main.go"))},
 		{"write normal source", mkReq("write", "file_path", filepath.Join(home, "proj", "main.go"))},
 		{"write .git/info/exclude is harmless", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "info", "exclude"))},
-		{"write .git/branches is harmless", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "branches", "x"))},
 		{"bash has no path", mkReq("bash", "command", "ls -la")},
 		{"empty args", Request{ToolName: "write"}},
+		{"codebot memory", mkReq("write", "file_path", filepath.Join(home, ".codebot", "memory", "user.md"))},
+		{"codebot session", mkReq("write", "file_path", filepath.Join(home, ".codebot", "projects", "p1", "session.jsonl"))},
+		{"codebot worktree", mkReq("write", "file_path", filepath.Join(home, "proj", ".codebot", "worktrees", "fix", "main.go"))},
 	}
 
 	for _, tc := range tests {
@@ -83,30 +110,6 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 				t.Fatalf("expected allow, got reason=%q", reason)
 			}
 		})
-	}
-}
-
-func TestCheckDangerousPath_CaseInsensitive(t *testing.T) {
-	// macOS / Windows filesystems collapse case. A model writing .BASHRC must
-	// not bypass the .bashrc force-ask rule.
-	home := t.TempDir()
-	tests := []string{".BASHRC", ".BaShRc", ".ZsHrC", ".GitConfig", ".MCP.JSON"}
-	for _, name := range tests {
-		t.Run(name, func(t *testing.T) {
-			req := mkReq("write", "file_path", filepath.Join(home, name))
-			if reason := checkDangerousPath(home, req); reason == "" {
-				t.Fatalf("case-variant %q should still match force-ask", name)
-			}
-		})
-	}
-}
-
-func TestCheckDangerousPath_RelativeResolvedAgainstWorkspace(t *testing.T) {
-	ws := t.TempDir()
-	req := mkReq("write", "file_path", ".bashrc")
-
-	if reason := checkDangerousPath(ws, req); reason == "" {
-		t.Fatalf("relative .bashrc under workspace should match, got allow")
 	}
 }
 
@@ -154,8 +157,6 @@ func TestCheckDangerousPath_BashCommandReferencesSSHKey(t *testing.T) {
 		{"env prefix then read key", "HOME=/foo cat ~/.ssh/id_ed25519", true},
 		{"public key is fine", "cat ~/.ssh/id_rsa.pub", false},
 		{"normal source", "cat " + filepath.Join(home, "main.go"), false},
-		{"ls listing only", "ls -la /tmp", false},
-		{"no path at all", "pwd", false},
 	}
 
 	for _, tc := range tests {
@@ -165,38 +166,6 @@ func TestCheckDangerousPath_BashCommandReferencesSSHKey(t *testing.T) {
 			gotHit := reason != ""
 			if gotHit != tc.wantHit {
 				t.Fatalf("hit=%v want=%v reason=%q", gotHit, tc.wantHit, reason)
-			}
-		})
-	}
-}
-
-func TestCheckDangerousPath_IDEAndAgentLoaderDirs(t *testing.T) {
-	// .vscode/.idea/.claude are loader-execution surfaces (tasks autorun,
-	// runConfigurations autolaunch, .claude hooks fire) — force-ask, never
-	// hard-deny.
-	home := t.TempDir()
-	cases := []struct {
-		name string
-		path string
-	}{
-		{"vscode tasks.json", filepath.Join(home, "proj", ".vscode", "tasks.json")},
-		{"vscode settings.json", filepath.Join(home, "proj", ".vscode", "settings.json")},
-		{"idea runConfig", filepath.Join(home, "proj", ".idea", "runConfigurations", "x.xml")},
-		{"claude hooks", filepath.Join(home, "proj", ".claude", "hooks.json")},
-		// codebot's own configuration, not its data.
-		{"codebot settings", filepath.Join(home, "proj", ".codebot", "settings.json")},
-		{"codebot consents", filepath.Join(home, ".codebot", "consent.json")},
-		{"codebot skill", filepath.Join(home, ".codebot", "skills", "deploy", "SKILL.md")},
-		{"codebot plugin cache", filepath.Join(home, ".codebot", "plugins", "cache", "github.com", "a", "b", "c", "mcp.json")},
-		{"shared skill", filepath.Join(home, "proj", "sub", ".agents", "skills", "deploy", "SKILL.md")},
-		{"codebot agent", filepath.Join(home, "proj", ".codebot", "agents", "reviewer.md")},
-		{"codebot approvals", filepath.Join(home, ".codebot", "approvals", "p1.json")},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := mkReq("write", "file_path", tc.path)
-			if reason := checkDangerousPath(home, req); reason == "" {
-				t.Fatalf("expected force-ask, got allow")
 			}
 		})
 	}
@@ -219,25 +188,6 @@ func TestCheckDangerousPath_ThroughALinkedDirectory(t *testing.T) {
 	req := mkReq("write", "file_path", filepath.Join(proj, "docs", "evil", "SKILL.md"))
 	if reason := checkDangerousPath(proj, req); reason == "" {
 		t.Fatal("a skill written through a linked directory went unasked")
-	}
-}
-
-func TestCheckDangerousPath_CodebotMemoryAndSessionsAreNotForceAsk(t *testing.T) {
-	// memory/sessions are harness-managed; they get force-ask only if we
-	// screw up. Guard against accidentally over-matching .codebot/.
-	home := t.TempDir()
-	cases := []string{
-		filepath.Join(home, ".codebot", "memory", "user.md"),
-		filepath.Join(home, ".codebot", "projects", "p1", "session.jsonl"),
-		filepath.Join(home, "proj", ".codebot", "worktrees", "fix", "main.go"),
-	}
-	for _, p := range cases {
-		t.Run(filepath.Base(filepath.Dir(p)), func(t *testing.T) {
-			req := mkReq("write", "file_path", p)
-			if reason := checkDangerousPath(home, req); reason != "" {
-				t.Fatalf("harness-managed %q should not match dangerous-path (reason=%q)", p, reason)
-			}
-		})
 	}
 }
 

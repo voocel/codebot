@@ -37,8 +37,6 @@ func keyPress(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "backspace":
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
-	case "esc":
-		return tea.KeyPressMsg{Code: tea.KeyEscape}
 	case "space":
 		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	case "ctrl+r":
@@ -130,6 +128,16 @@ func TestLongPasteGoesInAsAReference(t *testing.T) {
 	if !e.Empty() {
 		t.Errorf("the input holds %q", e.ta.Value())
 	}
+
+	// A carriage return breaks a line and is not sent.
+	e = newEditor()
+	e.Update(tea.PasteMsg{Content: strings.Repeat("x", 600) + "\r" + strings.Repeat("y", 600)})
+	if got := e.ta.Value(); got != "[Pasted text #1 +2 lines]" {
+		t.Errorf("the input holds %q", got)
+	}
+	if in := press(e, "enter"); in == nil || strings.Contains(in.Text, "\r") {
+		t.Errorf("sent %+v", in)
+	}
 }
 
 func TestCompletion(t *testing.T) {
@@ -191,6 +199,16 @@ func TestHistory(t *testing.T) {
 			t.Errorf("%s: the input holds %q, want %q", c.key, got, c.want)
 		}
 	}
+
+	// On a wrapped row, up moves within the line.
+	e.Clear()
+	e.SetWidth(30)
+	long := strings.Repeat("word ", 16)
+	write(e, long)
+	press(e, "up")
+	if got := e.ta.Value(); got != long {
+		t.Errorf("up on a wrapped row recalled %q", got)
+	}
 }
 
 func TestSuggestion(t *testing.T) {
@@ -211,32 +229,6 @@ func TestSuggestion(t *testing.T) {
 	write(e, "no")
 	if in := press(e, "enter"); in == nil || in.Text != "no" {
 		t.Errorf("typing did not replace the suggestion: %+v", in)
-	}
-}
-
-func TestUpMovesWithinAWrappedLine(t *testing.T) {
-	e := newEditor()
-	e.SetWidth(30)
-	e.SetHistory(NewHistory(filepath.Join(t.TempDir(), "history.jsonl"), "/project"))
-	write(e, "old")
-	press(e, "enter")
-	long := strings.Repeat("word ", 16)
-	write(e, long)
-	press(e, "up")
-	if got := e.ta.Value(); got != long {
-		t.Errorf("up on a wrapped row recalled %q", got)
-	}
-}
-
-func TestPastedCarriageReturns(t *testing.T) {
-	e := newEditor()
-	body := strings.Repeat("x", 600) + "\r" + strings.Repeat("y", 600)
-	e.Update(tea.PasteMsg{Content: body})
-	if got := e.ta.Value(); got != "[Pasted text #1 +2 lines]" {
-		t.Errorf("the input holds %q", got)
-	}
-	if in := press(e, "enter"); in == nil || strings.Contains(in.Text, "\r") {
-		t.Errorf("sent %q", in.Text)
 	}
 }
 

@@ -90,12 +90,9 @@ type App struct {
 	// the configuration last read is the one in effect.
 	reloading, connecting sync.Mutex
 
-	mu sync.Mutex
-	// sessionTrust is what the user decided of projects for this session
-	// alone, over what they keep, by root.
-	sessionTrust map[string]extension.Consent
-	current      *Conversation
-	unsubscribe  func()
+	mu          sync.Mutex
+	current     *Conversation
+	unsubscribe func()
 }
 
 // Boot loads the configuration and opens the first conversation.

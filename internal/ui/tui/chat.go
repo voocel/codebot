@@ -177,19 +177,6 @@ func (v *chatView) scroll(n int) {
 	v.follow = !p.before(v.bottom(cells))
 }
 
-// inserted follows a cell put at i before others: the window and the
-// selection stay on what they showed.
-func (v *chatView) inserted(i int) {
-	for _, p := range []*pos{&v.top, &v.sel.from.pos, &v.sel.to.pos} {
-		if i <= p.cell {
-			p.cell++
-		}
-	}
-	if i < v.seen {
-		v.seen++
-	}
-}
-
 func (v *chatView) toTop() {
 	cells := v.cells()
 	v.top, v.seen = pos{}, len(cells)

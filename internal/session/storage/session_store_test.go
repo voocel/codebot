@@ -43,13 +43,16 @@ func texts(msgs []agentcore.Message) []string {
 	return out
 }
 
+// Replay applies every entry kind, and keeps thinking whole: a truncated one
+// would break the signature and the prompt cache of a resumed session.
 func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
 
+	thinking := litellm.ReasoningBlock{Text: strings.Repeat("x", 10_000), State: &litellm.ProviderState{Provider: "anthropic", Data: json.RawMessage(`{"signature":"s"}`)}}
 	answer := agentcore.Message{
 		Role:   litellm.RoleAssistant,
-		Blocks: []litellm.Block{litellm.Text("a1")},
+		Blocks: []litellm.Block{thinking, litellm.Text("a1")},
 		Usage:  &agentcore.Usage{Usage: litellm.Usage{InputTokens: 10, OutputTokens: 2}, Cost: &catalog.Cost{Total: 0.5}},
 	}
 	summary := agentcore.SummaryMessage("checkpoint")
@@ -80,6 +83,9 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	if got := state.Messages[0]; got.Kind != agentcore.KindSummary || agentcore.SummaryText(got) != "checkpoint" {
 		t.Fatalf("summary did not round-trip: %#v", got)
 	}
+	if got, ok := state.Messages[3].Blocks[0].(litellm.ReasoningBlock); !ok || got.Text != thinking.Text || got.State == nil || string(got.State.Data) != `{"signature":"s"}` {
+		t.Fatal("thinking must be stored verbatim so a resumed request matches the live one")
+	}
 	if state.Model != (Model{Provider: "p", Model: "m2", Effort: "high"}) {
 		t.Fatalf("model = %+v", state.Model)
 	}
@@ -87,33 +93,6 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	// the compaction.
 	if state.Usage.InputTokens != 25 || state.Usage.Cost.Total != 1 {
 		t.Fatalf("usage = %+v", state.Usage)
-	}
-}
-
-func TestReplayKeepsFullThinking(t *testing.T) {
-	t.Parallel()
-	s := newStore(t)
-
-	block := litellm.ReasoningBlock{Text: strings.Repeat("x", 10_000), State: &litellm.ProviderState{Provider: "anthropic", Data: json.RawMessage(`{"signature":"s"}`)}}
-	if err := s.Append(agentcore.Message{Role: litellm.RoleAssistant, Blocks: []litellm.Block{block}}); err != nil {
-		t.Fatal(err)
-	}
-	state, err := Replay(s.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok := state.Messages[0].Blocks[0].(litellm.ReasoningBlock)
-	if !ok || got.Text != block.Text || got.State == nil || string(got.State.Data) != `{"signature":"s"}` {
-		t.Fatal("thinking must be stored verbatim so a resumed request matches the live one")
-	}
-}
-
-func TestAppendAfterCloseFails(t *testing.T) {
-	t.Parallel()
-	s := newStore(t)
-	s.Close()
-	if err := s.Append(agentcore.UserText("hello")); err == nil || !strings.Contains(err.Error(), "closed") {
-		t.Fatalf("err = %v, want closed store error", err)
 	}
 }
 

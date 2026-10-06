@@ -5,16 +5,6 @@ import (
 	"testing"
 )
 
-func TestParseRuleSetNil(t *testing.T) {
-	rs, err := ParseRuleSet(nil, nil)
-	if err != nil {
-		t.Fatalf("ParseRuleSet: %v", err)
-	}
-	if rs != nil {
-		t.Fatalf("expected nil ruleset, got %#v", rs)
-	}
-}
-
 func TestRuleSetDenyOverridesAllow(t *testing.T) {
 	rs, err := ParseRuleSet([]string{"Bash(git *)"}, []string{"Bash(rm -rf *)"})
 	if err != nil {

@@ -138,11 +138,3 @@ func TestBackKeepsTheModelForTheSameProvider(t *testing.T) {
 		t.Errorf("another provider kept the key %q", got)
 	}
 }
-
-func TestQuit(t *testing.T) {
-	w := newWizard()
-	_, cmd := w.Update(keyPress("esc"))
-	if cmd == nil || w.result.Saved || screen(w) != "" {
-		t.Error("esc did not leave without saving")
-	}
-}

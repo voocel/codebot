@@ -167,8 +167,9 @@ func remote(t *testing.T) (repo string, commit func(msg string)) {
 	}
 }
 
-// A git plugin stays at the commit the user agreed to; an update that runs
-// something new waits for them to agree again.
+// A git plugin stays at the commit the user agreed to: one whose ref has
+// moved on is told to have an update, fetching nothing, and an update that
+// runs something new waits for them to agree again.
 func TestGitPluginUpdates(t *testing.T) {
 	repo, commit := remote(t)
 	writeKit(t, repo)
@@ -186,11 +187,20 @@ func TestGitPluginUpdates(t *testing.T) {
 	if pl := e.app.Plugins()[0]; pl.State != PluginOn || pl.Commit != o.Commit {
 		t.Fatalf("plugin %+v", pl)
 	}
+	if names := e.app.PluginUpdates(ctx); len(names) > 0 {
+		t.Fatalf("up to date, updates for %q", names)
+	}
 
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("docs"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	commit("docs")
+	if names := e.app.PluginUpdates(ctx); !slices.Equal(names, []string{"kit"}) {
+		t.Fatalf("updates for %q", names)
+	}
+	if pl := e.app.Plugins()[0]; pl.Commit != o.Commit {
+		t.Fatalf("checking for updates moved the plugin to %s", pl.Commit)
+	}
 	updates, err := e.app.UpdatePlugins(ctx, "")
 	if err != nil || len(updates) != 1 || updates[0].Offer != nil || updates[0].Commit == o.Commit || e.app.Plugins()[0].Commit != updates[0].Commit {
 		t.Fatalf("an update of nothing new did not apply: %+v, %v", updates, err)
@@ -217,42 +227,6 @@ func TestGitPluginUpdates(t *testing.T) {
 	}
 }
 
-// A git plugin whose ref has moved on is told to have an update, fetching
-// nothing, until it is updated.
-func TestPluginUpdates(t *testing.T) {
-	repo, commit := remote(t)
-	writeKit(t, repo)
-	commit("v1")
-	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
-	ctx := context.Background()
-	o, err := e.app.OfferPlugin(ctx, "example.test/acme/kit", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
-		t.Fatal(err)
-	}
-	if names := e.app.PluginUpdates(ctx); len(names) > 0 {
-		t.Fatalf("up to date, updates for %q", names)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("docs"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	commit("docs")
-	if names := e.app.PluginUpdates(ctx); !slices.Equal(names, []string{"kit"}) {
-		t.Fatalf("updates for %q", names)
-	}
-	if pl := e.app.Plugins()[0]; pl.Commit != o.Commit {
-		t.Fatalf("checking for updates moved the plugin to %s", pl.Commit)
-	}
-	if _, err := e.app.UpdatePlugins(ctx, ""); err != nil {
-		t.Fatal(err)
-	}
-	if names := e.app.PluginUpdates(ctx); len(names) > 0 {
-		t.Errorf("updated, updates for %q", names)
-	}
-}
-
 // A project's plugins wait for the user to trust the project to declare
 // them, and are fetched as they install them, never before: what they run
 // is the user's to agree to.
@@ -268,7 +242,7 @@ func TestProjectPlugins(t *testing.T) {
 	if _, _, errs := e.app.InstallPlugins(ctx); len(errs) > 0 || e.app.Plugins()[0].State != PluginUntrusted {
 		t.Fatalf("installed the untrusted project's plugin: %v", errs)
 	}
-	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface, false); err != nil {
+	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginNotInstalled || len(e.app.Trust().Ask()) > 0 {
@@ -288,7 +262,7 @@ func TestProjectPlugins(t *testing.T) {
 		t.Errorf("plugin %+v, servers %q", pl, servers(e))
 	}
 
-	if _, err := e.app.DenyTrust(ctx, false); err != nil {
+	if _, err := e.app.DenyTrust(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginUntrusted || len(servers(e)) > 0 {
@@ -364,7 +338,7 @@ func TestPluginsAddedToTheProject(t *testing.T) {
 	e := boot(t, setup{git: true, project: map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}}}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeKit(t, filepath.Join(e.cwd, "tools", "kit"), "db")
 	ctx := context.Background()
-	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface, true); err != nil {
+	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.app.OfferPlugin(ctx, "tools/kit", true); err == nil {
@@ -400,7 +374,7 @@ func TestPluginsOfOneName(t *testing.T) {
 	writeKit(t, filepath.Join(os.Getenv("HOME"), "kit"))
 	writeKit(t, filepath.Join(e.cwd, "tools", "kit"))
 	ctx := context.Background()
-	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface, false); err != nil {
+	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, e.app.Trust().Surface); err != nil {
 		t.Fatal(err)
 	}
 	var states []string

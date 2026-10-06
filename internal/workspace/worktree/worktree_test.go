@@ -89,6 +89,8 @@ func TestSlug(t *testing.T) {
 	}
 }
 
+// TestCreateChangesRemove walks a worktree's life: created once (a second
+// Create of the same name fails), dirty after an edit, listed, force-removed.
 func TestCreateChangesRemove(t *testing.T) {
 	repo := initRepo(t)
 
@@ -101,6 +103,9 @@ func TestCreateChangesRemove(t *testing.T) {
 	}
 	if branch != "codebot/feat" {
 		t.Errorf("branch = %q, want codebot/feat", branch)
+	}
+	if _, _, err := Create(repo, "feat"); err == nil {
+		t.Error("duplicate Create should fail")
 	}
 
 	if changed, err := HasChanges(dir); err != nil || changed {
@@ -130,16 +135,6 @@ func TestCreateChangesRemove(t *testing.T) {
 	}
 	if infos, _ := List(repo); len(infos) != 0 {
 		t.Errorf("List = %d entries after Remove, want 0", len(infos))
-	}
-}
-
-func TestCreateDuplicate(t *testing.T) {
-	repo := initRepo(t)
-	if _, _, err := Create(repo, "dup"); err != nil {
-		t.Fatalf("first Create: %v", err)
-	}
-	if _, _, err := Create(repo, "dup"); err == nil {
-		t.Error("duplicate Create should fail")
 	}
 }
 

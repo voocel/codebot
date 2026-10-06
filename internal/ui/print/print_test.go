@@ -62,9 +62,10 @@ func (m *scriptModel) factory(spec provider.ModelSpec) (agentcore.Model, error) 
 	return agentcore.Model{Client: client, Request: litellm.Request{Model: spec.Model}}, err
 }
 
-// A background command finishes after the prompt's run ended; print mode
-// waits for it and for the run its result starts.
-func TestRunPrintWaitsForBackgroundWork(t *testing.T) {
+// boot starts the app in trust mode in cwd, with a user configuration whose
+// model answers as model does.
+func boot(t *testing.T, model *scriptModel, cwd string) *app.App {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	settings := `{"provider":"anthropic","model":"claude-haiku-4-5","snapshot":false,
@@ -75,18 +76,20 @@ func TestRunPrintWaitsForBackgroundWork(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".codebot", "settings.json"), []byte(settings), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args, _ := json.Marshal(map[string]any{"command": "sleep 0.2; echo finished", "run_in_background": true})
-	model := &scriptModel{replies: []litellmtest.Reply{litellmtest.Respond(litellm.ToolUseBlock{ID: "b1", Name: "bash", Arguments: string(args)})}}
-	a, err := app.Boot(app.Options{
-		Cwd:      t.TempDir(),
-		Mode:     interact.ModeTrust,
-		UI:       UI{},
-		NewModel: model.factory,
-	})
+	a, err := app.Boot(app.Options{Cwd: cwd, Mode: interact.ModeTrust, UI: UI{}, NewModel: model.factory})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
+	t.Cleanup(a.Close)
+	return a
+}
+
+// A background command finishes after the prompt's run ended; print mode
+// waits for it and for the run its result starts.
+func TestRunPrintWaitsForBackgroundWork(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{"command": "sleep 0.2; echo finished", "run_in_background": true})
+	model := &scriptModel{replies: []litellmtest.Reply{litellmtest.Respond(litellm.ToolUseBlock{ID: "b1", Name: "bash", Arguments: string(args)})}}
+	a := boot(t, model, t.TempDir())
 
 	if err := Run(a, []string{"start it"}, true); err != nil {
 		t.Fatal(err)
@@ -103,29 +106,10 @@ func TestRunPrintWaitsForBackgroundWork(t *testing.T) {
 // A path confirmed every time cannot be approved in print mode, not even in
 // trust mode; the agent is told why.
 func TestRunPrintRefusesWhatNeedsConfirming(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	settings := `{"provider":"anthropic","model":"claude-haiku-4-5","snapshot":false,
-		"providers":{"anthropic":{"api_key":"test","models":["claude-haiku-4-5"]}}}`
-	if err := os.MkdirAll(filepath.Join(home, ".codebot"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".codebot", "settings.json"), []byte(settings), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	args, _ := json.Marshal(map[string]any{"file_path": ".bashrc", "content": "echo hi"})
 	model := &scriptModel{replies: []litellmtest.Reply{litellmtest.Respond(litellm.ToolUseBlock{ID: "w1", Name: "write", Arguments: string(args)})}}
 	cwd := t.TempDir()
-	a, err := app.Boot(app.Options{
-		Cwd:      cwd,
-		Mode:     interact.ModeTrust,
-		UI:       UI{},
-		NewModel: model.factory,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
+	a := boot(t, model, cwd)
 
 	if err := Run(a, []string{"set up my shell"}, true); err != nil {
 		t.Fatal(err)
@@ -147,23 +131,8 @@ func TestRunPrintRefusesWhatNeedsConfirming(t *testing.T) {
 // A failed run is reported once, by the caller Run returns its error to, not
 // also as it happens.
 func TestRunPrintLeavesTheFailureToTheCaller(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	settings := `{"provider":"anthropic","model":"claude-haiku-4-5","snapshot":false,
-		"providers":{"anthropic":{"api_key":"test","models":["claude-haiku-4-5"]}}}`
-	if err := os.MkdirAll(filepath.Join(home, ".codebot"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".codebot", "settings.json"), []byte(settings), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	rejected := &litellm.Error{Type: litellm.ErrorTypeValidation, Message: "unknown model", Provider: "anthropic", StatusCode: 400}
-	model := &scriptModel{replies: []litellmtest.Reply{litellmtest.Fail(rejected)}}
-	a, err := app.Boot(app.Options{Cwd: t.TempDir(), Mode: interact.ModeTrust, UI: UI{}, NewModel: model.factory})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
+	a := boot(t, &scriptModel{replies: []litellmtest.Reply{litellmtest.Fail(rejected)}}, t.TempDir())
 
 	r, w, err := os.Pipe()
 	if err != nil {

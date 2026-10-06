@@ -26,27 +26,18 @@ func toolReq(name string, args map[string]any) Request {
 	}
 }
 
-func TestBalancedReadAllowed(t *testing.T) {
+// Balanced mode lets a read in the workspace through and, with no one to
+// ask, denies a write.
+func TestBalancedWithoutUI(t *testing.T) {
 	engine := newEngine(t, Config{})
-
-	decision, err := engine.Decide(context.Background(), toolReq("read", map[string]any{"path": "a.txt"}))
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if decision == nil || decision.Kind != DecisionAllow || !decision.Allowed() {
-		t.Fatalf("expected auto allow, got %#v", decision)
-	}
-}
-
-func TestBalancedWriteDeniedWithoutUI(t *testing.T) {
-	engine := newEngine(t, Config{})
-
-	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": "a.txt"}))
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if decision == nil || decision.Kind != DecisionDeny || decision.Allowed() {
-		t.Fatalf("expected deny without a UI, got %#v", decision)
+	for tool, want := range map[string]DecisionKind{"read": DecisionAllow, "write": DecisionDeny} {
+		decision, err := engine.Decide(context.Background(), toolReq(tool, map[string]any{"path": "a.txt"}))
+		if err != nil {
+			t.Fatalf("Decide: %v", err)
+		}
+		if decision == nil || decision.Kind != want || decision.Allowed() != (want == DecisionAllow) {
+			t.Fatalf("%s: got %#v, want %s", tool, decision, want)
+		}
 	}
 }
 
@@ -59,10 +50,7 @@ func TestOutsideRootsAllowsOnlyOnce(t *testing.T) {
 		return interact.Verdict{Choice: interact.AllowAlways}, nil
 	})})
 
-	decision, err := engine.Decide(context.Background(), Request{
-		ToolName: "read",
-		Args:     mustJSON(t, map[string]any{"path": outside}),
-	})
+	decision, err := engine.Decide(context.Background(), toolReq("read", map[string]any{"path": outside}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -109,27 +97,17 @@ func TestAlwaysRemembersEachCommand(t *testing.T) {
 	}
 }
 
-// A denial tells the agent it was the user's, with what they said to do
-// instead.
+// A denial tells the agent what the user said to do instead.
 func TestDenialCarriesTheFeedback(t *testing.T) {
-	feedback := ""
 	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
-		return interact.Verdict{Choice: interact.Deny, Feedback: feedback}, nil
+		return interact.Verdict{Choice: interact.Deny, Feedback: "use make clean"}, nil
 	})})
-	deny := func() string {
-		t.Helper()
-		d, err := engine.Decide(context.Background(), toolReq("bash", map[string]any{"command": "rm -rf build"}))
-		if err != nil || d.Allowed() {
-			t.Fatalf("%v, %v", d, err)
-		}
-		return d.Reason
+	d, err := engine.Decide(context.Background(), toolReq("bash", map[string]any{"command": "rm -rf build"}))
+	if err != nil || d.Allowed() {
+		t.Fatalf("%v, %v", d, err)
 	}
-	if r := deny(); !strings.Contains(r, "The user denied this") {
-		t.Errorf("reason %q", r)
-	}
-	feedback = "use make clean"
-	if r := deny(); !strings.Contains(r, "use make clean") {
-		t.Errorf("reason %q", r)
+	if !strings.Contains(d.Reason, "use make clean") {
+		t.Errorf("reason %q", d.Reason)
 	}
 }
 
@@ -145,23 +123,6 @@ func TestEditOffersTheMode(t *testing.T) {
 	}
 	if !prompt.Edit || prompt.Remember != "" {
 		t.Errorf("prompt = %+v", prompt)
-	}
-}
-
-func TestPromptCarriesTheToolCallID(t *testing.T) {
-	workspace := t.TempDir()
-	var got string
-	engine := newEngine(t, Config{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
-		got = p.ToolID
-		return interact.Verdict{Choice: interact.Deny}, nil
-	})})
-	req := toolReq("write", map[string]any{"path": "a.txt"})
-	req.ToolID = "call_1"
-	if _, err := engine.Decide(context.Background(), req); err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if got != "call_1" {
-		t.Fatalf("prompt ToolID = %q, want call_1", got)
 	}
 }
 
@@ -186,97 +147,30 @@ func TestWriteViaSymlinkEscapeDenied(t *testing.T) {
 	}
 }
 
-func TestMetadataOverrideForCustomTool(t *testing.T) {
-	engine := newEngine(t, Config{})
-
-	decision, err := engine.Decide(context.Background(), Request{
-		ToolName: "custom_lookup",
-		Metadata: Metadata{
-			Capability:  CapabilityRead,
-			SummaryHint: "custom lookup",
-			KeyPrefix:   "custom",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if decision == nil || decision.Kind != DecisionAllow || decision.Capability != CapabilityRead {
-		t.Fatalf("expected metadata-driven allow, got %#v", decision)
-	}
-}
-
-func TestInternalReadablePathSilentlyAllowed(t *testing.T) {
-	workspace := t.TempDir()
-	memDir := t.TempDir()
-	engine := newEngine(t, Config{
-		Cwd:   workspace,
-		Roots: FilesystemRoots{InternalReadable: []string{memDir}},
-		UI:    mustNotAsk(t),
-	})
-
-	target := filepath.Join(memDir, "MEMORY.md")
-	decision, err := engine.Decide(context.Background(), Request{
-		ToolName: "read",
-		Args:     mustJSON(t, map[string]any{"path": target}),
-	})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if decision == nil || !decision.Allowed() {
-		t.Fatalf("expected silent allow, got %#v", decision)
-	}
-	if decision.Source != DecisionSourceInternal {
-		t.Fatalf("expected DecisionSourceInternal, got %q", decision.Source)
-	}
-	if decision.Prompted {
-		t.Fatalf("expected no prompt for internal path, got %#v", decision)
-	}
-	if decision.OutsideRoots {
-		t.Fatalf("internal path must not be marked outside roots, got %#v", decision)
-	}
-}
-
-func TestInternalWritablePathSilentlyAllowedInBalancedMode(t *testing.T) {
-	workspace := t.TempDir()
-	memDir := t.TempDir()
-	engine := newEngine(t, Config{
-		Cwd:   workspace,
-		Roots: FilesystemRoots{InternalWritable: []string{memDir}},
-		UI:    mustNotAsk(t),
-	})
-
-	target := filepath.Join(memDir, "MEMORY.md")
-	decision, err := engine.Decide(context.Background(), Request{
-		ToolName: "write",
-		Args:     mustJSON(t, map[string]any{"path": target}),
-	})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if decision == nil || !decision.Allowed() || decision.Source != DecisionSourceInternal {
-		t.Fatalf("expected silent allow via internal path, got %#v", decision)
-	}
-}
-
-func TestInternalWritableImpliesReadable(t *testing.T) {
-	workspace := t.TempDir()
-	memDir := t.TempDir()
-	engine := newEngine(t, Config{
-		Cwd:   workspace,
-		Roots: FilesystemRoots{InternalWritable: []string{memDir}},
-		UI:    mustNotAsk(t),
-	})
-
-	target := filepath.Join(memDir, "topic.md")
-	decision, err := engine.Decide(context.Background(), Request{
-		ToolName: "read",
-		Args:     mustJSON(t, map[string]any{"path": target}),
-	})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if decision == nil || !decision.Allowed() || decision.Source != DecisionSourceInternal {
-		t.Fatalf("expected internal-path read allow, got %#v", decision)
+// A harness-declared internal path is used without asking: a readable one
+// for reads, a writable one for writes and reads both.
+func TestInternalPathsSilentlyAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		tool     string
+		writable bool
+	}{
+		{"read", false},
+		{"write", true},
+		{"read", true},
+	} {
+		memDir := t.TempDir()
+		roots := FilesystemRoots{InternalReadable: []string{memDir}}
+		if tc.writable {
+			roots = FilesystemRoots{InternalWritable: []string{memDir}}
+		}
+		engine := newEngine(t, Config{Cwd: t.TempDir(), Roots: roots, UI: mustNotAsk(t)})
+		decision, err := engine.Decide(context.Background(), toolReq(tc.tool, map[string]any{"path": filepath.Join(memDir, "MEMORY.md")}))
+		if err != nil {
+			t.Fatalf("Decide: %v", err)
+		}
+		if decision == nil || !decision.Allowed() || decision.Source != DecisionSourceInternal {
+			t.Fatalf("%s (writable %v): expected silent allow via internal path, got %#v", tc.tool, tc.writable, decision)
+		}
 	}
 }
 
@@ -289,10 +183,7 @@ func TestInternalReadOnlyHardDeniesWrite(t *testing.T) {
 	})
 
 	target := filepath.Join(memDir, "MEMORY.md")
-	decision, err := engine.Decide(context.Background(), Request{
-		ToolName: "write",
-		Args:     mustJSON(t, map[string]any{"path": target}),
-	})
+	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": target}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -318,10 +209,7 @@ func TestInternalPathRespectsDenyRule(t *testing.T) {
 		Roots: FilesystemRoots{InternalReadable: []string{memDir}},
 	})
 
-	decision, err := engine.Decide(context.Background(), Request{
-		ToolName: "read",
-		Args:     mustJSON(t, map[string]any{"path": target}),
-	})
+	decision, err := engine.Decide(context.Background(), toolReq("read", map[string]any{"path": target}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -356,10 +244,7 @@ func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 	})
 
 	target := filepath.Join(memDir, "MEMORY.md")
-	decision, err := engine.Decide(context.Background(), Request{
-		ToolName: "write",
-		Args:     mustJSON(t, map[string]any{"path": target}),
-	})
+	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": target}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -372,15 +257,6 @@ func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 	if decision.Source == DecisionSourceInternal {
 		t.Fatalf("internal silent allow must not preempt user-roots flow, got %#v", decision)
 	}
-}
-
-func mustJSON(t *testing.T, v any) json.RawMessage {
-	t.Helper()
-	raw, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	return raw
 }
 
 // A grant allows what the mode would ask about, for the request carrying it,

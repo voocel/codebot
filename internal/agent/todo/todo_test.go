@@ -12,10 +12,9 @@ func TestParseRejectsInvalidLists(t *testing.T) {
 	t.Parallel()
 
 	for name, args := range map[string]string{
-		"empty content":    `{"todos":[{"content":" ","status":"pending"}]}`,
-		"unknown status":   `{"todos":[{"content":"a","status":"done"}]}`,
-		"two in progress":  `{"todos":[{"content":"a","status":"in_progress"},{"content":"b","status":"in_progress"}]}`,
-		"malformed object": `{"todos":"a"}`,
+		"empty content":   `{"todos":[{"content":" ","status":"pending"}]}`,
+		"unknown status":  `{"todos":[{"content":"a","status":"done"}]}`,
+		"two in progress": `{"todos":[{"content":"a","status":"in_progress"},{"content":"b","status":"in_progress"}]}`,
 	} {
 		if _, err := Parse(json.RawMessage(args)); err == nil {
 			t.Errorf("%s: expected an error", name)

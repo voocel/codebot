@@ -11,38 +11,6 @@ import (
 	"testing"
 )
 
-func TestMergeSettingsProviderAPI(t *testing.T) {
-	base := Settings{
-		Providers: map[string]*ProviderConfig{
-			"openai": {
-				API:    "chat",
-				APIKey: "sk-base",
-				Extra:  &ProviderExtra{UserAgent: "base-client/1.0"},
-			},
-		},
-	}
-	override := Settings{
-		Providers: map[string]*ProviderConfig{
-			"openai": {
-				API:   "responses",
-				Extra: &ProviderExtra{UserAgent: "override-client/1.0"},
-			},
-		},
-	}
-
-	merged := mergeSettings(base, override)
-	pc := merged.Providers["openai"]
-	if pc.API != "responses" {
-		t.Fatalf("API = %q, want responses", pc.API)
-	}
-	if pc.APIKey != "sk-base" {
-		t.Fatalf("APIKey = %q, want inherited key", pc.APIKey)
-	}
-	if got := pc.Extra.UserAgent; got != "override-client/1.0" {
-		t.Fatalf("Extra.UserAgent = %q, want override-client/1.0", got)
-	}
-}
-
 func TestConnection(t *testing.T) {
 	headers := map[string]string{"Anthropic-Beta": "explicit"}
 	pc := ProviderConfig{
@@ -164,17 +132,21 @@ func TestForProjectClassifiesEveryField(t *testing.T) {
 	}
 }
 
-// Merging leaves the layers as they were: they are merged again on reload.
+// Merging overrides a provider's fields one by one, its extras whole, and
+// leaves the layers as they were: they are merged again on reload.
 func TestMergeLeavesItsInputs(t *testing.T) {
 	base := Settings{
-		Providers:   map[string]*ProviderConfig{"p": {APIKey: "k"}},
+		Providers:   map[string]*ProviderConfig{"p": {API: "chat", APIKey: "k", Extra: &ProviderExtra{UserAgent: "base/1.0"}}},
 		Permissions: &PermissionsConfig{Allow: make([]string, 1, 4)},
 	}
 	override := Settings{
-		Providers:   map[string]*ProviderConfig{"p": {BaseURL: "u"}},
+		Providers:   map[string]*ProviderConfig{"p": {API: "responses", BaseURL: "u", Extra: &ProviderExtra{UserAgent: "override/1.0"}}},
 		Permissions: &PermissionsConfig{Allow: []string{"x"}},
 	}
-	mergeSettings(base, override)
+	merged := mergeSettings(base, override)
+	if p := merged.Providers["p"]; p.API != "responses" || p.BaseURL != "u" || p.APIKey != "k" || p.Extra.UserAgent != "override/1.0" {
+		t.Errorf("merged %+v, extra %+v", p, p.Extra)
+	}
 	if base.Providers["p"].BaseURL != "" || len(base.Permissions.Allow) != 1 {
 		t.Errorf("merging changed the base: %+v %+v", base.Providers["p"], base.Permissions)
 	}

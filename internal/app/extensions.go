@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"maps"
 	"strings"
 	"time"
 
@@ -44,15 +43,6 @@ func (a *App) load(layers config.Layers) (*extensions, config.Resolved, error) {
 	if err != nil {
 		return nil, config.Resolved{}, err
 	}
-	a.mu.Lock()
-	if len(a.sessionTrust) > 0 {
-		consents.Projects = maps.Clone(consents.Projects)
-		if consents.Projects == nil {
-			consents.Projects = map[string]extension.Consent{}
-		}
-		maps.Copy(consents.Projects, a.sessionTrust)
-	}
-	a.mu.Unlock()
 	set := extension.Load(extension.Options{Cwd: a.cwd, Layers: layers, Consents: consents, PluginDirs: a.opts.PluginDirs, TrustAll: a.opts.Trust})
 	settings, err := layers.Resolve(a.cwd, set.Granted)
 	if err != nil {
@@ -72,78 +62,40 @@ func Printable(s string) string { return printable.Escape(s) }
 func (a *App) Trust() Trust { return a.Extensions().Trust }
 
 // SetTrust records what the user decided of the project's surface they
-// were shown: they agreed to agreed, of it, and declined the rest. With
-// remember it holds from now on, else for this session. The extensions
-// reload.
-func (a *App) SetTrust(ctx context.Context, shown, agreed Surface, remember bool) (ReloadReport, error) {
+// were shown: they agreed to agreed, of it, and declined the rest. The
+// extensions reload.
+func (a *App) SetTrust(ctx context.Context, shown, agreed Surface) (ReloadReport, error) {
 	surface := a.Trust().Surface
-	decide := func(c extension.Consent) extension.Consent { return c.Decided(surface, shown, agreed) }
-	if err := a.decideProject(decide, remember); err != nil {
+	if err := a.decideProject(func(c extension.Consent) extension.Consent { return c.Decided(surface, shown, agreed) }); err != nil {
 		return ReloadReport{}, err
 	}
 	return a.refresh(ctx)
 }
 
 // DenyTrust records that the user does not trust the project: none of what
-// it runs takes effect, nor are they asked about it. With remember it holds
-// from now on, else for this session. The extensions reload.
-func (a *App) DenyTrust(ctx context.Context, remember bool) (ReloadReport, error) {
-	decide := func(extension.Consent) extension.Consent { return extension.Consent{Denied: true} }
-	if err := a.decideProject(decide, remember); err != nil {
+// it runs takes effect, nor are they asked about it. The extensions reload.
+func (a *App) DenyTrust(ctx context.Context) (ReloadReport, error) {
+	if err := a.decideProject(func(extension.Consent) extension.Consent { return extension.Consent{Denied: true} }); err != nil {
 		return ReloadReport{}, err
 	}
 	return a.refresh(ctx)
 }
 
-// agreeToProject adds it to what the user agreed to of the project, where
-// they decided for this session or kept it, unless they do not trust it:
-// they wrote it there themselves.
+// agreeToProject adds it to what the user agreed to of the project, unless
+// they do not trust it: they wrote it there themselves.
 func (a *App) agreeToProject(it extension.Item) error {
-	a.mu.Lock()
-	_, inSession := a.sessionTrust[a.Trust().Root]
-	a.mu.Unlock()
 	return a.decideProject(func(c extension.Consent) extension.Consent {
 		if !c.Denied {
 			c.Surface, c.Declined = c.Surface.With(it), c.Declined.Missing(Surface{it})
 		}
 		return c
-	}, !inSession)
+	})
 }
 
-// decideProject applies decide to what the user decided of the project, as
-// it stands in this session: with remember from now on, else for this
-// session alone.
-func (a *App) decideProject(decide func(extension.Consent) extension.Consent, remember bool) error {
+// decideProject applies decide to what the user decided of the project.
+func (a *App) decideProject(decide func(extension.Consent) extension.Consent) error {
 	root := a.Trust().Root
-	a.mu.Lock()
-	session, inSession := a.sessionTrust[root]
-	a.mu.Unlock()
-	from := func(kept extension.Consent) extension.Consent {
-		if inSession {
-			return decide(session)
-		}
-		return decide(kept)
-	}
-	if remember {
-		if err := extension.EditConsents(func(cs *extension.Consents) { cs.Projects[root] = from(cs.Projects[root]) }); err != nil {
-			return err
-		}
-		a.mu.Lock()
-		delete(a.sessionTrust, root)
-		a.mu.Unlock()
-		return nil
-	}
-	consents, err := extension.ReadConsents()
-	if err != nil {
-		return err
-	}
-	a.mu.Lock()
-	if a.sessionTrust == nil {
-		a.sessionTrust = map[string]extension.Consent{}
-	}
-	a.sessionTrust[root] = from(consents.Projects[root])
-	a.mu.Unlock()
-	return nil
+	return extension.EditConsents(func(cs *extension.Consents) { cs.Projects[root] = decide(cs.Projects[root]) })
 }
 
 func (a *App) skillCatalog() *skill.Catalog { return a.ext.Load().skills }

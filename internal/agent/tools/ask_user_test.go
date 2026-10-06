@@ -26,37 +26,27 @@ func (f *fakeUI) Approve(context.Context, interact.Approval) (interact.Verdict, 
 	return interact.Verdict{Choice: interact.Deny}, nil
 }
 
-func runAskUser(t *testing.T, ui *fakeUI, args string) string {
-	t.Helper()
-	text, err := call(t, NewAskUser(ui), args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return text
-}
-
+// What the user answered, or that they cancelled, or that no one can be
+// asked, goes back to the model as text.
 func TestAskUserReportsAnswers(t *testing.T) {
-	ui := &fakeUI{answers: interact.Answers{Selected: map[string][]string{"Which DB?": {"Postgres"}}}}
-	text := runAskUser(t, ui, askArgs)
-	if len(ui.asked) != 1 || ui.asked[0].Header != "DB" {
-		t.Fatalf("asked %+v", ui.asked)
-	}
-	if !strings.Contains(text, `"Which DB?"="Postgres"`) {
-		t.Fatalf("result = %q", text)
-	}
-}
-
-func TestAskUserReportsCancellation(t *testing.T) {
-	text := runAskUser(t, &fakeUI{answers: interact.Answers{Cancelled: true}}, askArgs)
-	if !strings.Contains(text, "cancelled") {
-		t.Fatalf("result = %q", text)
-	}
-}
-
-func TestAskUserWithoutAnInteractiveUser(t *testing.T) {
-	text := runAskUser(t, &fakeUI{askErr: interact.ErrUnsupported}, askArgs)
-	if !strings.Contains(text, "unavailable") {
-		t.Fatalf("result = %q", text)
+	for _, tc := range []struct {
+		ui   *fakeUI
+		want string
+	}{
+		{&fakeUI{answers: interact.Answers{Selected: map[string][]string{"Which DB?": {"Postgres"}}}}, `"Which DB?"="Postgres"`},
+		{&fakeUI{answers: interact.Answers{Cancelled: true}}, "cancelled"},
+		{&fakeUI{askErr: interact.ErrUnsupported}, "unavailable"},
+	} {
+		text, err := call(t, NewAskUser(tc.ui), askArgs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tc.ui.asked) != 1 || tc.ui.asked[0].Header != "DB" {
+			t.Fatalf("asked %+v", tc.ui.asked)
+		}
+		if !strings.Contains(text, tc.want) {
+			t.Errorf("result = %q, want %q", text, tc.want)
+		}
 	}
 }
 

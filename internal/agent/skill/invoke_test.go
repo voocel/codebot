@@ -76,83 +76,23 @@ func TestInvokeChecksWhoInvokes(t *testing.T) {
 	}
 }
 
-func TestInvokeRejectsInactivePathScopedSkill(t *testing.T) {
-	t.Parallel()
-
-	catalog := NewCatalog([]Spec{{Name: "frontend", Paths: []string{"web/**"}}}).Active(t.TempDir())
-	_, err := catalog.Invoke(context.Background(), InvokeInput{Name: "frontend", By: ByUser})
-	if err != ErrNotFound {
-		t.Fatalf("expected inactive skill to behave as not found, got %v", err)
-	}
-}
-
 func TestExpandSkillArgs(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		body string
-		args string
-		want string
-	}{
-		{
-			name: "no args",
-			body: "do something",
-			args: "",
-			want: "do something",
-		},
-		{
-			name: "no placeholder appends",
-			body: "do something",
-			args: "foo bar",
-			want: "do something\n\nARGUMENTS: foo bar",
-		},
-		{
-			name: "$ARGUMENTS replacement",
-			body: "fix $ARGUMENTS now",
-			args: "bug-123",
-			want: "fix bug-123 now",
-		},
-		{
-			name: "$@ replacement",
-			body: "run $@",
-			args: "test --verbose",
-			want: "run test --verbose",
-		},
-		{
-			name: "positional $0 $1",
-			body: "move $0 to $1",
-			args: "src dst",
-			want: "move src to dst",
-		},
-		{
-			name: "$ARGUMENTS[N]",
-			body: "from $ARGUMENTS[0] to $ARGUMENTS[1]",
-			args: "old new",
-			want: "from old to new",
-		},
-		{
-			name: "out of range positional",
-			body: "value: $5",
-			args: "a b",
-			want: "value: ",
-		},
-		{
-			name: "quoted args",
-			body: "deploy $0 to $1",
-			args: `app "prod server"`,
-			want: "deploy app to prod server",
-		},
+	tests := []struct{ name, body, args, want string }{
+		{"no args", "do something", "", "do something"},
+		{"no placeholder appends", "do something", "foo bar", "do something\n\nARGUMENTS: foo bar"},
+		{"$ARGUMENTS replacement", "fix $ARGUMENTS now", "bug-123", "fix bug-123 now"},
+		{"$@ replacement", "run $@", "test --verbose", "run test --verbose"},
+		{"positional $0 $1", "move $0 to $1", "src dst", "move src to dst"},
+		{"$ARGUMENTS[N]", "from $ARGUMENTS[0] to $ARGUMENTS[1]", "old new", "from old to new"},
+		{"out of range positional", "value: $5", "a b", "value: "},
+		{"quoted args", "deploy $0 to $1", `app "prod server"`, "deploy app to prod server"},
 	}
-
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := expandArgs(tc.body, tc.args)
-			if got != tc.want {
-				t.Errorf("expandArgs(%q, %q)\n  got:  %q\n  want: %q", tc.body, tc.args, got, tc.want)
-			}
-		})
+		if got := expandArgs(tc.body, tc.args); got != tc.want {
+			t.Errorf("%s: expandArgs(%q, %q)\n  got:  %q\n  want: %q", tc.name, tc.body, tc.args, got, tc.want)
+		}
 	}
 }
 

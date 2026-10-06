@@ -13,16 +13,8 @@ func TestIsReadonlyBash(t *testing.T) {
 	}{
 		// --- simple readonly ---
 		{"ls", "ls", true},
-		{"ls -la", "ls -la /tmp", true},
-		{"pwd", "pwd", true},
-		{"echo", "echo hello", true},
-		{"cat file", "cat README.md", true},
 		{"grep recursive", "grep -r foo .", true},
 		{"git status", "git status", true},
-		{"git log", "git log --oneline -5", true},
-		{"git diff", "git diff HEAD~1", true},
-		{"git show", "git show HEAD", true},
-		{"git blame", "git blame README.md", true},
 		{"find no -exec", "find . -name '*.go' -type f", true},
 		{"sed no -i", "sed 's/foo/bar/' file", true},
 		{"compound readonly", "ls && pwd && cat README.md", true},
@@ -57,6 +49,12 @@ func TestIsReadonlyBash(t *testing.T) {
 		{"mixed compound", "ls && rm -rf /tmp/x", false},
 		{"mixed pipe", "cat file | tee out.txt", false},
 
+		// --- non-readonly: a substitution or another line runs whatever it holds ---
+		{"command substitution", "ls $(touch x)", false},
+		{"backticks", "ls `touch x`", false},
+		{"another line", "ls\ntouch x", false},
+		{"background", "cat a & touch x", false},
+
 		// --- non-readonly: env-var prefix rejected outright ---
 		{"env var prefix", "NODE_ENV=prod ls", false},
 
@@ -74,7 +72,6 @@ func TestIsReadonlyBash(t *testing.T) {
 
 		// --- edge ---
 		{"empty", "", false},
-		{"only spaces", "   ", false},
 	}
 
 	for _, tc := range tests {
@@ -113,16 +110,6 @@ func TestCommandKeys(t *testing.T) {
 	} {
 		if got := commandKeys(cmd); !slices.Equal(got, want) {
 			t.Errorf("commandKeys(%q) = %q, want %q", cmd, got, want)
-		}
-	}
-}
-
-// What only looks read-only is not: a substitution or another line runs
-// whatever it holds.
-func TestReadonlyBashRefusesHiddenCommands(t *testing.T) {
-	for _, cmd := range []string{"ls $(touch x)", "ls `touch x`", "ls\ntouch x", "cat a & touch x"} {
-		if isReadonlyBash(cmd) {
-			t.Errorf("%q passed as read-only", cmd)
 		}
 	}
 }

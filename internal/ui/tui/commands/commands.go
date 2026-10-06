@@ -130,19 +130,18 @@ func (r *Registry) Run(line string) tea.Cmd {
 
 func (r *Registry) run(line string) tea.Cmd {
 	line = strings.TrimSpace(line)
-	at := &transcript.Prompt{Text: line, Kind: transcript.ToCommand}
-	echo := emit(at)
+	echo := emit(&transcript.Prompt{Text: line, Kind: transcript.ToCommand})
 	name, args, _ := strings.Cut(strings.TrimPrefix(line, "/"), " ")
 	c, ok := r.Lookup(name)
 	switch {
 	case !ok:
-		return tea.Sequence(echo, Under(at, fail(fmt.Sprintf("Unknown command /%s. Type / to see the commands.", name))))
+		return tea.Sequence(echo, fail(fmt.Sprintf("Unknown command /%s. Type / to see the commands.", name)))
 	case c.Idle && r.app.Current().Status().Running:
-		return tea.Sequence(echo, Under(at, fail("/"+c.Name+" waits for the agent to finish; press esc to stop it.")))
+		return tea.Sequence(echo, fail("/"+c.Name+" waits for the agent to finish; press esc to stop it."))
 	case c.inline:
 		return c.Run(strings.TrimSpace(args))
 	}
-	return tea.Sequence(echo, Under(at, c.Run(strings.TrimSpace(args))))
+	return tea.Sequence(echo, c.Run(strings.TrimSpace(args)))
 }
 
 // IsCommand reports whether line is a slash command rather than a message

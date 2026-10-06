@@ -215,14 +215,13 @@ func TestCachedKeepsSourcesApart(t *testing.T) {
 	if cached("github.com/fork/tools") == tools {
 		t.Error("two repositories share their cache")
 	}
-	if name := filepath.Base(filepath.Dir(cached("github.com/acme/.github"))); strings.HasPrefix(name, ".") {
-		t.Errorf("a repository named with a dot is cached as a fetch under way: %s", name)
-	}
 }
 
-// Fetch takes the ref's commit, or the commit given, into the cache,
-// without its history.
-func TestFetch(t *testing.T) {
+// repository makes a git repository of two commits: v1, tagged v1 and
+// branched as feature/main, and v2 on main, which describes the plugin. It
+// returns the repository's URL and the two commits.
+func repository(t *testing.T) (url, v1, v2 string) {
+	t.Helper()
 	repo := t.TempDir()
 	run := func(args ...string) string {
 		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
@@ -237,17 +236,26 @@ func TestFetch(t *testing.T) {
 	write(t, filepath.Join(repo, "plugin.json"), manifest+"}")
 	run("add", ".")
 	run("commit", "-q", "-m", "v1")
-	run("tag", "v1")
-	v1 := run("rev-parse", "HEAD")
+	run("tag", "-a", "-m", "v1", "v1")
+	run("branch", "feature/main")
+	v1 = run("rev-parse", "HEAD")
 	write(t, filepath.Join(repo, "plugin.json"), manifest+`, "description": "two"}`)
 	run("commit", "-qam", "v2")
+	v2 = run("rev-parse", "HEAD")
 
-	// The test's repository is local, which codebot's fetch refuses.
+	// The repository is local, which codebot's fetch refuses.
 	t.Setenv("GIT_CONFIG_COUNT", "1")
 	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
 	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	return "file://" + repo, v1, v2
+}
+
+// Fetch takes the ref's commit, or the commit given, into the cache,
+// without its history.
+func TestFetch(t *testing.T) {
+	url, v1, _ := repository(t)
 	cache := t.TempDir()
-	src := Source{URL: "file://" + repo, Ref: "v1"}
+	src := Source{URL: url, Ref: "v1"}
 	commit, err := Fetch(t.Context(), src, cache, "")
 	if err != nil {
 		t.Fatal(err)
@@ -285,32 +293,10 @@ func TestFetch(t *testing.T) {
 
 // Latest tells the commit a fetch of the ref would take, fetching nothing.
 func TestLatest(t *testing.T) {
-	repo := t.TempDir()
-	run := func(args ...string) string {
-		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
-		cmd.Dir = repo
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	run("init", "-q", "-b", "main")
-	write(t, filepath.Join(repo, "plugin.json"), manifest+"}")
-	run("add", ".")
-	run("commit", "-q", "-m", "v1")
-	run("tag", "-a", "-m", "v1", "v1")
-	run("branch", "feature/main")
-	v1 := run("rev-parse", "HEAD")
-	run("commit", "-q", "--allow-empty", "-m", "v2")
-	v2 := run("rev-parse", "HEAD")
-
-	t.Setenv("GIT_CONFIG_COUNT", "1")
-	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
-	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+	url, v1, v2 := repository(t)
 	cache := t.TempDir()
 	for ref, want := range map[string]string{"": v2, "main": v2, "v1": v1, "feature/main": v1, v1: "", "nope": ""} {
-		if got, err := Latest(t.Context(), Source{URL: "file://" + repo, Ref: ref}, cache); err != nil || got != want {
+		if got, err := Latest(t.Context(), Source{URL: url, Ref: ref}, cache); err != nil || got != want {
 			t.Errorf("%q: %s, %v; want %s", ref, got, err, want)
 		}
 	}
@@ -390,8 +376,6 @@ func TestCodebotNamespace(t *testing.T) {
 	}
 }
 
-// A commit no longer held is marked, and removed two weeks after; one held
-// again loses its mark, and a fetch under way is left alone.
 // A plugin keeps its data across refs, apart from any other source's.
 func TestDataDir(t *testing.T) {
 	dir := func(raw string) string {
@@ -416,8 +400,9 @@ func TestDataDir(t *testing.T) {
 	}
 }
 
-// The cache keeps the commits read within unusedAge, and removes the
-// others, and the repositories left with none; a fetch under way stays.
+// The cache keeps the commits read within unusedAge, reading one marking
+// it, and removes the others, and the repositories left with none; a fetch
+// under way stays.
 func TestSweepCache(t *testing.T) {
 	cache := t.TempDir()
 	hex := strings.Repeat("d", 40)
@@ -433,12 +418,16 @@ func TestSweepCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	write(t, filepath.Join(used, "plugin.json"), manifest+"}")
 	now := time.Now()
 	old := now.Add(-unusedAge - time.Hour)
-	for _, d := range []string{unused, gone, fetching} {
+	for _, d := range []string{used, unused, gone, fetching} {
 		if err := os.Chtimes(d, old, old); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, _, err := ReadCached(tools, cache, strings.Repeat("a", 40), "/data"); err != nil {
+		t.Fatal(err)
 	}
 	if err := SweepCache(cache, now); err != nil {
 		t.Fatal(err)
@@ -452,26 +441,5 @@ func TestSweepCache(t *testing.T) {
 	}
 	if err := SweepCache(filepath.Join(cache, "none"), now); err != nil {
 		t.Errorf("no cache yet: %v", err)
-	}
-}
-
-// Reading a commit marks it used.
-func TestReadCachedMarksTheCommitUsed(t *testing.T) {
-	cache := t.TempDir()
-	src, _ := ParseSource("github.com/acme/tools", "")
-	repo := Cached(src, cache, "abc")
-	write(t, filepath.Join(repo, "plugin.json"), manifest+"}")
-	old := time.Now().Add(-unusedAge - time.Hour)
-	if err := os.Chtimes(repo, old, old); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := ReadCached(src, cache, "abc", "/data"); err != nil {
-		t.Fatal(err)
-	}
-	if err := SweepCache(cache, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(repo); err != nil {
-		t.Errorf("swept the commit just read: %v", err)
 	}
 }

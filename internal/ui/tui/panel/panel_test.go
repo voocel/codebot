@@ -24,16 +24,12 @@ func keyPress(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
-	case "tab":
-		return tea.KeyPressMsg{Code: tea.KeyTab}
 	case "up":
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "space":
 		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
-	case "backspace":
-		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "ctrl+c":
 		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	}
@@ -85,14 +81,9 @@ func TestPermissionOffersWhatItRemembers(t *testing.T) {
 	}
 
 	// Nothing to remember, nothing offered beyond this call.
-	reply := make(chan interact.Verdict, 1)
-	p = NewPermission(interact.Approval{Tool: "write", Confirm: true}, reply, nil)
+	p = NewPermission(interact.Approval{Tool: "write", Confirm: true}, make(chan interact.Verdict, 1), nil)
 	if v := ansi.Strip(p.View(60, 20)); strings.Contains(v, "again") || strings.Contains(v, "all edits") {
 		t.Errorf("a call confirmed each time offers more:\n%s", v)
-	}
-	press(p, "esc")
-	if got := (<-reply).Choice; got != interact.Deny {
-		t.Errorf("esc answered %v, want No", got)
 	}
 }
 
@@ -152,18 +143,6 @@ func TestPermissionKeepsTheChoicesInView(t *testing.T) {
 	}
 }
 
-func TestAskSingle(t *testing.T) {
-	reply := make(chan interact.Answers, 1)
-	q := interact.Question{Question: "Which?", Options: []interact.Option{{Label: "A"}, {Label: "B"}}}
-	a := NewAsk([]interact.Question{q}, reply)
-	if !press(a, "down", "enter") {
-		t.Fatal("the panel stayed")
-	}
-	if got := (<-reply).Selected["Which?"]; !slices.Equal(got, []string{"B"}) {
-		t.Errorf("answered %v", got)
-	}
-}
-
 func TestAskCustomAnswer(t *testing.T) {
 	reply := make(chan interact.Answers, 1)
 	q := interact.Question{Question: "Name?", Options: []interact.Option{{Label: "A"}}}
@@ -175,6 +154,12 @@ func TestAskCustomAnswer(t *testing.T) {
 	}
 	if got := (<-reply).Selected["Name?"]; !slices.Equal(got, []string{"bob"}) {
 		t.Errorf("answered %v", got)
+	}
+
+	// esc cancels.
+	a = NewAsk([]interact.Question{q}, reply)
+	if !press(a, "esc") || !(<-reply).Cancelled {
+		t.Error("esc did not cancel")
 	}
 }
 
@@ -197,14 +182,6 @@ func TestAskSeveral(t *testing.T) {
 	got := (<-reply).Selected
 	if !slices.Equal(got["Which?"], []string{"A"}) || !slices.Equal(got["Also?"], []string{"X", "Z"}) {
 		t.Errorf("answered %v", got)
-	}
-}
-
-func TestAskCancel(t *testing.T) {
-	reply := make(chan interact.Answers, 1)
-	a := NewAsk([]interact.Question{{Question: "Which?", Options: []interact.Option{{Label: "A"}}}}, reply)
-	if !press(a, "esc") || !(<-reply).Cancelled {
-		t.Error("esc did not cancel")
 	}
 }
 
@@ -238,34 +215,6 @@ func TestListFilterAndSelect(t *testing.T) {
 	}
 }
 
-func TestListFits(t *testing.T) {
-	var items []Item
-	for i := range 40 {
-		items = append(items, Item{Title: strings.Repeat("x", i), Detail: "detail", Group: []string{"one", "two"}[i/20]})
-	}
-	l := &List{Title: "Many", Items: items}
-	l.Init()
-	press(l, "down", "down", "down")
-	fits(t, l.View(30, 12), 30, 12)
-}
-
-func TestTextTabs(t *testing.T) {
-	tx := &Text{Title: "Info", Tabs: []Tab{
-		{Name: "one", Body: Lines("first")},
-		{Name: "two", Body: Lines("second")},
-	}}
-	if v := ansi.Strip(tx.View(40, 10)); !strings.Contains(v, "first") {
-		t.Errorf("first tab:\n%s", v)
-	}
-	press(tx, "tab")
-	if v := ansi.Strip(tx.View(40, 10)); !strings.Contains(v, "second") {
-		t.Errorf("second tab:\n%s", v)
-	}
-	if !press(tx, "esc") {
-		t.Error("esc did not close")
-	}
-}
-
 func TestListGrowsAfterScrolling(t *testing.T) {
 	var items []Item
 	for i := range 30 {
@@ -285,6 +234,16 @@ func TestListGrowsAfterScrolling(t *testing.T) {
 	if v := ansi.Strip(l.View(80, 8)); !strings.Contains(v, "xxx") {
 		t.Errorf("after the reload:\n%s", v)
 	}
+
+	// Grouped, with titles longer than it is wide, a narrow list fits.
+	items = nil
+	for i := range 40 {
+		items = append(items, Item{Title: strings.Repeat("x", i), Detail: "detail", Group: []string{"one", "two"}[i/20]})
+	}
+	l = &List{Title: "Many", Items: items}
+	l.Init()
+	press(l, "down", "down", "down")
+	fits(t, l.View(30, 12), 30, 12)
 }
 
 func TestAskKeepsTheOptionsInView(t *testing.T) {

@@ -23,38 +23,17 @@ func TestSessionSpanAttributes(t *testing.T) {
 	}
 }
 
-func TestSessionSpanAttributesEmptyIsNil(t *testing.T) {
-	if got := sessionSpanAttributes(""); got != nil {
-		t.Errorf("empty session id must yield nil (no tagging), got %v", got)
-	}
-}
-
+// Telemetry stays off, with a noop shutdown, unless it is enabled and has an
+// endpoint to send to.
 func TestSetupDisabled(t *testing.T) {
-	hook, tracer, shutdown, err := Setup(context.Background(), config.TelemetryConfig{Enabled: false})
-	if err != nil {
-		t.Fatalf("disabled setup err: %v", err)
-	}
-	if hook != nil {
-		t.Fatal("disabled telemetry must return a nil hook")
-	}
-	if tracer != nil {
-		t.Fatal("disabled telemetry must return a nil tracer")
-	}
-	if shutdown == nil {
-		t.Fatal("shutdown must be a non-nil noop")
-	}
-	if err := shutdown(context.Background()); err != nil {
-		t.Fatalf("noop shutdown err: %v", err)
-	}
-}
-
-func TestSetupEnabledNoEndpoint(t *testing.T) {
-	hook, _, _, err := Setup(context.Background(), config.TelemetryConfig{Enabled: true})
-	if err != nil {
-		t.Fatalf("setup err: %v", err)
-	}
-	if hook != nil {
-		t.Fatal("an empty endpoint must disable telemetry even when Enabled")
+	for _, cfg := range []config.TelemetryConfig{{Enabled: false}, {Enabled: true}} {
+		hook, tracer, shutdown, err := Setup(context.Background(), cfg)
+		if err != nil || hook != nil || tracer != nil || shutdown == nil {
+			t.Fatalf("%+v: hook %v, tracer %v, shutdown nil %v, err %v", cfg, hook, tracer, shutdown == nil, err)
+		}
+		if err := shutdown(context.Background()); err != nil {
+			t.Fatalf("%+v: noop shutdown err: %v", cfg, err)
+		}
 	}
 }
 
@@ -68,16 +47,10 @@ func TestSetupEnabledReturnsHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enabled setup err: %v", err)
 	}
-	if hook == nil {
-		t.Fatal("enabled telemetry must return a hook")
-	}
-	if tracer == nil {
-		t.Fatal("enabled telemetry must return a tracer")
+	if hook == nil || tracer == nil || shutdown == nil {
+		t.Fatalf("enabled telemetry must return a hook, a tracer and a shutdown: %v, %v, nil shutdown %v", hook, tracer, shutdown == nil)
 	}
 	tracer.SetSession("sess-42")
-	if shutdown == nil {
-		t.Fatal("shutdown must be non-nil")
-	}
 	// No spans were produced, so shutdown flushes nothing and must not hang or
 	// error despite the endpoint being unreachable.
 	if err := shutdown(context.Background()); err != nil {

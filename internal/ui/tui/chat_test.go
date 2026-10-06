@@ -32,7 +32,7 @@ func chat(n, height int) (*chatView, func()) {
 	return v, add
 }
 
-func TestChatFollowsTheEnd(t *testing.T) {
+func TestChatHoldsItsPlaceWhenScrolledBack(t *testing.T) {
 	v, add := chat(5, 6)
 	if got := v.view(); got[len(got)-1] != "c4.2" || len(got) != 6 {
 		t.Fatalf("view = %q", got)
@@ -41,11 +41,6 @@ func TestChatFollowsTheEnd(t *testing.T) {
 	if got := v.view(); got[len(got)-1] != "c5.2" {
 		t.Errorf("a new cell did not show: %q", got)
 	}
-}
-
-func TestChatHoldsItsPlaceWhenScrolledBack(t *testing.T) {
-	v, add := chat(5, 6)
-	v.view()
 	v.scroll(-5)
 	before := v.view()
 	if v.follow {
@@ -80,10 +75,9 @@ func TestChatScrollStopsAtTheTop(t *testing.T) {
 	if got := v.view(); got[len(got)-1] != "c4.2" {
 		t.Errorf("bottom = %q", got)
 	}
-}
 
-func TestChatShortContentStaysFollowing(t *testing.T) {
-	v, _ := chat(1, 10)
+	// Content shorter than the view does not scroll at all.
+	v, _ = chat(1, 10)
 	v.scroll(-3)
 	if !v.follow {
 		t.Error("content shorter than the view scrolled")
@@ -124,17 +118,6 @@ func TestSelectionCopiesTheText(t *testing.T) {
 	v.press(3, 1)
 	if got := v.release(); got != "" || v.sel.on {
 		t.Errorf("a click selected %q", got)
-	}
-}
-
-func TestSelectionHighlights(t *testing.T) {
-	v, _ := chat(1, 5)
-	v.view()
-	v.press(1, 0)
-	v.drag(2, 0)
-	got := v.view()[0]
-	if got == "c0.0" || !strings.Contains(got, "c") {
-		t.Errorf("the selected line is not marked: %q", got)
 	}
 }
 

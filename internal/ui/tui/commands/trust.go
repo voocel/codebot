@@ -31,7 +31,7 @@ func TrustPanel(a *app.App, all bool) panel.Panel {
 	key, items, checked, lead := askKey, t.Ask(), t.Ask(), folder+" would turn on:"
 	no := panel.Choice{Label: "Don't trust these · keep working without them", Pick: func(app.Surface) tea.Cmd {
 		return decide(a, "Keeping them off; /trust changes that", func(ctx context.Context) (app.ReloadReport, error) {
-			return a.SetTrust(ctx, items, nil, true)
+			return a.SetTrust(ctx, items, nil)
 		})
 	}}
 	switch {
@@ -39,7 +39,7 @@ func TrustPanel(a *app.App, all bool) panel.Panel {
 		key, items, checked = trustKey, t.Surface, t.Surface.Missing(t.Declined)
 		no = panel.Choice{Label: "Don't trust this folder", Pick: func(app.Surface) tea.Cmd {
 			return decide(a, "Not trusting "+folder+"; /trust changes that", func(ctx context.Context) (app.ReloadReport, error) {
-				return a.DenyTrust(ctx, true)
+				return a.DenyTrust(ctx)
 			})
 		}}
 		switch {
@@ -55,23 +55,17 @@ func TrustPanel(a *app.App, all bool) panel.Panel {
 	case len(t.Agreed) > 0:
 		lead = folder + " has more to turn on since you trusted it:"
 	}
-	trust := func(remember bool) func(app.Surface) tea.Cmd {
-		return func(agreed app.Surface) tea.Cmd {
-			done := "Trusted " + folder
-			if n := len(items) - len(agreed); n > 0 {
-				done += fmt.Sprintf(", but for %d you declined", n)
-			}
-			if !remember {
-				done += " for this session"
-			}
-			return decide(a, done, func(ctx context.Context) (app.ReloadReport, error) {
-				return a.SetTrust(ctx, items, agreed, remember)
-			})
+	trust := func(agreed app.Surface) tea.Cmd {
+		done := "Trusted " + folder
+		if n := len(items) - len(agreed); n > 0 {
+			done += fmt.Sprintf(", but for %d you declined", n)
 		}
+		return decide(a, done, func(ctx context.Context) (app.ReloadReport, error) {
+			return a.SetTrust(ctx, items, agreed)
+		})
 	}
 	return panel.NewConsent(key, "Trust this folder?", lead, items, checked, []panel.Choice{
-		{Label: "Trust this folder", Pick: trust(true)},
-		{Label: "Trust for this session", Pick: trust(false)},
+		{Label: "Trust this folder", Pick: trust},
 		no,
 	}, func() tea.Cmd { return nil })
 }

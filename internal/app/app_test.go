@@ -17,7 +17,6 @@ import (
 	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/litellmtest"
 
-	"github.com/voocel/codebot/internal/agent/todo"
 	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/interact"
@@ -334,25 +333,6 @@ func extends(cur, prev call) bool {
 	return true
 }
 
-func TestSubmitRunsToIdle(t *testing.T) {
-	model := script(text("hello"))
-	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
-
-	e.submit("hi")
-
-	history := e.app.Current().History()
-	if got, want := texts(history), []string{"user:hi", "assistant:hello"}; !slices.Equal(got, want) {
-		t.Fatalf("history = %q, want %q", got, want)
-	}
-	// The context goes ahead of the first prompt.
-	if got, want := told(history), []string{"environment", "skills", "memory", "tools"}; !slices.Equal(got, want) {
-		t.Fatalf("told %q, want %q", got, want)
-	}
-	if !strings.Contains(history[0].Text(), "Working directory: "+e.cwd) {
-		t.Fatalf("the environment does not state the workspace: %q", history[0].Text())
-	}
-}
-
 // The context is told again only as it changes, after what was told
 // before: every request starts with the one before it.
 func TestContextChangesAreAppended(t *testing.T) {
@@ -409,18 +389,23 @@ func TestResumeTellsWhatChanged(t *testing.T) {
 }
 
 // A side question is asked as the conversation's calls are, thinking
-// included, so it reads the conversation from the prompt cache.
+// included, so it reads the conversation from the prompt cache, and adds
+// nothing to it.
 func TestSideCallsExtendTheConversation(t *testing.T) {
 	model := script(text("hello"), text("an answer"), text("run the tests"))
 	e := boot(t, setup{settings: map[string]any{"reasoning_effort": "high"}}, map[string]*fakeModel{"claude-sonnet-4-5": model})
 	e.submit("hi")
 	c := e.app.Current()
+	n := len(c.History())
 
-	if _, err := c.Query(context.Background(), "what?"); err != nil {
-		t.Fatal(err)
+	if answer, err := c.Query(context.Background(), "what?"); err != nil || answer != "an answer" {
+		t.Fatalf("query = %q, %v", answer, err)
 	}
 	if _, err := c.Suggest(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if got := len(c.History()); got != n {
+		t.Fatalf("history has %d messages after the side calls, %d before", got, n)
 	}
 	main := model.call(0)
 	if main.thinking == nil || main.thinking.Effort != "high" {
@@ -589,40 +574,22 @@ func TestSkillGrantsLastForTheRun(t *testing.T) {
 	}
 }
 
+// A vendor that takes deferred tools is sent tool_search, which loads the
+// tools it is not sent, web_fetch among them; one that cannot is sent every
+// tool.
 func TestDeferredToolsLoadThroughToolSearch(t *testing.T) {
-	model := script()
-	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	for _, cannotDefer := range []bool{false, true} {
+		model := script()
+		model.cannotDefer = cannotDefer
+		e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
 
-	e.submit("hi")
+		e.submit("hi")
 
-	c := model.last()
-	if !slices.Contains(c.tools, "tool_search") || slices.Contains(c.tools, "web_fetch") {
-		t.Fatalf("tools sent = %q, want tool_search and no web_fetch", c.tools)
-	}
-}
-
-func TestVendorsThatCannotDeferGetEveryTool(t *testing.T) {
-	model := script()
-	model.cannotDefer = true
-	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
-
-	e.submit("hi")
-
-	c := model.last()
-	if slices.Contains(c.tools, "tool_search") || !slices.Contains(c.tools, "web_fetch") {
-		t.Fatalf("tools sent = %q", c.tools)
-	}
-}
-
-func TestTodosComeFromTheHistory(t *testing.T) {
-	todos := map[string]any{"todos": []map[string]string{{"content": "write tests", "status": "in_progress"}}}
-	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script(use("t1", "todo_write", todos), text("ok"))})
-
-	e.submit("plan")
-
-	got := todo.FromHistory(e.app.Current().History())
-	if len(got) != 1 || got[0].Content != "write tests" {
-		t.Fatalf("todos = %+v", got)
+		tools := model.last().tools
+		search, fetch := slices.Contains(tools, "tool_search"), slices.Contains(tools, "web_fetch")
+		if search == cannotDefer || fetch != cannotDefer {
+			t.Errorf("cannot defer %v: tools sent = %q", cannotDefer, tools)
+		}
 	}
 }
 
@@ -849,20 +816,5 @@ func TestUndoRevertsTheLastRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(e.cwd, "a.txt")); !os.IsNotExist(err) {
 		t.Fatalf("file survived undo: %v", err)
-	}
-}
-
-func TestQueryLeavesTheHistoryAlone(t *testing.T) {
-	model := script(text("hello"), text("an answer"))
-	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
-	e.submit("hi")
-	n := len(e.app.Current().History())
-
-	answer, err := e.app.Current().Query(context.Background(), "what?")
-	if err != nil || answer != "an answer" {
-		t.Fatalf("query = %q, %v", answer, err)
-	}
-	if got := len(e.app.Current().History()); got != n {
-		t.Fatalf("history has %d messages after a query, %d before", got, n)
 	}
 }

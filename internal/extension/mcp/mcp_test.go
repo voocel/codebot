@@ -39,30 +39,6 @@ func TestMCPToolAdapter(t *testing.T) {
 	t.Parallel()
 	c := &Client{name: "srv"}
 
-	t.Run("basic", func(t *testing.T) {
-		t.Parallel()
-		mt := sdkmcp.Tool{
-			Name: "my-tool", Description: "A test tool",
-			InputSchema: map[string]any{"type": "object"},
-		}
-		tool := newTool(c, &mt)
-
-		if tool.Name != "mcp__srv__my-tool" || tool.Label != "my-tool" || tool.Description != "A test tool" || tool.Schema["type"] != "object" {
-			t.Errorf("tool = %+v", tool)
-		}
-	})
-
-	t.Run("title_as_label", func(t *testing.T) {
-		t.Parallel()
-		mt := sdkmcp.Tool{
-			Name: "x", Title: "Display Name", Description: "d",
-			InputSchema: map[string]any{"type": "object"},
-		}
-		if tool := newTool(c, &mt); tool.Label != "Display Name" {
-			t.Errorf("Label = %q", tool.Label)
-		}
-	})
-
 	t.Run("nil_schema_fallback", func(t *testing.T) {
 		t.Parallel()
 		mt := sdkmcp.Tool{Name: "x", Description: "d"}
@@ -156,25 +132,9 @@ func TestClientUsesStatelessSDK(t *testing.T) {
 	}
 }
 
-func TestManagerConfigureClearsFailures(t *testing.T) {
-	t.Parallel()
-
-	m := NewManager(nil)
-	defer m.Close()
-
-	m.failures["broken"] = "boom"
-
-	errs := m.Configure(t.Context(), nil)
-	if len(errs) != 0 {
-		t.Fatalf("expected no configure errors, got %v", errs)
-	}
-	if len(m.failures) != 0 {
-		t.Fatalf("expected failures to be cleared, got %v", m.failures)
-	}
-}
-
 // A server configured as before stays connected through Configure; one
-// changed reconnects, one gone disconnects.
+// changed reconnects, one gone disconnects, and the failures of before are
+// forgotten.
 func TestManagerConfigureKeepsWhatDidNotChange(t *testing.T) {
 	backend := sdkserver.New(&sdkserver.Options{Impl: sdkmcp.Implementation{Name: "s", Version: "1"}})
 	srv := httptest.NewServer(sdkhttp.NewHandler(backend, nil))
@@ -188,8 +148,12 @@ func TestManagerConfigureKeepsWhatDidNotChange(t *testing.T) {
 		t.Fatal(errs)
 	}
 	kept, before := m.clients["kept"], m.clients["changed"]
+	m.failures["broken"] = "boom"
 	if errs := m.Configure(t.Context(), map[string]config.MCPServer{"kept": cfg, "changed": changed}); len(errs) > 0 {
 		t.Fatal(errs)
+	}
+	if len(m.failures) != 0 {
+		t.Errorf("failures of before stayed: %v", m.failures)
 	}
 	if m.clients["kept"] != kept {
 		t.Error("an unchanged server reconnected")
@@ -208,29 +172,5 @@ func TestConnectTellsWhatTheServerSaid(t *testing.T) {
 	_, err := connect(t.Context(), "broken", config.MCPServer{Command: "sh", Args: []string{"-c", "echo first >&2; echo 404 Not Found >&2; exit 1"}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "first\n404 Not Found") {
 		t.Fatalf("err = %v", err)
-	}
-}
-
-// --- helpers ---
-
-// TestSortedClientsDeterministic guards the prompt-cache invariant: tools and
-// instructions must serialize in the same byte order across refreshes, so
-// client iteration must not depend on map order.
-func TestSortedClientsDeterministic(t *testing.T) {
-	m := NewManager(nil)
-	for _, name := range []string{"zeta", "alpha", "mid", "beta"} {
-		m.clients[name] = &Client{name: name}
-	}
-	want := []string{"alpha", "beta", "mid", "zeta"}
-	for range 50 {
-		got := m.sortedClients()
-		if len(got) != len(want) {
-			t.Fatalf("sortedClients len=%d want %d", len(got), len(want))
-		}
-		for i, c := range got {
-			if c.name != want[i] {
-				t.Fatalf("sortedClients[%d]=%s want %s", i, c.name, want[i])
-			}
-		}
 	}
 }

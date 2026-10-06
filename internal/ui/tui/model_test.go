@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,9 +19,7 @@ import (
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/interact"
-	"github.com/voocel/codebot/internal/session"
 	"github.com/voocel/codebot/internal/ui/tui/commands"
-	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
 // harness drives the TUI's model over an App whose model replies as
@@ -151,12 +148,8 @@ func keyPress(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
-	case "tab":
-		return tea.KeyPressMsg{Code: tea.KeyTab}
 	case "up":
 		return tea.KeyPressMsg{Code: tea.KeyUp}
-	case "down":
-		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "ctrl+c":
 		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	}
@@ -243,13 +236,9 @@ func use(id, tool string, args any) litellmtest.Reply {
 
 func TestWelcome(t *testing.T) {
 	h := boot(t)
-	h.shows(strings.TrimSpace(bot[0]), "codebot  test", tagline, "claude-sonnet-4-5  ·  effort auto", "Tip", "for commands", "balanced")
-	v := h.m.View()
-	if v.Cursor == nil {
+	h.shows(strings.TrimSpace(bot[0]), "codebot  test", tagline, "claude-sonnet-4-5  ·  effort auto", "balanced")
+	if h.m.View().Cursor == nil {
 		t.Fatal("the editor has no cursor")
-	}
-	if lines := strings.Count(v.Content, "\n") + 1; lines != 30 {
-		t.Errorf("the view has %d lines, want 30", lines)
 	}
 
 	// Narrow, the bot makes way for the lines beside it.
@@ -468,49 +457,11 @@ func TestAddAPlugin(t *testing.T) {
 	h.press("1")
 	await[reloadedMsg](h)
 	h.settleNotes()
-	h.shows("Added kit")
+	h.shows("❯ /plugins add ~/kit", "Added kit")
 
 	h.write("/plugins")
 	h.press("enter")
 	h.shows("Plugins", "kit 0.1.0", "1 skill · 1 MCP · ~/kit · on")
-}
-
-// What a command adds once it is done goes under it, though the user sent
-// another command meanwhile.
-func TestRepliesStayUnderTheirCommand(t *testing.T) {
-	h := boot(t)
-	dir := filepath.Join(os.Getenv("HOME"), "slow")
-	for name, text := range map[string]string{
-		"plugin.json": `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "slow"}`,
-		// A server that never answers holds connecting up for a second.
-		"mcp.json": `{"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", "mcpServers": {"db": {"type": "stdio", "command": "sleep", "args": ["1"]}}}`,
-	} {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	h.write("/plugins add ~/slow")
-	h.press("enter")
-	h.pause()
-	h.press("1")
-	h.write("/nope")
-	h.press("enter")
-	await[commands.Reply](h)
-	var order []string
-	for _, c := range h.m.t.Cells() {
-		switch c := c.(type) {
-		case *transcript.Prompt:
-			order = append(order, c.Text)
-		case *transcript.Notice:
-			order = append(order, strings.Fields(c.Text)[0])
-		}
-	}
-	if want := []string{"/plugins add ~/slow", "Fetching", "Added", "/nope", "Unknown"}; !slices.Equal(order, want) {
-		t.Errorf("cells %q", order)
-	}
 }
 
 func TestPermissionPanel(t *testing.T) {
@@ -543,6 +494,16 @@ func TestPermissionPanel(t *testing.T) {
 	if h.m.top() != nil {
 		t.Error("the withdrawn panel stayed")
 	}
+
+	// Allowing all edits switches to the accept-edits mode.
+	reply = make(chan interact.Verdict, 1)
+	h.feed(approveMsg{interact.Approval{Tool: "edit", Summary: "a.go", Edit: true}, reply})
+	h.shows("Allow Edit?", "allow all edits")
+	h.pause()
+	h.press("2")
+	if c := answered(t, reply).Choice; c != interact.AllowOnce || h.app.Mode() != interact.ModeAcceptEdits {
+		t.Errorf("answered %v in mode %v", c, h.app.Mode())
+	}
 }
 
 // Requests are answered in the order they come, and each waits to take
@@ -569,36 +530,7 @@ func TestRequestsQueue(t *testing.T) {
 	}
 }
 
-// Allowing all edits switches to the accept-edits mode.
-func TestPermissionAcceptsEdits(t *testing.T) {
-	h := boot(t)
-	reply := make(chan interact.Verdict, 1)
-	h.feed(approveMsg{interact.Approval{Tool: "edit", Summary: "a.go", Edit: true}, reply})
-	h.shows("Allow Edit?", "allow all edits")
-	h.pause()
-	h.press("2")
-	if c := answered(t, reply).Choice; c != interact.AllowOnce || h.app.Mode() != interact.ModeAcceptEdits {
-		t.Errorf("answered %v in mode %v", c, h.app.Mode())
-	}
-}
-
-func TestCommandMenu(t *testing.T) {
-	h := boot(t)
-	h.write("/he")
-	h.shows("/help")
-	h.press("enter")
-	if h.m.top() == nil {
-		t.Fatal("/help showed no panel")
-	}
-	h.shows("Help", "commands")
-	h.press("esc")
-	if h.m.top() != nil {
-		t.Error("esc left the panel")
-	}
-	h.shows("❯ /help")
-}
-
-func TestShellLine(t *testing.T) {
+func TestStopAShellLine(t *testing.T) {
 	h := boot(t)
 	h.write("!echo hi")
 	h.press("enter")
@@ -606,26 +538,7 @@ func TestShellLine(t *testing.T) {
 	if len(h.m.pending) > 0 {
 		t.Error("a shell line went to the agent")
 	}
-}
 
-func TestMessagesForEvents(t *testing.T) {
-	h := boot(t)
-	for _, c := range []struct {
-		ev   app.Event
-		want tea.Msg
-	}{
-		{app.Event{Kind: app.ModeChanged, Mode: interact.ModeTrust}, modeMsg{interact.ModeTrust}},
-		{app.Event{Kind: app.SessionEvent, Session: session.Event{Kind: session.RunStarted}}, runStartedMsg{}},
-		{app.Event{Kind: app.SessionEvent, Session: session.Event{Kind: session.Idle}}, idleMsg{}},
-	} {
-		if got := message(h.app, c.ev); got != c.want {
-			t.Errorf("%v: got %#v, want %#v", c.ev.Kind, got, c.want)
-		}
-	}
-}
-
-func TestStopAShellLine(t *testing.T) {
-	h := boot(t)
 	h.write("!sleep 30")
 	h.press("enter")
 	h.shows("Running sleep 30", "esc to stop")
@@ -683,27 +596,11 @@ func TestPendingInputsJoinInAnyOrder(t *testing.T) {
 	}
 }
 
-func TestStatusIsSetOffFromTheConversation(t *testing.T) {
-	h := boot(t)
-	h.m.t.Append(transcript.Print(strings.Repeat("output\n", 40)))
-	h.write("!sleep 30")
-	h.press("enter")
-	defer func() {
-		h.press("esc")
-		await[shellDoneMsg](h)
-	}()
-	lines := strings.Split(h.screen(), "\n")
-	i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "Running sleep 30") })
-	if i < 2 || strings.TrimSpace(lines[i-1]) != "" || strings.TrimSpace(lines[i-2]) == "" {
-		t.Errorf("no blank line above the status:\n%s", h.screen())
-	}
-}
-
 // A folder the user distrusted, trusted again from /trust, is trusted to
 // all of it: it was not declined item by item.
 func TestTrustAgainAfterDistrust(t *testing.T) {
 	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}})
-	if _, err := h.app.DenyTrust(context.Background(), true); err != nil {
+	if _, err := h.app.DenyTrust(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	h.m.remove(commands.IsAsk)

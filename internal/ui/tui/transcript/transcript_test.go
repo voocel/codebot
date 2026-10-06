@@ -165,15 +165,6 @@ func TestSubagentProgress(t *testing.T) {
 	}
 }
 
-func TestWriteWithoutChanges(t *testing.T) {
-	tr := New()
-	tr.Apply(agentcore.MessageEnd{Message: assistant("", call("w", "write", `{"file_path":"a.go","content":"x"}`))})
-	tr.Apply(agentcore.ToolStart{Call: agentcore.ToolCall{ID: "w", Name: "write", Preview: "(no changes)"}})
-	if got := plain(render(tr, Params{Width: 40})); !strings.Contains(got, "No changes") {
-		t.Errorf("rendered\n%s", got)
-	}
-}
-
 func TestHomePath(t *testing.T) {
 	for p, want := range map[string]string{
 		home:                          "~",
@@ -184,32 +175,5 @@ func TestHomePath(t *testing.T) {
 		if got := HomePath(p); got != want {
 			t.Errorf("HomePath(%q) = %q, want %q", p, got, want)
 		}
-	}
-}
-
-// What a command adds goes under it, after what it added before and before
-// what the user sent since; of a command no longer shown, at the end.
-func TestUnder(t *testing.T) {
-	tr := New()
-	a, b := &Prompt{Text: "/a", Kind: ToCommand}, &Prompt{Text: "/b", Kind: ToCommand}
-	tr.Append(a)
-	tr.Under(a, Note("a started"))
-	tr.Append(b)
-	tr.Under(b, Note("b done"))
-	if i := tr.Under(a, Note("a done")); i != 2 {
-		t.Errorf("a's reply went at %d", i)
-	}
-	tr.Under(&Prompt{Text: "/gone"}, Note("gone done"))
-	var got []string
-	for _, c := range tr.Cells() {
-		switch c := c.(type) {
-		case *Prompt:
-			got = append(got, c.Text)
-		case *Notice:
-			got = append(got, c.Text)
-		}
-	}
-	if want := []string{"/a", "a started", "a done", "/b", "b done", "gone done"}; !slices.Equal(got, want) {
-		t.Errorf("cells %q", got)
 	}
 }

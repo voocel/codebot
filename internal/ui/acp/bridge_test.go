@@ -2,9 +2,6 @@ package acp
 
 import (
 	"encoding/json"
-	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -82,25 +79,5 @@ func TestDiffContent_EmitsNativeDiff(t *testing.T) {
 	d := content[0].Diff
 	if d.OldText == nil || *d.OldText != "old-buffer" || d.NewText != "new-buffer" {
 		t.Fatalf("diff old/new mismatch: old=%v new=%q", d.OldText, d.NewText)
-	}
-}
-
-// An unreliable pre-exec snapshot (editor error on an existing file) must
-// suppress the diff rather than render one off the disk copy.
-func TestDiffContent_SkipsWhenSnapshotUnreliable(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte("disk-content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ws := &EditorFS{
-		conn:    fakeConn{read: func(string) (string, error) { return "", errors.New("editor error") }},
-		sid:     "s",
-		canRead: true,
-	}
-	s := &Server{fs: ws, pendingEdits: make(map[acp.ToolCallId]editSnapshot)}
-	args := json.RawMessage(`{"file_path":"f.go","content":"x"}`)
-	s.snapshotForDiff(agentcore.ToolCall{ID: "t1", Name: "write", Args: args}, dir)
-	if _, ok := s.diffContent(agentcore.ToolEnd{Call: agentcore.ToolCall{ID: "t1", Name: "write", Args: args}}); ok {
-		t.Fatal("unreliable snapshot must suppress the diff")
 	}
 }

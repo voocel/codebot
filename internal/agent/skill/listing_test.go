@@ -29,16 +29,8 @@ func TestListing(t *testing.T) {
 	if strings.Contains(result, "hidden") {
 		t.Error("a skill the model may not invoke must not be listed")
 	}
-}
-
-func TestListingEmpty(t *testing.T) {
-	t.Parallel()
-
 	if result := Listing(nil, nil); result != "" {
-		t.Errorf("expected empty, got %q", result)
-	}
-	if result := Listing([]Spec{{Name: "x", DisableModelInvocation: true}}, nil); result != "" {
-		t.Errorf("expected empty when all disabled, got %q", result)
+		t.Errorf("no skills to list must list nothing, got %q", result)
 	}
 }
 

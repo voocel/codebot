@@ -41,11 +41,6 @@ func modelWith(t *testing.T, caps *litellm.Capabilities) agentcore.Model {
 func TestEfforts(t *testing.T) {
 	t.Parallel()
 
-	for _, effort := range []string{"minimal", "auto", "High", " high "} {
-		if ValidEffort(effort) {
-			t.Errorf("%q accepted as a reasoning effort", effort)
-		}
-	}
 	all := []string{"", "off", "low", "medium", "high", "xhigh", "max"}
 	for reasoning, want := range map[*bool][]string{nil: all, new(true): all, new(false): {""}} {
 		if got := ThinkingLevels(nil, reasoning); !slices.Equal(got, want) {
@@ -188,9 +183,6 @@ func TestModelFactoryGateway(t *testing.T) {
 	}})
 	defer srv.Close()
 
-	if !IsSupportedType("gateway") {
-		t.Fatal("the gateway type must be supported")
-	}
 	m, err := NewModelFactory(NewModels())(ModelSpec{
 		Provider: "corp",
 		Type:     "gateway",

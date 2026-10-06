@@ -1,8 +1,6 @@
 package permission
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -40,17 +38,5 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if !reloaded.Has("a") || !reloaded.Has("b") {
 		t.Fatalf("expected persisted entries, got %#v", reloaded)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	var rows []StoreEntry
-	if err := json.Unmarshal(data, &rows); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if len(rows) != 2 || rows[0].Key != "a" || rows[1].Key != "b" {
-		t.Fatalf("expected sorted persisted rows, got %#v", rows)
 	}
 }

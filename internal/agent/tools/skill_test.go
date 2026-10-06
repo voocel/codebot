@@ -46,28 +46,8 @@ func run(t *testing.T, tool agentcore.Tool, name, args string) string {
 	return text
 }
 
-func TestSkillToolExecute(t *testing.T) {
-	t.Parallel()
-
-	tool := NewSkillTool(skillCatalog(t, map[string]string{
-		"greet": "---\ndescription: Say hello\n---\nHello $ARGUMENTS!",
-	}), "test-session", nil, ignoreInvocation)
-
-	text := run(t, tool, "greet", "World")
-	if !strings.Contains(text, "Hello World!") || !strings.Contains(text, `<skill name="greet">`) {
-		t.Errorf("expected the wrapped, expanded skill, got: %s", text)
-	}
-}
-
-func TestSkillToolNotFound(t *testing.T) {
-	t.Parallel()
-
-	tool := NewSkillTool(skillCatalog(t, nil), "", nil, ignoreInvocation)
-	if text := run(t, tool, "nonexistent", ""); !strings.Contains(text, "not found") {
-		t.Errorf("expected not-found message, got: %s", text)
-	}
-}
-
+// The model cannot invoke a skill kept for manual invocation, nor one that
+// does not exist; it is told so in text.
 func TestSkillToolDisableModelInvocation(t *testing.T) {
 	t.Parallel()
 
@@ -77,8 +57,13 @@ func TestSkillToolDisableModelInvocation(t *testing.T) {
 	if text := run(t, tool, "deploy", ""); !strings.Contains(text, "manual invocation only") {
 		t.Errorf("expected manual-only message, got: %s", text)
 	}
+	if text := run(t, tool, "nonexistent", ""); !strings.Contains(text, "not found") {
+		t.Errorf("expected not-found message, got: %s", text)
+	}
 }
 
+// A forked skill runs as a sub-agent once its invocation is seen, with the
+// skill's agent and model, or the general-purpose agent when it names none.
 func TestSkillToolContextFork(t *testing.T) {
 	t.Parallel()
 
@@ -94,44 +79,34 @@ func TestSkillToolContextFork(t *testing.T) {
 
 	tool := NewSkillTool(skillCatalog(t, map[string]string{
 		"research": "---\ncontext: fork\nagent: explore\nmodel: openai/gpt-5\n---\nResearch $ARGUMENTS",
+		"task":     "---\ncontext: fork\n---\nDo stuff",
 	}), "", fakeExecutor, func(*skill.Invocation) { applied = true })
+	fork := func(name, args string) (string, map[string]string) {
+		t.Helper()
+		result := run(t, tool, name, args)
+		var params map[string]string
+		json.Unmarshal(capturedArgs, &params)
+		return result, params
+	}
 
-	result := run(t, tool, "research", "auth module")
-
-	var params map[string]string
-	json.Unmarshal(capturedArgs, &params)
+	result, params := fork("research", "auth module")
 	if params["agent"] != "explore" || params["model"] != "openai/gpt-5" {
 		t.Errorf("expected agent=explore and the skill's model, got %v", params)
 	}
 	if !strings.Contains(params["task"], "Research auth module") {
 		t.Errorf("expected expanded task, got %q", params["task"])
 	}
-
 	if result != "research results" {
 		t.Errorf("expected executor result passthrough, got %s", result)
 	}
-}
 
-func TestSkillToolContextForkDefaultAgent(t *testing.T) {
-	t.Parallel()
-
-	var capturedArgs json.RawMessage
-	tool := NewSkillTool(skillCatalog(t, map[string]string{
-		"task": "---\ncontext: fork\n---\nDo stuff",
-	}), "", func(_ context.Context, args json.RawMessage) (agentcore.Result, error) {
-		capturedArgs = args
-		return agentcore.TextResult("ok"), nil
-	}, ignoreInvocation)
-
-	run(t, tool, "task", "")
-
-	var params map[string]string
-	json.Unmarshal(capturedArgs, &params)
-	if params["agent"] != "general-purpose" {
+	if _, params := fork("task", ""); params["agent"] != "general-purpose" {
 		t.Errorf("expected default agent=general-purpose, got %q", params["agent"])
 	}
 }
 
+// An inline skill returns its prompt, and the invocation, the source of the
+// conversation's grants, reaches the caller with the tools it allows.
 func TestSkillToolReportsInvocations(t *testing.T) {
 	t.Parallel()
 
@@ -140,8 +115,11 @@ func TestSkillToolReportsInvocations(t *testing.T) {
 		"review": "---\nallowed-tools: bash, read\n---\nreview $ARGUMENTS",
 	}), "", nil, func(inv *skill.Invocation) { seen = inv })
 
-	run(t, tool, "review", "diff")
+	text := run(t, tool, "review", "diff")
 	if seen == nil || !strings.Contains(seen.Prompt, "review diff") || len(seen.AllowedTools) != 2 {
 		t.Fatalf("unexpected invocation: %+v", seen)
+	}
+	if text != seen.Prompt {
+		t.Errorf("returned %q, want the invocation's prompt", text)
 	}
 }

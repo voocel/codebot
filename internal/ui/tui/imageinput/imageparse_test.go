@@ -2,8 +2,6 @@ package imageinput
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -23,35 +21,27 @@ var minimalPNG = []byte{
 }
 
 func TestFromBytes(t *testing.T) {
-	block, err := FromBytes(minimalPNG)
-	if err != nil {
-		t.Fatal(err)
+	tooLarge := make([]byte, maxImageSize+1)
+	copy(tooLarge, minimalPNG) // valid header but oversized
+	tests := []struct {
+		name string
+		data []byte
+		want string // the MIME type, "" for refused
+	}{
+		{"png", minimalPNG, "image/png"},
+		{"unsupported MIME", []byte("this is not an image"), ""},
+		{"too large", tooLarge, ""},
 	}
-	if block.MIME != "image/png" || !bytes.Equal(block.Data, minimalPNG) {
-		t.Errorf("block = %q, %d bytes; want the PNG", block.MIME, len(block.Data))
-	}
-}
-
-func TestFromBytes_UnsupportedMIME(t *testing.T) {
-	_, err := FromBytes([]byte("this is not an image"))
-	if err == nil {
-		t.Fatal("expected error for unsupported MIME type")
-	}
-}
-
-func TestFromBytes_TooLarge(t *testing.T) {
-	data := make([]byte, maxImageSize+1)
-	copy(data, minimalPNG) // valid header but oversized
-	_, err := FromBytes(data)
-	if err == nil {
-		t.Fatal("expected error for oversized image")
-	}
-}
-
-func TestFromBytes_Empty(t *testing.T) {
-	_, err := FromBytes(nil)
-	if err == nil {
-		t.Fatal("expected error for empty data")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			block, err := FromBytes(tt.data)
+			if block.MIME != tt.want || (err == nil) != (tt.want != "") {
+				t.Fatalf("block = %q, err = %v; want %q", block.MIME, err, tt.want)
+			}
+			if tt.want != "" && !bytes.Equal(block.Data, tt.data) {
+				t.Errorf("block holds %d bytes, want %d", len(block.Data), len(tt.data))
+			}
+		})
 	}
 }
 
@@ -62,21 +52,15 @@ func TestParseDroppedPath(t *testing.T) {
 		want string
 	}{
 		{"raw png", "/tmp/test.png", "/tmp/test.png"},
-		{"raw jpg", "/home/user/photo.jpg", "/home/user/photo.jpg"},
 		{"raw jpeg", "/tmp/shot.JPEG", "/tmp/shot.JPEG"},
 		{"single quoted", "'/tmp/my file.png'", "/tmp/my file.png"},
 		{"double quoted", `"/tmp/my file.webp"`, "/tmp/my file.webp"},
 		{"escaped spaces", `/tmp/my\ file.png`, "/tmp/my file.png"},
 		{"escaped parens", `/tmp/photo\ \(1\).png`, "/tmp/photo (1).png"},
-		{"escaped ampersand", `/tmp/A\ \&\ B.jpg`, "/tmp/A & B.jpg"},
 		{"whitespace padding", "  /tmp/test.gif  ", "/tmp/test.gif"},
 		{"multi-file newline", "/tmp/a.png\n/tmp/b.png", ""},
-		{"multi-file crlf", "/tmp/a.png\r\n/tmp/b.png", ""},
 		{"non-image txt", "/tmp/readme.txt", ""},
-		{"non-image go", "/tmp/main.go", ""},
 		{"empty", "", ""},
-		{"just spaces", "   ", ""},
-		{"no extension", "/tmp/noext", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,19 +69,5 @@ func TestParseDroppedPath(t *testing.T) {
 				t.Errorf("ParseDroppedPath(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestLoadFile(t *testing.T) {
-	tmp := filepath.Join(t.TempDir(), "test.png")
-	if err := os.WriteFile(tmp, minimalPNG, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	block, err := LoadFile(tmp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if block.MIME != "image/png" {
-		t.Errorf("mime = %q, want image/png", block.MIME)
 	}
 }

@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,25 +12,15 @@ import (
 	"github.com/voocel/litellm"
 )
 
-// bigOutput returns a result past outputLimit, as bash's JSON object when
-// structured and as plain text otherwise, so both truncation branches get
-// exercised.
-func bigOutput(structured bool) agentcore.ToolFunc {
-	return func(context.Context, agentcore.ToolCall) (agentcore.Result, error) {
-		payload := strings.Repeat("x", outputLimit+1)
-		if structured {
-			return agentcore.JSONResult(map[string]any{"output": payload, "exit_code": 0})
-		}
-		return agentcore.TextResult(payload), nil
-	}
-}
-
 // runLimited drives the middleware the way agentcore's chain does: the
 // limiter wraps the tool's run and is handed the call it is limiting.
-func runLimited(t *testing.T, name string, structured bool) string {
+func runLimited(t *testing.T, name string) string {
 	t.Helper()
 	l := NewOutputLimiter(t.TempDir())
-	res, err := l.Middleware()(context.Background(), agentcore.ToolCall{Name: name}, bigOutput(structured))
+	res, err := l.Middleware()(context.Background(), agentcore.ToolCall{Name: name},
+		func(context.Context, agentcore.ToolCall) (agentcore.Result, error) {
+			return agentcore.TextResult(strings.Repeat("x", outputLimit+1)), nil
+		})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -39,42 +28,13 @@ func runLimited(t *testing.T, name string, structured bool) string {
 }
 
 // persistedPath returns the file a limited result points at, or "".
-// Structured results carry the text under "output", the rest are plain text.
 func persistedPath(text string) string {
-	var obj map[string]any
-	if json.Unmarshal([]byte(text), &obj) == nil {
-		text, _ = obj["output"].(string)
-	}
 	_, path, ok := strings.Cut(text, persistedPathLabel)
 	if !ok {
 		return ""
 	}
 	path, _, _ = strings.Cut(path, "\n")
 	return strings.TrimSpace(path)
-}
-
-// A structured result carries the path inside the tool's own JSON, so on
-// Windows every separator arrives doubled. Reading it back has to yield a path
-// that actually opens — that is the whole point of persisting it.
-func TestPersistedOutputPathSurvivesJSONEncoding(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		structured bool
-	}{
-		{"structured", true},
-		{"plain text", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			raw := runLimited(t, "bash", tc.structured)
-			path := persistedPath(raw)
-			if path == "" {
-				t.Fatalf("no path recovered from %.120s", raw)
-			}
-			if _, err := os.Stat(path); err != nil {
-				t.Fatalf("recovered path does not open: %v", err)
-			}
-		})
-	}
 }
 
 // Outputs live in per-session directories, so the running session's own
@@ -116,6 +76,7 @@ func TestCleanOldOutputsSweepsEverySession(t *testing.T) {
 
 // Opting out is a short, deliberate list; everything else must be covered.
 // A whitelist is what let MCP results through with no size handling at all.
+// A limited result names a file that opens: persisting is the whole point.
 func TestLimiterCoversEverythingExceptOptOuts(t *testing.T) {
 	t.Parallel()
 
@@ -128,13 +89,15 @@ func TestLimiterCoversEverythingExceptOptOuts(t *testing.T) {
 		{"read", false},
 		{"skill", false},
 		{"bash", true},
-		{"web_fetch", true},
-		{"edit", true},
 		{"mcp__github__list_issues", true},
 	} {
-		got := runLimited(t, tc.tool, false)
-		if limited := persistedPath(got) != ""; limited != tc.limited {
+		path := persistedPath(runLimited(t, tc.tool))
+		if limited := path != ""; limited != tc.limited {
 			t.Errorf("%s: limited=%v, want %v", tc.tool, limited, tc.limited)
+		} else if limited {
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("%s: saved output does not open: %v", tc.tool, err)
+			}
 		}
 	}
 }

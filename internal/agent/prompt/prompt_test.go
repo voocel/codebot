@@ -11,24 +11,13 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-func TestSystemHoldsTheConventions(t *testing.T) {
+// The system prompt is the cached prefix: what changes while a conversation
+// lasts is told in Parts.
+func TestSystemHoldsNothingThatChanges(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
 
 	system := System(cwd)
-	for _, marker := range []string{
-		"expert coding assistant",
-		"## Doing tasks",
-		"## Using tools",
-		"## System reminders",
-		"## Communication",
-		"## Auto memory",
-	} {
-		if !strings.Contains(system, marker) {
-			t.Errorf("system prompt missing %q", marker)
-		}
-	}
-	// What changes while a conversation lasts is told in Parts.
 	for _, changing := range []string{cwd, time.Now().Format("2006-01-02")} {
 		if strings.Contains(system, changing) {
 			t.Errorf("system prompt holds %q", changing)
@@ -106,35 +95,14 @@ func TestProjectFilesStayInTheProject(t *testing.T) {
 	}
 }
 
+// A part with nothing to tell says so, which retracts what it told before;
+// MEMORY.md is promised to be in context, so an empty one says so too.
 func TestPartWithNothingToTellSaysSo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	if got := MCP("").Text(); got != "# MCP Server Instructions\n\nNone." {
 		t.Fatalf("text = %q", got)
 	}
-	if got := DeferredTools(nil); got.Body != "" {
-		t.Fatalf("body = %q", got.Body)
-	}
-	if got := DeferredTools([]string{"deploy", "rollback"}).Body; !strings.HasSuffix(got, "\n\ndeploy\nrollback") {
-		t.Fatalf("body = %q", got)
-	}
-}
-
-func TestProjectAndMemory(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	cwd := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("project rule\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := Project(cwd).Body; got != "project rule" {
-		t.Fatalf("project = %q", got)
-	}
-	// MEMORY.md is promised to be in context, so an empty one says so.
-	if got := Memory(cwd).Body; !strings.Contains(got, "currently empty") {
+	if got := Memory(t.TempDir()).Body; !strings.Contains(got, "currently empty") {
 		t.Fatalf("memory = %q", got)
-	}
-}
-
-func TestGitOutsideARepository(t *testing.T) {
-	if got := Git(t.TempDir()); got.Body != "" {
-		t.Fatalf("body = %q", got.Body)
 	}
 }

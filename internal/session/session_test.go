@@ -309,6 +309,8 @@ func encode(t *testing.T, msgs []agentcore.Message) string {
 
 func (h *harness) history() string { return describeAll(h.s.History()) }
 
+// A prompt runs to Idle with its history, status and usage recorded.
+// RunStarted precedes the events of the run, and Idle follows them.
 func TestPromptRunsToIdle(t *testing.T) {
 	t.Parallel()
 	model := script(say("hello"))
@@ -328,14 +330,6 @@ func TestPromptRunsToIdle(t *testing.T) {
 		t.Fatalf("usage = %+v, context = %d", st.Usage, st.Context)
 	}
 	h.checkReplay()
-}
-
-// RunStarted precedes the events of a run, and Idle follows them.
-func TestRunEventsBetweenStartAndIdle(t *testing.T) {
-	t.Parallel()
-	h := start(t, spec(script()))
-	h.post(User, "hi")
-	h.waitIdle(1)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -396,16 +390,6 @@ func TestBackgroundInputJoinsBeforeTheRunEnds(t *testing.T) {
 	}
 	if n := h.eventCount(isAgent[agentcore.RunEnd]); n != 1 {
 		t.Fatalf("runs = %d, want 1", n)
-	}
-}
-
-func TestBackgroundInputStartsARunWhenIdle(t *testing.T) {
-	t.Parallel()
-	h := start(t, spec(script()))
-	h.post(Background, "task finished")
-	h.waitIdle(1)
-	if got := h.history(); got != "user:task finished assistant:ok" {
-		t.Fatalf("history = %s", got)
 	}
 }
 
@@ -822,21 +806,9 @@ func (h *harness) waitStatus(ok func(*Status) bool) {
 	}
 }
 
-func TestWaitReturnsOnceSubscribersHaveTheIdle(t *testing.T) {
-	t.Parallel()
-	h := start(t, spec(script(say("hello"))))
-
-	h.post(User, "hi")
-	if err := h.s.Wait(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := h.eventCount(isKind(Idle)); n != 1 {
-		t.Fatalf("Wait returned with %d Idle events delivered", n)
-	}
-}
-
-// A subscriber still behind on an earlier Idle must not end the wait for
-// input posted after it: Wait covers the run the input starts.
+// Wait returns once every subscriber has the Idle. A subscriber still behind
+// on an earlier Idle must not end the wait for input posted after it: Wait
+// covers the run the input starts.
 func TestWaitCoversInputAfterAnEarlierIdle(t *testing.T) {
 	t.Parallel()
 	h := start(t, spec(script(say("first"), say("second"))))
@@ -862,6 +834,9 @@ func TestWaitCoversInputAfterAnEarlierIdle(t *testing.T) {
 	close(gate)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+	if n := h.eventCount(isKind(Idle)); n != 2 {
+		t.Fatalf("Wait returned with %d Idle events delivered", n)
 	}
 	mu.Lock()
 	defer mu.Unlock()

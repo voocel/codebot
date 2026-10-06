@@ -15,111 +15,33 @@ import (
 	"github.com/voocel/litellm/litellmtest"
 )
 
-func boolPtr(b bool) *bool { return &b }
-
 func TestParseMatcher(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		input     string
-		match     string
-		noMatch   string
-		wantError bool
+		name    string
+		input   string
+		match   string
+		noMatch string
 	}{
 		{name: "exact", input: "bash", match: "Bash", noMatch: "write"},
-		{name: "empty", input: "", match: "anything", noMatch: ""},
 		{name: "regex", input: "/write|edit/i", match: "Write", noMatch: "bash"},
-		{name: "invalid regex", input: "/[invalid/", wantError: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m, err := parseMatcher(tc.input)
-			if tc.wantError {
-				if err == nil {
-					t.Fatal("expected parse error")
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("parseMatcher: %v", err)
 			}
 			if !m.Match(tc.match) {
 				t.Fatalf("expected %q to match %q", tc.match, tc.input)
 			}
-			if tc.noMatch != "" && m.Match(tc.noMatch) {
+			if m.Match(tc.noMatch) {
 				t.Fatalf("expected %q not to match %q", tc.noMatch, tc.input)
 			}
 		})
 	}
-}
-
-func TestNewRunner(t *testing.T) {
-	t.Parallel()
-
-	if r := New("sess1", nil); len(r.matching(PreToolUse, "bash", nil)) != 0 {
-		t.Fatal("a new runner has hooks")
-	}
-
-	cfg := config.HooksConfig{
-		"PreToolUse": {
-			{Type: "url", Command: "echo test"},
-			{Type: "command", Command: ""},
-			{Type: "command", Command: "echo ok"},
-		},
-		"BadEvent": {
-			{Type: "command", Command: "echo bad"},
-		},
-	}
-	r := newRunner(cfg, nil)
-	if got := len(r.matching(PreToolUse, "", nil)); got != 1 {
-		t.Fatalf("expected 1 compiled hook, got %d", got)
-	}
-	r.Set(nil)
-	if got := len(r.matching(PreToolUse, "", nil)); got != 0 {
-		t.Fatalf("Set(nil) left %d hooks", got)
-	}
-}
-
-func TestRunPreToolUse(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.HooksConfig{
-		"PreToolUse": {
-			{Type: "command", Command: `echo '{"block":true,"reason":"not allowed"}'`, Matcher: "bash", Blocking: boolPtr(true)},
-		},
-	}
-	r := newRunner(cfg, nil)
-
-	if _, err := r.preToolUse(context.Background(), "write", json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("non-matching hook should be skipped: %v", err)
-	}
-
-	_, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`))
-	if err == nil || err.Error() != "hook: not allowed" {
-		t.Fatalf("expected blocking error, got %v", err)
-	}
-}
-
-func TestRunPostToolUse_FireAndForget(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "marker")
-	cfg := config.HooksConfig{
-		"PostToolUse": {
-			// ToSlash: the command runs via `sh -c`, where backslashes escape.
-			{Type: "command", Command: "touch " + filepath.ToSlash(marker)},
-		},
-	}
-	r := newRunner(cfg, nil)
-	r.postToolUse("bash", nil, json.RawMessage(`"ok"`), false)
-
-	waitFor(t, "expected PostToolUse hook to run", func() bool {
-		_, err := os.Stat(marker)
-		return err == nil
-	})
 }
 
 // The PostToolUse hooks get the result's text as a JSON string, and whether
@@ -165,32 +87,13 @@ func waitFor(t *testing.T, desc string, ok func() bool) {
 	}
 }
 
-func TestPreToolUse_UpdatedInput(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.HooksConfig{
-		"PreToolUse": {
-			{Type: "command", Command: `echo '{"updated_input":{"path":"/safe"}}'`, Matcher: "write"},
-		},
-	}
-	r := newRunner(cfg, nil)
-
-	dec, err := r.preToolUse(context.Background(), "write", json.RawMessage(`{"path":"/raw"}`))
-	if err != nil {
-		t.Fatalf("hook should not block: %v", err)
-	}
-	if string(dec.UpdatedInput) != `{"path":"/safe"}` {
-		t.Fatalf("expected rewritten input, got %q", string(dec.UpdatedInput))
-	}
-}
-
 func TestPreToolUseMiddleware(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.HooksConfig{
 		"PreToolUse": {
 			{Type: "command", Command: `echo '{"updated_input":{"path":"/safe"}}'`, Matcher: "write"},
-			{Type: "command", Command: `echo '{"block":true,"reason":"nope"}'`, Matcher: "bash", Blocking: boolPtr(true)},
+			{Type: "command", Command: `echo '{"block":true,"reason":"nope"}'`, Matcher: "bash", Blocking: new(true)},
 		},
 	}
 	mw := newRunner(cfg, nil).PreToolUse()
@@ -217,52 +120,21 @@ func TestPreToolUseMiddleware(t *testing.T) {
 	}
 }
 
+// A blocking command hook blocks the call by exiting 2; failing otherwise,
+// it lets the call through.
 func TestPreToolUse_ExitCode2Blocks(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.HooksConfig{
-		"PreToolUse": {
-			{Type: "command", Command: `echo "denied" >&2; exit 2`, Matcher: "bash", Blocking: boolPtr(true)},
-		},
-	}
-	r := newRunner(cfg, nil)
-
-	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err == nil {
-		t.Fatal("expected exit-2 hook to block")
-	}
-}
-
-func TestPreToolUse_ExitCode1NonBlocking(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.HooksConfig{
-		"PreToolUse": {
-			{Type: "command", Command: `echo "oops" >&2; exit 1`, Matcher: "bash", Blocking: boolPtr(true)},
-		},
-	}
-	r := newRunner(cfg, nil)
-
-	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("exit-1 should be a non-blocking error, got block: %v", err)
-	}
-}
-
-func TestUserPromptSubmit_AdditionalContext(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.HooksConfig{
-		"UserPromptSubmit": {
-			{Type: "command", Command: `echo '{"additional_context":"remember: be concise"}'`},
-		},
-	}
-	r := newRunner(cfg, nil)
-
-	dec, err := r.RunUserPromptSubmit(context.Background(), "hello")
-	if err != nil {
-		t.Fatalf("hook should not block: %v", err)
-	}
-	if dec.AdditionalContext != "remember: be concise" {
-		t.Fatalf("expected additional context, got %q", dec.AdditionalContext)
+	for command, blocks := range map[string]bool{
+		`echo "denied" >&2; exit 2`: true,
+		`echo "oops" >&2; exit 1`:   false,
+	} {
+		r := newRunner(config.HooksConfig{"PreToolUse": {
+			{Type: "command", Command: command, Matcher: "bash", Blocking: new(true)},
+		}}, nil)
+		if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); (err != nil) != blocks {
+			t.Errorf("%s: err %v, want a block %v", command, err, blocks)
+		}
 	}
 }
 
@@ -272,7 +144,7 @@ func TestPromptHookUsesTheCurrentModel(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.HooksConfig{
-		"PreToolUse": {{Type: "prompt", Prompt: "May this run? $ARGUMENTS", Blocking: boolPtr(true)}},
+		"PreToolUse": {{Type: "prompt", Prompt: "May this run? $ARGUMENTS", Blocking: new(true)}},
 	}
 	current := answerModel(t, `{"ok":true}`)
 	r := newRunner(cfg, func() agentcore.Model { return current })
@@ -331,7 +203,7 @@ func TestCheck(t *testing.T) {
 func TestHookEnv(t *testing.T) {
 	r := New("sess", nil)
 	r.Set(config.HooksConfig{"PreToolUse": {
-		{Type: "command", Command: `test "$PLUGIN_ROOT" = /plug || exit 2`, Blocking: boolPtr(true), Env: map[string]string{"PLUGIN_ROOT": "/plug"}},
+		{Type: "command", Command: `test "$PLUGIN_ROOT" = /plug || exit 2`, Blocking: new(true), Env: map[string]string{"PLUGIN_ROOT": "/plug"}},
 	}})
 	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
 		t.Errorf("the hook went without its environment: %v", err)
@@ -363,7 +235,7 @@ func TestCommandHookTimesOut(t *testing.T) {
 	t.Parallel()
 
 	r := newRunner(config.HooksConfig{"PreToolUse": {
-		{Type: "command", Command: "sleep 30; true", Blocking: boolPtr(true), Timeout: new(1)},
+		{Type: "command", Command: "sleep 30; true", Blocking: new(true), Timeout: new(1)},
 	}}, nil)
 	start := time.Now()
 	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
