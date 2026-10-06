@@ -3,6 +3,8 @@ package plugin
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -131,9 +133,23 @@ func Cached(s Source, cache, commit string) string {
 	return filepath.Join(cache, filepath.FromSlash(s.key()), commit)
 }
 
+// DataDir returns the directory under root the plugin from s keeps its data
+// in: one for each source, whatever its ref, so that updates keep it. It is
+// named after the source's last element, for the user to tell, and its
+// digest, for no two sources to share it.
+func DataDir(s Source, root string) string {
+	s.Ref = ""
+	sum := sha256.Sum256([]byte(s.String()))
+	hint := filepath.Base(s.Dir)
+	if s.Dir == "" {
+		hint = path.Base(cmp.Or(s.Path, s.key()))
+	}
+	return filepath.Join(root, strings.TrimLeft(hint, ".")+"-"+hex.EncodeToString(sum[:4]))
+}
+
 // ReadCached reads the plugin of the git source s from the checkout of its
 // commit under cache, which the plugin's directory may not lead out of.
-func ReadCached(s Source, cache, commit, dataRoot string) (*Plugin, []error, error) {
+func ReadCached(s Source, cache, commit, data string) (*Plugin, []error, error) {
 	repo := Cached(s, cache, commit)
 	dir := filepath.Join(repo, filepath.FromSlash(s.Path))
 	realRepo, err := filepath.EvalSymlinks(repo)
@@ -147,7 +163,7 @@ func ReadCached(s Source, cache, commit, dataRoot string) (*Plugin, []error, err
 	if !within(realRepo, real) {
 		return nil, nil, fmt.Errorf("%s leads outside %s", s.Path, s.URL)
 	}
-	return Read(dir, dataRoot)
+	return Read(dir, data)
 }
 
 // Fetch fetches from git into the cache under cache the commit given, or
@@ -208,17 +224,16 @@ func Fetch(ctx context.Context, s Source, cache, commit string) (string, error) 
 	return got, nil
 }
 
-// orphanAge is how long a commit no longer locked stays cached: a session
-// that loaded it before may run it still.
+// orphanAge is how long a commit, or a plugin's data, that no one holds
+// stays: a session that loaded it before may use it still.
 const orphanAge = 14 * 24 * time.Hour
 
 // reCommit matches a commit's name, SHA-1 or SHA-256.
 var reCommit = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
-// Sweep clears the cache under cache of the checkouts keep does not hold,
-// by directory. It marks one it finds unheld, beside it, and removes it
-// once it was marked orphanAge ago; one held again loses its mark.
-func Sweep(cache string, keep map[string]bool, now time.Time) error {
+// SweepCache clears the cache under cache of the checkouts keep does not
+// hold: see sweep.
+func SweepCache(cache string, keep map[string]bool, now time.Time) error {
 	err := filepath.WalkDir(cache, func(p string, d fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
@@ -230,19 +245,7 @@ func Sweep(cache string, keep map[string]bool, now time.Time) error {
 		case !reCommit.MatchString(d.Name()):
 			return nil // a repository's path
 		}
-		marker := p + ".orphaned"
-		marked, err := os.Stat(marker)
-		switch {
-		case keep[p]:
-			err = os.Remove(marker)
-		case errors.Is(err, fs.ErrNotExist):
-			err = os.WriteFile(marker, nil, 0o600)
-		case err == nil && now.Sub(marked.ModTime()) >= orphanAge:
-			if err = os.RemoveAll(p); err == nil {
-				err = os.Remove(marker)
-			}
-		}
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := sweep(p, keep[p], now); err != nil {
 			return err
 		}
 		return filepath.SkipDir
@@ -251,6 +254,48 @@ func Sweep(cache string, keep map[string]bool, now time.Time) error {
 		return nil
 	}
 	return err
+}
+
+// SweepData clears the plugins' data under data of the directories keep
+// does not hold: see sweep.
+func SweepData(data string, keep map[string]bool, now time.Time) error {
+	entries, err := os.ReadDir(data)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if p := filepath.Join(data, e.Name()); e.IsDir() {
+			if err := sweep(p, keep[p], now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// sweep marks the directory p, beside it, where it is not held, and removes
+// it once it was marked orphanAge ago: a session may use it still. Held
+// again, it loses its mark.
+func sweep(p string, held bool, now time.Time) error {
+	marker := p + ".orphaned"
+	marked, err := os.Stat(marker)
+	switch {
+	case held:
+		err = os.Remove(marker)
+	case errors.Is(err, fs.ErrNotExist):
+		err = os.WriteFile(marker, nil, 0o600)
+	case err == nil && now.Sub(marked.ModTime()) >= orphanAge:
+		if err = os.RemoveAll(p); err == nil {
+			err = os.Remove(marker)
+		}
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // git runs git in dir and returns its output, trimmed. Of the transports

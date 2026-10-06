@@ -81,19 +81,19 @@ type Plugin struct {
 	ext json.RawMessage // its extension in codebot's namespace
 }
 
-// Read reads the plugin in dir, its data kept under dataRoot. A manifest
-// that breaks the format rejects the whole plugin, an error; a broken skill
-// or MCP configuration is left out and reported among problems.
-func Read(dir, dataRoot string) (p *Plugin, problems []error, err error) {
+// Read reads the plugin in dir, its data kept in data: see DataDir. A
+// manifest that breaks the format rejects the whole plugin, an error; a
+// broken skill or MCP configuration is left out and reported among
+// problems.
+func Read(dir, data string) (p *Plugin, problems []error, err error) {
 	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil, nil, err
 	}
-	p = &Plugin{Root: root}
+	p = &Plugin{Root: root, Data: data}
 	if problems, err = p.readManifest(); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", dir, err)
 	}
-	p.Data = filepath.Join(dataRoot, p.Name)
 	problems = append(problems, p.readSkills()...)
 	problems = append(problems, p.readMCP()...)
 	problems = append(problems, p.readExtension()...)

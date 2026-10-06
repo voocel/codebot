@@ -75,25 +75,45 @@ func sorted(s Surface) Surface {
 	return slices.Compact(s)
 }
 
-// projectSurface returns the surface of a project of grants and skills: see
-// config.ForProject.
-func projectSurface(grants config.Settings, skills []skill.Spec) Surface {
-	var s Surface
-	for _, h := range hooksOf(Project, grants.Hooks) {
-		s = append(s, h.item())
+// grantItem is one of a project's grants: its item, and how it takes
+// effect.
+type grantItem struct {
+	Item
+	apply func(*config.Settings)
+}
+
+// grantItems lists a project's grants, config.ForProject's, one item each.
+func grantItems(g config.Settings) []grantItem {
+	var out []grantItem
+	add := func(it Item, apply func(*config.Settings)) { out = append(out, grantItem{it, apply}) }
+	for _, h := range hooksOf(Project, g.Hooks) {
+		add(h.item(), func(s *config.Settings) { s.Hooks[h.Event] = append(s.Hooks[h.Event], h.HookEntry) })
 	}
-	for name, srv := range grants.MCPServers {
-		s = append(s, MCPServer{Name: name, MCPServer: srv}.item())
+	for name, srv := range g.MCPServers {
+		add(MCPServer{Name: name, MCPServer: srv}.item(), func(s *config.Settings) { s.MCPServers[name] = srv })
 	}
-	for _, raw := range grants.Plugins {
-		s = append(s, NewItem("plugin", raw))
+	for _, raw := range g.Plugins {
+		add(NewItem("plugin", raw), func(s *config.Settings) { s.Plugins = append(s.Plugins, raw) })
 	}
-	if p := grants.Permissions; p != nil {
-		for kind, rules := range map[string][]string{"allow": p.Allow, "read": p.ReadRoots, "write": p.WriteRoots} {
-			for _, r := range rules {
-				s = append(s, NewItem(kind, r))
-			}
+	if p := g.Permissions; p != nil {
+		for _, r := range p.Allow {
+			add(NewItem("allow", r), func(s *config.Settings) { s.Permissions.Allow = append(s.Permissions.Allow, r) })
 		}
+		for _, r := range p.ReadRoots {
+			add(NewItem("read", r), func(s *config.Settings) { s.Permissions.ReadRoots = append(s.Permissions.ReadRoots, r) })
+		}
+		for _, r := range p.WriteRoots {
+			add(NewItem("write", r), func(s *config.Settings) { s.Permissions.WriteRoots = append(s.Permissions.WriteRoots, r) })
+		}
+	}
+	return out
+}
+
+// projectSurface returns the surface of a project of grants and skills.
+func projectSurface(grants []grantItem, skills []skill.Spec) Surface {
+	var s Surface
+	for _, g := range grants {
+		s = append(s, g.Item)
 	}
 	for _, spec := range skills {
 		s = append(s, skillItems(spec.Name, spec)...)
@@ -101,35 +121,13 @@ func projectSurface(grants config.Settings, skills []skill.Spec) Surface {
 	return sorted(s)
 }
 
-// grant keeps of a project's grants those the user agreed to.
-func grant(grants config.Settings, agreed Surface) config.Settings {
-	var out config.Settings
-	for _, h := range hooksOf(Project, grants.Hooks) {
-		if agreed.Has(h.item()) {
-			if out.Hooks == nil {
-				out.Hooks = config.HooksConfig{}
-			}
-			out.Hooks[h.Event] = append(out.Hooks[h.Event], h.HookEntry)
+// grant returns the settings of the grants the user agreed to.
+func grant(grants []grantItem, agreed Surface) config.Settings {
+	out := config.Settings{Hooks: config.HooksConfig{}, MCPServers: map[string]config.MCPServer{}, Permissions: &config.PermissionsConfig{}}
+	for _, g := range grants {
+		if agreed.Has(g.Item) {
+			g.apply(&out)
 		}
-	}
-	for name, srv := range grants.MCPServers {
-		if agreed.Has(MCPServer{Name: name, MCPServer: srv}.item()) {
-			if out.MCPServers == nil {
-				out.MCPServers = map[string]config.MCPServer{}
-			}
-			out.MCPServers[name] = srv
-		}
-	}
-	for _, raw := range grants.Plugins {
-		if agreed.Has(NewItem("plugin", raw)) {
-			out.Plugins = append(out.Plugins, raw)
-		}
-	}
-	if p := grants.Permissions; p != nil {
-		keep := func(kind string, rules []string) []string {
-			return slices.DeleteFunc(slices.Clone(rules), func(r string) bool { return !agreed.Has(NewItem(kind, r)) })
-		}
-		out.Permissions = &config.PermissionsConfig{Allow: keep("allow", p.Allow), ReadRoots: keep("read", p.ReadRoots), WriteRoots: keep("write", p.WriteRoots)}
 	}
 	return out
 }

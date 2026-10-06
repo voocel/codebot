@@ -32,6 +32,15 @@ type Consent struct {
 	Surface Surface `json:"surface,omitempty"`
 }
 
+// agreed returns what of surface the user agreed to. A consent to all of
+// it, for a session, is Consent{Surface: surface}.
+func (c Consent) agreed(surface Surface) Surface {
+	if c.Denied {
+		return nil
+	}
+	return surface.Intersect(c.Surface)
+}
+
 func consentsPath() string { return filepath.Join(config.UserConfigDir(), "consent.json") }
 
 // ReadConsents returns what the user agreed to.

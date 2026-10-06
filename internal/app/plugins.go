@@ -23,11 +23,12 @@ type PluginContent = plugin.Plugin
 
 // Plugin states; see extension.PluginState.
 const (
-	PluginOn       = extension.PluginOn
-	PluginShadowed = extension.PluginShadowed
-	PluginHeld     = extension.PluginHeld
-	PluginMissing  = extension.PluginMissing
-	PluginBroken   = extension.PluginBroken
+	PluginOn           = extension.PluginOn
+	PluginShadowed     = extension.PluginShadowed
+	PluginUntrusted    = extension.PluginUntrusted
+	PluginNotInstalled = extension.PluginNotInstalled
+	PluginNotCached    = extension.PluginNotCached
+	PluginBroken       = extension.PluginBroken
 )
 
 // Plugins lists the plugins given on the command line, then those the
@@ -136,13 +137,13 @@ func (a *App) InstallPlugins(ctx context.Context) (offers []*PluginOffer, fetche
 		var o *PluginOffer
 		var err error
 		switch {
-		case pl.State == PluginMissing && pl.Commit != "":
+		case pl.State == PluginNotCached:
 			if _, _, _, err = extension.ReadPlugin(ctx, pl.Src, pl.Commit); err == nil {
 				fetched = append(fetched, pl.Source)
 			}
-		case pl.State == PluginMissing:
+		case pl.State == PluginNotInstalled:
 			o, err = a.offer(ctx, pl.Src, "")
-		case pl.State == PluginOn && len(pl.Held) > 0:
+		case pl.State == PluginOn && len(pl.Held()) > 0:
 			o, err = a.offer(ctx, pl.Src, pl.Commit)
 		}
 		if err != nil {
@@ -191,7 +192,7 @@ func (a *App) UpdatePlugins(ctx context.Context, ref string) ([]PluginUpdate, er
 		case o.Commit == pl.Commit:
 			u.Commit = o.Commit
 			// Fetched again, a commit no longer cached takes effect.
-			applied = applied || pl.State == PluginMissing
+			applied = applied || pl.State == PluginNotCached
 		case len(o.New) > 0:
 			o.Source, o.Scope = pl.Source, pl.Scope
 			u.Commit, u.Offer = o.Commit, o
@@ -272,9 +273,9 @@ func (a *App) editSettings(scope extension.Scope, edit func(*config.Settings)) e
 	return config.EditUserSettings(edit)
 }
 
-// sweepPluginCache clears the cache of the commits left behind.
-func sweepPluginCache() {
-	if err := extension.SweepCache(); err != nil {
-		log.Printf("sweep the plugin cache: %v", err)
+// sweepPlugins clears the commits and the data the plugins left behind.
+func (a *App) sweepPlugins() {
+	if err := extension.SweepPlugins(a.opts.PluginDirs); err != nil {
+		log.Printf("sweep the plugins: %v", err)
 	}
 }

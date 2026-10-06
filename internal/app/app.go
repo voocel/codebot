@@ -154,7 +154,7 @@ func Boot(opts Options) (*App, error) {
 	}
 	go tools.CleanOldOutputs(config.SessionsDir(cwd))
 	go cleanWorktreeOrphans(cwd)
-	go sweepPluginCache()
+	go a.sweepPlugins()
 	return a, nil
 }
 

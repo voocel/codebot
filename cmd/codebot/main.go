@@ -174,13 +174,13 @@ func warn(a *app.App) {
 		fmt.Fprintln(os.Stderr, "codebot: "+err.Error())
 	}
 	for _, pl := range a.Plugins() {
-		switch {
-		case pl.State == app.PluginMissing:
-			fmt.Fprintf(os.Stderr, "codebot: plugin %s is not installed: /plugins install in codebot installs it\n", pl.Source)
+		switch held := pl.Held(); {
+		case pl.State == app.PluginNotInstalled, pl.State == app.PluginNotCached:
+			fmt.Fprintf(os.Stderr, "codebot: plugin %s is %s: /plugins install in codebot installs it\n", pl.Source, pl.State)
 		case pl.State == app.PluginBroken:
 			fmt.Fprintf(os.Stderr, "codebot: plugin %s is broken: %v\n", pl.Source, pl.Err)
-		case pl.State == app.PluginOn && len(pl.Held) > 0:
-			fmt.Fprintf(os.Stderr, "codebot: plugin %s runs %d more you have yet to agree to: /plugins install in codebot asks\n", pl.Name, len(pl.Held))
+		case len(held) > 0:
+			fmt.Fprintf(os.Stderr, "codebot: plugin %s runs %d more you have yet to agree to: /plugins install in codebot asks\n", pl.Name, len(held))
 		}
 	}
 	t := a.Trust()

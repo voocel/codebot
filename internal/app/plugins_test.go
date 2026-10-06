@@ -115,7 +115,7 @@ func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	if _, err := e.app.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if pl := e.app.Plugins()[0]; pl.State != PluginOn || !slices.Equal(pl.Held, Surface{mcpItem("shell")}) {
+	if pl := e.app.Plugins()[0]; pl.State != PluginOn || !slices.Equal(pl.Held(), Surface{mcpItem("shell")}) {
 		t.Fatalf("plugin %+v", pl)
 	}
 	if !slices.Equal(servers(e), []string{"kit_db"}) {
@@ -128,7 +128,7 @@ func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	if _, err := e.app.AcceptPlugin(ctx, offers[0]); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(servers(e), []string{"kit_db", "kit_shell"}) || len(e.app.Plugins()[0].Held) > 0 {
+	if !slices.Equal(servers(e), []string{"kit_db", "kit_shell"}) || len(e.app.Plugins()[0].Held()) > 0 {
 		t.Errorf("servers %q, plugin %+v", servers(e), e.app.Plugins()[0])
 	}
 	if layers, _ := config.Load(e.cwd); len(layers.User.Plugins) != 1 {
@@ -218,23 +218,23 @@ func TestProjectPlugins(t *testing.T) {
 	commit("v1")
 	e := boot(t, setup{project: map[string]any{"plugins": []string{"example.test/acme/kit"}}}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	ctx := context.Background()
-	if pl := e.app.Plugins()[0]; pl.State != PluginHeld {
+	if pl := e.app.Plugins()[0]; pl.State != PluginUntrusted {
 		t.Fatalf("the untrusted project's plugin is %s", pl.State)
 	}
-	if _, _, errs := e.app.InstallPlugins(ctx); len(errs) > 0 || e.app.Plugins()[0].State != PluginHeld {
+	if _, _, errs := e.app.InstallPlugins(ctx); len(errs) > 0 || e.app.Plugins()[0].State != PluginUntrusted {
 		t.Fatalf("installed the untrusted project's plugin: %v", errs)
 	}
 	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, true, false); err != nil {
 		t.Fatal(err)
 	}
-	if pl := e.app.Plugins()[0]; pl.State != PluginMissing || len(e.app.Trust().Ask()) > 0 {
+	if pl := e.app.Plugins()[0]; pl.State != PluginNotInstalled || len(e.app.Trust().Ask()) > 0 {
 		t.Fatalf("trusted, plugin %+v, trust %+v", pl, e.app.Trust())
 	}
 	offers, _, errs := e.app.InstallPlugins(ctx)
 	if len(offers) != 1 || len(errs) > 0 || !slices.Equal(offers[0].New, Surface{mcpItem("db")}) {
 		t.Fatalf("install: %+v, %v", offers, errs)
 	}
-	if pl := e.app.Plugins()[0]; pl.State != PluginMissing {
+	if pl := e.app.Plugins()[0]; pl.State != PluginNotInstalled {
 		t.Fatalf("offered, the plugin is %s", pl.State)
 	}
 	if _, err := e.app.AcceptPlugin(ctx, offers[0]); err != nil {
@@ -247,7 +247,7 @@ func TestProjectPlugins(t *testing.T) {
 	if _, err := e.app.SetTrust(ctx, e.app.Trust().Surface, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if pl := e.app.Plugins()[0]; pl.State != PluginHeld || len(servers(e)) > 0 {
+	if pl := e.app.Plugins()[0]; pl.State != PluginUntrusted || len(servers(e)) > 0 {
 		t.Errorf("distrusted, plugin %+v, servers %q", pl, servers(e))
 	}
 }
@@ -275,7 +275,7 @@ func TestAgreedPluginsComeBackAtTheirCommit(t *testing.T) {
 	if _, err := e.app.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if pl := e.app.Plugins()[0]; pl.State != PluginMissing || pl.Commit != o.Commit {
+	if pl := e.app.Plugins()[0]; pl.State != PluginNotCached || pl.Commit != o.Commit {
 		t.Fatalf("plugin %+v", pl)
 	}
 	offers, fetched, errs := e.app.InstallPlugins(ctx)
@@ -296,7 +296,7 @@ func TestDeclaredPluginsWaitToBeInstalled(t *testing.T) {
 	e := boot(t, setup{settings: map[string]any{"plugins": []string{"example.test/acme/kit"}}}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	ctx := context.Background()
 	e.app.Connect(ctx)
-	if pl := e.app.Plugins()[0]; pl.State != PluginMissing || pl.Commit != "" {
+	if pl := e.app.Plugins()[0]; pl.State != PluginNotInstalled || pl.Commit != "" {
 		t.Fatalf("plugin %+v", pl)
 	}
 	if _, err := e.app.OfferPlugin(ctx, "example.test/acme/kit", false); err == nil {
@@ -429,7 +429,7 @@ func TestPluginHooksRun(t *testing.T) {
 		t.Errorf("agents %+v", e.app.Extensions().Agents)
 	}
 	e.submit("go")
-	if _, err := os.Stat(filepath.Join(config.UserConfigDir(), "plugins", "data", "kit", "ran")); err != nil {
+	if _, err := os.Stat(filepath.Join(e.app.Plugins()[0].Data, "ran")); err != nil {
 		t.Errorf("the plugin's hook did not run with its data: %v", err)
 	}
 }

@@ -84,7 +84,7 @@ type Trust struct {
 	Denied bool
 }
 
-// Held returns what of the surface is not in effect.
+// Held returns what of the surface waits for the user to agree to it.
 func (t Trust) Held() Surface { return t.Surface.Missing(t.Agreed) }
 
 // Ask returns what of the surface to ask the user about: what is held,
@@ -147,22 +147,19 @@ func Load(o Options) *Set {
 		s.problem(fmt.Errorf("%s: only %s may set %s; ignored",
 			config.ProjectSettingsPath(l.Root), config.UserSettingsPath(), strings.Join(refused, ", ")))
 	}
-	projectSkills := s.loadSkills(o.Cwd, l.Root)
-	s.Trust = Trust{Root: l.Root, Surface: projectSurface(grants, projectSkills)}
-	switch c := o.Consents.Projects[l.Root]; {
-	case o.TrustAll:
-		s.Trust.Agreed = s.Trust.Surface
-	case c.Denied:
-		s.Trust.Denied = true
-	default:
-		s.Trust.Agreed = s.Trust.Surface.Intersect(c.Surface)
+	items := grantItems(grants)
+	surface := projectSurface(items, s.loadSkills(o.Cwd, l.Root))
+	c := o.Consents.Projects[l.Root]
+	if o.TrustAll {
+		c = Consent{Surface: surface}
 	}
+	s.Trust = Trust{Root: l.Root, Surface: surface, Agreed: c.agreed(surface), Denied: c.Denied}
 	for i, spec := range s.Skills {
 		if spec.Source == string(Project) {
 			s.Skills[i].Privileged = s.Trust.Agreed.HasAll(skillItems(spec.Name, spec))
 		}
 	}
-	s.Granted = grant(grants, s.Trust.Agreed)
+	s.Granted = grant(items, s.Trust.Agreed)
 
 	s.loadAgents(o.Cwd, l.Root)
 	s.loadMCP(l.Root, l.User.MCPServers, s.Granted.MCPServers)

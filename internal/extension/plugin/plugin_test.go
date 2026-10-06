@@ -49,7 +49,7 @@ func TestReadsAPlugin(t *testing.T) {
 			"npx": {"type": "stdio", "command": "npx", "cwd": "${PLUGIN_DATA}"}
 		}}`,
 	})
-	p, problems, err := Read(dir, "/data")
+	p, problems, err := Read(dir, "/data/acme-tools")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestCodebotNamespace(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "agents", "away.md")); err != nil {
 		t.Fatal(err)
 	}
-	p, problems, err := Read(dir, "/data")
+	p, problems, err := Read(dir, "/data/acme-tools")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,58 @@ func TestCodebotNamespace(t *testing.T) {
 
 // A commit no longer held is marked, and removed two weeks after; one held
 // again loses its mark, and a fetch under way is left alone.
-func TestSweep(t *testing.T) {
+// A plugin keeps its data across refs, apart from any other source's.
+func TestDataDir(t *testing.T) {
+	dir := func(raw string) string {
+		s, err := ParseSource(raw, "/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return DataDir(s, "/d")
+	}
+	v1, v2 := dir("github.com/acme/tools#v1"), dir("github.com/acme/tools#v2")
+	if v1 != v2 || filepath.Dir(v1) != filepath.FromSlash("/d") || !strings.HasPrefix(filepath.Base(v1), "tools-") {
+		t.Errorf("refs: %s, %s", v1, v2)
+	}
+	if lint := dir("github.com/acme/tools//plugins/lint"); lint == v1 || !strings.HasPrefix(filepath.Base(lint), "lint-") {
+		t.Errorf("a directory of the repository: %s", lint)
+	}
+	if fork := dir("github.com/fork/tools"); fork == v1 {
+		t.Error("two repositories share their data")
+	}
+	if local := dir("/src/tools"); local == v1 || !strings.HasPrefix(filepath.Base(local), "tools-") {
+		t.Errorf("a local plugin: %s", local)
+	}
+}
+
+// Data no one holds is marked, then removed.
+func TestSweepData(t *testing.T) {
+	data := t.TempDir()
+	held, left := filepath.Join(data, "kit-1"), filepath.Join(data, "kit-2")
+	for _, d := range []string{held, left} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := map[string]bool{held: true}
+	now := time.Now()
+	for _, at := range []time.Time{now, now.Add(orphanAge + time.Hour)} {
+		if err := SweepData(data, keep, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(left); err == nil {
+		t.Error("the data no one holds stays")
+	}
+	if _, err := os.Stat(held); err != nil {
+		t.Errorf("the data held is gone: %v", err)
+	}
+	if err := SweepData(filepath.Join(data, "none"), keep, now); err != nil {
+		t.Errorf("no data yet: %v", err)
+	}
+}
+
+func TestSweepCache(t *testing.T) {
 	cache := t.TempDir()
 	repo := filepath.Join(cache, "example.test", "acme", "kit")
 	held, left := filepath.Join(repo, strings.Repeat("a", 40)), filepath.Join(repo, strings.Repeat("b", 40))
@@ -360,16 +411,16 @@ func TestSweep(t *testing.T) {
 	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
 
 	now := time.Now()
-	if err := Sweep(cache, keep, now); err != nil {
+	if err := SweepCache(cache, keep, now); err != nil {
 		t.Fatal(err)
 	}
 	if !exists(left+".orphaned") || exists(held+".orphaned") || !exists(left) {
 		t.Fatal("the commit no longer held is not marked, or the held one is")
 	}
-	if err := Sweep(cache, keep, now.Add(orphanAge-time.Hour)); err != nil || !exists(left) {
+	if err := SweepCache(cache, keep, now.Add(orphanAge-time.Hour)); err != nil || !exists(left) {
 		t.Fatalf("removed before its time: %v", err)
 	}
-	if err := Sweep(cache, keep, now.Add(orphanAge+time.Hour)); err != nil {
+	if err := SweepCache(cache, keep, now.Add(orphanAge+time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if exists(left) || exists(left+".orphaned") || !exists(held) || !exists(fetching) {
@@ -379,10 +430,10 @@ func TestSweep(t *testing.T) {
 	if err := os.WriteFile(held+".orphaned", nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Sweep(cache, keep, now.Add(2*orphanAge)); err != nil || !exists(held) || exists(held+".orphaned") {
+	if err := SweepCache(cache, keep, now.Add(2*orphanAge)); err != nil || !exists(held) || exists(held+".orphaned") {
 		t.Errorf("a commit held again was removed or kept its mark: %v", err)
 	}
-	if err := Sweep(filepath.Join(cache, "none"), keep, now); err != nil {
+	if err := SweepCache(filepath.Join(cache, "none"), keep, now); err != nil {
 		t.Errorf("no cache yet: %v", err)
 	}
 }

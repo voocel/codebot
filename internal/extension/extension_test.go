@@ -175,7 +175,7 @@ func TestTheSurfaceWaitsForTrust(t *testing.T) {
 	if got := s.MCPConfig(); got["db"].Command != "user-db" || got["docs"].Headers["Authorization"] != "secret" {
 		t.Errorf("MCP servers %v", got)
 	}
-	if s.Granted.Hooks != nil || s.Granted.MCPServers != nil || len(s.Granted.Permissions.Allow) > 0 || len(s.Granted.Permissions.WriteRoots) > 0 {
+	if len(s.Granted.Hooks) > 0 || len(s.Granted.MCPServers) > 0 || len(s.Granted.Plugins) > 0 || len(s.Granted.Permissions.Allow) > 0 || len(s.Granted.Permissions.WriteRoots) > 0 {
 		t.Errorf("granted %+v", s.Granted)
 	}
 	if got := fmt.Sprint(s.Problems); !strings.Contains(got, "providers, telemetry") {
@@ -390,7 +390,7 @@ func TestPlugins(t *testing.T) {
 	}
 
 	s := load(t, cwd, false)
-	want := []string{"../plugins/acme on", "~/plugins/other on", "~/plugins/acme-copy shadowed", "github.com/acme/remote#v1 on", "github.com/acme/gone not installed", "nope broken"}
+	want := []string{"../plugins/acme on", "~/plugins/other on", "~/plugins/acme-copy shadowed", "github.com/acme/remote#v1 on", "github.com/acme/gone not cached", "nope broken"}
 	if got := states(s); !slices.Equal(got, want) {
 		t.Errorf("plugins %q, want %q", got, want)
 	}
@@ -398,8 +398,11 @@ func TestPlugins(t *testing.T) {
 		t.Errorf("acme:release = %+v", spec)
 	}
 	db := s.MCPConfig()["acme_db"]
-	if db.Command != "db-mcp" || db.Args[0] != filepath.Join(home, ".codebot", "plugins", "data", "acme") {
+	if db.Command != "db-mcp" || db.Args[0] != plugin.DataDir(plugin.Source{Dir: acme}, dataDir()) {
 		t.Errorf("acme_db = %+v", db)
+	}
+	if s.Plugins[2].Data == s.Plugins[0].Data {
+		t.Error("two plugins of one name share their data")
 	}
 	if _, err := os.Stat(db.Args[0]); err != nil {
 		t.Errorf("the plugin's data directory is missing: %v", err)
@@ -414,7 +417,7 @@ func TestPlugins(t *testing.T) {
 	// The user has yet to agree to what other runs: its skill loads, but
 	// not its privileges, and its server waits.
 	other := s.Plugins[1]
-	if !slices.Equal(other.Held, pluginWants("other")) || find(s.Skills, "other:release").Privileged {
+	if !slices.Equal(other.Held(), pluginWants("other")) || find(s.Skills, "other:release").Privileged {
 		t.Errorf("other %+v", other)
 	}
 	if _, ok := s.MCPConfig()["other_db"]; ok {
@@ -440,7 +443,7 @@ func TestSessionPlugins(t *testing.T) {
 	if got := states(s); !slices.Equal(got, []string{dev + " on", "~/plugins/acme shadowed"}) {
 		t.Errorf("plugins %q", got)
 	}
-	if s.Plugins[0].Scope != Session || len(s.Plugins[0].Held) > 0 || s.MCPConfig()["acme_db"].Command == "" {
+	if s.Plugins[0].Scope != Session || len(s.Plugins[0].Held()) > 0 || s.MCPConfig()["acme_db"].Command == "" {
 		t.Errorf("session plugin %+v", s.Plugins[0])
 	}
 }
@@ -467,19 +470,19 @@ func TestProjectPluginsWaitForTrust(t *testing.T) {
 	if got := states(s); !slices.Equal(got, []string{"../tools/kit on", "github.com/acme/remote#v1 not installed"}) {
 		t.Errorf("plugins %q", got)
 	}
-	if !slices.Equal(s.Plugins[0].Held, pluginWants("kit")) || len(s.MCP) > 0 {
+	if !slices.Equal(s.Plugins[0].Held(), pluginWants("kit")) || len(s.MCP) > 0 {
 		t.Errorf("kit runs what the user has yet to agree to: %+v", s.Plugins[0])
 	}
 
 	consents.Plugins = map[string]Consent{kit: {Surface: pluginWants("kit")}}
 	s = loadWith(t, Options{Cwd: cwd, Consents: consents})
-	if len(s.Plugins[0].Held) > 0 || s.MCPConfig()["kit_db"].Command == "" || !find(s.Skills, "kit:release").Privileged {
+	if len(s.Plugins[0].Held()) > 0 || s.MCPConfig()["kit_db"].Command == "" || !find(s.Skills, "kit:release").Privileged {
 		t.Errorf("kit %+v", s.Plugins[0])
 	}
 
 	// Trusted for a run, the project and the plugins it declares run.
 	s = load(t, cwd, true)
-	if s.Plugins[0].State != PluginOn || len(s.Plugins[0].Held) > 0 || s.MCPConfig()["kit_db"].Command == "" {
+	if s.Plugins[0].State != PluginOn || len(s.Plugins[0].Held()) > 0 || s.MCPConfig()["kit_db"].Command == "" {
 		t.Errorf("trusted for the run %+v", s.Plugins[0])
 	}
 }
@@ -556,8 +559,8 @@ func TestPluginHooksAndAgents(t *testing.T) {
 
 	consents := Consents{Projects: map[string]Consent{root: {Surface: Surface{{"plugin", "../tools/kit"}}}}}
 	held := loadWith(t, Options{Cwd: cwd, Consents: consents})
-	if len(held.Hooks) > 0 || !slices.Equal(held.Plugins[0].Held, Surface{{"hook", `kit: PreToolUse(bash): "$PLUGIN_ROOT"/guard`}}) {
-		t.Errorf("hooks %+v, held %q", held.Hooks, held.Plugins[0].Held)
+	if len(held.Hooks) > 0 || !slices.Equal(held.Plugins[0].Held(), Surface{{"hook", `kit: PreToolUse(bash): "$PLUGIN_ROOT"/guard`}}) {
+		t.Errorf("hooks %+v, held %q", held.Hooks, held.Plugins[0].Held())
 	}
 
 	s := load(t, cwd, true)
@@ -572,26 +575,33 @@ func TestPluginHooksAndAgents(t *testing.T) {
 	}
 }
 
-// The cache keeps the commits the user agreed to, and marks the others.
-func TestSweepCacheKeepsAgreedCommits(t *testing.T) {
+// The sweep keeps the commits and the data of the plugins the user agreed
+// to, and of those given on the command line, and marks the others.
+func TestSweepPluginsKeepsWhatIsAgreedTo(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	src, _ := plugin.ParseSource("example.test/acme/kit//plugins/kit#main", "")
+	other, _ := plugin.ParseSource("example.test/acme/other", "")
+	session := plugin.Source{Dir: t.TempDir()}
 	agreed, old := strings.Repeat("a", 40), strings.Repeat("b", 40)
-	for _, c := range []string{agreed, old} {
-		if err := os.MkdirAll(plugin.Cached(src, cacheDir(), c), 0o755); err != nil {
+	for _, d := range []string{
+		plugin.Cached(src, cacheDir(), agreed), plugin.Cached(src, cacheDir(), old),
+		plugin.DataDir(src, dataDir()), plugin.DataDir(other, dataDir()), plugin.DataDir(session, dataDir()),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := AgreeToPlugin(src, agreed, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := SweepCache(); err != nil {
+	if err := SweepPlugins([]string{session.Dir}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(plugin.Cached(src, cacheDir(), old) + ".orphaned"); err != nil {
-		t.Error("the commit left behind is not marked")
+	marked := func(dir string) bool { _, err := os.Stat(dir + ".orphaned"); return err == nil }
+	if !marked(plugin.Cached(src, cacheDir(), old)) || !marked(plugin.DataDir(other, dataDir())) {
+		t.Error("what no one agreed to is not marked")
 	}
-	if _, err := os.Stat(plugin.Cached(src, cacheDir(), agreed) + ".orphaned"); err == nil {
-		t.Error("the commit agreed to is marked")
+	if marked(plugin.Cached(src, cacheDir(), agreed)) || marked(plugin.DataDir(src, dataDir())) || marked(plugin.DataDir(session, dataDir())) {
+		t.Error("what is in use is marked")
 	}
 }

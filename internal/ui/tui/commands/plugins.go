@@ -135,18 +135,15 @@ func pluginDetail(pl app.Plugin) string {
 func pluginState(pl app.Plugin) string {
 	switch pl.State {
 	case app.PluginOn:
-		if len(pl.Held) > 0 {
-			return fmt.Sprintf("on · %d waiting for you · /plugins install", len(pl.Held))
+		if held := pl.Held(); len(held) > 0 {
+			return fmt.Sprintf("on · %d waiting for you · /plugins install", len(held))
 		}
 	case app.PluginShadowed:
 		return "another " + pl.Name + " is on in its stead"
-	case app.PluginHeld:
+	case app.PluginUntrusted:
 		return "waits for /trust"
-	case app.PluginMissing:
-		if pl.Commit != "" {
-			return "not cached · /plugins install"
-		}
-		return "not installed · /plugins install"
+	case app.PluginNotInstalled, app.PluginNotCached:
+		return string(pl.State) + " · /plugins install"
 	case app.PluginBroken:
 		return "broken: " + pl.Err.Error()
 	}
@@ -181,7 +178,7 @@ func pluginRows(pl app.Plugin) [][2]string {
 	if pl.Plugin == nil {
 		return rows
 	}
-	rows = append(rows, [2]string{"Directory", transcript.HomePath(pl.Root)})
+	rows = append(rows, [2]string{"Directory", transcript.HomePath(pl.Root)}, [2]string{"Data", transcript.HomePath(pl.Data)})
 	if pl.Description != "" {
 		rows = append(rows, [2]string{"About", pl.Description})
 	}
@@ -201,7 +198,7 @@ func pluginRows(pl app.Plugin) [][2]string {
 		rows = append(rows, [2]string{"Runs", ""})
 		for _, it := range pl.Surface {
 			detail := it.Detail
-			if pl.Held.Has(it) {
+			if !pl.Agreed.Has(it) {
 				detail += " · waiting for you"
 			}
 			rows = append(rows, [2]string{panel.KindLabel(it.Kind), detail})
