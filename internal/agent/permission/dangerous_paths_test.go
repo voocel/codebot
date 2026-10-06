@@ -33,8 +33,15 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 		{"read aws config", mkReq("read", "file_path", filepath.Join(home, ".aws", "config"))},
 		{"read netrc", mkReq("read", "file_path", filepath.Join(home, ".netrc"))},
 		{"read pgpass", mkReq("read", "file_path", filepath.Join(home, ".pgpass"))},
+		{"read git-credentials", mkReq("read", "file_path", filepath.Join(home, ".git-credentials"))},
+		{"read gh token", mkReq("read", "file_path", filepath.Join(home, ".config", "gh", "hosts.yml"))},
 		{"glob authorized_keys", mkReq("glob", "path", filepath.Join(home, ".ssh", "authorized_keys"))},
+		{"read aws sso token", mkReq("read", "file_path", filepath.Join(home, ".aws", "sso", "cache", "token.json"))},
+		{"read aws cli cache", mkReq("read", "file_path", filepath.Join(home, ".aws", "cli", "cache", "role.json"))},
 		{"read gcloud creds", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "credentials.db"))},
+		{"read gcloud tokens", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "access_tokens.db"))},
+		{"read gcloud adc", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"))},
+		{"read gcloud legacy", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "legacy_credentials", "me@example.com", "adc.json"))},
 
 		// leak-class on write
 		{"write authorized_keys", mkReq("write", "file_path", filepath.Join(home, ".ssh", "authorized_keys"))},
@@ -42,13 +49,18 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 
 		// implant-class on write
 		{"write bashrc", mkReq("write", "file_path", filepath.Join(home, ".bashrc"))},
+		{"write bash_profile", mkReq("write", "file_path", filepath.Join(home, ".bash_profile"))},
+		{"write zprofile", mkReq("write", "file_path", filepath.Join(home, ".zprofile"))},
 		{"write profile", mkReq("write", "file_path", filepath.Join(home, ".profile"))},
 		{"write envrc", mkReq("write", "file_path", filepath.Join(home, ".envrc"))},
+		{"write gitmodules", mkReq("edit", "file_path", filepath.Join(home, "proj", ".gitmodules"))},
+		{"write ripgreprc", mkReq("write", "file_path", filepath.Join(home, ".ripgreprc"))},
 		{"write claude config", mkReq("edit", "file_path", filepath.Join(home, ".claude.json"))},
 		{"write into .git/hooks", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "hooks", "post-commit"))},
 		{"write .git/config", mkReq("edit", "file_path", filepath.Join(home, "proj", ".git", "config"))},
 		{"write .ssh/config", mkReq("write", "file_path", filepath.Join(home, ".ssh", "config"))},
 		{"write .gnupg/something", mkReq("write", "file_path", filepath.Join(home, ".gnupg", "trustdb.gpg"))},
+		{"write .aws/sso cache", mkReq("write", "file_path", filepath.Join(home, ".aws", "sso", "cache", "token.json"))},
 
 		// case variants
 		{"write .BASHRC", mkReq("write", "file_path", filepath.Join(home, ".BASHRC"))},
@@ -95,6 +107,8 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 		{"read ssh public key", mkReq("read", "file_path", filepath.Join(home, ".ssh", "id_rsa.pub"))},
 		{"read .bashrc is not credential", mkReq("read", "file_path", filepath.Join(home, ".bashrc"))},
 		{"read normal source", mkReq("read", "file_path", filepath.Join(home, "proj", "main.go"))},
+		{"read gcloud configuration", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "configurations", "config_default"))},
+		{"read a project named gcloud", mkReq("read", "file_path", filepath.Join(home, "src", "gcloud", "main.go"))},
 		{"write normal source", mkReq("write", "file_path", filepath.Join(home, "proj", "main.go"))},
 		{"write .git/info/exclude is harmless", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "info", "exclude"))},
 		{"bash has no path", mkReq("bash", "command", "ls -la")},

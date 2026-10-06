@@ -221,6 +221,27 @@ func TestInternalPathRespectsDenyRule(t *testing.T) {
 	}
 }
 
+// A WebFetch(host) deny rule keeps web_fetch off the host, however the URL
+// spells it; other hosts are fetched.
+func TestWebFetchHostRules(t *testing.T) {
+	rules, err := ParseRuleSet(nil, []string{"WebFetch(*.evil.com)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := newEngine(t, Config{Rules: rules})
+	for url, allowed := range map[string]bool{
+		"https://docs.example.com/x":  true,
+		"https://evil.com/x":          false,
+		"https://api.EVIL.com:8443/x": false,
+		"https://evil.com./x":         false,
+	} {
+		d, err := engine.Decide(context.Background(), toolReq("web_fetch", map[string]any{"url": url}))
+		if err != nil || d.Allowed() != allowed {
+			t.Errorf("%s: %+v, %v; want allowed %v", url, d, err, allowed)
+		}
+	}
+}
+
 func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 	// When a path is in BOTH the user's WriteRoots and InternalWritable,
 	// the user-configured root wins: the request runs through the normal

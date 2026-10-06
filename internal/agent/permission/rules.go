@@ -100,10 +100,10 @@ func (r Rule) matches(info toolInfo, isDeny bool) bool {
 		}
 		return matchPath(r.Pattern, info.summary, info.workspace, info.roots)
 	case "WebFetch":
-		if info.capability != CapabilityNetwork {
+		if info.tool != "web_fetch" {
 			return false
 		}
-		return matchHost(r.Pattern, hostFromSummary(info.summary))
+		return matchHost(r.Pattern, hostOf(info.summary))
 	case "tool":
 		return matchToolName(r.Pattern, info.tool)
 	default:
@@ -298,10 +298,13 @@ func matchToolName(pattern, name string) bool {
 	return pattern == name
 }
 
-func hostFromSummary(summary string) string {
-	summary = strings.TrimSpace(summary)
-	if parsed, err := url.Parse(summary); err == nil && parsed.Host != "" {
-		return strings.ToLower(parsed.Host)
+// hostOf returns the host raw, a URL, names: lowercased, without a port or
+// the dot ending a fully qualified name, as WebFetch(host) rules name it;
+// "" for no URL.
+func hostOf(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
 	}
-	return strings.ToLower(summary)
+	return strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 }

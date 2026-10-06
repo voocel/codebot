@@ -19,16 +19,9 @@ import (
 // after a transient failure.
 var retryPolicy = retry.Policy{MaxAttempts: 6, InitialDelay: time.Second, MaxDelay: 30 * time.Second}
 
-// configure hands the session the spec for the conversation's current state;
-// it applies from the next run.
-func (c *Conversation) configure() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.configureLocked()
-}
-
-// configureLocked is configure for callers holding c.mu. Building and handing
-// over the spec under one lock keeps concurrent changes in order.
+// configureLocked hands the session the spec for the conversation's current
+// state; it applies from the next run. Callers hold c.mu: building and
+// handing over the spec under one lock keeps concurrent changes in order.
 func (c *Conversation) configureLocked() { c.session.Configure(c.specLocked()) }
 
 // middleware wraps every tool call, the main agent's and its sub-agents',

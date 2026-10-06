@@ -20,9 +20,9 @@ func TestRuleSetDenyOverridesAllow(t *testing.T) {
 	}
 }
 
-func TestRuleSetMatchesPathAndHost(t *testing.T) {
+func TestRuleSetMatchesPath(t *testing.T) {
 	workspace := t.TempDir()
-	rs, err := ParseRuleSet([]string{"Edit(src/**)", "WebFetch(*.github.com)"}, nil)
+	rs, err := ParseRuleSet([]string{"Edit(src/**)"}, nil)
 	if err != nil {
 		t.Fatalf("ParseRuleSet: %v", err)
 	}
@@ -36,15 +36,6 @@ func TestRuleSetMatchesPathAndHost(t *testing.T) {
 	})
 	if action != ruleAllow {
 		t.Fatalf("expected path allow, got action=%q", action)
-	}
-
-	action = rs.evaluate(toolInfo{
-		tool:       "web_fetch",
-		summary:    "https://api.github.com/repos/voocel/agentcore",
-		capability: CapabilityNetwork,
-	})
-	if action != ruleAllow {
-		t.Fatalf("expected host allow, got action=%q", action)
 	}
 }
 

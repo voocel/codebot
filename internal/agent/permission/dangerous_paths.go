@@ -13,14 +13,15 @@ import (
 //	                Deny are offered; deny rules still apply. Two flavours
 //	                of path qualify:
 //
-//	                  leak-class (read or write): SSH keys, AWS / gcloud
-//	                  credentials, .netrc, .pgpass — auto-allowing once
-//	                  would let later turns silently re-read them.
+//	                  leak-class (read or write): SSH keys, ~/.aws, gcloud
+//	                  credentials, .netrc, .pgpass, .git-credentials, the
+//	                  GitHub CLI's hosts.yml — auto-allowing once would
+//	                  let later turns silently re-read them.
 //
 //	                  implant-class (write only): shell rc, .git/hooks,
-//	                  .gitconfig, .mcp.json, .claude.json, .ssh / .aws /
-//	                  .gnupg dirs, IDE & agent loader configs. A single
-//	                  Allow Always would propagate the implant forever.
+//	                  .gitconfig, .mcp.json, .claude.json, .ssh / .gnupg
+//	                  dirs, IDE & agent loader configs. A single Allow
+//	                  Always would propagate the implant forever.
 //
 //	reason == ""  → clean. The request falls through to the regular
 //	                permission pipeline.
@@ -79,8 +80,8 @@ func checkDangerousPath(workspace string, req Request) string {
 }
 
 // scanBashForSensitiveRead walks a bash command looking for path-like tokens
-// that match the sensitive-read list (SSH keys, cloud credentials, .netrc,
-// .pgpass). Returns the matched-reason on first hit, or "" if clean. Used
+// that match the sensitive-read list (SSH keys, cloud credentials, .netrc
+// and the like). Returns the matched-reason on first hit, or "" if clean. Used
 // both to poison the readonly bash fast-path and to force-ask once the
 // request reaches the engine.
 //
@@ -141,22 +142,32 @@ func matchSensitiveRead(p string) string {
 			return "SSH authorized_keys"
 		}
 	}
-	if parent == ".aws" && (base == "credentials" || base == "config") {
+	// Besides credentials and config, ~/.aws caches tokens: sso/cache for
+	// SSO sign-ins, cli/cache for assumed roles.
+	if hasPathSegment(p, ".aws") {
 		return "AWS credentials"
 	}
-	if hasPathSegment(p, "gcloud") && strings.HasPrefix(base, "credentials") {
+	// gcloud keeps credentials.db, access_tokens.db,
+	// application_default_credentials.json and legacy_credentials/; the rest
+	// of its directory (configurations, logs) holds none.
+	if hasPathSegment(p, "gcloud") && (strings.Contains(base, "credentials") || strings.HasPrefix(base, "access_tokens") || hasPathSegment(p, "legacy_credentials")) {
 		return "gcloud credentials"
 	}
-	if base == ".netrc" || base == ".pgpass" {
+	if base == ".netrc" || base == ".pgpass" || base == ".git-credentials" {
 		return "credentials"
+	}
+	// The GitHub CLI's token, where no keyring holds it: ~/.config/gh, or
+	// on Windows %AppData%\GitHub CLI.
+	if base == "hosts.yml" && (parent == "gh" || parent == "github cli") {
+		return "GitHub CLI token"
 	}
 	return ""
 }
 
 // matchSensitiveWrite: write requests that earn a forced ask. Two cohorts:
 //
-//   - credentials (leak-class on write too — overwrite = lockout): SSH keys,
-//     AWS / gcloud credentials, .netrc, .pgpass.
+//   - credentials (leak-class on write too — overwrite = lockout): what
+//     matchSensitiveRead lists.
 //   - persistence (implant-class): shell rc, .git/hooks, .gitconfig,
 //     .mcp.json, .claude.json, IDE & agent loader configs. A single Allow
 //     Always would propagate the implant forever, so we require per-call
@@ -193,7 +204,7 @@ func matchSensitiveWrite(p string) string {
 	// agent hooks. All "edit me once → execute on every future open"
 	// patterns. Uses hasPathSegment so deeper paths like
 	// .idea/runConfigurations/x.xml still match.
-	for _, seg := range []string{".ssh", ".aws", ".gnupg"} {
+	for _, seg := range []string{".ssh", ".gnupg"} {
 		if parent == seg || hasPathSegment(p, seg) {
 			return seg + " config"
 		}

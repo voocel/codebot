@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -377,6 +376,7 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 	switch info.capability {
 	case CapabilityRead:
 		info.roots = roots.ReadRoots
+		info.summary = firstNonEmpty(strings.TrimSpace(c.url), info.summary)
 		if c.path != "" {
 			path, deny := checkedPath(workspace, roots.ReadRoots, c.path, "readable")
 			if path != "" {
@@ -434,17 +434,6 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 				info.outsideRoots = true
 				info.reason = fmt.Sprintf("workdir outside writable roots: %s", wd)
 			}
-		}
-	case CapabilityNetwork:
-		target := strings.TrimSpace(c.url)
-		info.summary = firstNonEmpty(target, info.summary)
-		if target != "" {
-			info.keys, info.remember = []string{"network:" + hostOf(target)}, "requests to "+hostOf(target)
-		} else {
-			info.keys, info.remember = []string{"network:" + req.ToolName}, "`"+req.ToolName+"`"
-		}
-		if info.reason == "" {
-			info.reason = "network access requires approval"
 		}
 	case CapabilityInternal:
 	default:
@@ -612,17 +601,6 @@ func dedup(roots []string) []string {
 		out = append(out, root)
 	}
 	return out
-}
-
-func hostOf(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return "unknown"
-	}
-	if parsed.Host != "" {
-		return strings.ToLower(parsed.Host)
-	}
-	return "unknown"
 }
 
 func firstNonEmpty(values ...string) string {

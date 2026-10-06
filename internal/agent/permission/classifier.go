@@ -12,7 +12,9 @@ import (
 //   - Exec    : command becomes the summary, and each command it runs an
 //     approval key (see commandKeys); workdir, if set, is checked against
 //     WriteRoots.
-//   - Network : url becomes the summary; its host the approval key.
+//
+// url is what web_fetch fetches; it becomes the summary, which WebFetch(host)
+// rules match.
 type classification struct {
 	capability Capability
 	path       string
@@ -42,7 +44,8 @@ func classify(workspace string, req Request) classification {
 //   - bash                    → Exec  (command + optional workdir)
 //   - web_fetch / web_search  → Read  (no local side effect: web_fetch only
 //     GETs, web_search only takes a query; a deny rule on the tool name,
-//     such as "web_fetch", turns them off)
+//     such as "web_fetch", turns them off, and WebFetch(host) the fetches
+//     of a host)
 //   - skill, todo_write, task control, subagent, ask_user,
 //     tool_search, worktree   → Internal (state changes authored by the
 //     model, with no side effects of their own to gate on)
@@ -64,7 +67,9 @@ func classifyTool(req Request) classification {
 			capability = CapabilityRead
 		}
 		return classification{capability: capability, command: cmd, workdir: stringField(req.Args, "workdir")}
-	case "web_fetch", "web_search":
+	case "web_fetch":
+		return classification{capability: CapabilityRead, url: stringField(req.Args, "url")}
+	case "web_search":
 		return classification{capability: CapabilityRead}
 	case "todo_write", "task_output", "task_stop", "subagent", "skill", "ask_user", "tool_search", "enter_worktree", "exit_worktree":
 		return classification{capability: CapabilityInternal}

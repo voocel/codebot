@@ -167,6 +167,11 @@
   // project's root in a project's.
   // Note: roots strictly govern file tools (read/write/edit/glob/grep/ls).
   // bash is only constrained at launch (workdir) and never guarantees actual access scope — always requires approval.
+  // allow / deny take rules; a deny rule wins over an allow rule:
+  //   web_fetch                    a tool, by name; a trailing * matches a prefix
+  //   Bash(go test *)              a command, by its words; * stands for the rest
+  //   Read(src/**), Edit(src/**)   a path, relative to a root or absolute (Write as Edit)
+  //   WebFetch(*.example.com)      web_fetch of a host; *. takes in its subdomains
   "permissions": {
     "read_roots": [
       ".",
