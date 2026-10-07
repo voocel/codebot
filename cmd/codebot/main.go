@@ -63,7 +63,7 @@ func main() {
 	resumeFlag := flag.Bool("r", false, "Select a session to resume")
 	modeFlag := flag.String("mode", "balanced", "Permission mode: strict, balanced, accept-edits, trust")
 	acpFlag := flag.Bool("acp", false, "Run as an ACP (Agent Client Protocol) agent over stdio")
-	setupFlag := flag.Bool("setup", false, "Run the setup wizard (provider + model + API key)")
+	setupFlag := flag.Bool("setup", false, "Run the setup wizard (provider, API key, model)")
 	trustFlag := flag.Bool("trust", false, "Trust this folder for this run: its hooks, MCP servers, plugins and allow rules take effect")
 	var pluginDirs dirs
 	flag.Var(&pluginDirs, "plugin-dir", "Load the plugin in this directory for this run (repeatable)")
@@ -87,13 +87,17 @@ func main() {
 	// for Boot to read.
 	var notice string
 	if interactive {
-		if *setupFlag || config.NeedsSetup() {
+		if first := config.NeedsSetup(); *setupFlag || first {
 			result, err := onboarding.Run()
 			if err != nil {
 				fail(err, "error")
 			}
 			if !result.Saved {
-				fmt.Println("Setup cancelled — run codebot again anytime.")
+				if first {
+					fmt.Println("Setup cancelled — run codebot again anytime.")
+				} else {
+					fmt.Println("Setup cancelled; your settings are unchanged.")
+				}
 				return
 			}
 			notice = result.Provider + " is set up · " + result.Model

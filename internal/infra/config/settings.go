@@ -589,6 +589,11 @@ func mergeSettings(base, override Settings) Settings {
 	return base
 }
 
+// UserSettings reads the user's settings file alone; a missing one is empty.
+func UserSettings() (Settings, error) {
+	return loadFile(UserSettingsPath(), regular.ReadFile)
+}
+
 func EditUserSettings(edit func(*Settings)) error {
 	return editSettings(UserSettingsPath(), regular.ReadFile, edit)
 }

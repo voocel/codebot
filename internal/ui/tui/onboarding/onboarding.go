@@ -35,10 +35,15 @@ type Result struct {
 	Model    string
 }
 
+// Run starts from the user settings, so a re-run offers what they hold.
 func Run() (Result, error) {
 	theme.Detect()
+	saved, err := config.UserSettings()
+	if err != nil {
+		return Result{}, err
+	}
 	list := func(ctx context.Context, c config.SetupChoice) ([]config.SetupModel, error) { return c.Models(ctx) }
-	final, err := tea.NewProgram(newWizard(list)).Run()
+	final, err := tea.NewProgram(newWizard(list, saved)).Run()
 	if err != nil {
 		return Result{}, fmt.Errorf("run setup: %w", err)
 	}
@@ -55,21 +60,21 @@ const listTimeout = 20 * time.Second
 type provider struct {
 	key, name string
 	env       string // the environment variable that usually holds its key
-	keys      string // where to create a key
+	keyPage   string // where to create a key
 	keyless   bool   // it runs locally and takes no key
 }
 
 var providers = []provider{
-	{key: "anthropic", name: "Anthropic", env: "ANTHROPIC_API_KEY", keys: "platform.claude.com/settings/keys"},
-	{key: "openai", name: "OpenAI", env: "OPENAI_API_KEY", keys: "platform.openai.com/api-keys"},
-	{key: "gemini", name: "Google Gemini", env: "GEMINI_API_KEY", keys: "aistudio.google.com/apikey"},
-	{key: "deepseek", name: "DeepSeek", env: "DEEPSEEK_API_KEY", keys: "platform.deepseek.com/api_keys"},
-	{key: "openrouter", name: "OpenRouter", env: "OPENROUTER_API_KEY", keys: "openrouter.ai/settings/keys"},
-	{key: "grok", name: "xAI Grok", env: "XAI_API_KEY", keys: "console.x.ai"},
-	{key: "glm", name: "Zhipu GLM", env: "ZHIPUAI_API_KEY", keys: "bigmodel.cn/usercenter/proj-mgmt/apikeys"},
-	{key: "qwen", name: "Qwen", env: "DASHSCOPE_API_KEY", keys: "bailian.console.aliyun.com"},
-	{key: "minimax", name: "MiniMax", env: "MINIMAX_API_KEY", keys: "platform.minimax.io"},
-	{key: "mimo", name: "Xiaomi MiMo", env: "MIMO_API_KEY", keys: "platform.xiaomimimo.com"},
+	{key: "anthropic", name: "Anthropic", env: "ANTHROPIC_API_KEY", keyPage: "platform.claude.com/settings/keys"},
+	{key: "openai", name: "OpenAI", env: "OPENAI_API_KEY", keyPage: "platform.openai.com/api-keys"},
+	{key: "gemini", name: "Google Gemini", env: "GEMINI_API_KEY", keyPage: "aistudio.google.com/apikey"},
+	{key: "deepseek", name: "DeepSeek", env: "DEEPSEEK_API_KEY", keyPage: "platform.deepseek.com/api_keys"},
+	{key: "openrouter", name: "OpenRouter", env: "OPENROUTER_API_KEY", keyPage: "openrouter.ai/settings/keys"},
+	{key: "grok", name: "xAI Grok", env: "XAI_API_KEY", keyPage: "console.x.ai"},
+	{key: "glm", name: "Zhipu GLM", env: "ZHIPUAI_API_KEY", keyPage: "bigmodel.cn/usercenter/proj-mgmt/apikeys"},
+	{key: "qwen", name: "Qwen", env: "DASHSCOPE_API_KEY", keyPage: "bailian.console.aliyun.com"},
+	{key: "minimax", name: "MiniMax", env: "MINIMAX_API_KEY", keyPage: "platform.minimax.io"},
+	{key: "mimo", name: "Xiaomi MiMo", env: "MIMO_API_KEY", keyPage: "platform.xiaomimimo.com"},
 	{key: "ollama", name: "Ollama", keyless: true},
 }
 
@@ -79,9 +84,17 @@ var custom = len(providers)
 // protocolNotes explains the protocols an endpoint most often speaks.
 var protocolNotes = map[string]string{
 	"compat":    "OpenAI-compatible Chat Completions",
-	"openai":    "OpenAI Responses",
+	"openai":    "OpenAI's own API",
 	"anthropic": "Anthropic Messages",
 	"gemini":    "Gemini generateContent",
+}
+
+// urlHints show where a base URL stops: before the paths its protocol adds.
+// Most stop after the version, as in https://…/v1.
+var urlHints = map[string]string{
+	"anthropic": "https://… (it adds /v1/messages)",
+	"gemini":    "https://… (it adds /v1beta/models)",
+	"gateway":   "https://… (the gateway's own URL)",
 }
 
 type step int
@@ -101,6 +114,7 @@ const (
 
 type wizard struct {
 	list          lister
+	saved         config.Settings
 	width, height int
 	step          step
 	row           int // picked provider, or custom
@@ -109,7 +123,8 @@ type wizard struct {
 	name, url, key, filter textinput.Model
 	protocols              []string
 	protocol               int
-	keyFor                 int // the row the key was entered for
+	keyFor                 int   // the row the key was entered for
+	refused                error // the provider's rejection of the key as it stands
 
 	// checking numbers the listing in flight, 0 when none, so a reply the
 	// user went back from is dropped.
@@ -122,19 +137,35 @@ type wizard struct {
 	result Result
 }
 
-func newWizard(list lister) *wizard {
+// newWizard starts on the default provider of saved, described as it is
+// when it is a custom endpoint of a protocol the setup offers.
+func newWizard(list lister, saved config.Settings) *wizard {
 	// Bedrock signs in with AWS keys, not an API key.
 	protocols := slices.DeleteFunc(llmprovider.Names(), func(t string) bool { return t == "bedrock" })
-	return &wizard{
+	w := &wizard{
 		list:      list,
+		saved:     saved,
 		name:      input("my-endpoint"),
-		url:       input("https://…/v1"),
+		url:       input(""),
 		key:       secret(),
 		filter:    input("type to filter, or any model id"),
 		protocols: protocols,
-		protocol:  slices.Index(protocols, "compat"),
 		keyFor:    -1,
 	}
+	w.setProtocol(slices.Index(protocols, "compat"))
+	current := ""
+	if saved.Provider != nil {
+		current = *saved.Provider
+	}
+	if i := slices.IndexFunc(providers, func(p provider) bool { return p.key == current }); i >= 0 {
+		w.row = i
+	} else if pc := saved.Providers[current]; pc != nil && slices.Contains(protocols, pc.Type) {
+		w.row = custom
+		w.name.SetValue(current)
+		w.url.SetValue(pc.BaseURL)
+		w.setProtocol(slices.Index(protocols, pc.Type))
+	}
+	return w
 }
 
 func input(placeholder string) textinput.Model {
@@ -156,7 +187,7 @@ type (
 		models []config.SetupModel
 		err    error
 	}
-	spinMsg struct{}
+	spinMsg struct{ check int }
 )
 
 func (w *wizard) Init() tea.Cmd { return nil }
@@ -171,11 +202,13 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return w, nil
 	case listedMsg:
-		w.listed(msg)
+		if msg.check == w.checking {
+			w.listed(msg)
+		}
 		return w, nil
 	case spinMsg:
-		if w.checking != 0 {
-			return w, spin()
+		if msg.check == w.checking {
+			return w, spin(msg.check)
 		}
 		return w, nil
 	case tea.KeyPressMsg:
@@ -194,8 +227,15 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	before := in.Value()
 	var cmd tea.Cmd
 	*in, cmd = in.Update(msg)
-	if in == &w.filter && in.Value() != before {
-		w.at, w.top = 0, 0
+	if in.Value() != before {
+		// An edit answers the error, and the rejection of the key.
+		w.err = ""
+		switch in {
+		case &w.key:
+			w.refused = nil
+		case &w.filter:
+			w.at, w.top = 0, 0
+		}
 	}
 	return w, cmd
 }
@@ -230,9 +270,9 @@ func (w *wizard) press(k string) (cmd tea.Cmd, ok bool) {
 			}
 			n := len(w.protocols)
 			if k == "left" {
-				w.protocol = (w.protocol + n - 1) % n
+				w.setProtocol((w.protocol + n - 1) % n)
 			} else {
-				w.protocol = (w.protocol + 1) % n
+				w.setProtocol((w.protocol + 1) % n)
 			}
 		case "enter":
 			w.describe()
@@ -247,6 +287,10 @@ func (w *wizard) press(k string) (cmd tea.Cmd, ok bool) {
 		case "esc":
 			w.back()
 		case "enter":
+			if w.refused != nil {
+				w.toModels(nil, w.refused)
+				return nil, true
+			}
 			return w.check(), true
 		default:
 			return nil, false
@@ -287,20 +331,29 @@ func (w *wizard) pick() tea.Cmd {
 	return nil
 }
 
+func (w *wizard) setProtocol(i int) {
+	w.protocol = i
+	w.url.Placeholder = cmp.Or(urlHints[w.protocols[i]], "https://…/v1")
+}
+
 // describe moves through the endpoint's fields, and on from the last one
 // once they hold a name and an http(s) base URL.
 func (w *wizard) describe() {
-	u, err := url.Parse(token(w.url.Value()))
 	switch {
 	case w.field < fieldURL:
 		w.field++
 	case token(w.name.Value()) == "":
 		w.err, w.field = "A name is required", fieldName
-	case err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "":
+	case !webURL(token(w.url.Value())):
 		w.err = "The base URL must be an http(s) URL"
 	default:
 		w.goTo(enterKey)
 	}
+}
+
+func webURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // back goes to the step before, leaving any listing in flight.
@@ -324,21 +377,29 @@ func (w *wizard) goTo(s step) {
 	w.focus()
 }
 
-// fillKey drops another provider's key, which is of no use here; the
-// environment may hold this one's.
+// fillKey drops another provider's key, which is of no use here, for the
+// one the settings or the environment hold.
 func (w *wizard) fillKey() {
 	if w.keyFor == w.row {
 		return
 	}
-	w.keyFor = w.row
+	w.keyFor, w.refused = w.row, nil
 	w.key.Reset()
-	if env := w.env(); env != "" {
-		w.key.SetValue(os.Getenv(env))
+	if k := cmp.Or(w.savedKey(), os.Getenv(w.env())); k != "" {
+		w.key.SetValue(k)
 		w.key.CursorEnd()
 	}
 }
 
 func (w *wizard) keyless() bool { return w.row != custom && providers[w.row].keyless }
+
+// savedKey is the key the settings hold for the picked provider.
+func (w *wizard) savedKey() string {
+	if pc := w.saved.Providers[w.choice().Provider]; pc != nil {
+		return pc.APIKey
+	}
+	return ""
+}
 
 // env names the variable holding the picked provider's key, if it holds
 // one.
@@ -359,13 +420,9 @@ func (w *wizard) check() tea.Cmd {
 	}
 	w.checks++
 	w.checking = w.checks
-	w.step, w.err = pickModel, ""
-	w.models, w.listErr = nil, nil
-	w.filter.Reset()
-	w.at, w.top = 0, 0
-	w.focus()
+	w.toModels(nil, nil)
 	n, list := w.checks, w.list
-	return tea.Batch(spin(), func() tea.Msg {
+	return tea.Batch(spin(n), func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
 		defer cancel()
 		models, err := list(ctx, choice)
@@ -373,25 +430,30 @@ func (w *wizard) check() tea.Cmd {
 	})
 }
 
-func spin() tea.Cmd {
-	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return spinMsg{} })
+func spin(check int) tea.Cmd {
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return spinMsg{check} })
 }
 
 // listed takes the models in, or sends the user back to a key the provider
-// rejected. A list that failed otherwise leaves the id to type, and so does
-// a custom endpoint's rejection: the endpoint may take its key another way,
-// such as a header set in settings.json, or guard only its model list.
+// rejected. There enter goes on with the key all the same: it may be barred
+// from listing the models alone, as an OpenAI key can be, or an endpoint may
+// take it another way, such as a header set in settings.json. A list that
+// failed otherwise leaves the id to type.
 func (w *wizard) listed(msg listedMsg) {
-	if msg.check != w.checking {
-		return
-	}
 	w.checking = 0
-	if litellm.ErrorTypeOf(msg.err) == litellm.ErrorTypeAuth && w.row != custom {
+	if litellm.ErrorTypeOf(msg.err) == litellm.ErrorTypeAuth {
 		w.goTo(enterKey)
-		w.err = w.rejection(msg.err)
+		w.refused, w.err = msg.err, w.rejection(msg.err)
 		return
 	}
-	w.models, w.listErr = msg.models, msg.err
+	w.toModels(msg.models, msg.err)
+}
+
+func (w *wizard) toModels(models []config.SetupModel, err error) {
+	w.step, w.err = pickModel, ""
+	w.models, w.listErr = models, err
+	w.filter.Reset()
+	w.at, w.top = 0, 0
 	w.focus()
 }
 
@@ -421,7 +483,7 @@ type row struct {
 }
 
 // rows are the models the filter matches, then the filter itself unless it
-// names one exactly.
+// names one.
 func (w *wizard) rows() []row {
 	if w.checking != 0 {
 		return nil
@@ -429,14 +491,14 @@ func (w *wizard) rows() []row {
 	typed := token(w.filter.Value())
 	q := strings.ToLower(typed)
 	var out []row
-	exact := false
+	named := false
 	for _, m := range w.models {
 		if strings.Contains(strings.ToLower(m.ID), q) || strings.Contains(strings.ToLower(m.Name), q) {
 			out = append(out, row{id: m.ID, name: m.Name, window: m.Window})
 		}
-		exact = exact || m.ID == typed
+		named = named || strings.EqualFold(m.ID, typed)
 	}
-	if typed != "" && !exact {
+	if typed != "" && !named {
 		out = append(out, row{id: typed, typed: true})
 	}
 	return out
@@ -522,59 +584,58 @@ func glimpse(key string) string {
 // key often ends with a newline.
 func token(s string) string { return strings.Join(strings.Fields(s), "") }
 
-const (
-	maxCardWidth = 72
-	labelWidth   = 12
-	headGap      = 4 // columns between the mark and the text beside it
-)
+const labelWidth = 12
 
-func (w *wizard) cardWidth() int { return min(cmp.Or(w.width, 80), maxCardWidth) }
+func (w *wizard) cardWidth() int { return min(cmp.Or(w.width, 80), brand.MaxWidth) }
 
 func (w *wizard) View() tea.View {
 	width, height := cmp.Or(w.width, 80), cmp.Or(w.height, 24)
 	cw := w.cardWidth()
 	body, at := w.body(brand.Inner(cw))
 
-	// The welcome sits above the steps when there is room for it.
-	var lines []string
-	cursor := -1
-	for _, roomy := range []bool{true, false} {
-		k := brand.NewCard(cw)
-		if roomy {
-			k.Add("")
-			k.Add(brand.Beside([]string{
-				theme.Bold.Foreground(theme.Strong).Render("Welcome to codebot"),
-				theme.MutedText.Render("Connect a model to get started"),
-				theme.SubtleText.Render("Saved to " + transcript.ShortPath(config.UserSettingsPath())),
-			}, headGap)...)
-			k.Add("")
-		}
-		k.Section(w.steps(), "")
-		k.Add("")
-		if at >= 0 {
-			cursor = k.Lines() + at
-		}
-		k.Add(body...)
-		k.Add("")
-		lines = k.Close()
-		if len(lines)+2 <= height {
-			break
-		}
+	// The welcome shows when both the providers, the longest step, and this
+	// one have room for it, so that it stays through the steps.
+	roomy := true
+	for _, b := range [][]string{w.providerLines(), body} {
+		lines, _ := w.card(cw, true, b)
+		roomy = roomy && len(lines)+2 <= height
 	}
+	lines, first := w.card(cw, roomy, body)
 	lines = append(lines, "", strings.Repeat(" ", 1+brand.Pad)+w.hint())
 	top := max(height-len(lines), 0) * 2 / 5
 	screen := append(make([]string, top), brand.Center(lines, width)...)
 
 	v := tea.NewView(strings.Join(screen, "\n"))
 	v.AltScreen = true
-	if in := w.focused(); in != nil && cursor >= 0 {
+	if in := w.focused(); in != nil && at >= 0 {
 		if c := in.Cursor(); c != nil {
 			c.X += max(width-cw, 0)/2 + 1 + brand.Pad + labelWidth
-			c.Y = top + cursor
+			c.Y = top + first + at
 			v.Cursor = c
 		}
 	}
 	return v
+}
+
+// card draws the steps and body in a card, with the welcome above them when
+// roomy; body starts on line first.
+func (w *wizard) card(width int, roomy bool, body []string) (lines []string, first int) {
+	k := brand.NewCard(width)
+	if roomy {
+		k.Add("")
+		k.Add(brand.Head([]string{
+			theme.Bold.Foreground(theme.Strong).Render("Welcome to codebot"),
+			theme.MutedText.Render("Connect a model to get started"),
+			theme.SubtleText.Render("Saved to " + transcript.ShortPath(config.UserSettingsPath())),
+		}, brand.Inner(width))...)
+		k.Add("")
+	}
+	k.Section(w.steps(), "")
+	k.Add("")
+	first = k.Lines()
+	k.Add(body...)
+	k.Add("")
+	return k.Close(), first
 }
 
 // steps is the stepper on the card's divider.
@@ -607,23 +668,7 @@ func (w *wizard) body(width int) ([]string, int) {
 	at := -1
 	switch w.step {
 	case pickProvider:
-		const other = "Other endpoint"
-		names := len(other)
-		for _, p := range providers {
-			names = max(names, len(p.name))
-		}
-		out = append(out, theme.Bold.Render("Choose a provider"), "")
-		for i, p := range providers {
-			detail := ""
-			switch {
-			case p.keyless:
-				detail = theme.SubtleText.Render("runs locally · no key")
-			case os.Getenv(p.env) != "":
-				detail = theme.OKText.Render("$" + p.env + " found")
-			}
-			out = append(out, choice(fmt.Sprintf("%-*s", names, p.name), detail, i == w.row))
-		}
-		out = append(out, choice(other, theme.SubtleText.Render("a proxy, gateway or local server"), w.row == custom))
+		out = w.providerLines()
 
 	case describeCustom:
 		p := w.protocols[w.protocol]
@@ -647,15 +692,20 @@ func (w *wizard) body(width int) ([]string, int) {
 		if w.row == custom {
 			out = append(out, theme.Bold.Render("API key for "+w.providerName()), theme.SubtleText.Render("Leave it empty if the endpoint takes none."))
 		} else {
-			out = append(out, theme.Bold.Render("Paste your "+w.providerName()+" API key"), theme.SubtleText.Render("Create one at "+providers[w.row].keys))
+			out = append(out, theme.Bold.Render("Paste your "+w.providerName()+" API key"), theme.SubtleText.Render("Create one at "+providers[w.row].keyPage))
 		}
 		out = append(out, "", field("API key", w.key.View(), false))
 		at = 3
+		key := token(w.key.Value())
 		var about []string
-		if g := glimpse(token(w.key.Value())); g != "" {
+		if g := glimpse(key); g != "" {
 			about = append(about, g)
 		}
-		if env := w.env(); env != "" && token(w.key.Value()) == token(os.Getenv(env)) {
+		switch env := w.env(); {
+		case key == "":
+		case key == w.savedKey():
+			about = append(about, "from settings.json")
+		case env != "" && key == token(os.Getenv(env)):
 			about = append(about, "from $"+env)
 		}
 		if len(about) > 0 {
@@ -667,11 +717,33 @@ func (w *wizard) body(width int) ([]string, int) {
 	}
 	if w.err != "" {
 		out = append(out, "")
-		for _, l := range strings.Split(ansi.Wordwrap(w.err, width, " "), "\n") {
+		for _, l := range paragraph(w.err, width) {
 			out = append(out, theme.ErrorText.Render(l))
 		}
 	}
 	return out, at
+}
+
+func (w *wizard) providerLines() []string {
+	const other = "Other endpoint"
+	names := len(other)
+	for _, p := range providers {
+		names = max(names, len(p.name))
+	}
+	out := []string{theme.Bold.Render("Choose a provider"), ""}
+	for i, p := range providers {
+		detail := ""
+		switch pc := w.saved.Providers[p.key]; {
+		case p.keyless:
+			detail = theme.SubtleText.Render("runs locally · no key")
+		case pc != nil && pc.APIKey != "":
+			detail = theme.OKText.Render("key saved")
+		case os.Getenv(p.env) != "":
+			detail = theme.OKText.Render("$" + p.env + " found")
+		}
+		out = append(out, option(fmt.Sprintf("%-*s", names, p.name), detail, i == w.row))
+	}
+	return append(out, option(other, theme.SubtleText.Render("a proxy, gateway or local server"), w.row == custom))
 }
 
 func (w *wizard) modelBody(width int) ([]string, int) {
@@ -686,14 +758,21 @@ func (w *wizard) modelBody(width int) ([]string, int) {
 			theme.WarmText.Render(transcript.Spinner(time.Now()) + " " + doing + "…"),
 		}, -1
 	}
+	var why string
+	switch {
+	case litellm.ErrorTypeOf(w.listErr) == litellm.ErrorTypeAuth:
+		why = w.rejection(w.listErr) + ". Esc changes it."
+	case w.listErr != nil && w.keyless():
+		why = "Is " + w.providerName() + " running? Its models could not be listed: " + w.listErr.Error()
+	case w.listErr != nil:
+		why = "The models could not be listed: " + w.listErr.Error()
+	case len(w.models) == 0:
+		why = w.providerName() + " lists no models."
+	}
 	var out []string
-	if w.listErr != nil {
-		why := "The models could not be listed: " + w.listErr.Error()
-		if litellm.ErrorTypeOf(w.listErr) == litellm.ErrorTypeAuth {
-			why = w.rejection(w.listErr) + ". Esc changes it."
-		}
+	if why != "" {
 		out = append(out, theme.Bold.Render("Type the model id"))
-		for _, l := range strings.Split(ansi.Wordwrap(why, width, " "), "\n") {
+		for _, l := range paragraph(why, width) {
 			out = append(out, theme.WarmText.Render(l))
 		}
 	} else {
@@ -716,17 +795,25 @@ func (w *wizard) modelBody(width int) ([]string, int) {
 	if more := len(rows) - w.top - shown; more > 0 {
 		out = append(out, theme.FaintText.Render(fmt.Sprintf("  ↓ %d more", more)))
 	}
-	if len(rows) == 0 && w.listErr == nil {
-		out = append(out, theme.SubtleText.Render("  No model matches"))
-	}
 	return out, at
+}
+
+// paragraph wraps text in at most three lines: an error may carry a whole
+// HTML page.
+func paragraph(text string, width int) []string {
+	lines := strings.Split(ansi.Wrap(strings.Join(strings.Fields(text), " "), width, " "), "\n")
+	if len(lines) > 3 {
+		lines = lines[:3]
+		lines[2] = ansi.Truncate(lines[2], width-1, "") + "…"
+	}
+	return lines
 }
 
 // modelRow lines up the ids, windows and names; the card cuts what runs
 // past its edge.
 func modelRow(r row, selected bool, idWidth int) string {
 	if r.typed {
-		return choice(`Use "`+r.id+`"`, theme.SubtleText.Render("as typed"), selected)
+		return option(`Use "`+r.id+`"`, theme.SubtleText.Render("as typed"), selected)
 	}
 	id := ansi.Truncate(r.id, idWidth, "…")
 	window := ""
@@ -737,10 +824,10 @@ func modelRow(r row, selected bool, idWidth int) string {
 	if r.name != "" && r.name != r.id {
 		detail += "  " + theme.SubtleText.Render(r.name)
 	}
-	return choice(id+strings.Repeat(" ", idWidth-ansi.StringWidth(id)), detail, selected)
+	return option(id+strings.Repeat(" ", idWidth-ansi.StringWidth(id)), detail, selected)
 }
 
-func choice(text, detail string, selected bool) string {
+func option(text, detail string, selected bool) string {
 	line := "  " + theme.Text.Render(text)
 	if selected {
 		line = theme.Selected.Render("❯ " + text)
@@ -771,6 +858,9 @@ func (w *wizard) hint() string {
 		}
 		return theme.Hint("tab", "next", "enter", "continue", "esc", "back")
 	case enterKey:
+		if w.refused != nil {
+			return theme.Hint("enter", "use it anyway", "esc", "back")
+		}
 		return theme.Hint("enter", "check the key", "esc", "back")
 	}
 	if w.checking != 0 {

@@ -35,9 +35,6 @@ var tips = []string{
 const (
 	maxRecent = 3
 	maxPath   = 40 // columns
-	cardWidth = 72
-	botGap    = 4  // columns between the bot and the text beside it
-	minBeside = 20 // below this many columns for the text, the bot is hidden
 )
 
 type recentMsg struct{ sessions []app.SessionInfo }
@@ -68,7 +65,7 @@ func (m *Model) setRecent(sessions []app.SessionInfo) {
 // out.
 func (m *Model) welcome(width, height int) []string {
 	m.recentAt = nil
-	w := min(width, cardWidth)
+	w := min(width, brand.MaxWidth)
 	inner := brand.Inner(w)
 	if inner < 1 {
 		return nil
@@ -131,28 +128,18 @@ func (m *Model) welcome(width, height int) []string {
 }
 
 func (m *Model) head(width int) []string {
-	beside := width - brand.BotWidth - botGap
-	if beside < minBeside {
-		beside = width
-	}
+	beside := brand.Room(width)
 	st := m.status
 	model := theme.Text.Render(st.Model)
 	// Drop the effort when it doesn't fit beside the model.
 	if effort := theme.FaintText.Render("  ·  ") + theme.SubtleText.Render("effort "+cmp.Or(st.Effort, "auto")); st.Reasoning && ansi.StringWidth(model+effort) <= beside {
 		model += effort
 	}
-	lines := []string{
+	return brand.Head([]string{
 		theme.Bold.Foreground(theme.Strong).Render("codebot") + theme.SubtleText.Render("  "+m.versionLabel()),
 		model,
 		m.place(beside),
-	}
-	for i, l := range lines {
-		lines[i] = ansi.Truncate(l, beside, "…")
-	}
-	if beside < width {
-		lines = brand.Beside(lines, botGap)
-	}
-	return brand.Center(lines, width)
+	}, width)
 }
 
 func (m *Model) versionLabel() string {

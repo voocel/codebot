@@ -96,7 +96,7 @@ cd codebot && go build -o codebot ./cmd/codebot
 codebot
 ```
 
-The first run launches a setup wizard: pick a provider, paste your API key (one already in its usual environment variable, such as `ANTHROPIC_API_KEY`, is filled in), then pick a model from those the key reaches — listing them checks the key. Ollama takes no key, and any other endpoint takes a name, a protocol and a base URL. Everything lands in `~/.codebot/settings.json` — the single source of configuration — and can be re-run anytime with `codebot -setup`. For more options see [settings.example.jsonc](settings.example.jsonc).
+The first run launches a setup wizard: pick a provider, paste your API key (one already in its usual environment variable, such as `ANTHROPIC_API_KEY`, is filled in), then pick a model from those the key reaches — listing them checks the key. Ollama takes no key, and any other endpoint takes a name, a protocol and a base URL. Everything lands in `~/.codebot/settings.json` — the single source of configuration — and can be re-run anytime with `codebot -setup`, which starts from your current provider and its saved key. For more options see [settings.example.jsonc](settings.example.jsonc).
 
 OpenRouter can be used as a first-class provider in `settings.json`:
 

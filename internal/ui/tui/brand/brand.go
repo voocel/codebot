@@ -46,8 +46,35 @@ func Bot() []string {
 	return out
 }
 
-// Beside puts lines beside the mark, below its antennae, gap columns apart.
-func Beside(lines []string, gap int) []string {
+const (
+	gap       = 4  // columns between the mark and the text beside it
+	minBeside = 20 // below this many columns for the text, the mark is hidden
+)
+
+// Room is how many columns a Head width columns wide leaves its text.
+func Room(width int) int {
+	if beside := width - BotWidth - gap; beside >= minBeside {
+		return beside
+	}
+	return width
+}
+
+// Head centers lines in width columns, beside the mark when Room leaves it
+// space; it cuts what runs past Room.
+func Head(lines []string, width int) []string {
+	room := Room(width)
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = ansi.Truncate(l, room, "…")
+	}
+	if room < width {
+		out = beside(out)
+	}
+	return Center(out, width)
+}
+
+// beside puts lines beside the mark, below its antennae.
+func beside(lines []string) []string {
 	face := Bot()
 	out := append([]string{face[0]}, lines...)
 	for i := 1; i < len(face); i++ {
@@ -73,8 +100,10 @@ func Center(lines []string, width int) []string {
 	return out
 }
 
-// Pad is the columns between a card's border and its content.
-const Pad = 2
+const (
+	MaxWidth = 72 // the widest a card grows
+	Pad      = 2  // columns between a card's border and its content
+)
 
 // Card is a rounded box whose border takes one color of ink per column.
 type Card struct {
