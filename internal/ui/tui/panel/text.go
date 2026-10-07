@@ -8,27 +8,24 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Text shows read-only text, in tabs when it has several.
 type Text struct {
 	Title string
 	Tabs  []Tab
-	// Load, when set, reads the tabs off the TUI's goroutine; the panel
-	// says it is loading until they come.
+	// Load, if set, runs off the TUI goroutine; the panel shows a loading
+	// state until it returns.
 	Load func() []Tab
 
 	active  int
 	offset  int
 	loading bool
-	height  int // of the last view, for paging
+	height  int // last view's height, for paging
 }
 
-// Tab is a page of a Text panel.
 type Tab struct {
 	Name string
 	Body func(width int) []string
 }
 
-// Lines returns a Tab body that shows lines as they are.
 func Lines(lines ...string) func(int) []string {
 	return func(int) []string { return lines }
 }

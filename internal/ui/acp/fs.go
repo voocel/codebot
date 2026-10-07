@@ -17,30 +17,22 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 )
 
-// acpFileConn is the slice of the ACP connection this backend needs: the editor
-// text file callbacks. Depending on it (rather than the concrete
-// *acp.AgentSideConnection) decouples the backend from the SDK transport and
-// lets tests inject a fake. *acp.AgentSideConnection satisfies it.
+// acpFileConn lets tests replace *acp.AgentSideConnection with a fake.
 type acpFileConn interface {
 	ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error)
 	WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error)
 }
 
-// EditorFS is the ACP-backed agentcore tools.FS: read/write of text files
-// is routed to the editor (fs/read_text_file, fs/write_text_file) so the agent
-// sees unsaved buffer contents and writes land back in the editor. Everything
-// else — stat, directory listing, mkdir, and any file the editor can't serve as
-// text (binary, images, or when the client lacks the capability) — falls back
-// to the local filesystem via the embedded OSFS.
+// EditorFS routes text file reads and writes to the editor, so the agent sees
+// unsaved buffers and its writes land in them. Everything else, including
+// files the editor can't serve as text, uses the local filesystem.
 //
-// The connection and session id are bound lazily: the backend is constructed
-// before Boot (so it can be injected into the tools), while the ACP connection
-// only exists once Serve starts. Until bound, every method transparently uses
-// the OS fallback.
+// It is built before Boot, while the connection only exists once Serve
+// starts; until bound it behaves like the local filesystem.
 type EditorFS struct {
-	agentcoretools.OSFS // fallback for stat/readdir/mkdir and non-text reads
+	agentcoretools.OSFS
 
-	logf func(format string, args ...any) // diagnostics sink (stderr); nil = silent
+	logf func(format string, args ...any) // nil = silent
 
 	mu       sync.RWMutex
 	conn     acpFileConn
@@ -51,12 +43,7 @@ type EditorFS struct {
 
 var _ agentcoretools.FS = (*EditorFS)(nil)
 
-// NewEditorFS creates an unbound ACP backend. Until bindConn/setSession/
-// setCaps are called it behaves exactly like the local filesystem.
-//
-// Diagnostics go to stderr (log is concurrency-safe and stdout is the protocol
-// channel). The fallback to disk on an editor read error stays, but is no longer
-// silent — it is the only signal that the editor's buffer view was bypassed.
+// NewEditorFS logs to stderr because stdout is the protocol channel.
 func NewEditorFS() *EditorFS {
 	return &EditorFS{logf: log.New(os.Stderr, "", log.LstdFlags).Printf}
 }
@@ -73,7 +60,6 @@ func (w *EditorFS) setSession(sid acp.SessionId) {
 	w.sid = sid
 }
 
-// setCaps records the editor's advertised fs capabilities from initialize.
 func (w *EditorFS) setCaps(canRead, canWrite bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -93,12 +79,9 @@ func (w *EditorFS) writeReady() (acpFileConn, acp.SessionId, bool) {
 	return w.conn, w.sid, w.canWrite && w.conn != nil && w.sid != ""
 }
 
-// Stat reports metadata. For a file the editor can serve as text it synthesizes
-// a FileInfo whose Version is a hash of the *current buffer* — so the
-// read-before-write check tracks unsaved edits (disk mtime would not change for
-// them) and the agent can stat a buffer that has no file on disk yet. Anything
-// the editor can't serve as text (directories, binaries, images, or when
-// unbound/uncapable) falls through to the local filesystem.
+// Stat sets Version to a hash of the editor buffer, so the read-before-write
+// check sees unsaved edits that don't change the disk mtime, and a buffer with
+// no file on disk can still be stat'ed.
 func (w *EditorFS) Stat(ctx context.Context, path string) (agentcoretools.FileInfo, error) {
 	content, ok := w.tryReadText(ctx, path)
 	if !ok {
@@ -110,9 +93,7 @@ func (w *EditorFS) Stat(ctx context.Context, path string) (agentcoretools.FileIn
 		Mode:    0o644,
 		Version: hashContent(content),
 	}
-	// Best-effort real mode/mtime when the file also exists on disk; harmless
-	// when it doesn't (a buffer-only new file). Version, not mtime, drives the
-	// stale check whenever it is set, so an approximate mtime here is fine.
+	// Version drives the stale check, so the disk mtime is only informative.
 	if osInfo, err := w.OSFS.Stat(ctx, path); err == nil {
 		fi.Mode = osInfo.Mode
 		fi.ModTime = osInfo.ModTime
@@ -120,13 +101,9 @@ func (w *EditorFS) Stat(ctx context.Context, path string) (agentcoretools.FileIn
 	return fi, nil
 }
 
-// Open returns the editor buffer (if available) as a reader, else the OS file.
-//
-// Reads keep a silent OS fallback on purpose: it is how images and binaries are
-// served (the editor's text endpoint errors on them, and we must read the bytes
-// to sniff/decode), and how brand-new or editor-unknown files are read. A read
-// is non-destructive, so degrading to the on-disk copy is safe — unlike a write
-// (see WriteFile).
+// Open falls back to disk on purpose: images and binaries are read that way,
+// since the editor's text endpoint rejects them. A read is harmless; a write
+// is not (see WriteFile).
 func (w *EditorFS) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 	if data, ok := w.tryReadText(ctx, path); ok {
 		return io.NopCloser(bytes.NewReader(data)), nil
@@ -134,7 +111,6 @@ func (w *EditorFS) Open(ctx context.Context, path string) (io.ReadCloser, error)
 	return w.OSFS.Open(ctx, path)
 }
 
-// ReadFile returns the editor buffer (if available), else the OS file.
 func (w *EditorFS) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	if data, ok := w.tryReadText(ctx, path); ok {
 		return data, nil
@@ -142,14 +118,8 @@ func (w *EditorFS) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	return w.OSFS.ReadFile(ctx, path)
 }
 
-// WriteFile writes through the editor when it is bound and advertises the
-// capability; otherwise it writes the local file.
-//
-// Unlike reads, a failed editor write is NOT silently retried against disk: the
-// editor is the source of truth in that mode, so writing behind its back would
-// desync the buffer and the file and leave the user thinking the edit landed in
-// the editor. We surface the error instead. (Falling back is only correct when
-// the editor was never going to handle the write — unbound or no capability.)
+// WriteFile does not retry a failed editor write on disk: the editor owns the
+// file, and writing behind its back would desync the buffer from the file.
 func (w *EditorFS) WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error {
 	conn, sid, ok := w.writeReady()
 	if !ok {
@@ -161,19 +131,11 @@ func (w *EditorFS) WriteFile(ctx context.Context, path string, data []byte, perm
 	return nil
 }
 
-// tryReadText asks the editor for the file as text. It returns ok=false (so the
-// caller falls back to the OS) when the backend is unbound, the client lacks the
-// capability, or the editor returns any error.
-//
-// ACP does not document read error conditions and RequestError carries only the
-// seven standard JSON-RPC codes — there is no semantic code distinguishing "not
-// a text file" (image/binary, which MUST fall back to read the bytes) from a
-// transient read failure. So both are treated alike: fall back to disk. Known
-// limitation of that conflation: if the editor returns an error for a text file
-// that actually has an unsaved buffer, we serve the on-disk copy instead, which
-// can miss unsaved edits. In practice a conforming client (e.g. Zed) returns
-// content for any text file open or not, so an error here means non-text / truly
-// missing / client fault — for the first two, disk is correct or equally absent.
+// tryReadText returns false when the caller should read from disk. ACP error
+// codes can't tell "not a text file" from a real read failure, so any error
+// falls back to disk, which may miss unsaved edits. Conforming clients such as
+// Zed return content for every text file, so in practice an error means a
+// binary or missing file.
 func (w *EditorFS) tryReadText(ctx context.Context, path string) ([]byte, bool) {
 	conn, sid, ok := w.readReady()
 	if !ok {
@@ -181,10 +143,8 @@ func (w *EditorFS) tryReadText(ctx context.Context, path string) ([]byte, bool) 
 	}
 	resp, err := conn.ReadTextFile(ctx, acp.ReadTextFileRequest{SessionId: sid, Path: path})
 	if err != nil {
-		// Editor advertised the capability but couldn't serve the file as text
-		// (non-text file, or a real read failure — ACP gives no way to tell).
-		// We fall back to disk, but record it: this is the one case where the
-		// agent may be reading stale on-disk bytes instead of the live buffer.
+		// Logged because the agent may now read stale disk bytes instead of
+		// the live buffer.
 		if w.logf != nil {
 			w.logf("acp: fs/read_text_file failed for %s, falling back to local filesystem: %v", path, err)
 		}
@@ -193,47 +153,38 @@ func (w *EditorFS) tryReadText(ctx context.Context, path string) ([]byte, bool) 
 	return []byte(resp.Content), true
 }
 
-// diffSnapshot is a file's content captured for native-diff rendering, tagged
-// with whether it is trustworthy. reliable=false means "do not render a diff
-// from this" — a wrong before/after is worse than no diff at all.
+// diffSnapshot with reliable=false must not be rendered: a wrong diff is
+// worse than none.
 type diffSnapshot struct {
 	text     string
 	exists   bool
 	reliable bool
 }
 
-// textForDiff reads a file specifically for native-diff rendering. Unlike
-// ReadFile/tryReadText it never passes a disk copy off as the editor buffer:
-// when the editor read path is advertised but errors on an existing file, the
-// disk contents may differ from the unsaved buffer, so the snapshot is marked
-// unreliable and the caller skips the diff. A file absent on disk (and from the
-// editor) is a reliable new-file snapshot (exists=false), which renders as a
-// new-file diff.
+// textForDiff, unlike ReadFile, never passes a disk copy off as the editor
+// buffer: if the editor errors on a file that exists on disk, the snapshot is
+// unreliable. A file missing from both is a reliable new file.
 func (w *EditorFS) textForDiff(ctx context.Context, path string) diffSnapshot {
 	conn, sid, hasCap := w.readReady()
 	if !hasCap {
-		// No editor read path at all → the OS copy is the source of truth.
 		data, err := w.OSFS.ReadFile(ctx, path)
 		switch {
 		case err == nil:
 			return diffSnapshot{text: string(data), exists: true, reliable: true}
 		case os.IsNotExist(err):
-			return diffSnapshot{reliable: true} // exists=false → new-file diff
+			return diffSnapshot{reliable: true}
 		default:
-			return diffSnapshot{} // unreadable → unreliable, skip
+			return diffSnapshot{}
 		}
 	}
 	if resp, err := conn.ReadTextFile(ctx, acp.ReadTextFileRequest{SessionId: sid, Path: path}); err == nil {
 		return diffSnapshot{text: resp.Content, exists: true, reliable: true}
 	}
-	// Capability advertised but the editor errored: can't distinguish "truly new
-	// file" from "editor couldn't serve an existing file". Only the former is a
-	// safe new-file diff — confirm against disk. If it exists on disk, the disk
-	// copy may not match the unsaved buffer, so treat as unreliable.
+	// The editor errored: only a file missing on disk is safely new.
 	if _, err := w.OSFS.Stat(ctx, path); os.IsNotExist(err) {
-		return diffSnapshot{reliable: true} // exists=false → new-file diff
+		return diffSnapshot{reliable: true}
 	}
-	return diffSnapshot{} // unreliable, skip
+	return diffSnapshot{}
 }
 
 func hashContent(b []byte) string {

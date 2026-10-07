@@ -1,7 +1,6 @@
-// Package markdown lays out text for the terminal: markdown rendered with
-// styles, and plain text wrapped. Every line it returns fits the width it is
-// given and carries its own styling, so any line can be shown without those
-// before it.
+// Package markdown renders markdown and wraps plain text for the terminal.
+// Every line fits the given width and carries its own styling, so any line
+// can be shown without the lines before it.
 package markdown
 
 import (
@@ -22,7 +21,6 @@ import (
 
 var parser = goldmark.New(goldmark.WithExtensions(extension.GFM)).Parser()
 
-// Render renders the markdown src at width.
 func Render(src string, width int) []string {
 	width = max(width, 8)
 	source := []byte(src)
@@ -32,11 +30,9 @@ func Render(src string, width int) []string {
 
 type renderer struct {
 	src   []byte
-	depth int // of the list being rendered
+	depth int // list nesting depth
 }
 
-// blocks renders the children of n one under the other, a blank line between
-// them unless tight.
 func (r *renderer) blocks(n ast.Node, width int, tight bool) []string {
 	var out []string
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
@@ -93,7 +89,6 @@ func headingStyle(level int) lipgloss.Style {
 	}
 }
 
-// lines returns the text of a block's lines.
 func (r *renderer) lines(n ast.Node) string {
 	var b strings.Builder
 	segs := n.Lines()
@@ -139,8 +134,6 @@ func (r *renderer) list(l *ast.List, width int) []string {
 	return out
 }
 
-// code renders a code block: highlighted when its language is known, behind
-// a rule, long lines wrapped.
 func code(src, lang string, width int) []string {
 	src = strings.TrimRight(strings.ReplaceAll(src, "\t", "    "), "\n")
 	bar := theme.FaintText.Render("│ ")
@@ -153,8 +146,8 @@ func code(src, lang string, width int) []string {
 	return out
 }
 
-// table renders a table in a grid when it fits width, else each row as
-// "header: value" lines.
+// table falls back to "header: value" lines per row when the grid doesn't
+// fit.
 func (r *renderer) table(t *east.Table, width int) []string {
 	var rows [][][]span
 	for row := t.FirstChild(); row != nil; row = row.NextSibling() {
@@ -244,15 +237,14 @@ func align(s string, width int, a east.Alignment) string {
 	}
 }
 
-// inline returns the inline content of n as spans, in st unless marked up.
 func (r *renderer) inline(n ast.Node, st lipgloss.Style) []span {
 	var out []span
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch c := c.(type) {
 		case *ast.Text:
 			out = append(out, span{string(c.Value(r.src)), st})
-			// Models break lines expecting them kept, so a soft break is
-			// one too.
+			// Models break lines expecting them kept, so treat a soft break
+			// as a hard one.
 			if c.SoftLineBreak() || c.HardLineBreak() {
 				out = append(out, span{"\n", st})
 			}
@@ -298,7 +290,6 @@ func (r *renderer) inline(n ast.Node, st lipgloss.Style) []span {
 	return out
 }
 
-// plain is the text of n's inline content, without markup.
 func (r *renderer) plain(n ast.Node) string {
 	return spansText(r.inline(n, lipgloss.NewStyle()))
 }

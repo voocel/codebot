@@ -18,10 +18,9 @@ const (
 
 type filesMsg struct{ files []string }
 
-// listFiles lists what may be mentioned under root, relative to it: its
-// files and the directories holding them, those with a trailing slash. In
-// a repository the files are git's, but what it ignores; elsewhere, all but
-// the hidden.
+// listFiles returns paths relative to root: files, plus their directories
+// with a trailing slash. In a git repository it skips ignored files;
+// elsewhere it skips hidden ones.
 func listFiles(root string) []string {
 	files, ok := gitFiles(root)
 	if !ok {
@@ -80,8 +79,7 @@ func walkFiles(root string) []string {
 	return files
 }
 
-// rank returns the paths q matches, best first, at most maxMatches. See
-// score; a tie goes to the shorter path.
+// rank breaks ties by the shorter path.
 func rank(paths []string, q string) []string {
 	type hit struct {
 		path       string
@@ -104,10 +102,9 @@ func rank(paths []string, q string) []string {
 	return out
 }
 
-// score tells how well q matches p, both lower case, by tier, 0 for not at
-// all: the name is q, or begins with it, or holds it; the path holds it; or
-// it holds q's runes in order, then the closer together the better, by
-// span.
+// score expects p and q in lower case. A higher tier is better and 0 means
+// no match. For an in-order rune match, span is the distance from the first
+// to the last matched rune.
 func score(p, q string) (tier, span int) {
 	name := path.Base(p)
 	switch {

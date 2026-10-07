@@ -44,8 +44,8 @@ func TestParseMatcher(t *testing.T) {
 	}
 }
 
-// The PostToolUse hooks get the result's text as a JSON string, and whether
-// the call failed.
+// Hooks receive the result text as a JSON string and whether the call
+// failed.
 func TestPostToolUseMiddleware(t *testing.T) {
 	t.Parallel()
 
@@ -74,8 +74,7 @@ func TestPostToolUseMiddleware(t *testing.T) {
 	}
 }
 
-// waitFor polls until ok reports true, failing the test after a deadline.
-// Fire-and-forget hooks give no completion signal, so tests must poll.
+// waitFor polls because fire-and-forget hooks give no completion signal.
 func waitFor(t *testing.T, desc string, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -98,7 +97,7 @@ func TestPreToolUseMiddleware(t *testing.T) {
 	}
 	mw := newRunner(cfg, nil).PreToolUse()
 
-	// The rewrite is what the rest of the chain decides on and runs.
+	// The rest of the chain sees the rewritten arguments.
 	var seen json.RawMessage
 	res, err := mw(context.Background(), agentcore.ToolCall{Name: "write", Args: json.RawMessage(`{"path":"/raw"}`)},
 		func(_ context.Context, call agentcore.ToolCall) (agentcore.Result, error) {
@@ -109,7 +108,7 @@ func TestPreToolUseMiddleware(t *testing.T) {
 		t.Fatalf("result %+v, err %v, the rest saw %s", res, err, seen)
 	}
 
-	// A blocking hook refuses the call before the rest of the chain.
+	// A blocking hook stops the call before the rest of the chain.
 	res, err = mw(context.Background(), agentcore.ToolCall{Name: "bash", Args: json.RawMessage(`{}`)},
 		func(context.Context, agentcore.ToolCall) (agentcore.Result, error) {
 			t.Fatal("the chain went on after a blocking hook")
@@ -120,8 +119,7 @@ func TestPreToolUseMiddleware(t *testing.T) {
 	}
 }
 
-// A blocking command hook blocks the call by exiting 2; failing otherwise,
-// it lets the call through.
+// Other non-zero exits let the call through.
 func TestPreToolUse_ExitCode2Blocks(t *testing.T) {
 	t.Parallel()
 
@@ -138,8 +136,6 @@ func TestPreToolUse_ExitCode2Blocks(t *testing.T) {
 	}
 }
 
-// A prompt hook asks the model the conversation has switched to, not the one
-// it started with.
 func TestPromptHookUsesTheCurrentModel(t *testing.T) {
 	t.Parallel()
 
@@ -157,14 +153,12 @@ func TestPromptHookUsesTheCurrentModel(t *testing.T) {
 	}
 }
 
-// newRunner returns a runner of cfg.
 func newRunner(cfg config.HooksConfig, model func() agentcore.Model) *Runner {
 	r := New("test", model)
 	r.Set(cfg)
 	return r
 }
 
-// answerModel is a model that always answers with text.
 func answerModel(t *testing.T, text string) agentcore.Model {
 	t.Helper()
 	replies := make([]litellmtest.Reply, 4)
@@ -178,8 +172,7 @@ func answerModel(t *testing.T, text string) agentcore.Model {
 	return agentcore.Model{Client: client, Request: litellm.Request{Model: "m"}}
 }
 
-// A hook that would not run is told so: its event, type, what the type
-// needs, and its matchers are checked.
+// Check rejects bad events and types, missing type fields and bad matchers.
 func TestCheck(t *testing.T) {
 	ok := config.HookEntry{Type: "command", Command: "true", Matcher: "/^ba/"}
 	if err := Check("PreToolUse", ok); err != nil {
@@ -199,7 +192,6 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// A command hook runs with its own environment.
 func TestHookEnv(t *testing.T) {
 	r := New("sess", nil)
 	r.Set(config.HooksConfig{"PreToolUse": {
@@ -210,9 +202,7 @@ func TestHookEnv(t *testing.T) {
 	}
 }
 
-// A command hook runs its command in sh, but on Windows its command_windows,
-// if it has one, in PowerShell; a command alone on a Windows without sh is
-// told as the hook loads.
+// On Windows without sh, a hook with no command_windows fails at load.
 func TestCommandFor(t *testing.T) {
 	he := config.HookEntry{Type: "command", Command: "./guard", CommandWindows: `& "$env:PLUGIN_ROOT\guard.ps1"`}
 	for goos, want := range map[string]string{"linux": "sh ./guard", "darwin": "sh ./guard", "windows": "powershell " + he.CommandWindows} {
@@ -230,7 +220,7 @@ func TestCommandFor(t *testing.T) {
 	}
 }
 
-// A command hook's timeout holds though what it started holds its output.
+// The timeout holds even when a child process keeps the output pipe open.
 func TestCommandHookTimesOut(t *testing.T) {
 	t.Parallel()
 

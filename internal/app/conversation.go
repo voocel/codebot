@@ -26,36 +26,35 @@ import (
 	"github.com/voocel/codebot/internal/workspace/worktree"
 )
 
-// Conversation is one session and everything that lives as long as it: its
-// tools, working directory, background tasks, checkpoints and hooks. Opening
+// Conversation holds everything that lives as long as one session. Opening
 // another session replaces the whole Conversation; nothing is reset.
 type Conversation struct {
 	app        *App
 	id         string
-	dir        string // per-session directory: background output, tool output
+	dir        string
 	session    *session.Session
 	tasks      *task.Runtime
-	agents     *AgentHub         // background sub-agent runs
+	agents     *AgentHub
 	snapshots  *snapshot.Tracker // nil when checkpoints are off
 	hooks      *hooks.Runner
 	files      *agentcoretools.FileReadState
 	limiter    *tools.OutputLimiter
 	validation *hooks.Validation
 
-	system []litellm.Block // the system prompt; see context.go
+	system []litellm.Block // see context.go
 
-	// mu guards what follows. The App's lock is never taken under it.
+	// mu guards the fields below. Never take the App's lock while holding it.
 	mu        sync.Mutex
 	cwd       string
 	worktree  *worktreeState
 	model     modelChoice
 	workspace []prompt.Part
-	skills    *skill.Catalog   // those active in the workspace
-	tools     []agentcore.Tool // built for the current model
-	subagents agentcore.Tool   // the subagent tool among them, for forked skills
-	mcpTools  []agentcore.Tool // every MCP tool the conversation had, see growTools
-	// grants are the tools the skills invoked in the current run allow; they
-	// go when it ends.
+	skills    *skill.Catalog
+	tools     []agentcore.Tool
+	subagents agentcore.Tool   // the subagent tool in tools, used by forked skills
+	mcpTools  []agentcore.Tool // every MCP tool seen so far; see growTools
+	// grants are tools allowed by skills invoked in the current run. They are
+	// dropped when the run ends.
 	grants []permission.Rule
 }
 
@@ -100,9 +99,9 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 	return c, nil
 }
 
-// start starts the conversation once it is current and the one it replaces
-// has ended: it takes what the MCP servers offer now, in case a refresh went
-// to the conversation it replaced, and starts telemetry and the hooks.
+// start runs once the conversation is current and the previous one has
+// closed. It re-reads the MCP offer in case a refresh went to the previous
+// conversation.
 func (c *Conversation) start() {
 	c.mcpChanged()
 	c.app.tracer.SetSession(c.id)
@@ -114,8 +113,6 @@ func (c *Conversation) start() {
 	})
 }
 
-// close ends the conversation: the run, background tasks, a worktree with no
-// changes, and the hooks' session.
 func (c *Conversation) close() {
 	c.session.Close()
 	c.tasks.StopAll()
@@ -129,25 +126,21 @@ func (c *Conversation) close() {
 	c.hooks.RunSessionEnd()
 }
 
-// ID is the session ID.
 func (c *Conversation) ID() string { return c.id }
 
-// Cwd is the directory the agent works in: the workspace, or the worktree it
-// entered.
+// Cwd is the workspace, or the worktree the agent entered.
 func (c *Conversation) Cwd() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.cwd
 }
 
-// Subscribe calls fn with the conversation's session events; see
-// session.Session.Subscribe.
 func (c *Conversation) Subscribe(fn func(session.Event)) (unsubscribe func()) {
 	return c.session.Subscribe(fn)
 }
 
-// Submit sends the user's input. UserPromptSubmit hooks run first: a blocking
-// hook rejects the input, and context they add goes ahead of it.
+// Submit runs UserPromptSubmit hooks first: a blocking hook rejects the
+// input, and context they add is posted before it.
 func (c *Conversation) Submit(ctx context.Context, blocks []litellm.Block) error {
 	msgs, err := c.promptSubmit(ctx, blocks)
 	if err != nil {
@@ -157,8 +150,6 @@ func (c *Conversation) Submit(ctx context.Context, blocks []litellm.Block) error
 	return nil
 }
 
-// promptSubmit runs the UserPromptSubmit hooks over the user's input and
-// returns what to post: the context they add, then the input.
 func (c *Conversation) promptSubmit(ctx context.Context, blocks []litellm.Block) ([]agentcore.Message, error) {
 	input := agentcore.User(blocks...)
 	dec, err := c.hooks.RunUserPromptSubmit(ctx, input.Text())
@@ -177,48 +168,41 @@ func (c *Conversation) post(msgs []agentcore.Message) {
 	}
 }
 
-// reminder wraps harness-provided context so the model does not take it for
-// the user's words.
+// reminder marks harness context so the model doesn't mistake it for the
+// user's words.
 func reminder(text string) string {
 	return "<system-reminder>\n" + text + "\n</system-reminder>"
 }
 
-// kindReminder marks a message the harness adds for the model, such as a
-// validation failure to fix or context a hook adds.
+// kindReminder marks messages the harness adds, such as validation failures
+// or hook context. Frontends don't show them as the user's.
 const kindReminder = "reminder"
 
-// reminderMessage is a message of harness-provided context, which frontends
-// do not show as the user's.
 func reminderMessage(text string) agentcore.Message {
 	m := agentcore.UserText(reminder(text))
 	m.Kind = kindReminder
 	return m
 }
 
-// background posts a finished background task's notification.
 func (c *Conversation) background(msg agentcore.Message) {
 	c.session.Post(session.Input{Source: session.Background, Msg: msg})
 }
 
-// Wait returns once the conversation is idle with every earlier input
-// handled and every subscriber caught up; see session.Session.Wait.
 func (c *Conversation) Wait(ctx context.Context) error { return c.session.Wait(ctx) }
 
-// Cancel stops the current run.
 func (c *Conversation) Cancel() { c.session.Cancel() }
 
-// Compact summarizes the history now.
 func (c *Conversation) Compact(ctx context.Context) error { return c.session.Compact(ctx) }
 
-// Query answers a side question from the conversation's context without
-// adding to it. It thinks as the conversation does: a request that thinks
-// otherwise reads none of the conversation from the prompt cache.
+// Query answers a side question without adding to the history. It keeps the
+// conversation's reasoning settings, because a request with different ones
+// misses the prompt cache.
 func (c *Conversation) Query(ctx context.Context, question string) (string, error) {
 	return c.session.Query(ctx, question, 0)
 }
 
-// Suggest predicts what the user may type next, or "" when nothing fits. It
-// thinks as the conversation does, as Query.
+// Suggest predicts the user's next input, or "" when nothing fits. Like
+// Query, it keeps the conversation's reasoning settings.
 func (c *Conversation) Suggest(ctx context.Context) (string, error) {
 	text, err := c.session.Query(ctx, prompt.Suggestion, suggestionMaxTokens)
 	if err != nil {
@@ -231,10 +215,8 @@ func (c *Conversation) Suggest(ctx context.Context) (string, error) {
 	return text, nil
 }
 
-// History returns the conversation's history.
 func (c *Conversation) History() []agentcore.Message { return c.session.History() }
 
-// Status describes the conversation for display.
 type Status struct {
 	session.Status
 	Mode     interact.Mode
@@ -243,12 +225,11 @@ type Status struct {
 	Tasks    int    // running background tasks
 	// SmallModel runs the explore sub-agent.
 	SmallModel string
-	// Reasoning reports whether the model takes a reasoning effort; Effort
-	// "" then leaves it to the provider.
+	// Reasoning reports whether the model accepts a reasoning effort. An
+	// empty Effort means the provider default.
 	Reasoning bool
 }
 
-// Status returns the conversation's status.
 func (c *Conversation) Status() Status {
 	c.mu.Lock()
 	small, reasoning := c.model.small, c.model.reasoning
@@ -264,11 +245,9 @@ func (c *Conversation) Status() Status {
 	}
 }
 
-// GitBranch is the branch checked out where the conversation works, ""
-// outside a repository.
+// GitBranch returns "" outside a repository.
 func (c *Conversation) GitBranch() string { return worktree.CurrentBranch(c.Cwd()) }
 
-// Skills returns the skills active in the conversation's workspace.
 func (c *Conversation) Skills() []Skill { return c.activeSkills().List() }
 
 func (c *Conversation) activeSkills() *skill.Catalog {
@@ -277,15 +256,12 @@ func (c *Conversation) activeSkills() *skill.Catalog {
 	return c.skills
 }
 
-// Tasks returns the background task runtime.
 func (c *Conversation) Tasks() *task.Runtime { return c.tasks }
 
-// Agents returns the hub of background sub-agent runs.
 func (c *Conversation) Agents() *AgentHub { return c.agents }
 
-// SetModel switches to the model name served by the provider configured as
-// prov, with the reasoning effort ("" is the provider default), and
-// remembers the choice in the settings.
+// SetModel also saves the choice as the default in the user's settings. An
+// empty effort means the provider default.
 func (c *Conversation) SetModel(prov, name, effort string) error {
 	choice, err := c.app.chooseModel(prov, name, effort)
 	if err != nil {
@@ -299,8 +275,7 @@ func (c *Conversation) SetModel(prov, name, effort string) error {
 	return c.app.rememberModel(prov, name, effort)
 }
 
-// hookModel is the model prompt hooks call: the conversation's, without its
-// reasoning effort.
+// hookModel is the conversation's model without its reasoning effort.
 func (c *Conversation) hookModel() agentcore.Model {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -310,10 +285,9 @@ func (c *Conversation) hookModel() agentcore.Model {
 // suggestionMaxTokens bounds a suggestion's response, reasoning included.
 const suggestionMaxTokens = 2048
 
-// mcpChanged takes what the MCP servers now offer: their tools join the
-// conversation's, which only grow (see growTools), and their instructions
-// replace the ones before, from the next run. It reads the offer under c.mu,
-// so of concurrent calls the last one applies the latest offer.
+// mcpChanged applies the current MCP offer from the next run on. Tools only
+// accumulate (see growTools); instructions are replaced. The offer is read
+// under c.mu, so among concurrent calls the last one applies the latest.
 func (c *Conversation) mcpChanged() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -321,9 +295,8 @@ func (c *Conversation) mcpChanged() {
 	c.configureLocked()
 }
 
-// Reload takes the extensions the App reloaded, and re-reads the workspace
-// the model is told about. The model is told what changed as the next run
-// starts.
+// Reload applies the App's reloaded extensions and re-reads the workspace.
+// The model learns what changed when the next run starts.
 func (c *Conversation) Reload() {
 	c.hooks.Set(c.app.Extensions().HooksConfig())
 	c.mu.Lock()
@@ -333,9 +306,8 @@ func (c *Conversation) Reload() {
 	c.configureLocked()
 }
 
-// InvokeSkill runs a skill the user invoked as a command. An inline skill is
-// submitted as the user's input; a forked one runs in a sub-agent whose output
-// is returned.
+// InvokeSkill submits an inline skill as user input. A forked skill runs in
+// a sub-agent and its output is returned.
 func (c *Conversation) InvokeSkill(ctx context.Context, name, args string) (string, error) {
 	inv, err := c.activeSkills().Invoke(ctx, skill.InvokeInput{
 		Name:      name,
@@ -360,15 +332,15 @@ func (c *Conversation) InvokeSkill(ctx context.Context, name, args string) (stri
 		return "", err
 	}
 	msgs[len(msgs)-1].Kind = kindSkill
-	// Granted before the prompt is posted, so the run it lands in has the
-	// skill's tools.
+	// Grant before posting so the run that takes the prompt has the skill's
+	// tools.
 	c.skillInvoked(inv)
 	c.post(msgs)
 	return "", nil
 }
 
-// skillInvoked records a skill's use. An inline skill's allowed tools are
-// granted until the current run ends.
+// skillInvoked grants an inline skill's allowed tools until the current run
+// ends.
 func (c *Conversation) skillInvoked(inv *skill.Invocation) {
 	_ = c.app.usage.Record(inv.Spec.Name, time.Now())
 	if inv.Fork {
@@ -380,18 +352,16 @@ func (c *Conversation) skillInvoked(inv *skill.Invocation) {
 	c.mu.Unlock()
 }
 
-// skillGrants returns what the skills of the current run allow.
 func (c *Conversation) skillGrants() []permission.Rule {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.grants
 }
 
-// errNoSnapshots explains Undo, Redo and Diff without checkpoints.
 var errNoSnapshots = errors.New("file checkpoints are off: they need a git repository and the snapshot setting")
 
-// Undo reverts the files changed by the most recent run that changed any; ok
-// is false when there is nothing to undo.
+// Undo reverts the most recent run that changed files. ok is false when
+// there is nothing to undo.
 func (c *Conversation) Undo() (changed []string, ok bool, err error) {
 	if c.snapshots == nil {
 		return nil, false, errNoSnapshots
@@ -399,7 +369,6 @@ func (c *Conversation) Undo() (changed []string, ok bool, err error) {
 	return c.snapshots.Undo()
 }
 
-// Redo re-applies the most recent Undo.
 func (c *Conversation) Redo() (changed []string, ok bool, err error) {
 	if c.snapshots == nil {
 		return nil, false, errNoSnapshots
@@ -407,7 +376,7 @@ func (c *Conversation) Redo() (changed []string, ok bool, err error) {
 	return c.snapshots.Redo()
 }
 
-// Diff previews what Undo would revert, "" when nothing.
+// Diff previews what Undo would revert.
 func (c *Conversation) Diff() (string, error) {
 	if c.snapshots == nil {
 		return "", errNoSnapshots

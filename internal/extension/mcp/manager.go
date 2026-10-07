@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -9,38 +10,51 @@ import (
 	"sync"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/mcp-sdk-go/auth"
 
 	"github.com/voocel/codebot/internal/agent/permission"
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// Manager manages the lifecycle of multiple MCP server connections.
 type Manager struct {
 	mu       sync.Mutex
 	clients  map[string]*Client
 	configs  map[string]config.MCPServer // what each client connected with
-	failures map[string]string           // server name → error message
-	onChange func()                      // a server signalled tools/list_changed
+	servers  map[string]config.MCPServer // the last configuration
+	failures map[string]error
+	// authz outlive connections, so a login sees the challenge of the
+	// connection that failed.
+	authz    map[auth.Config]*auth.Authorizer
+	store    auth.Store
+	onChange func() // a server signalled tools/list_changed
 }
 
-// NewManager creates an empty Manager. onChange is called, on a goroutine of
-// the server's connection, whenever a server's tool list changes.
+// NewManager calls onChange, on the connection's goroutine, whenever a
+// server's tool list changes.
 func NewManager(onChange func()) *Manager {
 	return &Manager{
 		clients:  make(map[string]*Client),
 		configs:  make(map[string]config.MCPServer),
-		failures: make(map[string]string),
+		failures: make(map[string]error),
+		authz:    make(map[auth.Config]*auth.Authorizer),
+		store:    tokenStore{path: oauthPath()},
 		onChange: onChange,
 	}
 }
 
-// Configure makes the connected servers those of servers. It disconnects
-// those gone or changed, then connects, in parallel, the new, the changed
-// and those that failed before; a server connected as configured stays
-// connected. It returns the servers that failed to connect. Calls must not
-// overlap: the caller orders them.
-func (m *Manager) Configure(ctx context.Context, servers map[string]config.MCPServer) []error {
+// Failure is a server that did not connect.
+type Failure struct {
+	Server string
+	Err    error
+	Login  bool // it wants an OAuth login
+}
+
+// Configure connects only servers that are new, changed or failed before;
+// connected servers whose config is unchanged stay up. Calls must not
+// overlap; the caller serializes them.
+func (m *Manager) Configure(ctx context.Context, servers map[string]config.MCPServer) []Failure {
 	m.mu.Lock()
+	m.servers = servers
 	var stale []*Client
 	for name, c := range m.clients {
 		if cfg, ok := servers[name]; !ok || !reflect.DeepEqual(cfg, m.configs[name]) {
@@ -68,31 +82,108 @@ func (m *Manager) Configure(ctx context.Context, servers map[string]config.MCPSe
 	}
 	ch := make(chan result, len(pending))
 	for name, cfg := range pending {
+		authz := m.authorizer(cfg)
 		go func() {
-			c, err := connect(ctx, name, cfg, m.onChange)
+			c, err := connect(ctx, name, cfg, authz, m.onChange)
 			ch <- result{name, c, err}
 		}()
 	}
-	var errs []error
+	var failures []Failure
 	for range len(pending) {
 		r := <-ch
 		m.mu.Lock()
 		if r.err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", r.name, r.err))
-			m.failures[r.name] = r.err.Error()
+			m.failures[r.name] = r.err
+			failures = append(failures, m.failure(r.name, r.err))
 		} else {
 			m.clients[r.name], m.configs[r.name] = r.client, pending[r.name]
 		}
 		m.mu.Unlock()
 	}
-	return errs
+	return failures
 }
 
-// sortedClients returns connected clients in deterministic (server name)
-// order. Tools and instructions feed the LLM request's tools array and the
-// system prompt's mcp overlay; iterating the map directly would shuffle
-// their bytes across refreshes and bust the provider prompt cache from the
-// prefix onward. Caller must hold m.mu.
+// Login starts an OAuth login to the server name; the caller completes it
+// with Wait and connects again.
+func (m *Manager) Login(ctx context.Context, name string) (*auth.Login, error) {
+	authz, err := m.oauthOf(name)
+	if err != nil {
+		return nil, err
+	}
+	l, err := authz.Login(ctx)
+	if errors.Is(err, auth.ErrClientRequired) {
+		return nil, fmt.Errorf("%w: register an OAuth app there with callback URL http://127.0.0.1/callback, then set its client_id and client_secret as mcp_servers.%s.oauth", err, name)
+	}
+	return l, err
+}
+
+// Logout forgets the server's token and disconnects it, so the next
+// Configure connects it again without one.
+func (m *Manager) Logout(name string) error {
+	authz, err := m.oauthOf(name)
+	if err != nil {
+		return err
+	}
+	if err := authz.Logout(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	c := m.clients[name]
+	delete(m.clients, name)
+	delete(m.configs, name)
+	m.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
+	}
+	return nil
+}
+
+func (m *Manager) oauthOf(name string) (*auth.Authorizer, error) {
+	m.mu.Lock()
+	cfg, ok := m.servers[name]
+	m.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("no MCP server is called %q", name)
+	}
+	authz := m.authorizer(cfg)
+	if authz == nil {
+		return nil, fmt.Errorf("%s does not log in with OAuth: only HTTP servers without an Authorization header do", name)
+	}
+	return authz, nil
+}
+
+// clientMetadataURL is codebot's Client ID Metadata Document, served from
+// site/oauth/client.json.
+const clientMetadataURL = "https://voocel.github.io/codebot/oauth/client.json"
+
+// authorizer returns the server's OAuth authorizer, or nil when it does not
+// use OAuth. Caller does not hold m.mu.
+func (m *Manager) authorizer(cfg config.MCPServer) *auth.Authorizer {
+	if !usesOAuth(cfg) {
+		return nil
+	}
+	ac := auth.Config{Server: cfg.URL, Store: m.store, ClientMetadataURL: clientMetadataURL}
+	if cfg.OAuth != nil {
+		ac.ClientID, ac.ClientSecret = cfg.OAuth.ClientID, cfg.OAuth.ClientSecret
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a := m.authz[ac]
+	if a == nil {
+		a = auth.New(ac)
+		m.authz[ac] = a
+	}
+	return a
+}
+
+// failure describes the server name's connection error. Caller holds m.mu.
+func (m *Manager) failure(name string, err error) Failure {
+	return Failure{Server: name, Err: err, Login: usesOAuth(m.servers[name]) && needsLogin(err)}
+}
+
+// sortedClients keeps tools and instructions in a stable order across
+// refreshes; map order would change the request prefix and break the prompt
+// cache. Caller holds m.mu.
 func (m *Manager) sortedClients() []*Client {
 	names := slices.Sorted(maps.Keys(m.clients))
 	out := make([]*Client, 0, len(names))
@@ -102,8 +193,6 @@ func (m *Manager) sortedClients() []*Client {
 	return out
 }
 
-// Tools returns the tools of the connected servers, and how the permission
-// engine sees each, by name.
 func (m *Manager) Tools(ctx context.Context) ([]agentcore.Tool, map[string]permission.Metadata) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -124,7 +213,6 @@ func (m *Manager) Tools(ctx context.Context) ([]agentcore.Tool, map[string]permi
 	return tools, perms
 }
 
-// Instructions collects server instructions from all connected servers.
 func (m *Manager) Instructions() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -138,7 +226,6 @@ func (m *Manager) Instructions() []string {
 	return out
 }
 
-// Close terminates all MCP server connections.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -149,25 +236,25 @@ func (m *Manager) Close() {
 	}
 }
 
-// ServerStatus describes a connected or failed MCP server.
 type ServerStatus struct {
 	Name      string
 	ToolCount int
 	Error     string // non-empty if connection failed
+	Login     bool   // the server wants an OAuth login
 	ListError string // non-empty if connected but ListTools failed
 }
 
-// Status returns the status of all MCP servers, including failed ones. The
-// servers list their tools in parallel, under ctx, without holding the lock.
+// Status includes failed servers. Tools are listed in parallel without
+// holding the lock.
 func (m *Manager) Status(ctx context.Context) []ServerStatus {
 	m.mu.Lock()
 	clients := make([]*Client, 0, len(m.clients))
 	for _, c := range m.clients {
 		clients = append(clients, c)
 	}
-	failures := make(map[string]string, len(m.failures))
-	for k, v := range m.failures {
-		failures[k] = v
+	failures := make([]Failure, 0, len(m.failures))
+	for name, err := range m.failures {
+		failures = append(failures, m.failure(name, err))
 	}
 	m.mu.Unlock()
 
@@ -175,26 +262,27 @@ func (m *Manager) Status(ctx context.Context) []ServerStatus {
 		name  string
 		count int
 		err   error
+		login bool
 	}
 	ch := make(chan result, len(clients))
 	for _, c := range clients {
 		go func(c *Client) {
 			tools, err := c.ListTools(ctx)
-			ch <- result{name: c.Name(), count: len(tools), err: err}
+			ch <- result{name: c.Name(), count: len(tools), err: err, login: c.oauth && needsLogin(err)}
 		}(c)
 	}
 
 	out := make([]ServerStatus, 0, len(clients)+len(failures))
 	for range clients {
 		r := <-ch
-		s := ServerStatus{Name: r.name, ToolCount: r.count}
+		s := ServerStatus{Name: r.name, ToolCount: r.count, Login: r.login}
 		if r.err != nil {
 			s.ListError = r.err.Error()
 		}
 		out = append(out, s)
 	}
-	for name, errMsg := range failures {
-		out = append(out, ServerStatus{Name: name, Error: errMsg})
+	for _, f := range failures {
+		out = append(out, ServerStatus{Name: f.Server, Error: f.Err.Error(), Login: f.Login})
 	}
 	return out
 }

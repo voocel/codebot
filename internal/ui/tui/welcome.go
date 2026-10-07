@@ -16,16 +16,10 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// The welcome is what an empty conversation shows, a little above the
-// middle: a card holding the bot beside where codebot works, the tagline
-// under them, and the recent conversations, a click away, then a tip. What does not fit
-// goes: the tip first, then the recent conversations.
-
 const tagline = "A long-running coding agent that lives in your terminal."
 
-// bot is codebot's face: antennae, a round head and two eyes. Its full
-// cells are painted as background, which no terminal leaves gaps in between
-// rows, and its edges are half blocks.
+// Full blocks are painted as background color, since terminals leave no
+// gaps between rows in a background.
 var bot = [4]string{
 	"  ▀▄    ▄▀  ",
 	" ▄████████▄ ",
@@ -33,7 +27,6 @@ var bot = [4]string{
 	" ▀████████▀ ",
 }
 
-// tips teach what is not in sight.
 var tips = []string{
 	"Drag across text to copy it",
 	"Click a tool call to open it up · ctrl+o opens them all",
@@ -50,18 +43,17 @@ var tips = []string{
 }
 
 const (
-	maxRecent = 3  // recent conversations listed
-	maxPath   = 40 // columns of the directory shown
-	cardWidth = 72 // the widest the card gets
-	cardPad   = 2  // columns between the card's border and what it holds
-	botGap    = 4  // columns between the bot and the lines beside it
-	minBeside = 20 // the fewest columns the bot leaves the lines beside it
+	maxRecent = 3
+	maxPath   = 40 // columns
+	cardWidth = 72
+	cardPad   = 2  // columns between the border and the content
+	botGap    = 4  // columns between the bot and the text beside it
+	minBeside = 20 // below this many columns for the text, the bot is hidden
 )
 
 type recentMsg struct{ sessions []app.SessionInfo }
 
-// loadRecent reads the conversations of the workspace, which means reading
-// their files, so off the TUI's goroutine.
+// loadRecent reads session files, so it runs off the TUI goroutine.
 func (m *Model) loadRecent() tea.Cmd {
 	a := m.app
 	return func() tea.Msg {
@@ -73,8 +65,7 @@ func (m *Model) loadRecent() tea.Cmd {
 	}
 }
 
-// setRecent keeps the conversations worth going back to: the latest that
-// say something, but the one open.
+// setRecent skips the open session and empty ones.
 func (m *Model) setRecent(sessions []app.SessionInfo) {
 	m.recent = m.recent[:0]
 	for _, s := range sessions {
@@ -84,8 +75,8 @@ func (m *Model) setRecent(sessions []app.SessionInfo) {
 	}
 }
 
-// welcome lays the welcome out in width by height, and notes the line of
-// each recent conversation for the mouse.
+// welcome drops the tip first, then the recent sessions, when space runs
+// out.
 func (m *Model) welcome(width, height int) []string {
 	m.recentAt = nil
 	w := min(width, cardWidth)
@@ -102,7 +93,7 @@ func (m *Model) welcome(width, height int) []string {
 	tip := m.tipLines(inner)
 	ink := lipgloss.Blend1D(w, sink(theme.Accent), sink(theme.Info), sink(theme.Agent))
 
-	// From the most to the least that may show.
+	// From the fullest layout to the most compact.
 	for _, c := range []struct{ recent, tip, roomy bool }{
 		{true, true, true},
 		{true, false, true},
@@ -131,7 +122,7 @@ func (m *Model) welcome(width, height int) []string {
 		}
 		lines := k.close()
 		if c.tip {
-			// In line with what the card holds.
+			// Align with the card's content.
 			margin := strings.Repeat(" ", 1+cardPad)
 			lines = append(lines, "")
 			for _, l := range tip {
@@ -151,9 +142,6 @@ func (m *Model) welcome(width, height int) []string {
 	return nil
 }
 
-// head is the top of the card, centred in width: the bot, and beside its
-// head the name, the model and the place; those alone when the bot leaves
-// them too little room.
 func (m *Model) head(width int) []string {
 	beside := width - ansi.StringWidth(bot[0]) - botGap
 	if beside < minBeside {
@@ -161,7 +149,7 @@ func (m *Model) head(width int) []string {
 	}
 	st := m.status
 	model := theme.Text.Render(st.Model)
-	// The effort, short of room, makes way for the model.
+	// Drop the effort when it doesn't fit beside the model.
 	if effort := theme.FaintText.Render("  ·  ") + theme.SubtleText.Render("effort "+cmp.Or(st.Effort, "auto")); st.Reasoning && ansi.StringWidth(model+effort) <= beside {
 		model += effort
 	}
@@ -176,7 +164,7 @@ func (m *Model) head(width int) []string {
 	if beside < width {
 		face := drawBot()
 		gap := strings.Repeat(" ", botGap)
-		// The lines sit beside the head, under the antennae.
+		// The text sits beside the head, below the antennae.
 		lines = append([]string{face[0]}, lines...)
 		for i := 1; i < len(face); i++ {
 			lines[i] = face[i] + gap + lines[i]
@@ -185,8 +173,6 @@ func (m *Model) head(width int) []string {
 	return centre(lines, width)
 }
 
-// drawBot paints the bot in a light running from the accent at its top
-// left to blue at its bottom right.
 func drawBot() []string {
 	w := ansi.StringWidth(bot[0])
 	ramp := lipgloss.Blend1D(w+2*len(bot), theme.Accent, theme.Info)
@@ -209,7 +195,6 @@ func drawBot() []string {
 	return out
 }
 
-// centre indents lines as one block to the middle of width.
 func centre(lines []string, width int) []string {
 	w := 0
 	for _, l := range lines {
@@ -223,8 +208,7 @@ func centre(lines []string, width int) []string {
 	return out
 }
 
-// card is a box with rounded corners, its border running through the
-// colours of ink, one per column.
+// card is a rounded box whose border takes one color of ink per column.
 type card struct {
 	ink   []color.Color
 	lines []string
@@ -236,7 +220,6 @@ func newCard(ink []color.Color) *card {
 	return k
 }
 
-// add puts lines in the card, each at most its inner width wide.
 func (k *card) add(lines ...string) {
 	w := len(k.ink)
 	pad := strings.Repeat(" ", cardPad)
@@ -246,18 +229,14 @@ func (k *card) add(lines ...string) {
 	}
 }
 
-// section opens a part of the card under a rule bearing title and note.
 func (k *card) section(title, note string) {
 	k.lines = append(k.lines, k.edge("├", "┤", title, note))
 }
 
-// close draws the card's bottom and returns its lines.
 func (k *card) close() []string {
 	return append(k.lines, k.edge("╰", "╯", "", ""))
 }
 
-// edge draws a border line between the corners l and r, with title and
-// note set into it where they fit.
 func (k *card) edge(l, r, title, note string) string {
 	w := len(k.ink)
 	if title == "" || w-2 < ansi.StringWidth(title)+4 {
@@ -272,8 +251,6 @@ func (k *card) edge(l, r, title, note string) string {
 	return head + k.stroke(" "+strings.Repeat("─", w-x-2)+r, x)
 }
 
-// stroke draws the border runes of s from column x on, each in its
-// column's colour.
 func (k *card) stroke(s string, x int) string {
 	var b strings.Builder
 	for i, r := range []rune(s) {
@@ -282,7 +259,6 @@ func (k *card) stroke(s string, x int) string {
 	return b.String()
 }
 
-// sink takes c halfway to the colour of rules, for the card's border.
 func sink(c color.Color) color.Color {
 	return lipgloss.Blend1D(3, c, theme.Faint)[1]
 }
@@ -294,16 +270,14 @@ func (m *Model) versionLabel() string {
 	return m.version
 }
 
-// place says where the conversation works, in width: the directory and the
-// branch.
 func (m *Model) place(width int) string {
 	path := transcript.HomePath(m.status.Cwd)
 	var branch string
 	if m.branch != "" {
 		branch = theme.FaintText.Render("  ·  ") + theme.MutedText.Render("⎇ "+m.branch)
 	}
-	// The end of a long path says the most. Short of room, the branch,
-	// which the footer shows too, makes way for it.
+	// Keep the end of a long path. When room is short, drop the branch,
+	// which the footer shows too.
 	room := width - ansi.StringWidth(branch)
 	if room < min(ansi.StringWidth(path), maxPath/2) {
 		branch, room = "", width
@@ -315,7 +289,6 @@ func (m *Model) place(width int) string {
 	return theme.PathText.Render(path) + branch
 }
 
-// tipLines wraps the tip to width.
 func (m *Model) tipLines(width int) []string {
 	const lead = "Tip  "
 	lines := strings.Split(ansi.Wordwrap(m.tip, width-len(lead), ""), "\n")
@@ -329,7 +302,6 @@ func (m *Model) tipLines(width int) []string {
 	return lines
 }
 
-// recentRows lists the recent conversations width wide, and the id of each.
 func (m *Model) recentRows(width int) (rows, ids []string) {
 	now := time.Now()
 	for _, s := range m.recent {

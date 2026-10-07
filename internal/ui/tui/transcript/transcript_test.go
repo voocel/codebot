@@ -49,8 +49,8 @@ func call(id, name, args string) litellm.ToolUseBlock {
 	return litellm.ToolUseBlock{ID: id, Name: name, Arguments: args}
 }
 
-// TestApplyMatchesLoad checks the invariant the package rests on: a run
-// shows the same live as restored from the history it wrote.
+// The package's core invariant: a run renders the same live as restored
+// from the history it wrote.
 func TestApplyMatchesLoad(t *testing.T) {
 	user := agentcore.UserText("fix the tests")
 	first := assistant("Let me look at the **failures**.", call("c1", "bash", `{"command":"go test ./..."}`), call("c2", "todo_write", `{"todos":[]}`), call("c3", "edit", `{"file_path":"/x/a.go"}`), call("c4", "write", `{"file_path":"/x/b.go","content":"package x\n\nvar B = 2\n"}`))
@@ -64,8 +64,8 @@ func TestApplyMatchesLoad(t *testing.T) {
 	live := New()
 	live.Apply(agentcore.MessageEnd{Message: user})
 	stream(live, first, "Let me look ", "at the **failures**.")
-	// Calls run in parallel start in any order; those awaiting approval
-	// show a preview.
+	// Parallel calls start in any order; calls awaiting approval show a
+	// preview.
 	for _, c := range slices.Backward(first.ToolCalls()) {
 		live.Apply(agentcore.ToolStart{Call: agentcore.ToolCall{ID: c.ID, Name: c.Name, Args: json.RawMessage(c.Arguments), Preview: "-1 var B = 1\n+1 var B = 2\n"}})
 	}

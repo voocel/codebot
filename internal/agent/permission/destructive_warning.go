@@ -2,22 +2,16 @@ package permission
 
 import "regexp"
 
-// Patterns that flag a bash command as potentially destructive. Each match
-// produces a UI-only warning on the approval card — the deny/allow decision
-// is unaffected. Goal: a final cognitive checkpoint before the user presses Y,
-// especially in trust / always-allow modes where the engine would otherwise
-// pass silently.
-//
-// Go's RE2 lacks lookahead, so dry-run forms are not excluded — we warn
-// unconditionally on the matching shape. A false-positive warning on
-// `git clean -nf` is acceptable; missing the warning on `git clean -f` is not.
+// A destructive pattern adds a warning to the approval card and keeps the
+// command from being remembered; it never denies. RE2 has no lookahead, so
+// dry runs such as git clean -nf warn too: a false warning is acceptable, a
+// missed one is not.
 type destructivePattern struct {
 	re      *regexp.Regexp
 	warning string
 }
 
 var destructivePatterns = []destructivePattern{
-	// Git — data loss / hard to reverse
 	{regexp.MustCompile(`\bgit\s+reset\s+--hard\b`), "may discard uncommitted changes"},
 	{regexp.MustCompile(`\bgit\s+push\b[^;&|\n]*[ \t](?:--force|--force-with-lease|-f)\b`), "may overwrite remote history"},
 	{regexp.MustCompile(`\bgit\s+clean\b[^;&|\n]*-[a-zA-Z]*f`), "may permanently delete untracked files"},
@@ -26,32 +20,25 @@ var destructivePatterns = []destructivePattern{
 	{regexp.MustCompile(`\bgit\s+stash[ \t]+(?:drop|clear)\b`), "may permanently remove stashed changes"},
 	{regexp.MustCompile(`\bgit\s+branch\s+(?:-D[ \t]|--delete\s+--force|--force\s+--delete)\b`), "may force-delete a branch"},
 
-	// Git — safety bypass
 	{regexp.MustCompile(`\bgit\s+(?:commit|push|merge)\b[^;&|\n]*--no-verify\b`), "may skip safety hooks"},
 	{regexp.MustCompile(`\bgit\s+commit\b[^;&|\n]*--amend\b`), "may rewrite the last commit"},
 
-	// File deletion (ordered: -rf > -r > -f so the most specific reason wins)
+	// Ordered -rf, -r, -f so the most specific warning wins.
 	{regexp.MustCompile(`(?:^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f|(?:^|[;&|\n]\s*)rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`), "may recursively force-remove files"},
 	{regexp.MustCompile(`(?:^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR]`), "may recursively remove files"},
 	{regexp.MustCompile(`(?:^|[;&|\n]\s*)rm\s+-[a-zA-Z]*f`), "may force-remove files"},
 
-	// Privilege escalation
 	{regexp.MustCompile(`(?:^|[;&|\n]\s*)sudo\b`), "runs with elevated privileges"},
 
-	// Database
 	{regexp.MustCompile(`(?i)\b(?:DROP|TRUNCATE)\s+(?:TABLE|DATABASE|SCHEMA)\b`), "may drop or truncate database objects"},
 	{regexp.MustCompile(`(?i)\bDELETE\s+FROM\s+\w+[ \t]*(?:;|"|'|\n|$)`), "may delete all rows from a database table"},
 
-	// Infrastructure
 	{regexp.MustCompile(`\bkubectl\s+delete\b`), "may delete Kubernetes resources"},
 	{regexp.MustCompile(`\bterraform\s+destroy\b`), "may destroy Terraform infrastructure"},
 }
 
-// destructiveCommandWarning returns a short warning string when cmd matches
-// a known destructive pattern, or "" otherwise. The returned phrase is the
-// noun phrase only (e.g. "may overwrite remote history") — the caller adds
-// any label / icon / styling. Returns the FIRST match, so order patterns from
-// most specific to least.
+// destructiveCommandWarning returns the first match, so patterns go from most
+// specific to least.
 func destructiveCommandWarning(cmd string) string {
 	if cmd == "" {
 		return ""

@@ -2,7 +2,6 @@ package prompt
 
 import "fmt"
 
-// ExploreAgent returns the system prompt for the explore sub-agent.
 func ExploreAgent(cwd string) string {
 	return fmt.Sprintf(`You are a code exploration expert working in %s.
 
@@ -19,7 +18,6 @@ func ExploreAgent(cwd string) string {
 - Return concise, well-organized result summaries`, cwd)
 }
 
-// PlanAgent returns the system prompt for the plan sub-agent.
 func PlanAgent(cwd string) string {
 	return fmt.Sprintf(`You are a software architect working in %s.
 
@@ -45,7 +43,6 @@ func PlanAgent(cwd string) string {
 - Plans should be concise and actionable — avoid over-engineering`, cwd)
 }
 
-// GeneralAgent returns the system prompt for the general-purpose sub-agent.
 func GeneralAgent(cwd string) string {
 	return fmt.Sprintf(`You are a coding expert working in %s.
 

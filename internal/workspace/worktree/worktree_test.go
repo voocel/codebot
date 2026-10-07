@@ -27,7 +27,6 @@ func initRepo(t *testing.T) string {
 	return dir
 }
 
-// gitIn runs a git command in dir, failing the test on error.
 func gitIn(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
@@ -36,10 +35,8 @@ func gitIn(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// TestRemoveKeepsCommittedWork is the regression for the data-loss path: a
-// worktree whose working tree is clean because the agent committed into it must
-// NOT lose those commits when the sandbox is cleaned up. Non-force Remove drops
-// the checkout but keeps the branch (branchKept), so the commits survive.
+// A worktree that is clean because the agent committed into it must not lose
+// those commits on cleanup.
 func TestRemoveKeepsCommittedWork(t *testing.T) {
 	repo := initRepo(t)
 	dir, branch, err := Create(repo, "feat")
@@ -47,7 +44,6 @@ func TestRemoveKeepsCommittedWork(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Agent commits inside the worktree; the working tree is then clean.
 	if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("important\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +60,6 @@ func TestRemoveKeepsCommittedWork(t *testing.T) {
 	if !branchKept {
 		t.Error("branch with unmerged commits must be kept, not deleted")
 	}
-	// The checkout is gone but the branch (and its commit) survives.
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Error("checkout dir should be removed")
 	}
@@ -89,8 +84,6 @@ func TestSlug(t *testing.T) {
 	}
 }
 
-// TestCreateChangesRemove walks a worktree's life: created once (a second
-// Create of the same name fails), dirty after an edit, listed, force-removed.
 func TestCreateChangesRemove(t *testing.T) {
 	repo := initRepo(t)
 

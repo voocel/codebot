@@ -1,7 +1,6 @@
 // Package plugin reads plugins in the Agent Plugins 1.0 format and fetches
-// them from git. A plugin is a directory: plugin.json naming it, skills in
-// skills/, MCP servers in mcp.json. See
-// https://github.com/agentplugins/agent-plugins-spec.
+// them from git. A plugin directory holds plugin.json, skills/ and mcp.json.
+// See https://github.com/agentplugins/agent-plugins-spec.
 package plugin
 
 import (
@@ -30,9 +29,9 @@ const (
 	mcpSchema    = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 )
 
-// Namespace is codebot's among a plugin's extensions. It holds what the
-// format leaves to each client: the plugin's hooks, as settings give them,
-// and the directory of its agents.
+// Namespace is codebot's key under "extensions" in plugin.json. It holds what
+// the format leaves to clients: hooks, in the settings format, and the agents
+// directory.
 //
 //	"extensions": {"io.github.voocel.codebot": {
 //		"hooks": {"PreToolUse": [{"type": "command", "command": "\"$PLUGIN_ROOT\"/bin/guard", "matcher": "bash"}]},
@@ -40,7 +39,6 @@ const (
 //	}}
 const Namespace = "io.github.voocel.codebot"
 
-// Manifest is what plugin.json says of a plugin.
 type Manifest struct {
 	Name        string   `json:"name"`
 	Version     string   `json:"version"`
@@ -52,39 +50,31 @@ type Manifest struct {
 	Keywords    []string `json:"keywords"`
 }
 
-// Author is a plugin's author.
 type Author struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
 	URL   string `json:"url"`
 }
 
-// Plugin is a plugin read from its directory.
 type Plugin struct {
 	Manifest
-	// Root is the plugin's directory, symlinks resolved.
+	// Root has symlinks resolved.
 	Root string
-	// Data is the directory its MCP servers keep data in across updates,
-	// PLUGIN_DATA; it may not exist yet.
+	// Data is PLUGIN_DATA, which survives updates; it may not exist yet.
 	Data string
-	// Skills are its skills, named as it names them, frozen: they run as
-	// they were read.
+	// Skills, MCP and Agents keep the plugin's own names, not namespaced.
+	// Skills are frozen as read.
 	Skills []skill.Spec
-	// MCP are its MCP servers, named as it names them, ready to run.
-	MCP map[string]config.MCPServer
-	// Hooks are its hooks, by event; command hooks get PLUGIN_ROOT and
-	// PLUGIN_DATA in their environment.
-	Hooks config.HooksConfig
-	// Agents are its agents, named as it names them.
+	MCP    map[string]config.MCPServer
+	// Command hooks get PLUGIN_ROOT and PLUGIN_DATA in their environment.
+	Hooks  config.HooksConfig
 	Agents []subagent.AgentDefinition
 
-	ext json.RawMessage // its extension in codebot's namespace
+	ext json.RawMessage // the value under Namespace
 }
 
-// Read reads the plugin in dir, its data kept in data: see DataDir. A
-// manifest that breaks the format rejects the whole plugin, an error; a
-// broken skill or MCP configuration is left out and reported among
-// problems.
+// Read rejects the plugin if its manifest breaks the format. A broken skill
+// or MCP configuration is only skipped and reported in problems.
 func Read(dir, data string) (p *Plugin, problems []error, err error) {
 	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -102,17 +92,14 @@ func Read(dir, data string) (p *Plugin, problems []error, err error) {
 
 var reName = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
 
-// ValidName reports whether name is a plugin's name: up to 64 lower-case
-// letters, digits, "-" and ".", starting and ending with a letter or digit,
-// with no "--" or "..". It holds no "_" or ":", which tell it apart where
-// it names what the plugin brings.
+// ValidName excludes "_" and ":", which separate the plugin name in
+// namespaced resource names.
 func ValidName(name string) bool {
 	return len(name) <= 64 && reName.MatchString(name) && !strings.Contains(name, "--") && !strings.Contains(name, "..")
 }
 
-// readManifest reads plugin.json. Fields the format does not know, and a
-// malformed extensions, are reported and ignored; any other violation is
-// an error.
+// readManifest reports and ignores unknown fields and a malformed
+// extensions object; any other violation is an error.
 func (p *Plugin) readManifest() (problems []error, err error) {
 	file, err := p.inside(filepath.Join(p.Root, "plugin.json"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -141,7 +128,7 @@ func (p *Plugin) readManifest() (problems []error, err error) {
 		return nil, fmt.Errorf("plugin.json: $schema must be %s", pluginSchema)
 	}
 	if ext, ok := fields["extensions"]; ok {
-		// Namespaces codebot does not implement are not looked into.
+		// Other clients' namespaces are only checked to be objects.
 		var namespaces map[string]json.RawMessage
 		if err := json.Unmarshal(ext, &namespaces); err != nil || namespaces == nil {
 			problems = append(problems, errors.New("plugin.json: extensions is not an object, ignored"))
@@ -165,13 +152,11 @@ func (p *Plugin) readManifest() (problems []error, err error) {
 	if !ValidName(p.Name) {
 		return nil, fmt.Errorf("plugin.json: invalid name %q", p.Name)
 	}
-	// What the user reads of the plugin is what it says.
+	// Escape so the terminal shows exactly what the plugin says.
 	p.Version, p.Description = printable.Escape(p.Version), printable.Escape(p.Description)
 	return problems, nil
 }
 
-// readSkills reads the skills: each directory right under skills/ holding
-// a SKILL.md.
 func (p *Plugin) readSkills() (problems []error) {
 	dir := filepath.Join(p.Root, "skills")
 	entries, err := os.ReadDir(dir)
@@ -209,8 +194,6 @@ func (p *Plugin) readSkills() (problems []error) {
 	return problems
 }
 
-// inside returns path with symlinks resolved, failing where it resolves
-// outside the plugin.
 func (p *Plugin) inside(path string) (string, error) {
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -222,13 +205,13 @@ func (p *Plugin) inside(path string) (string, error) {
 	return real, nil
 }
 
-// within reports whether path is dir or under it, both clean.
+// within expects both paths clean.
 func within(dir, path string) bool {
 	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
-// readExtension reads what codebot's namespace brings. A namespace that
-// breaks its format is left out whole, a broken hook or agent only itself.
+// readExtension drops the whole namespace if it breaks the format, but only
+// the broken entry for a bad hook or agent.
 func (p *Plugin) readExtension() (problems []error) {
 	if p.ext == nil {
 		return nil
@@ -261,9 +244,9 @@ func (p *Plugin) readExtension() (problems []error) {
 	return problems
 }
 
-// hook reads a hook of event. Its command runs as written, PLUGIN_ROOT and
-// PLUGIN_DATA in its environment for the shell to expand; an http hook
-// calls https alone, as a remote MCP server does.
+// hook keeps the command as written; the shell expands PLUGIN_ROOT and
+// PLUGIN_DATA from the environment. HTTP hooks must use https, like remote
+// MCP servers.
 func (p *Plugin) hook(event string, raw json.RawMessage) (config.HookEntry, error) {
 	var he config.HookEntry
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -286,8 +269,6 @@ func (p *Plugin) hook(event string, raw json.RawMessage) (config.HookEntry, erro
 	return he, nil
 }
 
-// readAgents reads the agents in dir, a path in the plugin starting "./":
-// each *.md file in it.
 func (p *Plugin) readAgents(dir string) (problems []error) {
 	rel, ok := strings.CutPrefix(dir, "./")
 	if !ok {

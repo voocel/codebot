@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// mergeAgents resolves name collisions by the order groups were passed, as
-// Definitions passes them: builtin → loaded, so a loaded file overrides a
-// built-in. The override keeps the built-in's slot and new names go last.
+// An override keeps the built-in's position; new names go last.
 func TestMergeAgents_LaterSourceWins(t *testing.T) {
 	builtin := []AgentDefinition{
 		{Name: "explore", Description: "builtin explore"},
@@ -29,7 +27,6 @@ func TestMergeAgents_LaterSourceWins(t *testing.T) {
 	}
 }
 
-// Validate must fail when any required field is empty.
 func TestValidate_RequiredFields(t *testing.T) {
 	cases := []struct {
 		def  AgentDefinition

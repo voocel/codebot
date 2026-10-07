@@ -23,8 +23,8 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// Model is the TUI. The screen has two parts: the conversation, or a page
-// over it, and below it the editor, or the panel the user deals with first.
+// Model shows the conversation (or a page over it) on top, and the editor
+// (or the top panel) below.
 type Model struct {
 	app     *app.App
 	cmds    *commands.Registry
@@ -34,13 +34,13 @@ type Model struct {
 	status app.Status
 	mode   interact.Mode
 	branch string
-	// asked is what of the folder's surface the user was asked about
-	// unbidden this session: they are not asked about it again.
+	// asked is the folder surface the user was already prompted about this
+	// session; it is not prompted again.
 	asked app.Surface
 
 	width, height int
-	// mainTop and mainHeight place the conversation, or the page, in the
-	// last view, for the mouse.
+	// mainTop and mainHeight locate the main area in the last view, for
+	// mouse hit-testing.
 	mainTop, mainHeight int
 
 	t      *transcript.Transcript
@@ -49,9 +49,9 @@ type Model struct {
 	editor *editor.Editor
 	panels []panel.Panel
 
-	// A request comes unasked for, maybe while the user types: the one on
-	// top takes keys once it has shown, since shownAt, with none pressed
-	// for armDelay. armed is the one that does.
+	// Requests pop up unprompted, possibly while the user types. The top
+	// request takes keys only once armDelay has passed since shownAt and
+	// since the last key; armed is the request that passed that check.
 	shown   panel.Panel
 	shownAt time.Time
 	armed   panel.Panel
@@ -64,8 +64,8 @@ type Model struct {
 	stopped  bool // the user stopped the run, which drops the pending inputs
 	expanded bool
 
-	// recent are the conversations the welcome offers, recentAt the line
-	// of the main area each shows on; tip is the welcome's tip.
+	// Welcome screen state; recentAt maps a main-area line to the session
+	// shown on it.
 	recent   []app.SessionInfo
 	recentAt map[int]string
 	tip      string
@@ -74,7 +74,7 @@ type Model struct {
 	toast     string
 	toastID   int
 	quitArmed bool
-	away      bool // the terminal reports the user has gone elsewhere
+	away      bool // the terminal reported losing focus
 }
 
 // pending is an input sent but not yet in the conversation.
@@ -84,14 +84,13 @@ type pending struct {
 	posted bool
 }
 
-// shellRun is a "!" line running.
 type shellRun struct {
 	line    string
 	started time.Time
 	cancel  context.CancelFunc
 }
 
-// page is a full view over the conversation: a sub-agent's run.
+// page shows a sub-agent's run over the conversation.
 type page struct {
 	title  string
 	view   *chatView
@@ -105,7 +104,10 @@ type (
 	agentMsg      struct{ ev agentcore.Event }
 	runStartedMsg struct{}
 	idleMsg       struct{}
-	statusMsg     struct{ status app.Status }
+	statusMsg     struct {
+		conv   *app.Conversation
+		status app.Status
+	}
 	sessionErrMsg struct{ err error }
 	openedMsg     struct{ conv *app.Conversation }
 	modeMsg       struct{ mode interact.Mode }
@@ -149,9 +151,8 @@ func newModel(a *app.App, version string) *Model {
 	return m
 }
 
-// askTrust asks the user to decide on what of the folder waits for their
-// trust, in place of a question asked before, where it holds what they
-// were not asked about yet this session.
+// askTrust shows the trust panel, replacing an earlier one, when the folder
+// has surface the user was not yet asked about this session.
 func (m *Model) askTrust() tea.Cmd {
 	ask := m.app.Trust().Ask()
 	if len(ask) == 0 {
@@ -165,7 +166,6 @@ func (m *Model) askTrust() tea.Cmd {
 	return m.push(commands.TrustPanel(m.app, false))
 }
 
-// open shows conv, replacing what the TUI showed.
 func (m *Model) open(conv *app.Conversation) {
 	m.conv = conv
 	m.status = conv.Status()
@@ -230,7 +230,9 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.idle()
 		return m.alert("Done")
 	case statusMsg:
-		m.status = msg.status
+		if msg.conv == m.conv {
+			m.status = msg.status
+		}
 		return nil
 	case sessionErrMsg:
 		m.t.Append(transcript.Fail(app.ErrorText(msg.err)))
@@ -250,6 +252,9 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	case connectedMsg:
 		for _, e := range msg.report.Errors {
 			m.t.Append(transcript.Fail("MCP: " + e))
+		}
+		for _, name := range msg.report.Login {
+			m.t.Append(transcript.Note("MCP: " + name + " needs you to log in · /mcp login " + name))
 		}
 		if p := commands.PendingPlugins(m.app); p != "" {
 			m.t.Append(transcript.Note(p))
@@ -336,8 +341,8 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 
-	// What is left is for the panels, which may have work under way, and
-	// the editor.
+	// Other messages go to every panel, which may have work in flight, and
+	// to the editor.
 	var cmds []tea.Cmd
 	for _, p := range slices.Clone(m.panels) {
 		cmds = append(cmds, m.updatePanel(p, msg))
@@ -346,15 +351,14 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	return tea.Batch(append(cmds, cmd)...)
 }
 
-// agent takes an event of the conversation's run.
 func (m *Model) agent(ev agentcore.Event) tea.Cmd {
 	now := time.Now()
 	m.t.Apply(ev)
 	m.run.apply(ev, now)
 	switch e := ev.(type) {
 	case agentcore.MessageEnd:
-		// An input the user sent has joined the conversation; inputs may
-		// overtake one another on the way in, and a skill's is not one.
+		// A sent input joined the conversation. Match by text, not order:
+		// inputs can overtake each other, and a skill's message is not one.
 		if text, ok := app.UserText(e.Message); ok && e.Message.Role == litellm.RoleUser {
 			if i := slices.IndexFunc(m.pending, func(p pending) bool { return p.text == text }); i >= 0 {
 				m.pending = slices.Delete(m.pending, i, i+1)
@@ -371,8 +375,7 @@ func (m *Model) agent(ev agentcore.Event) tea.Cmd {
 	return nil
 }
 
-// idle takes the conversation having nothing left to run. The inputs a stop
-// dropped go back to the editor.
+// idle puts the inputs a stop dropped back in the editor.
 func (m *Model) idle() {
 	m.run.active = false
 	var dropped []string
@@ -408,8 +411,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 
-	// What the user types under a request that has just come goes on to
-	// the editor.
+	// Keys typed just as a request appears go to the editor, not to it.
 	if p := m.top(); p != nil && m.ready(p, now) {
 		return m.updatePanel(p, k)
 	}
@@ -472,8 +474,8 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 	return cmd
 }
 
-// interrupt is ctrl+c: it clears the input, else stops the run or the shell
-// line, else quits when pressed twice.
+// interrupt handles ctrl+c: clear the input, else stop the run or the shell
+// line, else quit on a second press.
 func (m *Model) interrupt() tea.Cmd {
 	switch {
 	case !m.editor.Empty():
@@ -497,8 +499,6 @@ func (m *Model) stop() {
 	m.conv.Cancel()
 }
 
-// send sends what the user wrote: to the agent, to a command, or to the
-// shell.
 func (m *Model) send(in editor.Input) tea.Cmd {
 	m.chat.toBottom()
 	text := strings.TrimSpace(in.Text)
@@ -522,14 +522,14 @@ func (m *Model) send(in editor.Input) tea.Cmd {
 	m.pending = append(m.pending, pending{id: id, text: text})
 	blocks := append([]litellm.Block{litellm.Text(text)}, in.Images...)
 	conv := m.conv
-	// UserPromptSubmit hooks run on the way in, so off the TUI's goroutine.
+	// Submit runs the UserPromptSubmit hooks, so keep it off the TUI
+	// goroutine.
 	return func() tea.Msg {
 		return submittedMsg{id, conv.Submit(context.Background(), blocks)}
 	}
 }
 
-// runShell runs a "!" line in the workspace; its output shows, but the
-// agent does not see it.
+// runShell shows the output to the user but not to the agent.
 func (m *Model) runShell(line string) tea.Cmd {
 	m.t.Append(&transcript.Prompt{Text: line, Kind: transcript.ToShell})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -539,7 +539,7 @@ func (m *Model) runShell(line string) tea.Cmd {
 		defer cancel()
 		cmd := shellCommand(ctx, line)
 		cmd.Dir = dir
-		cmd.WaitDelay = time.Second // for pipes held by what it left behind
+		cmd.WaitDelay = time.Second // don't hang on pipes held by leftover children
 		out, err := cmd.CombinedOutput()
 		var cells []transcript.Cell
 		if text := strings.TrimRight(string(out), "\n"); text != "" {
@@ -565,8 +565,8 @@ func (m *Model) top() panel.Panel {
 	return m.panels[len(m.panels)-1]
 }
 
-// push shows p over the panels shown, but a request after those before it:
-// requests are answered in the order they come.
+// push puts p on top, except that a request goes below earlier requests so
+// requests are answered in arrival order.
 func (m *Model) push(p panel.Panel) tea.Cmd {
 	at := len(m.panels)
 	if isRequest(p) {
@@ -587,9 +587,8 @@ func (m *Model) remove(match func(panel.Panel) bool) {
 	m.restack()
 }
 
-// restack follows a change of the panels: the request on top learns how
-// many wait behind it, and when it has just come on top, it waits to take
-// keys.
+// restack tells the top request how many wait behind it, and restarts the
+// arm delay when a new panel reaches the top.
 func (m *Model) restack() {
 	top := m.top()
 	if top != m.shown {
@@ -611,11 +610,10 @@ func isRequest(p panel.Panel) bool {
 	return ok
 }
 
-// armDelay is how long a request waits, with no key pressed, before it
-// takes keys.
+// armDelay keeps keys meant for the editor from answering a request that
+// just appeared.
 var armDelay = 500 * time.Millisecond
 
-// ready reports whether p, on top, takes keys at now; see armed.
 func (m *Model) ready(p panel.Panel, now time.Time) bool {
 	if !isRequest(p) || p == m.armed {
 		return true
@@ -679,8 +677,7 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 	return nil
 }
 
-// click acts on the cell clicked: a sub-agent call opens its run, others
-// expand or collapse.
+// click opens a sub-agent call's runs and toggles other cells.
 func (m *Model) click(v *chatView, p pos) tea.Cmd {
 	c := v.cell(p)
 	if t, ok := c.(*transcript.Tool); ok && len(t.Agents()) > 0 && v == m.chat {
@@ -693,10 +690,9 @@ func (m *Model) click(v *chatView, p pos) tea.Cmd {
 	return nil
 }
 
-// copy puts text on the clipboard two ways: through the terminal (OSC 52),
-// which reaches the user's machine over SSH, and through the system's,
-// for terminals without OSC 52 such as Terminal.app. Either may be missing,
-// so neither failing is an error.
+// copy writes both via OSC 52, which works over SSH, and to the system
+// clipboard, for terminals without OSC 52 such as Terminal.app. Either may
+// be unavailable, so failures are ignored.
 func (m *Model) copy(text string) tea.Cmd {
 	system := func() tea.Msg {
 		clipboard.WriteAll(text)
@@ -705,7 +701,6 @@ func (m *Model) copy(text string) tea.Cmd {
 	return tea.Batch(tea.SetClipboard(text), system, m.notify("Copied "+strconv.Itoa(len([]rune(text)))+" characters"))
 }
 
-// notify shows text in the footer for a while.
 func (m *Model) notify(text string) tea.Cmd {
 	m.toast = text
 	m.toastID++
@@ -713,7 +708,6 @@ func (m *Model) notify(text string) tea.Cmd {
 	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return toastEndMsg{id} })
 }
 
-// tick keeps the animation going while something moves.
 func (m *Model) tick() tea.Cmd {
 	if m.ticking || !(m.run.active || m.run.compacting() || m.shell != nil) {
 		return nil
@@ -722,7 +716,6 @@ func (m *Model) tick() tea.Cmd {
 	return tea.Tick(time.Second/30, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// openAgent shows the background sub-agent name, following its run.
 func (m *Model) openAgent(name string) tea.Cmd {
 	history, events, stop := m.conv.Agents().Subscribe(name)
 	t := transcript.New()
@@ -742,7 +735,6 @@ func (m *Model) openAgent(name string) tea.Cmd {
 	return waitAgent(m.page)
 }
 
-// waitAgent waits for the next event of the sub-agent p follows.
 func waitAgent(p *page) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-p.events
@@ -750,7 +742,6 @@ func waitAgent(p *page) tea.Cmd {
 	}
 }
 
-// openCall shows the sub-agent runs of a subagent call.
 func (m *Model) openCall(t *transcript.Tool) {
 	heads := map[*transcript.Agent]transcript.Cell{}
 	cells := func() []transcript.Cell {

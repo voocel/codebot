@@ -7,24 +7,21 @@ import (
 	"github.com/voocel/codebot/internal/session"
 )
 
-// Kind identifies an App event.
 type Kind int
 
 const (
-	// SessionEvent carries an event of the current conversation in Session.
+	// SessionEvent carries an event of Conversation in Session. It can
+	// arrive after Conversation was replaced or the App closed.
 	SessionEvent Kind = iota
-	// Opened says Conversation became the current conversation.
+	// Opened means Conversation is now the current one.
 	Opened
-	// ModeChanged says the permission mode changed to Mode.
+	// ModeChanged carries the new permission mode in Mode.
 	ModeChanged
-	// MCPChanged says the MCP tools or instructions changed.
 	MCPChanged
-	// Reloaded says the extensions reloaded, the project's trust among
-	// them; see App.Trust.
+	// Reloaded means the extensions, including project trust, reloaded.
 	Reloaded
 )
 
-// Event is an App event.
 type Event struct {
 	Kind         Kind
 	Session      session.Event
@@ -32,8 +29,8 @@ type Event struct {
 	Mode         interact.Mode
 }
 
-// broadcaster calls every subscriber with each event on the publishing
-// goroutine, one event at a time.
+// broadcaster calls subscribers synchronously on the publishing goroutine,
+// one event at a time.
 type broadcaster struct {
 	delivering sync.Mutex // held while an event is delivered
 

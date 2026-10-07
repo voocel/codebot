@@ -13,8 +13,8 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// TestMain keeps the locks the history takes, in the user's config
-// directory, apart from the user's.
+// TestMain uses a temporary HOME so the history locks, kept in the user's
+// config directory, don't touch the real one.
 func TestMain(m *testing.M) {
 	home, err := os.MkdirTemp("", "editor-test-home")
 	if err != nil {
@@ -26,8 +26,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// writeHistory writes n entries of each project, with a paste of size
-// bytes, oldest first.
+// writeHistory writes n entries per project, oldest first, each with a
+// paste of size bytes.
 func writeHistory(t *testing.T, path string, n, size int, projects ...string) {
 	t.Helper()
 	var b bytes.Buffer
@@ -91,8 +91,8 @@ func TestHistoryCapsEntriesPerProject(t *testing.T) {
 	}
 }
 
-// What another codebot appends as this one compacts the file is kept:
-// compacting waits for the lock appends take, and reads the file under it.
+// Entries another codebot appends during compaction survive: compact reads
+// the file under the same lock appends take.
 func TestHistoryCompactingKeepsWhatIsAppended(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.jsonl")
 	writeHistory(t, path, 60, 100<<10, "/a", "/b")

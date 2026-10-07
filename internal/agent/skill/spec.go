@@ -1,5 +1,5 @@
-// Package skill loads skills, prompts the model or the user can invoke, and
-// renders them for an invocation.
+// Package skill loads skills, prompts that the model or the user can invoke,
+// and renders them for an invocation.
 package skill
 
 import (
@@ -16,22 +16,20 @@ import (
 	"github.com/voocel/codebot/internal/lib/regular"
 )
 
-// Spec is a skill.
 type Spec struct {
 	Name        string
 	Description string
 	WhenToUse   string
 
-	// FilePath is the skill's file, read afresh at every invocation unless
-	// the skill is frozen; empty for a bundled skill, whose text is built in.
+	// FilePath is reread on every invocation unless the skill is frozen.
+	// Bundled skills have none.
 	FilePath string
-	// BaseDir is the directory the skill's references are relative to.
+	// BaseDir is where the skill's relative references resolve.
 	BaseDir string
-	// Source says where the skill comes from, for the user: "builtin",
-	// "user" or "project".
+	// Source is "builtin", "user" or "project", shown to the user.
 	Source string
-	// Privileged lets the skill do what it may only where trusted: run the
-	// commands its text holds, allow tools and pick a model. See Privileges.
+	// Privileged lets the skill run its commands, allow tools and pick a
+	// model. Only trusted skills get it.
 	Privileged bool
 
 	DisableModelInvocation bool
@@ -40,26 +38,23 @@ type Spec struct {
 
 	// Context is "fork" for a skill that runs in a sub-agent, else "inline".
 	Context string
-	// Agent is the sub-agent a forked skill runs in.
-	Agent string
-	// Model runs a forked skill's sub-agent on a different model.
+	Agent   string
+	// Model overrides the model of a forked skill's sub-agent.
 	Model        string
 	AllowedTools []string
-	// Paths, when set, make the skill active only in a workspace holding a
+	// Paths, if set, activate the skill only in a workspace containing a
 	// match.
 	Paths []string
 
-	text   string // the skill's file, if fixed
-	frozen bool   // text is the file, which is not read afresh
+	text   string // the file's content when frozen
+	frozen bool
 }
 
-// Forked reports whether the skill runs in a sub-agent rather than in the
-// conversation.
 func (s Spec) Forked() bool { return s.Context == "fork" }
 
-// Privileges lists what the skill does that it may only where trusted: the
-// commands its text runs as it is invoked, the tools it allows unasked and
-// the model it picks.
+// Privileges lists, for the user to review, what the skill does only when
+// privileged: the commands it runs, the tools it allows and the model it
+// picks.
 func (s Spec) Privileges() []string {
 	var out []string
 	if text, err := s.read(); err == nil {
@@ -76,9 +71,8 @@ func (s Spec) Privileges() []string {
 	return out
 }
 
-// Freeze returns the skill fixed to its file as it is now: invoking it no
-// longer reads the file afresh. A project's skills are frozen as they load,
-// so that what runs is what the user trusted.
+// Freeze snapshots the file so later edits don't change the skill. Project
+// skills are frozen on load, so what runs is what the user trusted.
 func (s Spec) Freeze() (Spec, error) {
 	text, err := s.read()
 	if err != nil {
@@ -88,7 +82,6 @@ func (s Spec) Freeze() (Spec, error) {
 	return s, nil
 }
 
-// read returns the skill's file: its text, if frozen, else read afresh.
 func (s Spec) read() (string, error) {
 	if s.frozen {
 		return s.text, nil
@@ -97,7 +90,6 @@ func (s Spec) read() (string, error) {
 	return string(data), err
 }
 
-// prompt renders the skill for an invocation with args.
 func (s Spec) prompt(ctx context.Context, args, sessionID string) (string, error) {
 	text, err := s.read()
 	if err != nil {
@@ -114,7 +106,6 @@ func (s Spec) prompt(ctx context.Context, args, sessionID string) (string, error
 
 var reSkillName = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
 
-// ValidName reports whether name, ignoring case, can name a skill.
 func ValidName(name string) bool {
 	if len(name) == 0 || len(name) > 64 {
 		return false
@@ -131,7 +122,6 @@ func stripFrontmatter(content string) string {
 	return strings.TrimSpace(body)
 }
 
-// firstLine returns the first non-blank line of s, cut to maxLen runes.
 func firstLine(s string, maxLen int) string {
 	for line := range strings.Lines(s) {
 		line = strings.TrimSpace(line)
@@ -149,9 +139,8 @@ func firstLine(s string, maxLen int) string {
 var reSkillIndexed = regexp.MustCompile(`\$ARGUMENTS\[(\d{1,2})\]`)
 var reSkillPositional = regexp.MustCompile(`\$(\d{1,2})(?:\b|$)`)
 
-// expandArgs puts the invocation's arguments into the skill's body: $ARGUMENTS
-// and $@ take them whole, $ARGUMENTS[n] and $n the nth. A body with no
-// placeholder gets them appended.
+// expandArgs replaces $ARGUMENTS and $@ with all arguments, and $ARGUMENTS[n]
+// and $n with the nth. Without placeholders the arguments are appended.
 func expandArgs(body, rawArgs string) string {
 	if rawArgs == "" {
 		return body
@@ -184,8 +173,8 @@ func expandArgs(body, rawArgs string) string {
 	return result
 }
 
-// variables are what a skill's text names as ${NAME}, and its commands as
-// environment variables.
+// variables are available as ${NAME} in the skill's text and as environment
+// variables to its commands.
 func variables(skillDir, sessionID string) map[string]string {
 	return map[string]string{
 		"CODEBOT_SKILL_DIR":  skillDir,
@@ -205,10 +194,9 @@ func expandVars(body string, vars map[string]string) string {
 
 var reShellInjection = regexp.MustCompile("!`([^`]+)`")
 
-// expandShell replaces each !`command` in body with the command's output.
-// It runs the commands as the text holds them, which Privileges lists;
-// vars reach them in their environment, as values put in their text would
-// run as part of them.
+// expandShell replaces each !`command` with its output. Variables go in the
+// environment rather than the command text, so their values can't inject
+// shell code.
 func expandShell(ctx context.Context, body string, vars map[string]string) string {
 	env := os.Environ()
 	for k, v := range vars {

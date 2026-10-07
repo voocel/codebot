@@ -22,8 +22,8 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/commands"
 )
 
-// harness drives the TUI's model over an App whose model replies as
-// scripted, the way the program would.
+// harness drives the Model the way the program would, over an App with a
+// scripted model.
 type harness struct {
 	t    *testing.T
 	app  *app.App
@@ -36,7 +36,7 @@ func boot(t *testing.T, replies ...litellmtest.Reply) *harness {
 	return bootIn(t, nil, replies...)
 }
 
-// bootIn boots in a folder whose own settings are project, nil for none.
+// bootIn writes project as the folder's settings; nil writes none.
 func bootIn(t *testing.T, project map[string]any, replies ...litellmtest.Reply) *harness {
 	t.Helper()
 	home := t.TempDir()
@@ -89,7 +89,7 @@ func bootIn(t *testing.T, project map[string]any, replies ...litellmtest.Reply) 
 
 	h := &harness{t: t, app: a, m: newModel(a, "test"), msgs: make(chan tea.Msg, 256)}
 	unsubscribe := a.Subscribe(func(ev app.Event) {
-		if msg := message(a, ev); msg != nil {
+		if msg := message(ev); msg != nil {
 			h.msgs <- msg
 		}
 	})
@@ -98,13 +98,12 @@ func bootIn(t *testing.T, project map[string]any, replies ...litellmtest.Reply) 
 	return h
 }
 
-// feed gives the model msg and carries out the commands it returns.
 func (h *harness) feed(msg tea.Msg) {
 	h.do(h.m.update(msg))
 }
 
-// do carries out cmd. What it returns at once goes to the model; what takes
-// longer comes later with the App's messages.
+// do feeds what cmd returns immediately to the model; slower results arrive
+// later with the App's messages.
 func (h *harness) do(cmd tea.Cmd) {
 	if cmd == nil {
 		return
@@ -119,14 +118,13 @@ func (h *harness) do(cmd tea.Cmd) {
 	}
 }
 
-// take handles what a command returned, as the program would. The
-// animation's ticks are left out.
+// take skips animation ticks.
 func (h *harness) take(msg tea.Msg) {
 	switch msg.(type) {
 	case nil, tickMsg:
 		return
 	}
-	// A batch or a sequence, which the program carries out.
+	// A batch or a sequence.
 	if v := reflect.ValueOf(msg); v.Kind() == reflect.Slice && v.Type().Elem() == reflect.TypeFor[tea.Cmd]() {
 		for i := range v.Len() {
 			h.do(v.Index(i).Interface().(tea.Cmd))
@@ -157,15 +155,12 @@ func keyPress(k string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: k}
 }
 
-// write types text into the editor.
 func (h *harness) write(text string) {
 	for _, r := range text {
 		h.press(string(r))
 	}
 }
 
-// settle feeds the App's messages to the model until the conversation goes
-// idle.
 func (h *harness) settle() {
 	h.t.Helper()
 	timeout := time.After(5 * time.Second)
@@ -182,7 +177,7 @@ func (h *harness) settle() {
 	}
 }
 
-// await feeds the App's messages to the model until one is like want.
+// await feeds the App's messages to the model until one of type T arrives.
 func await[T tea.Msg](h *harness) {
 	h.t.Helper()
 	timeout := time.After(5 * time.Second)
@@ -199,8 +194,8 @@ func await[T tea.Msg](h *harness) {
 	}
 }
 
-// settleNotes feeds the App's messages to the model for a moment, for what
-// commands left running to land.
+// settleNotes feeds the App's messages briefly so results of commands still
+// running can land.
 func (h *harness) settleNotes() {
 	h.t.Helper()
 	timeout := time.After(300 * time.Millisecond)
@@ -214,7 +209,6 @@ func (h *harness) settleNotes() {
 	}
 }
 
-// screen renders the view without styles.
 func (h *harness) screen() string {
 	return ansi.Strip(h.m.View().Content)
 }
@@ -241,14 +235,14 @@ func TestWelcome(t *testing.T) {
 		t.Fatal("the editor has no cursor")
 	}
 
-	// Narrow, the bot makes way for the lines beside it.
+	// When narrow, the bot is hidden to make room for the text.
 	h.feed(tea.WindowSizeMsg{Width: 30, Height: 20})
 	if s := h.screen(); strings.Contains(s, strings.TrimSpace(bot[0])) || !strings.Contains(s, "codebot  test") {
 		t.Errorf("at 30 columns:\n%s", s)
 	}
 }
 
-// resumable leaves a conversation behind and opens a new one.
+// resumable leaves a finished conversation behind and opens a new one.
 func resumable(t *testing.T) (h *harness, id string) {
 	h = boot(t, litellmtest.Text("Sure."))
 	h.write("Refactor the TUI layer")
@@ -339,8 +333,7 @@ func TestStopRestoresQueuedInput(t *testing.T) {
 	h.shows("Interrupted", "❯ second")
 }
 
-// pause is the user stopping for a moment, after which a request on top
-// takes keys.
+// pause waits out armDelay so the top request takes keys.
 func (h *harness) pause() {
 	h.m.shownAt = h.m.shownAt.Add(-armDelay)
 	h.m.lastKey = h.m.lastKey.Add(-armDelay)
@@ -357,8 +350,7 @@ func answered[T any](t *testing.T, reply chan T) T {
 	}
 }
 
-// A folder with something to trust asks first, once; until trusted, the
-// footer says so.
+// The trust question is asked once; until trusted, the footer says so.
 func TestTrustPanel(t *testing.T) {
 	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}})
 	h.shows("Trust this folder?", "would turn on:", "allows", "Bash(make *)", "outside any sandbox", "1. Trust this folder")
@@ -388,7 +380,7 @@ func TestTrustPanel(t *testing.T) {
 	}
 }
 
-// A trusted folder that comes to run more asks about only that.
+// A trusted folder that gains new surface asks about the new items only.
 func TestTrustAsksAboutWhatIsNew(t *testing.T) {
 	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}})
 	h.pause()
@@ -412,8 +404,8 @@ func TestTrustAsksAboutWhatIsNew(t *testing.T) {
 	h.shows("1 waiting for trust · /trust")
 }
 
-// Unchecked, an item is declined: the rest takes effect, and it is not
-// asked about again.
+// An unchecked item is declined and not asked about again; the rest takes
+// effect.
 func TestTrustPanelDeclinesWhatIsUnchecked(t *testing.T) {
 	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)", "Bash(rm *)"}}})
 	h.shows("[x] allows", "Bash(rm *)", "space check")
@@ -433,8 +425,7 @@ func TestTrustPanelDeclinesWhatIsUnchecked(t *testing.T) {
 	}
 }
 
-// /plugins add shows what the plugin runs before adding it; /plugins lists
-// it.
+// /plugins add shows what the plugin runs before adding it.
 func TestAddAPlugin(t *testing.T) {
 	h := boot(t)
 	dir := filepath.Join(os.Getenv("HOME"), "kit")
@@ -473,7 +464,7 @@ func TestPermissionPanel(t *testing.T) {
 		t.Error("the editor's cursor shows under a panel")
 	}
 
-	// What the user was typing as it came goes on to the editor.
+	// Keys typed as the request appeared go to the editor.
 	h.write("12")
 	if len(reply) > 0 || h.m.editor.Empty() {
 		t.Fatalf("typing answered %d, and the editor is empty: %v", len(reply), h.m.editor.Empty())
@@ -487,7 +478,7 @@ func TestPermissionPanel(t *testing.T) {
 		t.Error("the panel stayed")
 	}
 
-	// A request withdrawn takes its panel away.
+	// Withdrawing a request removes its panel.
 	other := make(chan<- interact.Verdict, 1)
 	h.feed(approveMsg{interact.Approval{Tool: "write"}, other})
 	h.feed(withdrawMsg{other})
@@ -506,9 +497,7 @@ func TestPermissionPanel(t *testing.T) {
 	}
 }
 
-// Requests are answered in the order they come, and each waits to take
-// keys when it comes on top: the enter that answered one does not answer
-// the next.
+// The enter that answered one request must not also answer the next.
 func TestRequestsQueue(t *testing.T) {
 	h := boot(t)
 	first, second := make(chan interact.Verdict, 1), make(chan interact.Verdict, 1)
@@ -596,8 +585,8 @@ func TestPendingInputsJoinInAnyOrder(t *testing.T) {
 	}
 }
 
-// A folder the user distrusted, trusted again from /trust, is trusted to
-// all of it: it was not declined item by item.
+// Trusting a distrusted folder again via /trust trusts all of it, since
+// nothing was declined item by item.
 func TestTrustAgainAfterDistrust(t *testing.T) {
 	h := bootIn(t, map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}})
 	if _, err := h.app.DenyTrust(context.Background()); err != nil {

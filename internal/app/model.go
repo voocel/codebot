@@ -14,26 +14,22 @@ import (
 	"github.com/voocel/codebot/internal/infra/provider"
 )
 
-// defaultWindow applies to models the model list does not know.
+// defaultWindow is used for models missing from the model list.
 const defaultWindow = 128_000
 
-// modelChoice is the model a conversation runs on and what follows from it.
 type modelChoice struct {
 	provider string
 	name     string
-	// model is the model without the reasoning effort, which only the
-	// conversation's own calls use: sub-agents and prompt hooks take the
-	// provider default.
+	// model has no reasoning effort set: only the conversation's own calls
+	// use effort, while sub-agents and prompt hooks use the provider default.
 	model     agentcore.Model
 	effort    string
-	reasoning bool // the model takes a reasoning effort
+	reasoning bool // the model accepts a reasoning effort
 	window    int  // effective context window
 	compactAt int  // estimated request size that triggers compaction
 	small     string
 }
 
-// chooseModel builds the model name served by the provider configured as
-// prov, with a reasoning effort it supports.
 func (a *App) chooseModel(prov, name, effort string) (modelChoice, error) {
 	spec, err := config.ModelSpec(a.settings.Providers, prov, name)
 	if err != nil {
@@ -53,8 +49,8 @@ func (a *App) chooseModel(prov, name, effort string) (modelChoice, error) {
 	if ok && facts.MaxInputTokens > 0 {
 		window, maxOutput = facts.MaxInputTokens, facts.MaxOutputTokens
 	}
-	// The user cap only ever lowers the window: above the model's own the
-	// provider rejects the request.
+	// The user's cap can only lower the window; the provider rejects requests
+	// above the model's own.
 	if cap := a.settings.CompactWindow; cap > 0 && cap < window {
 		window = cap
 	}
@@ -71,10 +67,7 @@ func (a *App) chooseModel(prov, name, effort string) (modelChoice, error) {
 	}, nil
 }
 
-// compactReserve is the room left in window for the model's reply: what the
-// compaction ratio leaves, if one is set, else the model's output ceiling,
-// at most 20k tokens and half the window. A model of unknown ceiling gets
-// 13% of the window, between 4k and 16k tokens.
+// compactReserve is the room left in the window for the model's reply.
 func compactReserve(window, maxOutput int, ratio float64) int {
 	switch {
 	case ratio > 0:
@@ -86,15 +79,12 @@ func compactReserve(window, maxOutput int, ratio float64) int {
 	}
 }
 
-// smallModel is the model the explore sub-agent runs on: the provider's
-// small_model, else the model itself.
 func (a *App) smallModel(prov, name string) string {
 	return cmp.Or(a.settings.Providers[prov].SmallModel, name)
 }
 
-// resolveModelName builds a model named in an agent definition: served by
-// prov when it lists the model, else by the first provider (by name) that
-// does, else by prov.
+// resolveModelName resolves a model named in an agent definition. It prefers
+// prov, then the first provider (by name) that lists the model.
 func (a *App) resolveModelName(prov, name string) (agentcore.Model, error) {
 	lists := func(p string) bool {
 		return slices.ContainsFunc(a.settings.Providers[p].Models, func(m string) bool { return strings.EqualFold(m, name) })
@@ -114,7 +104,6 @@ func (a *App) resolveModelName(prov, name string) (agentcore.Model, error) {
 	return a.newModel(spec)
 }
 
-// ModelFacts returns what the model list knows about a model.
 func (a *App) ModelFacts(prov, name string) (catalog.Model, bool) {
 	spec, err := config.ModelSpec(a.settings.Providers, prov, name)
 	if err != nil {
@@ -123,8 +112,7 @@ func (a *App) ModelFacts(prov, name string) (catalog.Model, bool) {
 	return a.models.Lookup(spec)
 }
 
-// ThinkingLevels lists the reasoning efforts a model accepts; "" is the
-// provider default.
+// ThinkingLevels includes "" for the provider default.
 func (a *App) ThinkingLevels(prov, name string) []string {
 	spec, err := config.ModelSpec(a.settings.Providers, prov, name)
 	if err != nil {

@@ -23,13 +23,13 @@ import (
 	"github.com/voocel/codebot/internal/session"
 )
 
-// UI is the user in print mode, where nobody can answer: whatever the
-// permission mode does not allow on its own is refused.
+// UI refuses whatever the permission mode doesn't allow on its own, since
+// nobody can answer in print mode.
 type UI struct{}
 
 var (
 	errNobodyToApprove = errors.New("nobody can approve this in print mode; rerun with --mode accept-edits or --mode trust to allow it")
-	// No mode reaches outside the workspace on its own.
+	// No mode allows this, so the message points to settings instead.
 	errOutsideWorkspace = errors.New("nobody can approve access outside the workspace in print mode; add the directory to permissions.read_roots or write_roots in settings.json to allow it")
 )
 
@@ -38,7 +38,6 @@ func (UI) Approve(_ context.Context, req interact.Approval) (interact.Verdict, e
 	case req.OutsideRoots:
 		return interact.Verdict{Choice: interact.Deny}, errOutsideWorkspace
 	case req.Confirm:
-		// No mode allows it either: it is confirmed every time.
 		return interact.Verdict{Choice: interact.Deny}, fmt.Errorf("nobody can approve this in print mode: %s needs confirming each time", req.Reason)
 	}
 	return interact.Verdict{Choice: interact.Deny}, errNobodyToApprove
@@ -48,10 +47,9 @@ func (UI) Ask(context.Context, []interact.Question) (interact.Answers, error) {
 	return interact.Answers{}, interact.ErrUnsupported
 }
 
-// Run runs one prompt, from args or stdin, and returns once the
-// conversation and its background tasks are done. The reply streams to
-// stdout and tool and status notes to stderr; in JSON mode every agent event
-// streams to stdout as JSONL.
+// Run returns once the conversation and its background tasks are done. The
+// reply goes to stdout and notes to stderr; in JSON mode every event goes to
+// stdout.
 func Run(a *app.App, args []string, jsonMode bool) error {
 	prompt := strings.Join(args, " ")
 	if prompt == "" {
@@ -65,13 +63,15 @@ func Run(a *app.App, args []string, jsonMode bool) error {
 		return errors.New("print mode requires a prompt (argument or stdin pipe)")
 	}
 
-	// Unlike the TUI there is no later turn to pick MCP tools up, so
-	// connect first.
+	// There is no later turn to pick up MCP tools, so connect first.
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	report := a.Connect(ctx)
 	cancel()
 	for _, e := range report.Errors {
 		fmt.Fprintf(os.Stderr, "mcp: %s\n", e)
+	}
+	for _, name := range report.Login {
+		fmt.Fprintf(os.Stderr, "mcp: %s needs a login: run /mcp login %s in codebot\n", name, name)
 	}
 
 	p := &printer{json: jsonMode, hidden: make(map[string]bool)}
@@ -82,9 +82,8 @@ func Run(a *app.App, args []string, jsonMode bool) error {
 	if err := conv.Submit(context.Background(), []litellm.Block{litellm.Text(prompt)}); err != nil {
 		return fmt.Errorf("print mode: %w", err)
 	}
-	// A background task posts its result before it counts as done, and the
-	// result starts another run, which may start more tasks. Done is when
-	// the tasks are finished and handling what they posted ran nothing.
+	// A task's result starts another run, which may start more tasks. Stop
+	// once the tasks are done and their results started no run.
 	for {
 		conv.Tasks().Wait()
 		last := conv.Status().LastRun
@@ -98,7 +97,6 @@ func Run(a *app.App, args []string, jsonMode bool) error {
 	return p.failure()
 }
 
-// printer writes the events of a print run.
 type printer struct {
 	json   bool
 	hidden map[string]bool // tool calls the transcript does not show
@@ -148,8 +146,7 @@ func (p *printer) onAgentEvent(ev agentcore.Event) {
 
 	switch e := ev.(type) {
 	case agentcore.MessageDelta:
-		// Only answer text: thinking and tool-call argument deltas are not
-		// part of the reply.
+		// Thinking and tool-argument deltas are not part of the reply.
 		if d, ok := e.Event.(litellm.TextDelta); ok {
 			fmt.Fprint(os.Stdout, d.Text)
 		}
@@ -181,11 +178,9 @@ func (p *printer) onAgentEvent(ev agentcore.Event) {
 	}
 }
 
-// readStdinPrompt reads all of stdin as a prompt (for pipe usage).
 func readStdinPrompt() (string, error) {
 	info, _ := os.Stdin.Stat()
 	if info.Mode()&os.ModeCharDevice != 0 {
-		// Not piped, no stdin input.
 		return "", nil
 	}
 	data, err := io.ReadAll(bufio.NewReader(os.Stdin))
@@ -195,10 +190,9 @@ func readStdinPrompt() (string, error) {
 	return string(data), nil
 }
 
-// jsonFor is how -json prints an event: an object naming its type, with
-// errors as their text, since an error value encodes as {}. Streamed deltas
-// other than text, reasoning and tool arguments are left out, a sub-agent's
-// too: the message they make up follows whole.
+// jsonFor encodes errors as text because an error value marshals as {}.
+// Other deltas, and all sub-agent deltas, are dropped: the complete message
+// follows anyway.
 func jsonFor(ev agentcore.Event) map[string]any {
 	switch e := ev.(type) {
 	case agentcore.MessageStart:

@@ -15,35 +15,28 @@ import (
 	"github.com/voocel/codebot/internal/agent/skill"
 )
 
-// A conversation's requests only ever grow: what one sends is the start of
-// the next, so the prompt cache serves it and the reasoning Claude keeps
-// across turns, which is bound to everything before it, stays valid. The
-// system prompt (prompt.System) is built once and never changes while the
-// conversation lasts. What does change — the working directory, the date,
-// the project's files, git, MCP servers, deferred tools — is told in
-// messages, one per prompt.Part, ahead of a run's inputs: each part the
-// history does not tell as it now is. Tools are only added, deferred where
-// the model defers tools.
+// A conversation's requests only grow: each request is a prefix of the next,
+// so the prompt cache hits and the reasoning Claude carries across turns
+// stays valid. The system prompt is built once per conversation. What changes
+// (cwd, date, project files, git, MCP servers, deferred tools) is sent as one
+// message per prompt.Part before a run's inputs, only when it differs from
+// what the history last said. Tools are only ever added.
 
-// kindContext marks a message telling a part of the context, whose key
-// follows.
+// kindContext prefixes a context message's Kind; the part's key follows.
 const kindContext = "context:"
 
-// workspace is what the model is told about the directory the conversation
-// works in, and the skills active there, loaded when the conversation opens
-// or moves and when the user reloads. The user and the model are offered
-// the skills the model is told of.
+// workspace returns the skills active in cwd and the parts describing it.
+// The user and the model are offered the same skills the model is told of.
 func (a *App) workspace(cwd string) (*skill.Catalog, []prompt.Part) {
 	skills := a.skillCatalog().Active(cwd)
 	listing := skill.Listing(skills.List(), a.usage.Scores(time.Now()))
-	// Memory belongs to the project, not to the worktree the conversation
-	// may be in.
+	// Memory belongs to the project, not to a worktree.
 	return skills, []prompt.Part{prompt.Skills(listing), prompt.Project(cwd), prompt.Memory(a.cwd), prompt.Git(cwd)}
 }
 
-// contextMessages returns the messages telling each part as it is that
-// history never told or last told otherwise. A part with nothing to tell is
-// told only to retract what history told of it.
+// contextMessages returns a message for each part that differs from what
+// the history last said about it. An empty part is sent only to retract an
+// earlier one.
 func contextMessages(parts []prompt.Part, history []agentcore.Message) []agentcore.Message {
 	told := map[string]string{}
 	for _, m := range history {
@@ -66,7 +59,6 @@ func contextMessages(parts []prompt.Part, history []agentcore.Message) []agentco
 	return out
 }
 
-// deferredNames returns the names of the deferred tools among tools.
 func deferredNames(tools []agentcore.Tool) []string {
 	var names []string
 	for _, t := range tools {
@@ -77,9 +69,8 @@ func deferredNames(tools []agentcore.Tool) []string {
 	return names
 }
 
-// growTools returns kept with fresh's version of each of its tools, then
-// the tools of fresh it lacks: a conversation's tools are only added to. A
-// tool fresh no longer has stays, and fails when called.
+// growTools never removes a tool, so the request prefix stays the same. A
+// tool that fresh no longer has stays and fails when called.
 func growTools(kept, fresh []agentcore.Tool) []agentcore.Tool {
 	out := make([]agentcore.Tool, 0, len(kept)+len(fresh))
 	for _, t := range kept {
@@ -98,19 +89,18 @@ func growTools(kept, fresh []agentcore.Tool) []agentcore.Tool {
 	return out
 }
 
-// gone runs a tool whose MCP server no longer offers it.
 func gone(name string) func(context.Context, json.RawMessage) (agentcore.Result, error) {
 	return func(context.Context, json.RawMessage) (agentcore.Result, error) {
 		return agentcore.Result{}, fmt.Errorf("%s is no longer available: its MCP server stopped offering it", name)
 	}
 }
 
-// systemPrompt is the conversation's system prompt, with a cache breakpoint:
-// it is the same in every conversation of the workspace.
+// systemPrompt has a cache breakpoint because it is the same for every
+// conversation in the workspace.
 func (a *App) systemPrompt() []litellm.Block {
 	return []litellm.Block{litellm.TextBlock{Text: prompt.System(a.cwd), Cache: a.cache()}}
 }
 
-// cache is every cache breakpoint of the conversation's requests. They
-// share the TTL: one of a longer TTL may not follow one of a shorter.
+// cache is used for every cache breakpoint, so they share one TTL: a
+// breakpoint with a longer TTL may not follow one with a shorter TTL.
 func (a *App) cache() *litellm.CacheControl { return &litellm.CacheControl{TTL: a.opts.CacheTTL} }

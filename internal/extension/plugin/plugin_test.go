@@ -25,7 +25,6 @@ func write(t *testing.T, path, text string) {
 
 const manifest = `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "acme-tools", "version": "1.2.0"`
 
-// plugin writes a plugin of the given files into a new directory.
 func plugin(t *testing.T, files map[string]string) string {
 	dir := t.TempDir()
 	for name, text := range files {
@@ -123,7 +122,7 @@ func TestMCPViolations(t *testing.T) {
 			t.Errorf("%s: MCP %v, problems %v, err %v", server, p.MCP, problems, err)
 		}
 	}
-	// A loopback server may go without TLS.
+	// Loopback servers may use plain http.
 	dir := plugin(t, map[string]string{
 		"plugin.json": manifest + "}",
 		"mcp.json":    `{"$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", "mcpServers": {"s": {"type": "streamable-http", "url": "http://127.0.0.1:8080/mcp"}}}`,
@@ -133,7 +132,6 @@ func TestMCPViolations(t *testing.T) {
 	}
 }
 
-// What a symlink leads to outside the plugin is not read.
 func TestSymlinksStayInside(t *testing.T) {
 	outside := plugin(t, map[string]string{"SKILL.md": "---\ndescription: outside\n---\n"})
 	dir := plugin(t, map[string]string{
@@ -195,8 +193,8 @@ func TestParseSource(t *testing.T) {
 	}
 }
 
-// A repository's commits are cached a level under it, however its URL
-// names it, apart from any other repository's.
+// Every URL form of a repository maps to the same cache directory, distinct
+// from other repositories.
 func TestCachedKeepsSourcesApart(t *testing.T) {
 	cached := func(raw string) string {
 		s, err := ParseSource(raw, "/")
@@ -217,9 +215,8 @@ func TestCachedKeepsSourcesApart(t *testing.T) {
 	}
 }
 
-// repository makes a git repository of two commits: v1, tagged v1 and
-// branched as feature/main, and v2 on main, which describes the plugin. It
-// returns the repository's URL and the two commits.
+// repository creates a git repository with two commits: v1 (tag v1, branch
+// feature/main) and v2 on main, which adds a description.
 func repository(t *testing.T) (url, v1, v2 string) {
 	t.Helper()
 	repo := t.TempDir()
@@ -243,15 +240,14 @@ func repository(t *testing.T) (url, v1, v2 string) {
 	run("commit", "-qam", "v2")
 	v2 = run("rev-parse", "HEAD")
 
-	// The repository is local, which codebot's fetch refuses.
+	// Fetch refuses file:// repositories; allow them for the test.
 	t.Setenv("GIT_CONFIG_COUNT", "1")
 	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
 	t.Setenv("GIT_CONFIG_VALUE_0", "always")
 	return "file://" + repo, v1, v2
 }
 
-// Fetch takes the ref's commit, or the commit given, into the cache,
-// without its history.
+// Fetch caches the ref's commit, or the given one, without history.
 func TestFetch(t *testing.T) {
 	url, v1, _ := repository(t)
 	cache := t.TempDir()
@@ -291,7 +287,6 @@ func TestFetch(t *testing.T) {
 	}
 }
 
-// Latest tells the commit a fetch of the ref would take, fetching nothing.
 func TestLatest(t *testing.T) {
 	url, v1, v2 := repository(t)
 	cache := t.TempDir()
@@ -305,8 +300,6 @@ func TestLatest(t *testing.T) {
 	}
 }
 
-// A plugin in a repository's directory is read from the commit fetched,
-// which its directory may not lead out of.
 func TestReadCachedStaysInTheRepository(t *testing.T) {
 	cache := t.TempDir()
 	src, err := ParseSource("github.com/acme/plugins//plugins/tools", "")
@@ -330,8 +323,8 @@ func TestReadCachedStaysInTheRepository(t *testing.T) {
 	}
 }
 
-// codebot's namespace brings hooks and agents; another client's is not
-// looked into.
+// Codebot's namespace adds hooks and agents; other clients' namespaces are
+// ignored.
 func TestCodebotNamespace(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "plugin.json"), manifest+`, "extensions": {
@@ -376,7 +369,7 @@ func TestCodebotNamespace(t *testing.T) {
 	}
 }
 
-// A plugin keeps its data across refs, apart from any other source's.
+// The data directory is shared across refs and distinct per source.
 func TestDataDir(t *testing.T) {
 	dir := func(raw string) string {
 		s, err := ParseSource(raw, "/")
@@ -400,9 +393,8 @@ func TestDataDir(t *testing.T) {
 	}
 }
 
-// The cache keeps the commits read within unusedAge, reading one marking
-// it, and removes the others, and the repositories left with none; a fetch
-// under way stays.
+// Commits read within unusedAge stay; older ones are removed, then empty
+// repositories. Fetches in progress stay.
 func TestSweepCache(t *testing.T) {
 	cache := t.TempDir()
 	hex := strings.Repeat("d", 40)

@@ -1,7 +1,6 @@
-// Package app assembles codebot. An App holds what lives as long as the
-// process — settings, models, permissions, extensions and MCP — and the
-// current Conversation, which holds what lives as long as one session.
-// Frontends talk to these two types only.
+// Package app assembles codebot. App holds process-wide state (settings,
+// models, permissions, extensions, MCP) and the current Conversation, which
+// holds per-session state. Frontends use only these two types.
 package app
 
 import (
@@ -33,43 +32,36 @@ import (
 	"github.com/voocel/codebot/internal/workspace/worktree"
 )
 
-// ModelFactory builds a model.
 type ModelFactory func(provider.ModelSpec) (agentcore.Model, error)
 
-// Options configures Boot.
 type Options struct {
-	Cwd  string // the workspace
+	Cwd  string
 	Mode interact.Mode
-	// Resume opens this session; "" starts a new one.
+	// Resume is a session ID; "" starts a new session.
 	Resume string
-	// UI is how the agent reaches the user.
-	UI interact.UI
-	// Interactive offers the model ask_user; headless frontends have no one
-	// to ask.
+	UI     interact.UI
+	// Interactive enables ask_user; headless frontends have no one to ask.
 	Interactive bool
-	// CacheTTL is how long the prompt cache keeps the conversation, as
-	// litellm.CacheControl.TTL: "1h" where turns wait on a person, who
-	// pauses longer than the vendors' default five minutes.
+	// CacheTTL is passed as litellm.CacheControl.TTL. Use "1h" when a person
+	// is in the loop: they pause longer than the default five minutes.
 	CacheTTL string
-	// FS is the file backend for read, write and edit; nil means the local
-	// filesystem.
+	// FS backs read, write and edit; nil means the local filesystem.
 	FS agentcoretools.FS
 	// NewModel overrides how models are built; nil uses litellm.
 	NewModel ModelFactory
-	// Trust trusts the project for this process, whatever the user decided:
-	// what it and the plugins it declares run takes effect.
+	// Trust trusts the project and the plugins it declares for this process,
+	// ignoring saved consent.
 	Trust bool
-	// PluginDirs are plugins to load for this process alone, what they run
-	// agreed to: directories under development.
+	// PluginDirs are local plugins under development, loaded for this
+	// process only with everything they run allowed.
 	PluginDirs []string
 }
 
-// App is the process-wide state. See the package documentation.
 type App struct {
 	opts Options
 	cwd  string
-	// settings are as Boot loaded them, but for the model selection
-	// (Provider, Model, ReasoningEffort), which SetModel changes under mu.
+	// settings stay as Boot loaded them, except the model selection
+	// (Provider, Model, ReasoningEffort), which changes under mu.
 	settings    config.Resolved
 	models      *provider.Models
 	newModel    ModelFactory
@@ -81,13 +73,13 @@ type App struct {
 	tracer      *telemetry.Tracer
 	shutdown    func(context.Context) error
 	events      broadcaster
-	// ext and offered are replaced whole on reload and refresh. They are
-	// read without mu, so that a Conversation holding its own lock never
-	// waits for the App's.
+	// ext and offered are swapped whole on reload and refresh. They are read
+	// without mu so a Conversation holding its own lock never waits on the
+	// App's.
 	ext     atomic.Pointer[extensions]
 	offered atomic.Pointer[mcpOffer]
-	// reloading and connecting order reloads and connecting MCP servers, so
-	// the configuration last read is the one in effect.
+	// reloading and connecting serialize reloads and MCP connects, so the
+	// configuration read last is the one in effect.
 	reloading, connecting sync.Mutex
 
 	mu          sync.Mutex
@@ -95,7 +87,6 @@ type App struct {
 	unsubscribe func()
 }
 
-// Boot loads the configuration and opens the first conversation.
 func Boot(opts Options) (*App, error) {
 	cwd := opts.Cwd
 	if config.NeedsSetup() {
@@ -153,8 +144,8 @@ func Boot(opts Options) (*App, error) {
 	return a, nil
 }
 
-// Open closes the current conversation and opens the session id, or a new
-// one when id is "". On error the current conversation stays open.
+// Open replaces the current conversation with session id, or with a new
+// session when id is "". On error the current conversation stays open.
 func (a *App) Open(id string) (*Conversation, error) {
 	var (
 		store *storage.Store
@@ -178,7 +169,7 @@ func (a *App) Open(id string) (*Conversation, error) {
 	a.mu.Lock()
 	prev, unsubscribe := a.current, a.unsubscribe
 	a.current = c
-	a.unsubscribe = c.session.Subscribe(func(ev session.Event) { a.events.publish(Event{Kind: SessionEvent, Session: ev}) })
+	a.unsubscribe = c.session.Subscribe(func(ev session.Event) { a.events.publish(Event{Kind: SessionEvent, Session: ev, Conversation: c}) })
 	a.mu.Unlock()
 	if prev != nil {
 		unsubscribe()
@@ -189,27 +180,23 @@ func (a *App) Open(id string) (*Conversation, error) {
 	return c, nil
 }
 
-// Current returns the open conversation.
 func (a *App) Current() *Conversation {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.current
 }
 
-// SessionInfo describes a saved session.
 type SessionInfo = storage.SessionInfo
 
-// Sessions lists the sessions of the workspace, newest first.
+// Sessions returns the workspace's sessions, newest first.
 func (a *App) Sessions() ([]SessionInfo, error) { return a.sessions.List() }
 
-// Subscribe calls fn with the events of the current conversation, following
-// it across Open, and with App events, one at a time in the order they
-// occur. fn runs on the goroutine that caused the event, and must not cause
-// another (switch the mode, open a conversation) nor wait for the
-// conversation.
+// Subscribe delivers App events and the current conversation's events,
+// following it across Open, one at a time in order. fn runs on the goroutine
+// that caused the event. It must not cause another event (switch the mode,
+// open a conversation) or wait on the conversation.
 func (a *App) Subscribe(fn func(Event)) (unsubscribe func()) { return a.events.subscribe(fn) }
 
-// Close closes the conversation and releases process resources.
 func (a *App) Close() {
 	a.mu.Lock()
 	c, unsubscribe := a.current, a.unsubscribe
@@ -226,25 +213,20 @@ func (a *App) Close() {
 	_ = a.shutdown(ctx)
 }
 
-// Cwd is the workspace the process started in.
 func (a *App) Cwd() string { return a.cwd }
 
-// Settings returns the resolved settings.
 func (a *App) Settings() config.Resolved {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.settings
 }
 
-// defaultModel is the model a new conversation runs on.
 func (a *App) defaultModel() storage.Model {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return storage.Model{Provider: a.settings.Provider, Model: a.settings.Model, Effort: a.settings.ReasoningEffort}
 }
 
-// rememberModel makes a model the default for new conversations, in the
-// user's settings and in the settings the App runs on.
 func (a *App) rememberModel(prov, name, effort string) error {
 	if err := config.PatchUserSettings(config.Settings{Provider: &prov, Model: &name, ReasoningEffort: &effort}); err != nil {
 		return err
@@ -255,10 +237,8 @@ func (a *App) rememberModel(prov, name, effort string) error {
 	return nil
 }
 
-// Mode returns the permission mode.
 func (a *App) Mode() interact.Mode { return a.permissions.Mode() }
 
-// SetMode switches the permission mode.
 func (a *App) SetMode(m interact.Mode) {
 	a.modeMu.Lock()
 	defer a.modeMu.Unlock()
@@ -288,31 +268,30 @@ func newPermissionEngine(cwd string, opts Options, settings config.Resolved, ext
 	return engine, nil
 }
 
-// filesystemRoots are where tools read and write unasked under settings.
+// filesystemRoots are where tools may read and write without asking.
 func filesystemRoots(cwd string, settings config.Resolved, ext *extension.Set) permission.FilesystemRoots {
 	memoryDir := config.MemoryDir(cwd)
-	// What the local plugins hold runs, or decides what does, as they load.
+	// Local plugin directories hold code that runs when they load.
 	var plugins []string
 	for _, pl := range ext.Plugins {
 		if pl.Src.Dir != "" {
 			plugins = append(plugins, pl.Src.Dir)
 		}
 	}
-	// The sandbox worktrees are part of the workspace even where the
-	// configured roots leave them out.
+	// Sandbox worktrees belong to the workspace even if the configured roots
+	// leave them out.
 	worktrees := worktree.Root(cwd)
 	return permission.FilesystemRoots{
 		ReadRoots:  append(slices.Clone(settings.Permissions.ReadRoots), config.SessionsDir(cwd), worktrees),
 		WriteRoots: append(slices.Clone(settings.Permissions.WriteRoots), worktrees),
-		// Auto-memory lives outside the workspace; as a harness-managed
-		// path it skips the outside-roots prompt.
+		// Auto-memory lives outside the workspace but codebot manages it, so
+		// it skips the outside-roots prompt.
 		InternalReadable: []string{memoryDir},
 		InternalWritable: []string{memoryDir},
 		Protected:        plugins,
 	}
 }
 
-// auditor appends permission decisions to the audit log.
 func auditor(path string) func(permission.AuditEntry) {
 	var mu sync.Mutex
 	return func(e permission.AuditEntry) {
@@ -346,8 +325,7 @@ func auditor(path string) func(permission.AuditEntry) {
 	}
 }
 
-// checkProviderSetup validates that settings.json configures the active
-// provider. The first-run wizard runs before Boot, so anything missing here
+// checkProviderSetup runs after the first-run wizard, so anything missing
 // is an error.
 func checkProviderSetup(settings config.Resolved) error {
 	if pc, ok := settings.Providers[settings.Provider]; !ok || !pc.HasCredentials() {

@@ -17,7 +17,6 @@ import (
 	llmprovider "github.com/voocel/litellm/provider"
 )
 
-// capsProvider is a test provider stating caps.
 type capsProvider struct {
 	*litellmtest.Provider
 	caps litellm.Capabilities
@@ -67,8 +66,8 @@ func TestEfforts(t *testing.T) {
 	}
 }
 
-// The cache key goes only where the provider takes one, and never into the
-// model it was given.
+// The cache key is set only where the provider accepts it, and the model
+// passed in is left unchanged.
 func TestWithCacheKey(t *testing.T) {
 	t.Parallel()
 
@@ -120,8 +119,8 @@ func TestNewModelsLoadsSnapshot(t *testing.T) {
 	}
 }
 
-// Anthropic models carry the listed output cap, or a fallback for unlisted
-// ones, since Anthropic rejects requests without one, and the listed prices.
+// Anthropic rejects requests without an output cap, so models get the listed
+// cap or the fallback, plus the listed prices.
 func TestModelFactoryAnthropic(t *testing.T) {
 	var body struct {
 		MaxTokens int `json:"max_tokens"`
@@ -172,7 +171,7 @@ func TestModelFactoryAnthropic(t *testing.T) {
 	}
 }
 
-// A gateway provider runs the model on the gateway, which knows codebot by
+// A gateway provider sends calls to the gateway, which identifies codebot by
 // its API key.
 func TestModelFactoryGateway(t *testing.T) {
 	var auth string

@@ -17,7 +17,6 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// EventType identifies when a hook fires.
 type EventType string
 
 const (
@@ -43,9 +42,9 @@ type Payload struct {
 	Prompt  string          `json:"prompt,omitempty"` // UserPromptSubmit
 }
 
-// hookOutput is the JSON a hook may print to stdout to influence the run:
-// block applies to blocking PreToolUse and UserPromptSubmit hooks,
-// updated_input to PreToolUse, additional_context to UserPromptSubmit.
+// hookOutput is the JSON a hook may print to stdout. block applies to
+// blocking PreToolUse and UserPromptSubmit hooks, updated_input to
+// PreToolUse, and additional_context to UserPromptSubmit.
 type hookOutput struct {
 	Block             bool            `json:"block,omitempty"`
 	Reason            string          `json:"reason,omitempty"`
@@ -53,75 +52,66 @@ type hookOutput struct {
 	UpdatedInput      json.RawMessage `json:"updated_input,omitempty"`
 }
 
-// Decision is what the hooks that let a call or prompt through add to it; a
-// hook that blocks is an error instead.
+// Decision is what passing hooks add to a call or prompt; a block is
+// returned as an error instead.
 type Decision struct {
 	AdditionalContext string
 	UpdatedInput      json.RawMessage
 }
 
-// evalResult is a single hook's evaluated outcome.
 type evalResult struct {
 	decision  Decision
 	blocked   bool
 	reason    string
 	err       error  // non-blocking execution error, for logging
-	rawStdout []byte // raw hook stdout, used for PostStopValidation feedback
+	rawStdout []byte // fed back by PostStopValidation
 }
 
-// entry is a compiled, ready-to-run hook.
 type entry struct {
 	exec      executor
-	label     string // human-readable identifier for logging
+	label     string // for logs
 	matcher   matcher
 	argFilter matcher // if-condition: matches against tool args JSON; nil = no filter
 	blocking  bool
 	timeout   time.Duration
-	env       []string // the hook's own environment, as K=V
+	env       []string // K=V
 }
 
-// Runner runs a conversation's hooks. They are the user's own or a trusted
-// project's, so they run unasked; Set replaces them as the extensions
-// reload.
+// Runner runs hooks without asking: only hooks the user wrote or agreed to
+// reach it.
 type Runner struct {
 	sessionID string
 	model     func() agentcore.Model
 	hooks     atomic.Pointer[map[EventType][]entry]
 }
 
-// New returns the runner of a conversation's hooks, none until Set. Prompt
-// hooks ask whatever model returns at the time they run.
+// New has no hooks until Set. Prompt hooks call model each time they run, so
+// they follow model switches.
 func New(sessionID string, model func() agentcore.Model) *Runner {
 	r := &Runner{sessionID: sessionID, model: model}
 	r.Set(nil)
 	return r
 }
 
-// Set compiles cfg into the hooks that run from now on.
 func (r *Runner) Set(cfg config.HooksConfig) {
 	hooks := compileConfig(cfg, r.model)
 	r.hooks.Store(&hooks)
 }
 
-// preToolUse evaluates PreToolUse hooks. A blocking hook that signals a block
-// returns an error; otherwise the Decision may carry rewritten arguments.
 func (r *Runner) preToolUse(ctx context.Context, toolName string, args json.RawMessage) (Decision, error) {
 	return r.evaluate(ctx, toolName, args, Payload{Event: PreToolUse, Tool: toolName, Args: args})
 }
 
-// postToolUse fires the matching PostToolUse hooks in the background.
 func (r *Runner) postToolUse(toolName string, args, output json.RawMessage, isError bool) {
 	r.fireAsync(toolName, args, Payload{Event: PostToolUse, Tool: toolName, Args: args, Output: output, IsError: isError})
 }
 
-// RunNotification fires the Notification hooks in the background.
 func (r *Runner) RunNotification(message string) {
 	r.fireAsync("", nil, Payload{Event: Notification, Message: message})
 }
 
-// runPostStopValidation executes matching PostStopValidation hooks synchronously.
-// Returns the output of the first failing hook (non-zero exit or exit-2
-// block), or "" when every validation passes.
+// runPostStopValidation runs synchronously and returns the output of the
+// first failing hook, or "" if all pass.
 func (r *Runner) runPostStopValidation(ctx context.Context) (failOutput string) {
 	payload := Payload{Event: PostStopValidation, Message: "post-stop validation"}
 	for _, e := range r.matching(PostStopValidation, "", nil) {
@@ -143,22 +133,16 @@ func (r *Runner) runPostStopValidation(ctx context.Context) (failOutput string) 
 	return ""
 }
 
-// RunSessionStart fires the SessionStart hooks in the background.
 func (r *Runner) RunSessionStart() { r.fireAsync("", nil, Payload{Event: SessionStart}) }
 
-// RunSessionEnd fires the SessionEnd hooks in the background.
 func (r *Runner) RunSessionEnd() { r.fireAsync("", nil, Payload{Event: SessionEnd}) }
 
-// RunUserPromptSubmit evaluates UserPromptSubmit hooks. A blocking hook
-// rejects the prompt with an error; otherwise the returned Decision may carry
-// additional context to prepend to the turn.
 func (r *Runner) RunUserPromptSubmit(ctx context.Context, prompt string) (Decision, error) {
 	return r.evaluate(ctx, "", nil, Payload{Event: UserPromptSubmit, Prompt: prompt})
 }
 
-// fireAsync runs the hooks matching payload's event, tool and arguments in
-// the background. They outlive the call that fired them; each is bounded by
-// its own timeout.
+// fireAsync's hooks outlive the call that fired them, bounded only by their
+// own timeouts.
 func (r *Runner) fireAsync(toolName string, args json.RawMessage, payload Payload) {
 	for _, e := range r.matching(payload.Event, toolName, args) {
 		go func() {
@@ -169,8 +153,6 @@ func (r *Runner) fireAsync(toolName string, args json.RawMessage, payload Payloa
 	}
 }
 
-// matching returns the event's entries whose matcher accepts the tool name
-// and whose if-condition, if any, accepts the arguments.
 func (r *Runner) matching(event EventType, toolName string, args json.RawMessage) []entry {
 	var result []entry
 	for _, e := range (*r.hooks.Load())[event] {
@@ -185,7 +167,7 @@ func compileConfig(cfg config.HooksConfig, model func() agentcore.Model) map[Eve
 	hooks := make(map[EventType][]entry)
 	for event, entries := range cfg {
 		for _, he := range entries {
-			// The extensions checked the hooks as they loaded; see Check.
+			// Errors are dropped: the extensions ran Check on load.
 			if e, err := compile(he, model); err == nil {
 				hooks[EventType(event)] = append(hooks[EventType(event)], e)
 			}
@@ -194,8 +176,6 @@ func compileConfig(cfg config.HooksConfig, model func() agentcore.Model) map[Eve
 	return hooks
 }
 
-// Check checks a hook of event as settings give it: an event that fires, a
-// type that runs, what the type needs, and matchers that compile.
 func Check(event string, he config.HookEntry) error {
 	switch EventType(event) {
 	case PreToolUse, PostToolUse, Notification, PostStopValidation,
@@ -207,7 +187,6 @@ func Check(event string, he config.HookEntry) error {
 	return err
 }
 
-// compile makes he ready to run.
 func compile(he config.HookEntry, model func() agentcore.Model) (entry, error) {
 	exec, label, err := buildExecutor(he, model)
 	if err != nil {
@@ -267,15 +246,13 @@ func truncate(s string, n int) string {
 	return string(r[:n]) + "..."
 }
 
-// runOne runs the hook and evaluates its outcome.
 func (r *Runner) runOne(ctx context.Context, e entry, payload Payload) evalResult {
 	return interpret(r.execEntry(ctx, e, payload))
 }
 
-// interpret normalizes a hook's outcome. A hook blocks when it prints
-// {"block":true} or (for command hooks) exits with code 2. Any other non-zero
-// exit or transport error is a non-blocking error: it is logged but does not
-// stop the run.
+// interpret: a hook blocks when it prints {"block":true} or, for command
+// hooks, exits with code 2. Any other non-zero exit or transport error is
+// logged and does not stop the run.
 func interpret(o outcome) evalResult {
 	var out hookOutput
 	if len(o.stdout) > 0 {
@@ -298,9 +275,9 @@ func interpret(o outcome) evalResult {
 	return res
 }
 
-// evaluate runs the hooks matching payload's event, tool and arguments in
-// order. It stops at the first blocking hook that blocks, as an error, and
-// otherwise merges what the hooks add.
+// evaluate returns an error at the first blocking hook that blocks, and
+// otherwise merges what the hooks add. A block from a non-blocking hook is
+// ignored.
 func (r *Runner) evaluate(ctx context.Context, toolName string, args json.RawMessage, payload Payload) (Decision, error) {
 	var merged Decision
 	for _, e := range r.matching(payload.Event, toolName, args) {
@@ -320,8 +297,6 @@ func (r *Runner) evaluate(ctx context.Context, toolName string, args json.RawMes
 	return merged, nil
 }
 
-// mergeDecision combines two hook decisions: additional contexts are joined and
-// a later updated input overrides an earlier one.
 func mergeDecision(a, b Decision) Decision {
 	if b.AdditionalContext != "" {
 		if a.AdditionalContext == "" {
@@ -336,8 +311,6 @@ func mergeDecision(a, b Decision) Decision {
 	return a
 }
 
-// execEntry runs the hook within its timeout, with the payload on stdin and
-// the event in the environment.
 func (r *Runner) execEntry(ctx context.Context, e entry, payload Payload) outcome {
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()

@@ -11,9 +11,8 @@ import (
 	"github.com/voocel/codebot/internal/agent/todo"
 )
 
-// NewTodoWrite returns the todo_write tool, which replaces the session
-// checklist. The list lives in the conversation itself — see
-// todo.FromHistory.
+// NewTodoWrite stores nothing: the list lives in the history (see
+// todo.FromHistory).
 func NewTodoWrite() agentcore.Tool {
 	item := schema.Object(
 		schema.Property("content", schema.String("What needs to be done, in imperative form")).Required(),

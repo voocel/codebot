@@ -11,20 +11,17 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// askKey identifies the panel asking about the folder's trust unbidden, as
-// codebot starts or the folder adds to its surface; trustKey, the one
-// /trust shows.
+// askKey marks the trust panel codebot shows on its own, at start or when
+// the folder's surface grows; trustKey marks the one /trust shows.
 var askKey, trustKey = new(int), new(int)
 
-// IsAsk reports whether p asks about the folder's trust unbidden.
 func IsAsk(p panel.Panel) bool {
 	r, ok := p.(panel.Request)
 	return ok && r.Key() == askKey
 }
 
-// TrustPanel asks the user to decide on the folder's trust: on what they
-// have yet to decide on or, with all, on its whole surface. They trust it
-// to what they check; dismissed, it leaves things as they stand.
+// TrustPanel asks about the undecided items, or the whole surface with all.
+// Dismissing it changes nothing.
 func TrustPanel(a *app.App, all bool) panel.Panel {
 	t := a.Trust()
 	folder := transcript.HomePath(t.Root)
@@ -70,9 +67,6 @@ func TrustPanel(a *app.App, all bool) panel.Panel {
 	}, func() tea.Cmd { return nil })
 }
 
-// decide puts what the user decided of the folder in effect off the TUI's
-// goroutine, then notes done, with what it connected and the plugins that
-// wait for them now.
 func decide(a *app.App, done string, change func(context.Context) (app.ReloadReport, error)) tea.Cmd {
 	return func() tea.Msg {
 		r, err := change(context.Background())

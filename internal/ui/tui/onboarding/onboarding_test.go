@@ -40,7 +40,6 @@ func write(w *wizard, text string) {
 
 func screen(w *wizard) string { return ansi.Strip(w.View().Content) }
 
-// settings returns what the setup saved.
 func settings(t *testing.T, path string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(path)

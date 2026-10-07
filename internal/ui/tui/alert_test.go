@@ -10,8 +10,7 @@ import (
 	"github.com/voocel/codebot/internal/interact"
 )
 
-// The title says what codebot is up to; the user is alerted to what needs
-// them only once away from the terminal.
+// Alerts fire only once the terminal has lost focus.
 func TestAlertsTheUserAway(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "iTerm.app")
 	t.Setenv("TMUX", "")
@@ -41,7 +40,7 @@ func TestAlertsTheUserAway(t *testing.T) {
 	}
 }
 
-// raw returns what cmd writes to the terminal as it is.
+// raw returns the bytes cmd writes to the terminal.
 func raw(cmd tea.Cmd) string {
 	if cmd == nil {
 		return ""

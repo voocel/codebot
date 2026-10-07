@@ -7,10 +7,8 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// PreToolUse returns a ToolMiddleware that runs the PreToolUse hooks before
-// the rest of the chain, the permission check among it. A blocking hook
-// refuses the call; arguments a hook rewrites are what the rest decides on
-// and what the tool runs with.
+// PreToolUse runs before the permission check, so rewritten arguments are
+// what gets checked and run.
 func (r *Runner) PreToolUse() agentcore.ToolMiddleware {
 	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
 		dec, err := r.preToolUse(ctx, call.Name, call.Args)
@@ -24,9 +22,7 @@ func (r *Runner) PreToolUse() agentcore.ToolMiddleware {
 	}
 }
 
-// PostToolUse returns a ToolMiddleware that fires the PostToolUse hooks after
-// each call, with the arguments it ran with and its result's text as a JSON
-// string.
+// PostToolUse passes the result text to the hooks as a JSON string.
 func (r *Runner) PostToolUse() agentcore.ToolMiddleware {
 	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
 		res, err := next(ctx, call)

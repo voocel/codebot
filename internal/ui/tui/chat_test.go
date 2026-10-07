@@ -9,15 +9,14 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// cell is a cell of fixed lines.
 type cell struct{ lines []string }
 
 func (c *cell) Render(transcript.Params) []string { return slices.Clone(c.lines) }
 func (c *cell) Version() uint64                   { return 0 }
 func (c *cell) Live() bool                        { return false }
 
-// chat returns a view of n cells of three lines, "c<i>.<j>", height lines
-// tall, and a way to add cells.
+// chat returns a view of n three-line cells ("c<i>.<j>") and a function
+// that adds one.
 func chat(n, height int) (*chatView, func()) {
 	var cells []transcript.Cell
 	add := func() {

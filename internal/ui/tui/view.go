@@ -49,7 +49,7 @@ func (m *Model) View() tea.View {
 
 	main := m.mainView(max(m.height-len(bottom), 1), now)
 	lines := append(main, bottom...)
-	// On a short screen the bottom takes it all; the top gives way.
+	// On a short screen the bottom keeps its lines and the top is cut.
 	cut := max(len(lines)-m.height, 0)
 	m.mainTop -= cut
 	v.SetContent(strings.Join(lines[cut:], "\n"))
@@ -63,8 +63,6 @@ func (m *Model) View() tea.View {
 	return v
 }
 
-// statusLines render what goes on above the input: the run, and a shell
-// line running, set off from the conversation by a blank line.
 func (m *Model) statusLines(now time.Time, pending []pending) []string {
 	lines := m.run.lines(m.width, now, pending)
 	if m.shell != nil {
@@ -76,7 +74,6 @@ func (m *Model) statusLines(now time.Time, pending []pending) []string {
 	return append([]string{""}, lines...)
 }
 
-// mainView renders the conversation, or the page over it, height lines.
 func (m *Model) mainView(height int, now time.Time) []string {
 	var head []string
 	if m.page != nil {
@@ -120,8 +117,6 @@ func (m *Model) pageFooter() string {
 	return " " + theme.Hint("esc", "back", "↑↓ wheel", "scroll", "ctrl+o", "expand")
 }
 
-// footer shows the permission mode, or a passing message, and the state of
-// the conversation.
 func (m *Model) footer() string {
 	left := lipgloss.NewStyle().Foreground(modeColor(m.mode)).Render("⏵ "+modeLabel(m.mode)) + theme.FaintText.Render("  shift+tab")
 	if m.toast != "" {
@@ -197,8 +192,6 @@ func emptyPage(width, height int) []string {
 	return []string{theme.SubtleText.Render("Nothing yet")}
 }
 
-// renderAll renders cells one under the other, as the conversation shows
-// them, with a margin.
 func renderAll(cells []transcript.Cell, width int, expanded bool) []string {
 	v := newChatView(func() []transcript.Cell { return cells }, emptyPage)
 	v.width = max(width-2, 10)
@@ -212,8 +205,7 @@ func renderAll(cells []transcript.Cell, width int, expanded bool) []string {
 	return out
 }
 
-// pager opens the conversation in the user's pager, for searching and
-// copying: less shows it in color; another pager gets plain text.
+// pager strips colors unless it uses the default less -R.
 func (m *Model) pager() tea.Cmd {
 	lines := renderAll(m.main().cells(), m.width, true)
 	args := []string{"less", "-R", "+G"}

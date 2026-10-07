@@ -91,7 +91,6 @@ func say(text string) step {
 	return func(context.Context) (litellmtest.Reply, error) { return reply(text), nil }
 }
 
-// useTool calls the "wait" tool with the given id.
 func useTool(id string) step {
 	return func(context.Context) (litellmtest.Reply, error) {
 		return litellmtest.Respond(litellm.ToolUseBlock{ID: id, Name: "wait", Arguments: `{}`}), nil
@@ -132,7 +131,7 @@ func describeAll(msgs []agentcore.Message) string {
 	return strings.Join(out, " ")
 }
 
-// waitTool is a tool whose calls block until released.
+// waitTool's calls block until released.
 type waitTool struct {
 	started chan string
 	release chan struct{}
@@ -274,7 +273,7 @@ func (h *harness) waitIdle(n int) { h.t.Helper(); h.waitCount(n, isKind(Idle)) }
 
 func isKind(k Kind) func(Event) bool { return func(ev Event) bool { return ev.Kind == k } }
 
-// isAgent reports whether ev passes on an event of type E.
+// isAgent reports whether ev carries an agentcore event of type E.
 func isAgent[E agentcore.Event](ev Event) bool {
 	_, ok := ev.Agent.(E)
 	return ev.Kind == Agent && ok
@@ -585,8 +584,8 @@ func TestLoopCompactionIsRecorded(t *testing.T) {
 	h.checkReplay()
 }
 
-// The context the spec tells goes ahead of the inputs of a run, and after
-// the history a compaction wrote.
+// The spec's context messages go before each run's inputs and after a
+// compacted history.
 func TestContextIsTold(t *testing.T) {
 	t.Parallel()
 	sp := spec(script(say("a1"), say("a2"), say("a3")))

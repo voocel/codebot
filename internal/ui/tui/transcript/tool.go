@@ -14,18 +14,16 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// ToolState is where a tool call is.
 type ToolState int
 
 const (
 	Running ToolState = iota
 	Succeeded
 	Failed
-	// Interrupted is a call whose run ended before it did.
+	// Interrupted means the run ended before the call did.
 	Interrupted
 )
 
-// Tool is a tool call: its header, then its progress or result.
 type Tool struct {
 	rev
 	ID      string
@@ -37,15 +35,14 @@ type Tool struct {
 	Started time.Time
 
 	args    args
-	output  []string // lines a running tool reported
-	agents  []*Agent // the sub-agent runs of a subagent call
+	output  []string // progress lines of a running tool
+	agents  []*Agent // runs of a subagent call
 	toggled bool
 }
 
-// Agent is a sub-agent run of a subagent call.
 type Agent struct {
 	ID         string // "explore#2"
-	Name       string // the agent, "explore"
+	Name       string // "explore"
 	Transcript *Transcript
 	Turns      int
 	Tools      int
@@ -63,7 +60,6 @@ func (t *Tool) Toggle() { t.toggled = !t.toggled; t.bump() }
 
 func (t *Tool) Live() bool { return t.State == Running }
 
-// Agents returns the sub-agent runs of a subagent call.
 func (t *Tool) Agents() []*Agent { return t.agents }
 
 func (t *Tool) finish(result string, failed bool) {
@@ -85,7 +81,6 @@ func (t *Tool) interrupt() {
 	}
 }
 
-// progress takes what the running tool reported.
 func (t *Tool) progress(p any) {
 	switch p := p.(type) {
 	case string: // a line of bash output
@@ -167,10 +162,10 @@ func (t *Tool) icon(now time.Time) string {
 
 var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Spinner is the spinner's frame at now, a frame every 80ms.
+// Spinner advances a frame every 80ms.
 func Spinner(now time.Time) string { return spinner[now.UnixMilli()/80%int64(len(spinner))] }
 
-// Duration formats d briefly: "8s", "1m 20s", "2h 5m".
+// Duration formats d as "8s", "1m 20s" or "2h 5m".
 func Duration(d time.Duration) string {
 	d = d.Round(time.Second)
 	switch {
@@ -183,8 +178,7 @@ func Duration(d time.Duration) string {
 	}
 }
 
-// Ago formats how long ago something was: "just now", "5m ago", "3h ago",
-// "yesterday", "4d ago".
+// Ago returns "just now", "5m ago", "3h ago", "yesterday" or "4d ago".
 func Ago(d time.Duration) string {
 	switch {
 	case d < time.Minute:
@@ -200,7 +194,7 @@ func Ago(d time.Duration) string {
 	}
 }
 
-// Tokens formats a token count briefly: "950", "12.3k", "1.2M".
+// Tokens formats a count as "950", "12.3k" or "1.2M".
 func Tokens(n int) string {
 	switch {
 	case n < 1000:

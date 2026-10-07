@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	maxHistory = 500 // entries kept of a project
+	maxHistory = 500 // entries kept per project
 	// maxPasted caps the paste bodies an entry keeps; past it they are
 	// dropped and recall marks them unavailable.
 	maxPasted = 1 << 20
@@ -22,8 +22,8 @@ const (
 	maxHistoryFile = 10 << 20
 )
 
-// History is what the user sent in a project, newest first, kept in a JSON
-// lines file shared by every project.
+// History holds a project's inputs, newest first. All projects share one
+// JSON lines file.
 type History struct {
 	path      string
 	project   string
@@ -44,23 +44,19 @@ type record struct {
 	SessionID string         `json:"sessionId,omitempty"`
 }
 
-// NewHistory reads the history of project from path.
 func NewHistory(path, project string) *History {
 	h := &History{path: path, project: project}
 	h.load()
 	return h
 }
 
-// SetSession tags what is added from now on with the conversation id.
 func (h *History) SetSession(id string) { h.sessionID = id }
 
-// Len is the number of entries.
 func (h *History) Len() int { return len(h.items) }
 
-// get returns entry i, 0 being the newest.
+// get(0) is the newest entry.
 func (h *History) get(i int) entry { return h.items[i] }
 
-// Add records text with the paste bodies it references.
 func (h *History) Add(text string, pasted map[int]string) {
 	if text == "" {
 		return
@@ -84,13 +80,11 @@ func (h *History) Add(text string, pasted map[int]string) {
 	h.append(record{Display: text, Pasted: pasted, Timestamp: time.Now().UnixMilli(), Project: h.project, SessionID: h.sessionID})
 }
 
-// stored is an entry of the history file, as read.
 type stored struct {
 	raw []byte
 	record
 }
 
-// parse reads the entries of a history file's data.
 func parse(data []byte) []stored {
 	var lines []stored
 	for _, raw := range bytes.Split(data, []byte("\n")) {
@@ -123,10 +117,9 @@ func (h *History) load() {
 	}
 }
 
-// compact rewrites the history file with the newest entries of each project
-// that fit in half of maxHistoryFile. It reads the file and replaces it
-// under the lock appends take, so that what another codebot adds meanwhile
-// is kept.
+// compact keeps each project's newest entries within half of
+// maxHistoryFile. It rereads and replaces the file under the lock appends
+// take, so entries another codebot process adds meanwhile survive.
 func (h *History) compact() {
 	unlock, err := config.LockFile(h.path)
 	if err != nil {

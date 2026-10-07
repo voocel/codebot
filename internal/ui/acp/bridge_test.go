@@ -53,8 +53,6 @@ func TestBuildDiff(t *testing.T) {
 	}
 }
 
-// A successful write/edit produces a ToolDiffContent pairing the pre-exec buffer
-// with the post-exec buffer (codex review item: end-to-end diff emission).
 func TestDiffContent_EmitsNativeDiff(t *testing.T) {
 	dir := t.TempDir()
 	bufs := []string{"old-buffer", "new-buffer"} // snapshot read, then post-exec read

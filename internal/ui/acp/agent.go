@@ -17,16 +17,14 @@ import (
 	"github.com/voocel/codebot/internal/interact"
 )
 
-// Server adapts the App to the acp.Agent interface. One connection serves the
-// conversation opened at boot; session/load and multiple sessions are out of
-// scope.
+// Server serves only the conversation opened at boot; session/load and
+// multiple sessions are not supported.
 type Server struct {
 	version string
 	app     *app.App
 	fs      *EditorFS
 
-	// conn is set by Serve after the connection has started reading, so it
-	// is read on other goroutines.
+	// Atomic because Serve sets it after the connection has started reading.
 	conn atomic.Pointer[acp.AgentSideConnection]
 
 	mu           sync.Mutex
@@ -38,8 +36,6 @@ var _ acp.Agent = (*Server)(nil)
 func (s *Server) sessionID() acp.SessionId { return acp.SessionId(s.app.Current().ID()) }
 
 func (s *Server) Initialize(_ context.Context, req acp.InitializeRequest) (acp.InitializeResponse, error) {
-	// Route file reads/writes through the editor only for the capabilities it
-	// advertises; the backend falls back to the local filesystem otherwise.
 	s.fs.setCaps(req.ClientCapabilities.Fs.ReadTextFile, req.ClientCapabilities.Fs.WriteTextFile)
 	return acp.InitializeResponse{
 		ProtocolVersion:   acp.ProtocolVersionNumber,
@@ -57,12 +53,10 @@ func (s *Server) NewSession(_ context.Context, req acp.NewSessionRequest) (acp.N
 	if err := sameDir(req.Cwd, s.app.Cwd()); err != nil {
 		return acp.NewSessionResponse{}, err
 	}
-	// MCP servers come from codebot's own settings; the editor's
-	// req.McpServers are not wired in.
+	// MCP servers come from codebot's settings; req.McpServers is ignored.
 	return acp.NewSessionResponse{SessionId: s.sessionID(), Modes: s.sessionModes()}, nil
 }
 
-// modeDescriptions explains each permission mode in the editor's picker.
 var modeDescriptions = map[interact.Mode]string{
 	interact.ModeStrict:      "Ask before edits; block commands",
 	interact.ModeBalanced:    "Ask before edits and commands",
@@ -70,8 +64,6 @@ var modeDescriptions = map[interact.Mode]string{
 	interact.ModeTrust:       "Run everything without asking",
 }
 
-// sessionModes advertises the permission modes as ACP session modes; mode
-// ids are the interact.Mode values.
 func (s *Server) sessionModes() *acp.SessionModeState {
 	modes := make([]acp.SessionMode, 0, len(interact.Modes))
 	for _, m := range interact.Modes {
@@ -84,8 +76,7 @@ func (s *Server) sessionModes() *acp.SessionModeState {
 	return &acp.SessionModeState{AvailableModes: modes, CurrentModeId: acp.SessionModeId(s.app.Mode())}
 }
 
-// Prompt submits the user's message and answers once the conversation is idle
-// again, after every update of the turn has been sent.
+// Prompt answers only after every update of the turn has been sent.
 func (s *Server) Prompt(ctx context.Context, req acp.PromptRequest) (acp.PromptResponse, error) {
 	blocks, err := promptBlocks(req.Prompt)
 	if err != nil {
@@ -105,7 +96,6 @@ func (s *Server) Prompt(ctx context.Context, req acp.PromptRequest) (acp.PromptR
 	return turnResult(conv.Status().LastRun)
 }
 
-// promptBlocks converts the prompt's text and image blocks.
 func promptBlocks(blocks []acp.ContentBlock) ([]litellm.Block, error) {
 	out := make([]litellm.Block, 0, len(blocks))
 	for _, b := range blocks {
@@ -126,8 +116,8 @@ func promptBlocks(blocks []acp.ContentBlock) ([]litellm.Block, error) {
 	return out, nil
 }
 
-// turnResult maps how the last run ended to the prompt's response. ACP has
-// no error stop reason, so a failed run is a JSON-RPC error.
+// turnResult reports a failed run as a JSON-RPC error because ACP has no
+// error stop reason.
 func turnResult(run *agentcore.RunEnd) (acp.PromptResponse, error) {
 	if run == nil {
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
@@ -158,9 +148,8 @@ func (s *Server) SetSessionMode(_ context.Context, req acp.SetSessionModeRequest
 	return acp.SetSessionModeResponse{}, nil
 }
 
-// Methods below are not supported. They are not advertised via capabilities,
-// so a conforming client should not call them; we return MethodNotFound
-// rather than a silent no-op.
+// The methods below are not advertised, so conforming clients don't call
+// them.
 
 func (s *Server) Logout(context.Context, acp.LogoutRequest) (acp.LogoutResponse, error) {
 	return acp.LogoutResponse{}, acp.NewMethodNotFound("logout")
@@ -182,8 +171,6 @@ func (s *Server) SetSessionConfigOption(context.Context, acp.SetSessionConfigOpt
 	return acp.SetSessionConfigOptionResponse{}, acp.NewMethodNotFound("session/set_config_option")
 }
 
-// sameDir reports whether two paths resolve to the same directory, tolerant of
-// symlinks, relative paths, and trailing slashes.
 func sameDir(reqDir, rtDir string) error {
 	a, err1 := canonDir(reqDir)
 	b, err2 := canonDir(rtDir)

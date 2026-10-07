@@ -14,52 +14,44 @@ import (
 	"github.com/voocel/codebot/internal/lib/printable"
 )
 
-// Surface is what of a project or a plugin runs code or lets calls through
-// unasked, so takes effect only once the user agrees to it: its hooks, MCP
-// servers, allow rules and roots, the plugins a project declares, and what
-// its skills may do only where agreed to. It is the thing itself, not a
-// digest of it: the user agrees to each item, and is asked about just those
-// new since they last did. Items are sorted.
+// Surface is the part of a project or plugin that runs code or skips
+// permission prompts, so it needs the user's consent: hooks, MCP servers,
+// allow rules, roots, plugins a project declares, and skill privileges. It
+// stores the items themselves rather than a digest, so the user is asked
+// only about items that are new. Items are sorted.
 type Surface []Item
 
-// Item is one thing on a surface.
 type Item struct {
 	// Kind is "hook", "mcp", "allow", "read", "write", "skill" or "plugin".
 	Kind string `json:"kind"`
-	// Key is the thing itself, exactly: of a kind, two items of one key are
-	// the same, and one changed in any way is another.
+	// Key is the full content of the item: any change makes it a different
+	// item that needs consent again.
 	Key string `json:"key"`
-	// Detail tells the thing in full for the user to read, as a terminal is
-	// to show it.
+	// Detail is the escaped, human-readable form of the item.
 	Detail string `json:"-"`
 }
 
-// Standing is where the user stands on a surface: what of it they agreed
-// to, in effect, and what they declined.
+// Standing splits a surface into what the user agreed to and what they
+// declined.
 type Standing struct {
 	Surface, Agreed, Declined Surface
 }
 
-// Held returns what of the surface is not in effect.
+// Held returns the items not in effect.
 func (s Standing) Held() Surface { return s.Surface.Missing(s.Agreed) }
 
-// Ask returns what of the surface the user has yet to decide on.
 func (s Standing) Ask() Surface { return s.Held().Missing(s.Declined) }
 
 func (it Item) same(other Item) bool { return it.Kind == other.Kind && it.Key == other.Key }
 
-// With returns s with items, sorted.
 func (s Surface) With(items ...Item) Surface { return sorted(slices.Concat(s, items)) }
 
-// Has reports whether s holds it.
 func (s Surface) Has(it Item) bool { return slices.ContainsFunc(s, it.same) }
 
-// HasAll reports whether s holds each of items.
 func (s Surface) HasAll(items []Item) bool {
 	return !slices.ContainsFunc(items, func(it Item) bool { return !s.Has(it) })
 }
 
-// Intersect returns the items of s that other holds too.
 func (s Surface) Intersect(other Surface) Surface {
 	var out Surface
 	for _, it := range s {
@@ -70,7 +62,6 @@ func (s Surface) Intersect(other Surface) Surface {
 	return out
 }
 
-// Missing returns the items of s that agreed lacks.
 func (s Surface) Missing(agreed Surface) Surface {
 	var out Surface
 	for _, it := range s {
@@ -81,10 +72,8 @@ func (s Surface) Missing(agreed Surface) Surface {
 	return out
 }
 
-// NewItem makes an item of the string it is: a rule, a root, a source.
 func NewItem(kind, s string) Item { return Item{kind, s, printable.Escape(s)} }
 
-// valueItem makes an item of v, told by detail.
 func valueItem(kind string, v any, detail string) Item {
 	key, err := json.Marshal(v)
 	if err != nil {
@@ -100,14 +89,11 @@ func sorted(s Surface) Surface {
 	return slices.CompactFunc(s, Item.same)
 }
 
-// grantItem is one of a project's grants: its item, and how it takes
-// effect.
 type grantItem struct {
 	Item
 	apply func(*config.Settings)
 }
 
-// grantItems lists a project's grants, config.ForProject's, one item each.
 func grantItems(g config.Settings) []grantItem {
 	var out []grantItem
 	add := func(it Item, apply func(*config.Settings)) { out = append(out, grantItem{it, apply}) }
@@ -134,7 +120,6 @@ func grantItems(g config.Settings) []grantItem {
 	return out
 }
 
-// projectSurface returns the surface of a project of grants and skills.
 func projectSurface(grants []grantItem, skills []skill.Spec) Surface {
 	var s Surface
 	for _, g := range grants {
@@ -146,7 +131,6 @@ func projectSurface(grants []grantItem, skills []skill.Spec) Surface {
 	return sorted(s)
 }
 
-// grant returns the settings of the grants the user agreed to.
 func grant(grants []grantItem, agreed Surface) config.Settings {
 	out := config.Settings{Hooks: config.HooksConfig{}, MCPServers: map[string]config.MCPServer{}, Permissions: &config.PermissionsConfig{}}
 	for _, g := range grants {
@@ -157,8 +141,8 @@ func grant(grants []grantItem, agreed Surface) config.Settings {
 	return out
 }
 
-// skillItems lists what the skill named name may do only where agreed to.
-// They go together: it runs as a whole, or without its privileges.
+// skillItems lists a skill's privileges. They are all-or-nothing: the skill
+// runs with all of them or with none.
 func skillItems(name string, spec skill.Spec) []Item {
 	var out []Item
 	for _, p := range spec.Privileges() {
@@ -186,7 +170,6 @@ func (srv MCPServer) item() Item {
 	}{srv.Name, srv.MCPServer}, srv.Detail())
 }
 
-// Detail tells the hook as "Event(matcher) if …: what it runs".
 func (h Hook) Detail() string {
 	var b strings.Builder
 	b.WriteString(h.Event)
@@ -217,12 +200,14 @@ func (h Hook) Detail() string {
 	return b.String()
 }
 
-// Detail tells the server as "name: the command it runs, or the URL it
-// calls". Of a plugin's environment, PLUGIN_ROOT and PLUGIN_DATA are
-// codebot's, so left out.
+// Detail omits a plugin's PLUGIN_ROOT and PLUGIN_DATA, which codebot sets.
 func (srv MCPServer) Detail() string {
 	if srv.Type == "http" {
-		return srv.Name + ": " + srv.URL + pairs(" header", srv.Headers)
+		detail := srv.Name + ": " + srv.URL + pairs(" header", srv.Headers)
+		if srv.OAuth != nil {
+			detail += " oauth client " + srv.OAuth.ClientID
+		}
+		return detail
 	}
 	env := srv.Env
 	if srv.Plugin != "" {
@@ -244,7 +229,6 @@ func (srv MCPServer) Detail() string {
 	return detail
 }
 
-// pairs tells m as " label K=V", one per key, by key.
 func pairs(label string, m map[string]string) string {
 	var b strings.Builder
 	for _, k := range slices.Sorted(maps.Keys(m)) {

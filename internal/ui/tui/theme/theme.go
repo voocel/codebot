@@ -1,6 +1,5 @@
-// Package theme holds the TUI's palette and the styles built on it. Colors
-// name roles, not hues; Init picks the hues for the terminal's background
-// before anything renders.
+// Package theme holds the TUI's palette and styles. Colors name roles, not
+// hues; Init must pick the hues before anything renders.
 package theme
 
 import (
@@ -11,10 +10,8 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// Dark reports whether the palette is the dark-background one.
 var Dark bool
 
-// The palette.
 var (
 	Fg     color.Color // body text
 	Strong color.Color // highest contrast: the assistant's bullet, titles
@@ -38,12 +35,10 @@ var (
 	DiffAdd, DiffRemove         color.Color // line backgrounds
 	DiffAddWord, DiffRemoveWord color.Color // changed words within a line
 
-	// Glint is the ramp, dim to bright, of the light that sweeps over the
-	// status line's label.
+	// Glint ramps dim to bright for the status line's shimmer.
 	Glint [16]color.Color
 )
 
-// Styles shared across the TUI's packages.
 var (
 	Text       lipgloss.Style
 	Bold       lipgloss.Style
@@ -61,8 +56,8 @@ var (
 
 func init() { Init(true) }
 
-// Detect picks the palette for the terminal's background. CODEBOT_THEME set
-// to light or dark overrides what the terminal reports.
+// Detect lets CODEBOT_THEME=light|dark override the terminal's reported
+// background.
 func Detect() {
 	switch strings.ToLower(os.Getenv("CODEBOT_THEME")) {
 	case "light":
@@ -74,7 +69,6 @@ func Detect() {
 	}
 }
 
-// Init sets the palette for a dark or light background.
 func Init(dark bool) {
 	Dark = dark
 	c := func(light, dark string) color.Color {
@@ -126,7 +120,7 @@ func Init(dark bool) {
 	Key = s().Foreground(Muted).Bold(true)
 }
 
-// Hint renders "key action" pairs as a muted line, "↑↓ select · esc close".
+// Hint renders "key action" pairs, like "↑↓ select · esc close".
 func Hint(pairs ...string) string {
 	var b strings.Builder
 	for i := 0; i+1 < len(pairs); i += 2 {

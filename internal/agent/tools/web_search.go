@@ -14,7 +14,6 @@ import (
 	"github.com/voocel/agentcore/schema"
 )
 
-// SearchResult represents a single web search result.
 type SearchResult struct {
 	Title   string `json:"title"`
 	URL     string `json:"url"`
@@ -25,10 +24,8 @@ type searcher interface {
 	search(ctx context.Context, query string, maxResults int) ([]SearchResult, error)
 }
 
-// NewWebSearch returns the web_search tool, which searches the web through
-// provider, "tavily" or "jina".
 func NewWebSearch(provider, apiKey string) agentcore.Tool {
-	var s searcher // nil without the API key the provider needs
+	var s searcher // nil without the provider's API key
 	switch {
 	case provider == "jina":
 		s = jinaSearcher{apiKey}
@@ -71,7 +68,6 @@ func webSearch(ctx context.Context, s searcher, a webSearchArgs) (agentcore.Resu
 	return agentcore.JSONResult(results)
 }
 
-// tavilySearcher searches with POST https://api.tavily.com/search.
 type tavilySearcher struct{ apiKey string }
 
 type tavilyResponse struct {
@@ -115,8 +111,8 @@ func (p tavilySearcher) search(ctx context.Context, query string, maxResults int
 	return results, nil
 }
 
-// jinaSearcher searches with POST https://s.jina.ai/; X-Respond-With:
-// no-content returns only the results' titles, URLs and snippets.
+// jinaSearcher sets X-Respond-With: no-content so Jina returns only titles,
+// URLs and snippets.
 type jinaSearcher struct{ apiKey string }
 
 type jinaSearchResponse struct {

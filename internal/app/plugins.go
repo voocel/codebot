@@ -15,14 +15,10 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// Plugin is a plugin given on the command line or declared in settings,
-// and where it stands.
 type Plugin = extension.Plugin
 
-// PluginContent is a plugin as read: its manifest and what it brings.
 type PluginContent = plugin.Plugin
 
-// Plugin states; see extension.PluginState.
 const (
 	PluginOn           = extension.PluginOn
 	PluginShadowed     = extension.PluginShadowed
@@ -32,34 +28,29 @@ const (
 	PluginBroken       = extension.PluginBroken
 )
 
-// Plugins lists the plugins given on the command line, then those the
-// settings declare, the project's first.
+// Plugins lists command-line plugins first, then those declared in
+// settings, the project's before the user's.
 func (a *App) Plugins() []Plugin { return a.Extensions().Plugins }
 
-// PluginOffer is a plugin read for the user to agree to what it runs: one
-// to add, one the settings declare that runs what they have yet to agree
-// to, or a git one's newer commit.
+// PluginOffer is a plugin awaiting the user's consent: a new plugin, a
+// declared one with undecided items, or a newer commit of a git plugin.
 type PluginOffer struct {
-	// Source is the plugin's source as the settings declare it, or are to,
-	// and Scope whose settings.
+	// Source is the plugin's source as written in the settings of Scope.
 	Source string
 	Scope  extension.Scope
-	// Commit is the commit read of a git plugin.
 	Commit string
 	*plugin.Plugin
-	// Surface is all the plugin runs, and New what of it the user has yet
-	// to decide on.
+	// Surface is everything the plugin runs; New is the part the user has
+	// not decided on.
 	Surface, New Surface
-	// Problems are what of it failed to load, left out.
+	// Problems are the parts that failed to load and were left out.
 	Problems []error
 
 	src plugin.Source
-	// declare says the settings are to declare it.
+	// declare means accepting adds the plugin to the settings.
 	declare bool
 }
 
-// offer reads the plugin at src for the user to agree to: see
-// extension.ReadPlugin.
 func (a *App) offer(ctx context.Context, src plugin.Source, commit string) (*PluginOffer, error) {
 	consents, err := extension.ReadConsents()
 	if err != nil {
@@ -73,10 +64,9 @@ func (a *App) offer(ctx context.Context, src plugin.Source, commit string) (*Plu
 	return &PluginOffer{Commit: got, Plugin: p, Surface: surface, New: consents.Plugins[src.String()].Standing(surface).Ask(), Problems: problems, src: src}, nil
 }
 
-// OfferPlugin reads the plugin at source, a git repository fetched at its
-// ref or a directory from the working directory, for AcceptPlugin to add
-// to the user's settings or, with project, the project's, once the user
-// agrees to what it runs.
+// OfferPlugin reads the plugin at source: a git repository at its ref, or a
+// directory relative to the working directory. AcceptPlugin then adds it to
+// the user's settings, or the project's if project is set.
 func (a *App) OfferPlugin(ctx context.Context, source string, project bool) (*PluginOffer, error) {
 	scope := extension.User
 	if project {
@@ -108,10 +98,10 @@ func (a *App) OfferPlugin(ctx context.Context, source string, project bool) (*Pl
 	return o, nil
 }
 
-// declare is how the settings of scope are to declare source, src parsed
-// from it: a directory in the project relative to the project's settings,
-// so that they hold wherever it is checked out; another given relative to
-// the working directory as its absolute path; the rest as given.
+// declare returns how the settings of scope should write source. A
+// directory inside the project is written relative to the project's
+// settings so it works wherever the repository is checked out; another
+// relative path becomes absolute; anything else stays as given.
 func (a *App) declare(source string, src plugin.Source, scope extension.Scope) string {
 	root := a.Trust().Root
 	switch {
@@ -129,11 +119,10 @@ func (a *App) declare(source string, src plugin.Source, scope extension.Scope) s
 	return source
 }
 
-// InstallPlugins readies the plugins the settings declare that wait for
-// the user. A git one they agreed to is fetched at its commit where it is
-// not cached; the others are offered for them to decide on what they run:
-// a git one they have yet to agree to, fetched at its ref, and one that
-// runs what they have yet to decide on. It reloads when it fetched any.
+// InstallPlugins readies declared plugins. An agreed git plugin missing from
+// the cache is fetched at its commit. A plugin not yet agreed to, or with
+// undecided items, is returned as an offer. The extensions reload if
+// anything was fetched.
 func (a *App) InstallPlugins(ctx context.Context) (offers []*PluginOffer, fetched []string, errs []error) {
 	for _, pl := range a.Plugins() {
 		var o *PluginOffer
@@ -164,21 +153,20 @@ func (a *App) InstallPlugins(ctx context.Context) (offers []*PluginOffer, fetche
 	return offers, fetched, errs
 }
 
-// PluginUpdate is a git plugin fetched anew at its ref.
 type PluginUpdate struct {
 	Plugin Plugin
-	// Commit is the commit fetched, the plugin's own when it is up to date.
+	// Commit equals the plugin's own commit when it is up to date.
 	Commit string
-	// Offer is the commit fetched where it runs what the user has yet to
-	// agree to: the plugin stays at its own until they do, in
-	// AcceptPlugin. Nil, a commit fetched anew applied.
+	// Offer is set when the new commit runs something the user has not
+	// agreed to; the plugin stays on its old commit until AcceptPlugin.
+	// When nil, the new commit was applied.
 	Offer *PluginOffer
 	Err   error
 }
 
-// UpdatePlugins fetches anew at their refs the git plugins the user agreed
-// to, or the one ref names. An update that runs nothing new applies at
-// once; the others wait for the user to agree to what they add.
+// UpdatePlugins fetches agreed git plugins at their refs, or only the one
+// ref names. An update that runs nothing new applies at once; the others
+// wait for the user's consent.
 func (a *App) UpdatePlugins(ctx context.Context, ref string) ([]PluginUpdate, error) {
 	var out []PluginUpdate
 	applied := false
@@ -193,7 +181,7 @@ func (a *App) UpdatePlugins(ctx context.Context, ref string) ([]PluginUpdate, er
 			u.Err = err
 		case o.Commit == pl.Commit:
 			u.Commit = o.Commit
-			// Fetched again, a commit no longer cached takes effect.
+			// A commit missing from the cache takes effect once fetched.
 			applied = applied || pl.State == PluginNotCached
 		case len(o.New) > 0:
 			o.Source, o.Scope = pl.Source, pl.Scope
@@ -218,10 +206,9 @@ func (a *App) UpdatePlugins(ctx context.Context, ref string) ([]PluginUpdate, er
 	return out, nil
 }
 
-// PluginUpdates names the plugins in effect from git whose ref has moved
-// off the commit agreed to: what /plugins update would update. It asks the
-// remotes for their commits alone, fetching nothing; one that does not
-// answer is left out, untold.
+// PluginUpdates names the git plugins whose ref has moved past the agreed
+// commit. It only queries the remotes, without fetching; a remote that does
+// not answer is skipped silently.
 func (a *App) PluginUpdates(ctx context.Context) []string {
 	var (
 		wg    sync.WaitGroup
@@ -245,11 +232,10 @@ func (a *App) PluginUpdates(ctx context.Context) []string {
 	return names
 }
 
-// AcceptPlugin records what the user decided of the plugin offered, at its
-// commit: of what it runs new, they agreed to agreed and declined the rest.
-// It declares the plugin in the settings where it is to be, then puts it in
-// effect. A plugin the user adds to the project the project declares as
-// they trust it: they wrote it there.
+// AcceptPlugin records the user's decision at the offered commit: of the new
+// items, agreed is accepted and the rest declined. It then declares the
+// plugin in the settings if needed. A plugin the user adds to the project
+// is also trusted as a project item, since they wrote it there.
 func (a *App) AcceptPlugin(ctx context.Context, o *PluginOffer, agreed Surface) (ReloadReport, error) {
 	if err := extension.DecidePlugin(o.src, o.Commit, o.Surface, o.New, agreed); err != nil {
 		return ReloadReport{}, err
@@ -267,10 +253,9 @@ func (a *App) AcceptPlugin(ctx context.Context, o *PluginOffer, agreed Surface) 
 	return a.refresh(ctx)
 }
 
-// RemovePlugin removes the plugin ref names, by name or source, from the
-// user's settings or, with project, the project's, then puts the change in
-// effect. What the user decided of the plugin, and its data, stay: another
-// project may declare it still.
+// RemovePlugin removes the plugin, by name or source, from the user's or
+// the project's settings. Its consent and data stay, since another project
+// may still declare it.
 func (a *App) RemovePlugin(ctx context.Context, ref string, project bool) (ReloadReport, error) {
 	scope := extension.User
 	if project {
@@ -290,7 +275,6 @@ func (a *App) RemovePlugin(ctx context.Context, ref string, project bool) (Reloa
 	return a.refresh(ctx)
 }
 
-// editSettings applies edit to the settings of scope.
 func (a *App) editSettings(scope extension.Scope, edit func(*config.Settings)) error {
 	if scope == extension.Project {
 		return config.EditProjectSettings(a.Trust().Root, edit)
@@ -298,7 +282,6 @@ func (a *App) editSettings(scope extension.Scope, edit func(*config.Settings)) e
 	return config.EditUserSettings(edit)
 }
 
-// sweepPluginCache clears the cache of the commits no one runs any longer.
 func sweepPluginCache() {
 	if err := extension.SweepCache(); err != nil {
 		log.Printf("sweep the plugin cache: %v", err)

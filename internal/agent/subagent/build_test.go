@@ -32,7 +32,7 @@ func names(in []agentcore.Tool) []string {
 	return out
 }
 
-// mainTools is the main agent's pool as the app builds it, in dir.
+// mainTools builds the main agent's tools the way the app does.
 func mainTools(dir string) []agentcore.Tool {
 	w := tools.Workspace{Dir: dir, Files: tools.NewFileReadState()}
 	return append([]agentcore.Tool{w.Read(), w.Write(), w.Edit()},
@@ -62,8 +62,7 @@ func TestToolPoolAppliesTheDefinition(t *testing.T) {
 	}
 }
 
-// Each run gets read, write and edit of its own, over its own read state:
-// what one read lets neither another nor the main agent edit.
+// A read by one run doesn't let another run or the main agent edit the file.
 func TestToolPoolRebuildsTheFileTools(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644); err != nil {
@@ -93,8 +92,8 @@ func TestToolPoolRebuildsTheFileTools(t *testing.T) {
 	}
 }
 
-// A run's model is the call's, else the definition's, else the
-// conversation's; its configuration is its own.
+// A run uses the call's model, else the definition's, else the
+// conversation's.
 func TestAgentConfiguresEachRun(t *testing.T) {
 	model := func(name string) agentcore.Model {
 		client, err := litellm.New(litellmtest.New())

@@ -1,9 +1,6 @@
-// Package acp implements the Agent Client Protocol (ACP) frontend: it lets an
-// editor (Zed, JetBrains, Neovim, ...) spawn codebot as a child process and
-// drive it over JSON-RPC 2.0 on stdio.
-//
-// Stdout is the protocol channel in this mode; nothing else may write to it
-// (logging and diagnostics go to stderr).
+// Package acp is the Agent Client Protocol frontend: an editor runs codebot
+// as a child process and drives it over JSON-RPC on stdio. Stdout is the
+// protocol channel, so nothing else may write to it.
 package acp
 
 import (
@@ -17,26 +14,25 @@ import (
 	"github.com/voocel/codebot/internal/app"
 )
 
-// NewServer creates the ACP frontend. It is the interact.UI the App boots
-// with, and FS is its editor-backed file backend; Serve then runs it.
 func NewServer(version string) *Server {
 	return &Server{version: version, fs: NewEditorFS(), pendingEdits: make(map[acp.ToolCallId]editSnapshot)}
 }
 
-// FS routes the file tools through the editor, so they see unsaved buffers.
-// Until Serve binds the connection it is the local filesystem.
 func (s *Server) FS() agentcoretools.FS { return s.fs }
 
-// Serve runs the ACP agent over stdio until the client disconnects.
 func (s *Server) Serve(a *app.App) error {
 	s.app = a
 	s.fs.setSession(s.sessionID())
 	unsubscribe := a.Subscribe(s.onEvent)
 	defer unsubscribe()
-	// As in the TUI, the session takes MCP tools up as they connect.
+	// MCP tools join the session as their servers connect.
 	go func() {
-		for _, e := range a.Connect(context.Background()).Errors {
+		report := a.Connect(context.Background())
+		for _, e := range report.Errors {
 			fmt.Fprintf(os.Stderr, "mcp: %s\n", e)
+		}
+		for _, name := range report.Login {
+			fmt.Fprintf(os.Stderr, "mcp: %s needs a login: run /mcp login %s in codebot\n", name, name)
 		}
 	}()
 	conn := acp.NewAgentSideConnection(s, os.Stdout, os.Stdin)

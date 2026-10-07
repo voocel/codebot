@@ -12,7 +12,6 @@ import (
 	"github.com/voocel/codebot/internal/interact"
 )
 
-// approveFunc is a UI that answers approvals with itself.
 type approveFunc func(context.Context, interact.Approval) (interact.Verdict, error)
 
 func (f approveFunc) Approve(ctx context.Context, a interact.Approval) (interact.Verdict, error) {
@@ -55,8 +54,6 @@ func gate(e *Engine, grants func() []Rule, meta func(string) Metadata) func(ctx 
 	}
 }
 
-// Paths resolve against the directory the tool runs in, carried on the
-// context, so a worktree's files are checked where they are.
 func TestMiddlewareResolvesPathsWhereTheToolRuns(t *testing.T) {
 	main, wt := t.TempDir(), t.TempDir()
 	var summaries []string
@@ -78,7 +75,6 @@ func TestMiddlewareResolvesPathsWhereTheToolRuns(t *testing.T) {
 	}
 }
 
-// A conversation's grants allow its calls only while it hands them in.
 func TestMiddlewareGrantsComeFromTheConversation(t *testing.T) {
 	e := newEngine(t, Config{Mode: interact.ModeBalanced})
 	var grants []Rule
@@ -103,8 +99,8 @@ func TestMiddlewareGrantsComeFromTheConversation(t *testing.T) {
 	}
 }
 
-// A dangerous path is confirmed every time, even in trust mode and after
-// "always", but a deny rule still wins.
+// Neither trust mode nor an earlier "always" skips the prompt, but a deny
+// rule still wins.
 func TestDangerousPathsAreConfirmedEachTime(t *testing.T) {
 	rules, err := ParseRuleSet(nil, []string{"Write(.git/hooks/*)"})
 	if err != nil {
@@ -146,8 +142,6 @@ func TestDecideAskUserHonorsDenyRules(t *testing.T) {
 	}
 }
 
-// A tool that classifies itself, as an MCP tool does, is decided by what it
-// declares.
 func TestMiddlewareUsesToolMetadata(t *testing.T) {
 	e := newEngine(t, Config{Mode: interact.ModeBalanced})
 	for capability, want := range map[Capability]bool{
@@ -166,7 +160,6 @@ func TestMiddlewareUsesToolMetadata(t *testing.T) {
 	}
 }
 
-// A tool call's approval names the call and warns about a destructive command.
 func TestMiddlewareApprovalCarriesTheCallAndTheWarning(t *testing.T) {
 	var got interact.Approval
 	e := newEngine(t, Config{

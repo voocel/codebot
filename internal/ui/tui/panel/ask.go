@@ -11,28 +11,26 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Ask poses the agent's questions. With several, each has a tab, and a last
-// one reviews the answers before they go.
+// Ask gives each of several questions a tab, plus a final review tab.
 type Ask struct {
 	qs    []interact.Question
 	reply chan<- interact.Answers
-	tab   int // a question, or len(qs) for the review
+	tab   int // len(qs) is the review tab
 	state []answer
 	head  head
 	queue
-	own field // where the user types their own answer
+	own field // the user's free-form answer
 }
 
-// answer is where a question stands: its rows are its options, then the
-// user's own answer when it takes one.
+// An answer's rows are the question's options, then the free-form answer
+// if the question allows one.
 type answer struct {
 	menu
-	picked map[int]bool // options chosen, for a multi-select question
-	custom string       // the user's own answer
+	picked map[int]bool // for multi-select questions
+	custom string
 	done   bool
 }
 
-// NewAsk returns the panel for qs, which answers on reply.
 func NewAsk(qs []interact.Question, reply chan<- interact.Answers) *Ask {
 	a := &Ask{qs: qs, reply: reply, state: make([]answer, len(qs)), own: newField("Type your answer")}
 	for i, q := range qs {
@@ -88,14 +86,13 @@ func (a *Ask) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case i < 0:
 		return nil, false
 	case q.MultiSelect && k != "enter" && i < len(q.Options):
-		// A number, or space, ticks an option of several.
+		// In a multi-select question, a number or space toggles an option.
 		s.picked[i] = !s.picked[i]
 		return nil, false
 	}
 	return a.choose()
 }
 
-// choose answers the current question with the row under the cursor.
 func (a *Ask) choose() (tea.Cmd, bool) {
 	q, s := a.qs[a.tab], &a.state[a.tab]
 	if s.cursor == len(q.Options) {
@@ -108,7 +105,6 @@ func (a *Ask) choose() (tea.Cmd, bool) {
 	return a.next()
 }
 
-// typed takes msg while the user types their own answer.
 func (a *Ask) typed(msg tea.Msg) (tea.Cmd, bool) {
 	if k, _ := key(msg); k == "ctrl+c" {
 		a.reply <- interact.Answers{Cancelled: true}
@@ -126,8 +122,8 @@ func (a *Ask) typed(msg tea.Msg) (tea.Cmd, bool) {
 	return a.next()
 }
 
-// next moves to the first question left unanswered, or submits a single
-// question's answer, or goes to the review.
+// next submits a lone question directly; otherwise it goes to the first
+// unanswered question, then to the review.
 func (a *Ask) next() (tea.Cmd, bool) {
 	if len(a.qs) == 1 {
 		return a.submit()
@@ -153,7 +149,6 @@ func (a *Ask) submit() (tea.Cmd, bool) {
 	return nil, true
 }
 
-// chosen returns what question i was answered with.
 func (a *Ask) chosen(i int) []string {
 	q, s := a.qs[i], a.state[i]
 	var out []string
@@ -235,7 +230,7 @@ func (a *Ask) View(width, height int) string {
 		opts = append(opts, "")
 		opts = append(opts, markdown.Render(q.Options[s.cursor].Preview, width-4)...)
 	}
-	// The question may be long; the options must show.
+	// A long question is cut so the options stay visible.
 	body, cut := a.head.fit(append(body, markdown.Wrap(q.Question, theme.Bold, width-2)...), opts, height-2)
 
 	hint := []string{"↑↓", "select", "enter", "choose"}

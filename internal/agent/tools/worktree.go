@@ -9,9 +9,6 @@ import (
 	"github.com/voocel/agentcore/schema"
 )
 
-// NewEnterWorktree returns the enter_worktree tool, which moves the session
-// into an isolated git worktree sandbox through enter — the model-driven
-// counterpart to the /worktree command.
 func NewEnterWorktree(enter func(name string) (dir string, err error)) agentcore.Tool {
 	tool := agentcore.NewTool("enter_worktree",
 		`Create an isolated git worktree and switch the session into it, so edits are sandboxed from the main working tree. Use ONLY when the user explicitly asks to work in a worktree (e.g. "start a worktree", "use a worktree"); do NOT call this proactively for ordinary feature or bugfix work — use the normal git workflow instead. Requires a git repository and that the session is not already in a worktree; the tool returns an error otherwise. Call exit_worktree to leave.`,
@@ -32,9 +29,6 @@ func NewEnterWorktree(enter func(name string) (dir string, err error)) agentcore
 	return tool
 }
 
-// NewExitWorktree returns the exit_worktree tool, which returns the session
-// to the main workspace through exit: "keep" preserves uncommitted changes
-// (a clean sandbox is auto-removed), "discard" deletes it.
 func NewExitWorktree(exit func(discard bool) (message string, err error)) agentcore.Tool {
 	tool := agentcore.NewTool("exit_worktree",
 		`Exit the worktree created by enter_worktree and return the session to the main workspace. Use ONLY when the user explicitly asks to exit or leave the worktree; do NOT call this proactively. Returns an error if the session is not in a worktree.`,

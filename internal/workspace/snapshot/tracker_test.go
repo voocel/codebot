@@ -45,9 +45,6 @@ func readFile(t *testing.T, dir, name string) string {
 	return string(b)
 }
 
-// TestTrackAndUndo exercises the full round-trip: modify-then-undo restores
-// prior content, and undoing a turn that created a file removes that file. A
-// turn that changes nothing pushes no duplicate snapshot.
 func TestTrackAndUndo(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
@@ -94,16 +91,13 @@ func TestTrackAndUndo(t *testing.T) {
 		t.Fatalf("b.txt should be removed, stat err = %v", err)
 	}
 
-	// Empty stack: nothing to undo.
 	if _, ok, _ := tr.Undo(); ok {
 		t.Fatal("expected ok=false on empty stack")
 	}
 }
 
-// TestLargeFileGlobNameExcluded guards the large-file exclude against filenames
-// containing gitignore metacharacters. The oversized "[id].bin" must be matched
-// literally (excluded), while the small "i.bin" — which the unescaped character
-// class "[id]" would wrongly match and drop — must stay in the snapshot.
+// Unescaped, the pattern "[id].bin" would drop the small "i.bin" and keep the
+// large "[id].bin".
 func TestLargeFileGlobNameExcluded(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
@@ -130,8 +124,7 @@ func TestLargeFileGlobNameExcluded(t *testing.T) {
 	}
 }
 
-// TestNestedFile verifies snapshot/revert works for files in subdirectories
-// and that reported paths are work-tree-relative (guards the cmd.Dir anchoring).
+// Reported paths must be relative to the work tree.
 func TestNestedFile(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
@@ -158,8 +151,6 @@ func TestNestedFile(t *testing.T) {
 	}
 }
 
-// TestPersistAndReload verifies the undo stack survives reconstructing the
-// Tracker over the same shadow repo + sidecar (the resume scenario).
 func TestPersistAndReload(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
@@ -177,7 +168,6 @@ func TestPersistAndReload(t *testing.T) {
 	}
 	tr.Close()
 
-	// Fresh Tracker over the same shadow + sidecar: stack reloads from disk.
 	tr2 := newTestTracker(t, shadow, work, state)
 	writeFile(t, work, "a.txt", "v3")
 	if _, ok, err := tr2.Undo(); err != nil || !ok {
@@ -188,8 +178,6 @@ func TestPersistAndReload(t *testing.T) {
 	}
 }
 
-// TestRebindIsolation verifies Rebind moves the tracker to another workspace
-// and its stack, drops the redo stack, and back.
 func TestRebindIsolation(t *testing.T) {
 	requireGit(t)
 	workA, workB := t.TempDir(), t.TempDir()
@@ -209,7 +197,6 @@ func TestRebindIsolation(t *testing.T) {
 		t.Fatalf("undo: ok=%v err=%v", ok, err)
 	}
 
-	// Into a workspace with no checkpoints yet → nothing to undo or redo.
 	tr.Rebind(shadowB, workB, stateB)
 	if _, ok, _ := tr.Redo(); ok {
 		t.Fatal("Rebind must clear the redo stack")
@@ -218,7 +205,6 @@ func TestRebindIsolation(t *testing.T) {
 		t.Fatal("after Rebind to a fresh workspace, undo should report nothing")
 	}
 
-	// Back to A → its persisted stack reloads.
 	tr.Rebind(shadowA, workA, stateA)
 	if _, ok, err := tr.Undo(); err != nil || !ok {
 		t.Fatalf("undo after rebind back: ok=%v err=%v", ok, err)
@@ -228,10 +214,6 @@ func TestRebindIsolation(t *testing.T) {
 	}
 }
 
-// TestUndoExpiredSnapshot verifies a stack hash whose tree object is gone
-// (simulating a gc-pruned snapshot) degrades to ErrSnapshotExpired, pops the
-// dead hash without pushing onto the redo stack (no workspace change
-// happened), and lets the next undo reach a live snapshot.
 func TestUndoExpiredSnapshot(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
@@ -240,7 +222,7 @@ func TestUndoExpiredSnapshot(t *testing.T) {
 	if _, err := tr.Track(); err != nil { // real snapshot + inits shadow repo
 		t.Fatal(err)
 	}
-	// Push a hash absent from the shadow repo (as if gc pruned it).
+	// As if gc pruned it.
 	tr.stack = append(tr.stack, "0000000000000000000000000000000000000000")
 
 	if _, ok, err := tr.Undo(); !ok || !errors.Is(err, ErrSnapshotExpired) {
@@ -249,7 +231,6 @@ func TestUndoExpiredSnapshot(t *testing.T) {
 	if _, ok, _ := tr.Redo(); ok {
 		t.Fatal("an expired undo must not populate the redo stack")
 	}
-	// Dead hash popped; the real snapshot underneath still restores.
 	writeFile(t, work, "a.txt", "v2")
 	if _, ok, err := tr.Undo(); !ok || err != nil {
 		t.Fatalf("second undo: ok=%v err=%v", ok, err)
@@ -259,8 +240,6 @@ func TestUndoExpiredSnapshot(t *testing.T) {
 	}
 }
 
-// TestGCKeepsRecentSnapshot verifies background gc does not prune in-window
-// snapshots — undo still works right after a collection.
 func TestGCKeepsRecentSnapshot(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
@@ -284,9 +263,6 @@ func TestGCKeepsRecentSnapshot(t *testing.T) {
 	}
 }
 
-// TestUndoRedo verifies undo/redo symmetry: redo restores the pre-undo state,
-// the two stacks stay in sync across repeated undo/redo, and a fresh edit +
-// Track invalidates the redo branch.
 func TestUndoRedo(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
@@ -316,7 +292,7 @@ func TestUndoRedo(t *testing.T) {
 		t.Fatalf("after redo a.txt = %q, want v2 (pre-undo state)", got)
 	}
 
-	// Undo again — redo just pushed the v1 snapshot back onto the undo stack.
+	// Redo pushed the v1 snapshot back onto the undo stack.
 	if _, ok, err := tr.Undo(); err != nil || !ok {
 		t.Fatalf("undo after redo: ok=%v err=%v", ok, err)
 	}
@@ -324,7 +300,7 @@ func TestUndoRedo(t *testing.T) {
 		t.Fatalf("after second undo a.txt = %q, want v1", got)
 	}
 
-	// The redo stack holds v2; a new edit + Track invalidates it.
+	// A new edit invalidates the redo stack, which holds v2.
 	writeFile(t, work, "a.txt", "v3")
 	if _, err := tr.Track(); err != nil {
 		t.Fatal(err)
@@ -334,8 +310,6 @@ func TestUndoRedo(t *testing.T) {
 	}
 }
 
-// TestDiffTopIncludesUntracked verifies DiffTop stages first so a newly created
-// (untracked) file shows up — guarding the `add` before `diff --cached`.
 func TestDiffTopIncludesUntracked(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()

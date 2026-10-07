@@ -16,52 +16,44 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// Plugins live under ~/.codebot/plugins: the commits fetched, in cache/,
-// and what each source's keeps across updates, in data/.
+// ~/.codebot/plugins holds fetched commits in cache/ and, in data/, each
+// source's data that survives updates.
 func pluginsDir() string { return filepath.Join(config.UserConfigDir(), "plugins") }
 
 func cacheDir() string { return filepath.Join(pluginsDir(), "cache") }
 
 func dataDir() string { return filepath.Join(pluginsDir(), "data") }
 
-// PluginState is where a plugin stands.
 type PluginState string
 
 const (
 	PluginOn           PluginState = "on"
-	PluginShadowed     PluginState = "shadowed"      // another of its name is in its stead
-	PluginUntrusted    PluginState = "untrusted"     // the project declaring it is not trusted to
-	PluginNotInstalled PluginState = "not installed" // a git one the user has yet to agree to
-	PluginNotCached    PluginState = "not cached"    // a git one agreed to at a commit no longer cached
+	PluginShadowed     PluginState = "shadowed"      // another plugin of the same name won
+	PluginUntrusted    PluginState = "untrusted"     // the user has not agreed to the project declaring it
+	PluginNotInstalled PluginState = "not installed" // a git plugin the user has not agreed to yet
+	PluginNotCached    PluginState = "not cached"    // the agreed commit is no longer cached
 	PluginBroken       PluginState = "broken"
 )
 
-// Plugin is a plugin given on the command line or declared in settings,
-// and where it stands.
 type Plugin struct {
-	// Source is the plugin's source as given, and Scope whose settings
-	// declare it, or Session.
+	// Source is as written in settings or on the command line.
 	Source string
 	Scope  Scope
-	// Src is Source parsed, from the directory of the settings declaring
-	// it; zero where it does not parse.
+	// Src is Source parsed relative to the declaring settings file; zero if
+	// it does not parse.
 	Src plugin.Source
-	// Commit is the commit of a git plugin the user agreed to, "" for a
-	// local one and one they have yet to agree to.
+	// Commit is the agreed commit of a git plugin; "" for a local plugin or
+	// one not agreed to yet.
 	Commit string
 	State  PluginState
-	// Err says why the plugin is broken.
+	// Err is set when State is PluginBroken.
 	Err error
-	// Standing is where the user stands on what the plugin runs: of what
-	// they did not agree to, nothing runs.
+	// Only the items in Standing.Agreed run.
 	Standing
-	// Plugin is the plugin as read, nil where it is held, missing or
-	// broken.
+	// Plugin is nil unless State is PluginOn or PluginShadowed.
 	*plugin.Plugin
 }
 
-// Title names the plugin: by its name, or where it was not read, its
-// source.
 func (pl Plugin) Title() string {
 	if pl.Plugin == nil {
 		return pl.Source
@@ -69,14 +61,10 @@ func (pl Plugin) Title() string {
 	return pl.Name
 }
 
-// Is reports whether ref names the plugin: its name, or its source as
-// declared.
 func (pl Plugin) Is(ref string) bool {
 	return pl.Plugin != nil && pl.Name == ref || pl.Source == ref
 }
 
-// PluginBase is the directory a scope's plugin paths are relative to: that
-// of the settings file declaring them.
 func PluginBase(scope Scope, root string) string {
 	if scope == Project {
 		return filepath.Dir(config.ProjectSettingsPath(root))
@@ -84,9 +72,8 @@ func PluginBase(scope Scope, root string) string {
 	return filepath.Dir(config.UserSettingsPath())
 }
 
-// loadPlugins loads the plugins given on the command line, then those the
-// project declares, then the user's: of two of one name, the first. Of the
-// project's, those the user has not trusted it to declare are untrusted.
+// loadPlugins gives command-line plugins precedence over the project's, and
+// the project's over the user's.
 func (s *Set) loadPlugins(o Options, declared []string) {
 	type decl struct {
 		scope     Scope
@@ -127,10 +114,9 @@ func (s *Set) loadPlugins(o Options, declared []string) {
 	}
 }
 
-// readPlugin reads the plugin pl declares, and what of it the user agreed
-// to run. A local one is read where it is; a git one at the commit the user
-// agreed to, if it is cached. One given on the command line, or one a
-// project trusted for the run declares, runs all it does.
+// readPlugin reads a git plugin only at the agreed commit and only from the
+// cache; loading never fetches. Command-line plugins, and the project's under
+// --trust, get full consent.
 func (s *Set) readPlugin(pl *Plugin, o Options) {
 	src := pl.Src
 	c, ok := o.Consents.Plugins[src.String()]
@@ -163,12 +149,10 @@ func (s *Set) readPlugin(pl *Plugin, o Options) {
 	pl.State, pl.Standing = PluginOn, c.Standing(surface)
 }
 
-// contribute adds what a plugin brings, named after it: skill and agent
-// "<plugin>:<name>", MCP server "<plugin>_<server>". A plugin's name holds
-// no ":" or "_", so these never take another's name, but for a settings
-// server's, which wins. Its hooks run beside the settings'. Of what runs,
-// it brings what the user agreed to alone. Its data directory is made for
-// what it runs to keep data in.
+// contribute namespaces the plugin's resources: skills and agents as
+// "<plugin>:<name>", MCP servers as "<plugin>_<server>". Plugin names contain
+// no ":" or "_", so only a server from settings can clash, and it wins. MCP
+// servers and hooks are added only if the user agreed to them.
 func (s *Set) contribute(pl Plugin) {
 	if err := os.MkdirAll(pl.Data, 0o700); err != nil {
 		s.problem(err)
@@ -207,10 +191,9 @@ func settingsPath(scope Scope, root string) string {
 	return config.UserSettingsPath()
 }
 
-// PluginSurface is what a plugin runs or lets through: its MCP servers, its
-// hooks, and what its skills may do only where agreed to, named as it
-// brings them. Its directory and its data's are told as ${PLUGIN_ROOT} and
-// ${PLUGIN_DATA}: moving to another commit's directory runs nothing new.
+// PluginSurface lists the plugin's MCP servers, hooks and skill privileges.
+// Paths are written as ${PLUGIN_ROOT} and ${PLUGIN_DATA}, so moving to another
+// commit's directory alone does not need new consent.
 func PluginSurface(p *plugin.Plugin) Surface {
 	var s Surface
 	for name := range p.MCP {
@@ -226,9 +209,9 @@ func PluginSurface(p *plugin.Plugin) Surface {
 	return sorted(s)
 }
 
-// pluginServer is the server name of p as its surface tells it: its paths
-// in the plugin and its data as ${PLUGIN_ROOT} and ${PLUGIN_DATA}, and the
-// plugin's directory, where it runs unless it says otherwise, untold.
+// pluginServer returns server name as the surface shows it: paths become
+// ${PLUGIN_ROOT} and ${PLUGIN_DATA}, and a cwd equal to the default, the
+// plugin root, is dropped.
 func pluginServer(p *plugin.Plugin, name string) MCPServer {
 	srv := p.MCP[name]
 	relative := strings.NewReplacer(p.Root, "${PLUGIN_ROOT}", p.Data, "${PLUGIN_DATA}").Replace
@@ -247,10 +230,9 @@ func pluginServer(p *plugin.Plugin, name string) MCPServer {
 	return MCPServer{Name: p.Name + "_" + name, Plugin: p.Name, MCPServer: srv}
 }
 
-// ReadPlugin reads the plugin at src for the user to agree to what it runs:
-// a local one where it is; a git one at commit or, where that is "", at its
-// ref, fetched into the cache unless it is there. It returns the commit of
-// a git one.
+// ReadPlugin reads a plugin for the user to review. A git plugin is fetched
+// at commit, or at its ref when commit is "", and the resolved commit is
+// returned.
 func ReadPlugin(ctx context.Context, src plugin.Source, commit string) (p *plugin.Plugin, got string, problems []error, err error) {
 	data := plugin.DataDir(src, dataDir())
 	if src.Dir != "" {
@@ -267,14 +249,11 @@ func ReadPlugin(ctx context.Context, src plugin.Source, commit string) (p *plugi
 	return p, got, problems, nil
 }
 
-// LatestCommit returns the commit at the ref of the git source src, asking
-// its remote alone: see plugin.Latest.
 func LatestCommit(ctx context.Context, src plugin.Source) (string, error) {
 	return plugin.Latest(ctx, src, cacheDir())
 }
 
-// DecidePlugin records what the user decided of the plugin at src, at
-// commit for a git one, of its surface: see Consent.Decided.
+// DecidePlugin saves the decision and pins commit; see Consent.Decided.
 func DecidePlugin(src plugin.Source, commit string, surface, shown, agreed Surface) error {
 	return EditConsents(func(c *Consents) {
 		d := c.Plugins[src.String()].Decided(surface, shown, agreed)
@@ -283,5 +262,5 @@ func DecidePlugin(src plugin.Source, commit string, surface, shown, agreed Surfa
 	})
 }
 
-// SweepCache clears the cache of the commits no one read for two weeks.
+// SweepCache removes cached commits unread for two weeks.
 func SweepCache() error { return plugin.SweepCache(cacheDir(), time.Now()) }

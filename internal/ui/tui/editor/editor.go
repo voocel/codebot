@@ -1,6 +1,6 @@
-// Package editor is where the user writes: a multi-line input with history
-// and its search, completion of slash commands and of files mentioned with
-// @, pasted text and images, and the user's own editor a key away.
+// Package editor is the multi-line input: history and history search,
+// completion of slash commands and @file mentions, pasted text and images,
+// and handing the input off to the user's $EDITOR.
 package editor
 
 import (
@@ -24,19 +24,17 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Input is what the user sent.
 type Input struct {
-	// Text has the paste references expanded.
+	// Paste references in Text are already expanded.
 	Text   string
 	Images []litellm.Block
 }
 
-// Completion is a slash command the input may complete to.
 type Completion struct {
 	Name        string
 	Aliases     []string
 	Description string
-	// Run sends the command on enter: it takes no arguments.
+	// Run sends the command on enter because it takes no arguments.
 	Run bool
 }
 
@@ -47,7 +45,6 @@ const (
 
 const placeholder = "Ask anything · / for commands · @ for files · ! for shell"
 
-// Editor is the input. See the package documentation.
 type Editor struct {
 	ta       textarea.Model
 	commands func() []Completion
@@ -55,39 +52,34 @@ type Editor struct {
 	accent   color.Color
 
 	history *History
-	recall  int    // the history entry shown, -1 when none
+	recall  int    // history entry shown, -1 for none
 	draft   string // what the input held before recalling or searching
 
 	pastes  pastes
 	images  []litellm.Block
-	loading int // pastes being read
+	loading int // pastes still being read
 
-	// The menu offers what the word at the cursor completes to: a command
-	// for the "/word" the input starts with, a file for an "@path". sign is
-	// the word's, 0 for none; the commands and files are listed as it
-	// begins, and the menu matches it against them. While the user
-	// searches the history, the menu offers the entries holding what they
-	// type instead.
+	// The menu completes the word at the cursor: a command for a leading
+	// "/word", a file for an "@path". sign is the word's prefix rune, 0 for
+	// none. cmds and files are listed when the word begins and the menu
+	// filters them. During a history search it shows matching entries.
 	sign      rune
 	cmds      []Completion
 	files     []string
 	searching bool
 	menu      []item
 	menuAt    int
-	menuOff   bool // the user closed the menu on the word
+	menuOff   bool // the user closed the menu for this word
 
 	suggestion string
 }
 
-// item is an entry of the menu.
 type item struct {
 	label, note string
-	pick        func() // puts it in the input
-	run         bool   // enter sends the input once it is picked
+	pick        func()
+	run         bool // enter sends the input once it is picked
 }
 
-// New returns an editor completing the slash commands listed by commands
-// and the files under the directory root returns.
 func New(commands func() []Completion, root func() string) *Editor {
 	ta := textarea.New()
 	ta.ShowLineNumbers = false
@@ -129,29 +121,25 @@ func (e *Editor) restyle() {
 	e.ta.SetStyles(s)
 }
 
-// SetAccent colors the prompt and the rules around the input.
 func (e *Editor) SetAccent(c color.Color) {
 	e.accent = c
 	e.restyle()
 }
 
-// SetHistory sets what up and down recall.
 func (e *Editor) SetHistory(h *History) {
 	e.history, e.recall, e.draft = h, -1, ""
 }
 
-// SetSession starts on the conversation id, which what is sent from now on
-// is recorded under.
+// SetSession sets the session id that new history entries are recorded
+// under.
 func (e *Editor) SetSession(id string) {
 	e.history.SetSession(id)
 	e.recall, e.draft = -1, ""
 }
 
-// SetWidth sets the width the editor renders at.
 func (e *Editor) SetWidth(w int) { e.ta.SetWidth(max(w, 10)) }
 
-// SetSuggestion offers s as the next input: it shows while the input is
-// empty, and tab or enter take it.
+// SetSuggestion shows s while the input is empty; tab or enter accepts it.
 func (e *Editor) SetSuggestion(s string) {
 	e.suggestion = s
 	e.placehold()
@@ -168,11 +156,9 @@ func (e *Editor) placehold() {
 	}
 }
 
-// Empty reports whether the input holds nothing; a search of the history
-// is something.
+// Empty is false during a history search, even with no text.
 func (e *Editor) Empty() bool { return e.ta.Value() == "" && len(e.images) == 0 && !e.searching }
 
-// Clear empties the input.
 func (e *Editor) Clear() {
 	e.ta.Reset()
 	e.images = nil
@@ -181,7 +167,7 @@ func (e *Editor) Clear() {
 	e.endSearch()
 }
 
-// Insert puts text in the input, before what it holds.
+// Insert prepends text to the input.
 func (e *Editor) Insert(text string) {
 	if v := e.ta.Value(); v != "" {
 		text += "\n" + v
@@ -190,8 +176,8 @@ func (e *Editor) Insert(text string) {
 	e.ta.MoveToEnd()
 }
 
-// Dismiss closes the menu, and ends a search of the history with the input
-// as it was; it reports whether there was one.
+// Dismiss closes the menu or cancels a history search, restoring the input.
+// It reports whether there was anything to dismiss.
 func (e *Editor) Dismiss() bool {
 	switch {
 	case e.searching:
@@ -210,7 +196,7 @@ type textMsg struct{ text string }
 type pasteErrMsg struct{ err error }
 type editedMsg struct{ text string }
 
-// Update takes a message; in is set when the user sent the input.
+// Update returns a non-nil in when the user sent the input.
 func (e *Editor) Update(msg tea.Msg) (cmd tea.Cmd, in *Input) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
@@ -238,7 +224,7 @@ func (e *Editor) Update(msg tea.Msg) (cmd tea.Cmd, in *Input) {
 	return cmd, nil
 }
 
-// Error is a paste or an edit that failed, for the TUI to report.
+// Error reports a failed paste or external edit to the TUI.
 type Error struct{ Err error }
 
 func report(err error) tea.Cmd { return func() tea.Msg { return Error{err} } }
@@ -338,7 +324,6 @@ func (e *Editor) key(k tea.KeyPressMsg) (tea.Cmd, *Input) {
 	return tea.Batch(cmd, e.edited()), nil
 }
 
-// edited follows a change of the input.
 func (e *Editor) edited() tea.Cmd {
 	if e.suggestion != "" && e.ta.Value() != "" {
 		e.SetSuggestion("")
@@ -346,8 +331,8 @@ func (e *Editor) edited() tea.Cmd {
 	return e.refreshMenu()
 }
 
-// send empties the input and returns what it held; nil while a paste is
-// still being read or when there is nothing to send.
+// send returns nil while a paste is still loading or when there is nothing
+// to send.
 func (e *Editor) send() *Input {
 	if e.loading > 0 {
 		return nil
@@ -374,7 +359,6 @@ func (e *Editor) show(text string) {
 	e.menu = nil
 }
 
-// search starts a search of the history, keeping the input to come back to.
 func (e *Editor) search() {
 	e.draft, e.recall = e.ta.Value(), -1
 	e.searching = true
@@ -388,8 +372,6 @@ func (e *Editor) endSearch() {
 	e.placehold()
 }
 
-// external opens the input in the user's editor, to come back with what
-// they save.
 func (e *Editor) external() tea.Cmd {
 	f, err := os.CreateTemp("", "codebot-prompt-*.md")
 	if err != nil {
@@ -416,8 +398,8 @@ func (e *Editor) external() tea.Cmd {
 	})
 }
 
-// Open opens path in the user's editor, $VISUAL or $EDITOR, else vi, and
-// returns done's message once it exits.
+// Open edits path with $VISUAL, $EDITOR or vi, and returns done's message
+// when the editor exits.
 func Open(path string, done func(err error) tea.Msg) tea.Cmd {
 	name := os.Getenv("VISUAL")
 	if name == "" {
@@ -431,8 +413,8 @@ func Open(path string, done func(err error) tea.Msg) tea.Cmd {
 	return tea.ExecProcess(exec.Command(args[0], args[1:]...), done)
 }
 
-// onFirstRow reports whether the cursor is on the input's first row, as
-// wrapped; up there recalls history rather than moving.
+// onFirstRow counts wrapped rows: up on the first visual row recalls history
+// instead of moving the cursor.
 func (e *Editor) onFirstRow() bool {
 	return e.ta.Line() == 0 && e.ta.LineInfo().RowOffset == 0
 }
@@ -442,7 +424,6 @@ func (e *Editor) onLastRow() bool {
 	return e.ta.Line() == e.ta.LineCount()-1 && info.RowOffset == info.Height-1
 }
 
-// line returns the runes of the line the cursor is on.
 func (e *Editor) line() []rune {
 	lines := strings.Split(e.ta.Value(), "\n")
 	return []rune(lines[min(e.ta.Line(), len(lines)-1)])
@@ -454,11 +435,10 @@ func (e *Editor) repeat(k tea.KeyPressMsg, n int) {
 	}
 }
 
-// refreshMenu follows the input with the menu. Listing the commands may
-// look through the workspace for the skills that apply, and listing the
-// files reads it, so either happens once per word, not per key; the files
-// are listed off the TUI's goroutine, and meanwhile the menu matches those
-// listed last.
+// refreshMenu lists commands and files once per word, not per key: listing
+// commands may scan the workspace for skills, and listing files reads the
+// disk. Files are listed off the TUI goroutine; until they arrive the menu
+// filters the previous list.
 func (e *Editor) refreshMenu() tea.Cmd {
 	if e.searching {
 		e.setMenu(e.historyItems(e.ta.Value()))
@@ -487,8 +467,8 @@ func (e *Editor) refreshMenu() tea.Cmd {
 	return cmd
 }
 
-// word returns the word at the cursor the menu completes, after its sign:
-// a "/command" the input starts with, or an "@path" starting a word.
+// word returns the word the menu completes, without its sign: a "/command"
+// at the start of the input or an "@path" at the start of a word.
 func (e *Editor) word() (sign rune, q string) {
 	if w, ok := strings.CutPrefix(e.ta.Value(), "/"); ok && !strings.ContainsAny(w, " \n/") {
 		return '/', w
@@ -520,8 +500,8 @@ func (e *Editor) selected() (item, bool) {
 	return e.menu[e.menuAt], true
 }
 
-// pick puts it in the input, then follows the input: a directory picked
-// goes on to what it holds.
+// pick inserts it and refreshes the menu, so picking a directory lists its
+// contents.
 func (e *Editor) pick(it item) tea.Cmd {
 	it.pick()
 	return e.edited()
@@ -538,8 +518,8 @@ func (e *Editor) commandItems(q string) []item {
 	return items
 }
 
-// match returns the completions whose name or alias matches q, best first:
-// the whole name, then a prefix, then a part; an alias ranks below a name.
+// match ranks an exact name, then a prefix, then a substring; an alias match
+// ranks below a name match.
 func match(cs []Completion, q string) []Completion {
 	q = strings.ToLower(q)
 	score := func(c Completion) int {
@@ -583,8 +563,8 @@ func (e *Editor) fileItems(q string) []item {
 	return items
 }
 
-// mention puts "@path" in place of the "@word" at the cursor: quoted when
-// it holds a space, and open for more when it is a directory's.
+// mention replaces the "@word" at the cursor with "@path". Paths with spaces
+// are quoted; a directory gets no trailing space so the user can go deeper.
 func (e *Editor) mention(path string) {
 	_, q := e.word()
 	e.repeat(tea.KeyPressMsg{Code: tea.KeyBackspace}, len([]rune(q))+1)
@@ -597,7 +577,6 @@ func (e *Editor) mention(path string) {
 	e.ta.InsertString("@" + path)
 }
 
-// historyItems lists the entries of the history that hold q, newest first.
 func (e *Editor) historyItems(q string) []item {
 	q = strings.ToLower(q)
 	var items []item
@@ -628,7 +607,7 @@ func (e *Editor) paste(text string) tea.Cmd {
 	return e.insertPaste(text)
 }
 
-// newlines turns the line ends terminals paste, \r\n or a lone \r, into \n.
+// Terminals paste line ends as \r\n or a lone \r.
 var newlines = strings.NewReplacer("\r\n", "\n", "\r", "\n")
 
 func (e *Editor) insertPaste(text string) tea.Cmd {
@@ -640,8 +619,8 @@ func (e *Editor) insertPaste(text string) tea.Cmd {
 	return e.edited()
 }
 
-// readClipboard attaches the clipboard's image, or pastes its text when it
-// holds none.
+// readClipboard attaches the clipboard's image, or pastes its text if there
+// is no image.
 func readClipboard() tea.Msg {
 	data, err := imageinput.ReadImage()
 	if err != nil {
@@ -661,8 +640,6 @@ func readClipboard() tea.Msg {
 	return imageMsg{block}
 }
 
-// View renders the input between two rules, the images attached above it.
-// While the user searches the history, the rule above says so.
 func (e *Editor) View(width int) string {
 	ink := lipgloss.NewStyle().Foreground(e.accent)
 	rule := ink.Render(strings.Repeat("─", width))
@@ -682,7 +659,7 @@ func (e *Editor) View(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// Cursor is where the terminal's cursor goes, relative to the View.
+// Cursor is relative to View.
 func (e *Editor) Cursor() *tea.Cursor {
 	c := e.ta.Cursor()
 	if c == nil {
@@ -695,7 +672,6 @@ func (e *Editor) Cursor() *tea.Cursor {
 	return c
 }
 
-// Menu renders the menu, empty when none shows.
 func (e *Editor) Menu(width int) []string {
 	if len(e.menu) == 0 {
 		if e.searching && e.ta.Value() != "" {

@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// fileSkill writes a skill file and loads it, privileged or not.
 func fileSkill(t *testing.T, content string, privileged bool) Spec {
 	t.Helper()
 	dir := t.TempDir()
@@ -42,8 +41,6 @@ func TestInvokeExpandsVariablesAndShell(t *testing.T) {
 	}
 }
 
-// A skill without privileges keeps its text but neither runs its commands
-// nor allows tools nor picks a model.
 func TestUntrustedSkillLosesPrivileges(t *testing.T) {
 	t.Parallel()
 
@@ -109,9 +106,8 @@ func TestPrivileges(t *testing.T) {
 	}
 }
 
-// What a skill runs is what its text holds, as Privileges lists it: the
-// name of its directory, put in by a variable, runs nothing, and reaches
-// the commands as an environment variable.
+// A malicious directory name must not run as a command: ${CODEBOT_SKILL_DIR}
+// is substituted as text, and commands get it from the environment.
 func TestSkillDirectoryRunsNothing(t *testing.T) {
 	t.Parallel()
 

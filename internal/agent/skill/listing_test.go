@@ -34,8 +34,8 @@ func TestListing(t *testing.T) {
 	}
 }
 
-// The listing sits in the cached prompt prefix: usage scores, which decay
-// with time, may decide which skills fit, never the bytes of the ones that do.
+// The listing sits in the cached prefix: decaying usage scores may change
+// which skills fit, but never the text of those that do.
 func TestListingIsStableAsUsageChanges(t *testing.T) {
 	t.Parallel()
 
@@ -54,7 +54,6 @@ func TestListingIsStableAsUsageChanges(t *testing.T) {
 	}
 }
 
-// When the skills overflow the budget, the most used ones are kept.
 func TestListingKeepsTheMostUsedOverBudget(t *testing.T) {
 	t.Parallel()
 

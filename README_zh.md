@@ -174,6 +174,8 @@ OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`
 
 一个 skill 是一个含 `SKILL.md` 的目录，或者一个 `.md` 文件。同名时项目的优先于你的，你的优先于内置的；`/status` 会列出谁覆盖了谁。hooks 不互相覆盖，你的和项目的都会运行。事件、类型或字段不认识的 hook 会报出来，并且不加载。command hook 用 `sh` 运行；在 Windows 上，有 `command_windows` 就改用 PowerShell 运行它，只有 `command` 的需要 `PATH` 上有 `sh`（比如 Git for Windows 带的），否则加载时就报出来。PowerShell 会把 0 和 1 以外的退出码都变成 1，所以 Windows 命令要靠退出码 2 拦截，就以 `exit $LASTEXITCODE` 结尾，或者输出 `{"block": true}`。
 
+**HTTP 上的 MCP 服务器。** 没有配置 `Authorization` 头的 HTTP 服务器按 MCP 规范用 OAuth 登录：服务器要求授权时 codebot 会提示，`/mcp login <server>` 打开浏览器完成登录。codebot 用自己的 [client metadata document](site/oauth/client.json) 向该服务器的授权服务器表明身份。不接受这种文档的授权服务器（比如 GitHub 的）需要你在那里注册一个 OAuth 应用，回调 URL 填 `http://127.0.0.1/callback`，再把它的 client ID 和 secret 配成该服务器的 `oauth`，secret 可以写成 `${VAR}` 从环境变量读取（见 `settings.example.jsonc`）。token 保存在只有你能读的 `~/.codebot/mcp-oauth.json` 里并自动刷新；模型每次读写这个文件都要你确认。`/mcp logout <server>` 删除 token。配置了自己的 `Authorization` 头的服务器照旧使用这个头。
+
 **插件。** 插件按 [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) 格式把 skills 和 MCP 服务器打包在一起：一个目录，`plugin.json` 给出插件名，skills 放在 `skills/<name>/SKILL.md`，MCP 服务器写在 `mcp.json`。它的 skill 叫 `/<plugin>:<skill>`，MCP 服务器叫 `<plugin>_<server>`。这个格式不含 hooks 和子 agent，codebot 从 `plugin.json` 里自己的命名空间读取：
 
 ```json

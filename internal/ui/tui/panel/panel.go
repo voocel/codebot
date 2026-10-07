@@ -1,6 +1,5 @@
-// Package panel holds what takes the bottom of the screen in place of the
-// editor until the user is done with it: a permission request, questions,
-// a list to pick from, a page of text.
+// Package panel holds the views that replace the editor at the bottom of the
+// screen until dismissed: permission requests, questions, lists and text.
 package panel
 
 import (
@@ -17,30 +16,24 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// A Panel takes the keys and the bottom of the screen while it is shown.
 type Panel interface {
-	// Update takes a message: the keys, and any message the TUI does not
-	// handle itself. done reports that the panel is finished with.
+	// Update receives keys and any message the TUI doesn't handle itself.
 	Update(msg tea.Msg) (cmd tea.Cmd, done bool)
-	// View renders the panel at most height lines tall.
 	View(width, height int) string
 }
 
-// Initer is a Panel with work to start once shown.
 type Initer interface {
 	Init() tea.Cmd
 }
 
-// A Request is a Panel that answers what the agent asked, which the asker
-// may withdraw: Key identifies it. Requests wait their turn; Queue tells
-// the one shown how many wait behind it.
+// A Request answers the agent and may be withdrawn by Key. Requests wait
+// their turn; Queue tells the shown one how many wait behind it.
 type Request interface {
 	Panel
 	Key() any
 	Queue(behind int)
 }
 
-// queue is what a request knows of those behind it, for its title.
 type queue struct{ behind int }
 
 func (q *queue) Queue(behind int) { q.behind = behind }
@@ -52,12 +45,10 @@ func (q queue) title(t string) string {
 	return t
 }
 
-// menu is a column of options under a cursor: ↑↓ move it, and enter or an
-// option's number picks one.
+// In a menu, ↑↓ move the cursor and enter or an option's number picks.
 type menu struct{ n, cursor int }
 
-// key moves the cursor or picks an option: it returns the option picked,
-// or -1.
+// key returns the picked option, or -1.
 func (m *menu) key(k string) int {
 	switch k {
 	case "up", "k":
@@ -75,13 +66,11 @@ func (m *menu) key(k string) int {
 	return -1
 }
 
-// numbered renders option i as "1. text", marked when under the cursor.
 func (m menu) numbered(i int, text string) string {
 	return row(strconv.Itoa(i+1)+". "+text, i == m.cursor)
 }
 
-// field is a line the user types an answer of their own in, in place of
-// an option.
+// field is a free-form answer line offered in place of an option.
 type field struct {
 	input textinput.Model
 	on    bool
@@ -94,7 +83,6 @@ func newField(placeholder string) field {
 	return field{input: in}
 }
 
-// open shows the field, holding value.
 func (f *field) open(value string) tea.Cmd {
 	f.on = true
 	f.input.SetValue(value)
@@ -102,8 +90,7 @@ func (f *field) open(value string) tea.Cmd {
 	return f.input.Focus()
 }
 
-// update takes msg while the field is open. Enter closes it and reports
-// what was typed; esc only closes it.
+// update reports the text when enter closes the field; esc only closes it.
 func (f *field) update(msg tea.Msg) (cmd tea.Cmd, text string, entered bool) {
 	if k, ok := key(msg); ok && (k == "enter" || k == "esc") {
 		f.on = false
@@ -119,8 +106,8 @@ func (f *field) view(width int) string {
 	return theme.Selected.Render("❯ ") + f.input.View()
 }
 
-// head is what a request says above its options. What does not fit is
-// cut, and pgup and pgdown scroll it.
+// head is the text above a request's options. What doesn't fit is cut, and
+// pgup/pgdown scroll it.
 type head struct{ top, room int }
 
 func (h *head) key(k string) bool {
@@ -135,7 +122,7 @@ func (h *head) key(k string) bool {
 	return true
 }
 
-// follow scrolls, as fit last laid lines out, so that line shows.
+// follow scrolls the layout from the last fit so that line is visible.
 func (h *head) follow(line int) {
 	if line < h.top {
 		h.top = line
@@ -144,8 +131,8 @@ func (h *head) follow(line int) {
 	}
 }
 
-// fit lays lines out above tail in height lines, a line between them, from
-// the line scrolled to. It reports whether lines were cut.
+// fit puts lines above tail within height, from the scrolled position, and
+// reports whether lines were cut.
 func (h *head) fit(lines, tail []string, height int) (body []string, cut bool) {
 	h.room = max(height-len(tail)-1, 1)
 	gap := ""
@@ -158,8 +145,7 @@ func (h *head) fit(lines, tail []string, height int) (body []string, cut bool) {
 	return append(body, tail...), cut
 }
 
-// frame lays a panel out: a rule with the title, the body, then the hint,
-// within height lines; the body is cut to fit.
+// frame cuts the body to fit height.
 func frame(title string, body []string, hint string, width, height int) string {
 	head := theme.FaintText.Render("── ") + theme.Selected.Render(title) + " "
 	head += theme.FaintText.Render(strings.Repeat("─", max(width-ansi.StringWidth(head), 0)))
@@ -180,7 +166,6 @@ func frame(title string, body []string, hint string, width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-// row renders a selectable line, marked when selected.
 func row(text string, selected bool) string {
 	if selected {
 		return theme.Selected.Render("❯ ") + inline(text, theme.Selected)
@@ -188,8 +173,7 @@ func row(text string, selected bool) string {
 	return "  " + inline(text, theme.Text)
 }
 
-// inline renders text in st, its `code` spans without the backticks and in
-// the colour of code.
+// inline renders `code` spans without backticks, in the code color.
 func inline(text string, st lipgloss.Style) string {
 	var b strings.Builder
 	for i, part := range strings.Split(text, "`") {
@@ -202,12 +186,11 @@ func inline(text string, st lipgloss.Style) string {
 	return b.String()
 }
 
-// window returns the range of n rows to show in room so that cursor shows.
 func window(n, cursor, top, room int) (from, to int) {
 	if room <= 0 || n <= room {
 		return 0, n
 	}
-	// As close to top as keeps the cursor in view, and the window in n.
+	// Stay near top while keeping the cursor and the window in range.
 	top = min(max(top, cursor-room+1, 0), cursor, n-room)
 	return top, top + room
 }

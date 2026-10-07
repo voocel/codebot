@@ -1,0 +1,14 @@
+{
+  "client_id": "https://voocel.github.io/codebot/oauth/client.json",
+  "client_name": "codebot",
+  "client_uri": "https://github.com/voocel/codebot",
+  "redirect_uris": [
+    "http://127.0.0.1:47621/callback",
+    "http://127.0.0.1:47622/callback",
+    "http://127.0.0.1:47623/callback"
+  ],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none",
+  "application_type": "native"
+}

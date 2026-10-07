@@ -11,32 +11,27 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Item is a row of a List.
 type Item struct {
 	Title  string
 	Detail string // shown muted after the title
-	// Group heads the items that share it; a new group starts a section.
+	// A change of Group starts a new section.
 	Group string
-	// Current marks the item in use, such as the model selected.
+	// Current marks the item in use, such as the selected model.
 	Current bool
 	Value   any
 }
 
-// List lets the user pick an item.
 type List struct {
-	Title string
-	Items []Item
-	// Hint replaces the default hint.
-	Hint string
-	// Filter narrows the items to those matching what the user types.
+	Title  string
+	Items  []Item
+	Hint   string // replaces the default hint
 	Filter bool
-	// Select runs when the user picks an item with enter; the list closes.
+	// Select runs on enter, and the list closes.
 	Select func(Item) tea.Cmd
-	// Keys handles keys the list does not: handled stops the list from
-	// handling it, done closes the list. item is the selected item, nil
-	// when none is.
+	// Keys sees keys first. handled stops the list from processing the key;
+	// done closes the list. item is nil when nothing is selected.
 	Keys func(k string, item *Item) (cmd tea.Cmd, handled, done bool)
-	// Reload, when set, reads the items again every second while shown.
+	// Reload, if set, refreshes the items every second while shown.
 	Reload func() []Item
 
 	cursor int
@@ -58,7 +53,6 @@ func (l *List) tick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return reloadMsg{l} })
 }
 
-// visible returns the items that match the query.
 func (l *List) visible() []*Item {
 	q := strings.ToLower(l.query)
 	var out []*Item

@@ -16,53 +16,45 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// run is what the status line shows of the run under way.
 type run struct {
 	active  bool
 	started time.Time
 	tools   int
 
-	// in and out are the tokens of the responses that ended; reply is the
-	// response under way, as far as it went.
+	// in and out count finished responses; reply is the one streaming.
 	in, out int
 	reply   reply
-	// shown is what the status line shows of the tokens, rolling toward
-	// them since rolled.
+	// shown is the displayed token count, animating toward the real one.
 	shown  [2]float64
 	rolled time.Time
 
-	retry       int // the attempt coming, 0 when none
+	retry       int // next attempt, 0 when none
 	retryAt     time.Time
-	compactFrom time.Time // when the compaction under way started, zero when none
+	compactFrom time.Time // zero when not compacting
 
 	todos []todo.Item
 }
 
-// reply is a response's tokens as it streams: what its provider reported,
-// and the bytes that streamed, which tell its output before the provider
-// does at the end.
+// reply estimates output from the streamed bytes until the provider reports
+// usage, which it may only do at the end.
 type reply struct {
 	in, out  int
 	streamed int
 }
 
-// bytesPerToken estimates tokens from text: about four characters of
-// English, or one or two of CJK, three bytes each.
+// A token is about four characters of English, or one or two CJK
+// characters of three bytes each.
 const bytesPerToken = 4
 
-// tokens returns the tokens the run spent, the response under way
-// included: its input once the provider reports it, its output estimated
-// from what streamed until then.
 func (r *run) tokens() (in, out int) {
 	return r.in + r.reply.in, r.out + max(r.reply.out, r.reply.streamed/bytesPerToken)
 }
 
-// rollTime is how fast the tokens shown catch up: a thirtieth of a second
-// closes a twelfth of the gap.
+// rollTime is the time constant of the token counter animation: one 30fps
+// frame closes about a twelfth of the gap.
 const rollTime = 0.38 // seconds
 
-// roll moves the tokens shown toward the tokens, the further the faster, so
-// that they run rather than jump.
+// roll animates the counter so it runs rather than jumps.
 func (r *run) roll(now time.Time) {
 	k := 1 - math.Exp(-now.Sub(r.rolled).Seconds()/rollTime)
 	r.rolled = now
@@ -78,14 +70,12 @@ func approach(shown float64, target int, k float64) float64 {
 	return min(shown+max((t-shown)*k, 1), t)
 }
 
-// compacting reports whether a compaction is under way.
 func (r *run) compacting() bool { return !r.compactFrom.IsZero() }
 
 func (r *run) start(now time.Time) {
 	*r = run{active: true, started: now, rolled: now, todos: r.todos}
 }
 
-// apply takes an event of the run.
 func (r *run) apply(ev agentcore.Event, now time.Time) {
 	switch e := ev.(type) {
 	case agentcore.MessageStart:
@@ -108,7 +98,7 @@ func (r *run) apply(ev agentcore.Event, now time.Time) {
 				r.in += u.InputTokens
 				r.out += u.OutputTokens
 			} else {
-				// A provider that never told keeps the estimate.
+				// Keep the estimate when the provider reports no usage.
 				r.in, r.out = r.tokens()
 			}
 			r.reply = reply{}
@@ -130,7 +120,7 @@ func (r *run) apply(ev agentcore.Event, now time.Time) {
 	}
 }
 
-// summary sums up a run that ended, "" for one too short to.
+// summary returns "" for a run too short to be worth summarizing.
 func (r *run) summary(now time.Time) string {
 	d := now.Sub(r.started)
 	if r.tools == 0 && d < 10*time.Second {
@@ -146,12 +136,10 @@ func (r *run) summary(now time.Time) string {
 	return "✻ " + strings.Join(parts, " · ")
 }
 
-// lines renders the status above the input: what the run is doing, the
-// todo list, and the inputs waiting to join the conversation.
 func (r *run) lines(width int, now time.Time, pending []pending) []string {
 	var out []string
 	if r.active || r.compacting() {
-		// A compaction runs within a run, or on its own.
+		// A compaction may run inside a run or on its own.
 		label, since := "Running…", r.started
 		switch {
 		case r.compacting():
@@ -178,8 +166,7 @@ func (r *run) lines(width int, now time.Time, pending []pending) []string {
 	return out
 }
 
-// shellLine shows the "!" line running; esc stops it once no run is
-// under way to stop first.
+// shellLine offers esc only when there is no run for esc to stop first.
 func shellLine(s *shellRun, width int, now time.Time, stoppable bool) string {
 	line := twinkle(now) + " " + shimmer("Running", now) + " " + theme.Text.Render(ansi.Truncate(s.line, max(width/2, 10), "…")) +
 		theme.SubtleText.Render(" · "+transcript.Duration(now.Sub(s.started)))
@@ -189,16 +176,15 @@ func shellLine(s *shellRun, width int, now time.Time, stoppable bool) string {
 	return ansi.Truncate(" "+line, width, "…")
 }
 
-// star is the status line's spinner, a frame every 33ms.
+// star frames advance every 33ms.
 var star = []string{"·", "✢", "✶", "✽", "✶", "✢", "·"}
 
 func twinkle(now time.Time) string {
 	return lipgloss.NewStyle().Foreground(theme.Live).Render(star[now.UnixMilli()/33%int64(len(star))])
 }
 
-// shimmer renders text with a light sweeping over it, 20 characters a
-// second: 2 characters at full brightness, fading over 2 on either side,
-// then a pause as long as the light is wide.
+// shimmer sweeps a highlight across text at 20 characters per second: 2
+// characters at full brightness, fading over 2 on each side.
 func shimmer(text string, now time.Time) string {
 	const speed, band, slope = 20.0, 2.0, 2.0
 	runes := []rune(text)
@@ -219,7 +205,7 @@ func shimmer(text string, now time.Time) string {
 
 const maxTodos = 6
 
-// todoLines renders the todo list while any of it is left to do.
+// todoLines hides the list once everything is done.
 func todoLines(items []todo.Item) []string {
 	pending, active, done := todo.Counts(items)
 	if pending+active == 0 {

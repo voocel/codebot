@@ -7,20 +7,16 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// Validation runs the PostStopValidation hooks when a run would stop after
-// changing the repository, and sends the agent back once to fix a failure. A
-// conversation has one over its Runner.
+// Validation runs the PostStopValidation hooks when a run that changed the
+// repository would stop, and sends the agent back once to fix a failure.
 type Validation struct {
 	runner *Runner
 	dirty  atomic.Bool // the repository changed since the last passing validation
 	failed bool        // the last stop was refused; touched only by the run
 }
 
-// NewValidation returns a conversation's validation over r.
 func NewValidation(r *Runner) *Validation { return &Validation{runner: r} }
 
-// Track is a ToolMiddleware marking the repository changed after a
-// successful mutating call.
 func (v *Validation) Track(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
 	res, err := next(ctx, call)
 	if err == nil && !res.IsError {
@@ -32,9 +28,7 @@ func (v *Validation) Track(ctx context.Context, call agentcore.ToolCall, next ag
 	return res, err
 }
 
-// Check is called as a run would stop. With the repository changed, it runs
-// the hooks and returns what the agent is to fix, once per stop; "" lets the
-// run stop.
+// Check is called when a run would stop; "" lets it stop.
 func (v *Validation) Check(ctx context.Context) string {
 	if !v.dirty.Load() {
 		return ""

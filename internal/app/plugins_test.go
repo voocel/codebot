@@ -15,8 +15,7 @@ import (
 
 const kitManifest = `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "kit"}`
 
-// writeKit writes the plugin kit into dir: a skill, and the MCP servers
-// named.
+// writeKit writes a plugin with one skill and the named MCP servers.
 func writeKit(t *testing.T, dir string, servers ...string) {
 	t.Helper()
 	writeSkill(t, filepath.Join(dir, "skills"), "release", "---\ndescription: releases\n---\nRelease.\n")
@@ -38,10 +37,8 @@ func writeKit(t *testing.T, dir string, servers ...string) {
 	}
 }
 
-// mcpDetail tells the server name of a kit as the user reads it.
 func mcpDetail(name string) string { return "kit_" + name + ": " + name + "-mcp" }
 
-// details tells the items of s as the user reads them.
 func details(s Surface) []string {
 	var out []string
 	for _, it := range s {
@@ -66,8 +63,8 @@ func servers(e *env) []string {
 	return out
 }
 
-// The user adds a plugin of theirs and removes it from their settings: what
-// they decided of it stays, as another project may declare it still.
+// Removing a plugin keeps its consent, since another project may still
+// declare it.
 func TestPluginLifecycle(t *testing.T) {
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeKit(t, filepath.Join(os.Getenv("HOME"), "kit"), "db")
@@ -104,8 +101,8 @@ func TestPluginLifecycle(t *testing.T) {
 	}
 }
 
-// A local plugin is read afresh, and what it adds waits for the user: what
-// they agreed to runs on.
+// A local plugin is reread on reload. New items wait for consent while the
+// agreed ones keep running.
 func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	dir := filepath.Join(os.Getenv("HOME"), "kit")
@@ -144,8 +141,8 @@ func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	}
 }
 
-// remote serves dir as the git repository https://example.test/acme/kit,
-// whose history the returned function adds to.
+// remote serves a git repository at https://example.test/acme/kit; commit
+// adds to its history.
 func remote(t *testing.T) (repo string, commit func(msg string)) {
 	repo = t.TempDir()
 	git := func(args ...string) {
@@ -167,9 +164,9 @@ func remote(t *testing.T) (repo string, commit func(msg string)) {
 	}
 }
 
-// A git plugin stays at the commit the user agreed to: one whose ref has
-// moved on is told to have an update, fetching nothing, and an update that
-// runs something new waits for them to agree again.
+// A git plugin stays at its agreed commit. A moved ref is reported as an
+// update without fetching, and an update that runs something new waits for
+// consent.
 func TestGitPluginUpdates(t *testing.T) {
 	repo, commit := remote(t)
 	writeKit(t, repo)
@@ -227,9 +224,7 @@ func TestGitPluginUpdates(t *testing.T) {
 	}
 }
 
-// A project's plugins wait for the user to trust the project to declare
-// them, and are fetched as they install them, never before: what they run
-// is the user's to agree to.
+// A project's plugins need project trust and are fetched only on install.
 func TestProjectPlugins(t *testing.T) {
 	repo, commit := remote(t)
 	writeKit(t, repo, "db")
@@ -270,8 +265,8 @@ func TestProjectPlugins(t *testing.T) {
 	}
 }
 
-// A git plugin no longer cached comes back at the commit the user agreed
-// to, not at its ref's, unasked.
+// A git plugin missing from the cache is refetched at its agreed commit, not
+// its ref, without asking.
 func TestAgreedPluginsComeBackAtTheirCommit(t *testing.T) {
 	repo, commit := remote(t)
 	writeKit(t, repo)
@@ -305,8 +300,7 @@ func TestAgreedPluginsComeBackAtTheirCommit(t *testing.T) {
 	}
 }
 
-// A plugin the user's settings declare, never agreed to, waits for them to
-// install it: nothing fetches it before.
+// A declared plugin the user never agreed to is not fetched until installed.
 func TestDeclaredPluginsWaitToBeInstalled(t *testing.T) {
 	repo, commit := remote(t)
 	writeKit(t, repo)
@@ -332,8 +326,8 @@ func TestDeclaredPluginsWaitToBeInstalled(t *testing.T) {
 	}
 }
 
-// A plugin the user adds to a project they trust, the project declares as
-// they trust it: they wrote it there.
+// A plugin the user adds to a trusted project counts as trusted, since they
+// wrote it there.
 func TestPluginsAddedToTheProject(t *testing.T) {
 	e := boot(t, setup{git: true, project: map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)"}}}}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeKit(t, filepath.Join(e.cwd, "tools", "kit"), "db")
@@ -367,8 +361,8 @@ func TestPluginsAddedToTheProject(t *testing.T) {
 	}
 }
 
-// Of two plugins of one name, both are listed, the project's on; each is
-// removed from the settings named.
+// Two plugins with one name are both listed, with the project's on. Each is
+// removed from its own settings.
 func TestPluginsOfOneName(t *testing.T) {
 	e := boot(t, setup{git: true, settings: map[string]any{"plugins": []string{"~/kit"}}, project: map[string]any{"plugins": []string{"../tools/kit"}}}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeKit(t, filepath.Join(os.Getenv("HOME"), "kit"))
@@ -392,8 +386,8 @@ func TestPluginsOfOneName(t *testing.T) {
 	}
 }
 
-// A plugin given on the command line runs all it does for the session,
-// read afresh as it reloads, and nothing of it is kept.
+// A command-line plugin runs everything for the session, is reread on
+// reload, and leaves no consent behind.
 func TestSessionPlugins(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "kit")
 	writeKit(t, dir, "db")
@@ -413,8 +407,8 @@ func TestSessionPlugins(t *testing.T) {
 	}
 }
 
-// A plugin's hooks run in the conversation, PLUGIN_DATA theirs; its agents
-// join the others.
+// A plugin's hooks run with their own PLUGIN_DATA, and its agents join the
+// other agents.
 func TestPluginHooksRun(t *testing.T) {
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script(text("ok"))})
 	dir := filepath.Join(os.Getenv("HOME"), "kit")

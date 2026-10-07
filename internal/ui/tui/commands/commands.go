@@ -1,6 +1,6 @@
-// Package commands holds the slash commands. A command shows what it does
-// by sending a transcript.Cell, which joins the conversation, or a
-// panel.Panel, which takes the bottom of the screen.
+// Package commands holds the slash commands. A command reports by returning
+// a transcript.Cell, which joins the conversation, or a panel.Panel, which
+// takes the bottom of the screen.
 package commands
 
 import (
@@ -18,37 +18,32 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// Command is a slash command.
 type Command struct {
 	Name    string
 	Aliases []string
-	// Args describes the arguments, "<question>"; "" when it takes none.
+	// Args is a hint such as "<question>"; "" means no arguments.
 	Args        string
 	Description string
-	// Idle refuses to run while the agent works.
+	// Idle commands refuse to run while the agent works.
 	Idle  bool
 	Skill bool
 	Run   func(args string) tea.Cmd
 
-	// inline is a skill whose line joins the conversation as the user's
-	// input, which shows it.
+	// inline marks a skill whose line joins the conversation as user input,
+	// so the transcript already shows it.
 	inline bool
 }
 
-// Copy asks the TUI to put Text on the clipboard.
 type Copy struct{ Text string }
 
-// OpenAgent asks the TUI to show the background sub-agent Name.
 type OpenAgent struct{ Name string }
 
-// Registry is the slash commands: the built-in ones and one per skill the
-// user may invoke.
+// Registry holds the built-in commands and one per user-invocable skill.
 type Registry struct {
 	app      *app.App
 	builtins []Command
 }
 
-// New returns the commands for a.
 func New(a *app.App, version string) *Registry {
 	r := &Registry{app: a}
 	r.builtins = []Command{
@@ -78,7 +73,6 @@ func New(a *app.App, version string) *Registry {
 	return r
 }
 
-// all returns the built-in commands, then those of the skills active now.
 func (r *Registry) all() []Command {
 	cmds := slices.Clone(r.builtins)
 	for _, sk := range r.app.Current().Skills() {
@@ -101,7 +95,6 @@ func (r *Registry) builtin(name string) bool {
 	return slices.ContainsFunc(r.builtins, func(c Command) bool { return c.Name == name })
 }
 
-// Lookup finds a command by name or alias, ignoring case.
 func (r *Registry) Lookup(name string) (Command, bool) {
 	name = strings.ToLower(name)
 	for _, c := range r.all() {
@@ -112,8 +105,6 @@ func (r *Registry) Lookup(name string) (Command, bool) {
 	return Command{}, false
 }
 
-// Commands returns the commands to offer: the built-in ones, then the
-// skills', each by name.
 func (r *Registry) Commands() []Command {
 	cmds := r.all()
 	byName := func(a, b Command) int { return strings.Compare(a.Name, b.Name) }
@@ -122,8 +113,8 @@ func (r *Registry) Commands() []Command {
 	return cmds
 }
 
-// Run runs a "/name args" line. Commands read sessions, run git and wait on
-// servers, so they run off the TUI's goroutine.
+// Run runs commands off the TUI goroutine because they read sessions, run
+// git and wait on servers.
 func (r *Registry) Run(line string) tea.Cmd {
 	return func() tea.Msg { return tea.BatchMsg{r.run(line)} }
 }
@@ -144,8 +135,8 @@ func (r *Registry) run(line string) tea.Cmd {
 	return tea.Sequence(echo, c.Run(strings.TrimSpace(args)))
 }
 
-// IsCommand reports whether line is a slash command rather than a message
-// starting with a path such as "/usr/bin".
+// IsCommand tells a slash command from a message starting with a path such
+// as "/usr/bin".
 func IsCommand(line string) bool {
 	name, ok := strings.CutPrefix(strings.TrimSpace(line), "/")
 	if !ok {
@@ -159,8 +150,8 @@ func (r *Registry) skill(name string) func(string) tea.Cmd {
 	return func(args string) tea.Cmd {
 		conv := r.app.Current()
 		return func() tea.Msg {
-			// An inline skill joins the conversation as the user's input; a
-			// forked one returns what its sub-agent answered.
+			// An inline skill joins the conversation as user input; a forked
+			// one returns its sub-agent's answer.
 			out, err := conv.InvokeSkill(context.Background(), name, args)
 			switch {
 			case err != nil:
@@ -218,11 +209,10 @@ var keys = [][2]string{
 	{"! command", "Run a shell command"},
 }
 
-// maxLabel is the widest a table's labels get; a skill's argument hint can
-// be any length.
+// maxLabel caps label width, since a skill's argument hint can be any
+// length.
 const maxLabel = 24
 
-// table lays rows out as two aligned columns.
 func table(rows [][2]string, width int) []string {
 	w := 0
 	for _, r := range rows {
@@ -237,8 +227,7 @@ func table(rows [][2]string, width int) []string {
 	return out
 }
 
-// info lays out labelled values; a row with an empty value is a section
-// heading.
+// info renders a row with an empty value as a section heading.
 func info(rows [][2]string, width int) []string {
 	w := 0
 	for _, r := range rows {

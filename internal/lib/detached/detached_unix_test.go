@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// Cancelled, a command gives up at once, and what it started goes with it,
-// though it holds the command's output.
+// A canceled command returns at once and its children die too, even though
+// they hold its output.
 func TestCancelKillsWhatItStarted(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -34,7 +34,7 @@ func TestCancelKillsWhatItStarted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Orphaned, it is reaped once killed.
+	// The orphaned child is reaped once killed.
 	for deadline := time.Now().Add(5 * time.Second); syscall.Kill(pid, 0) == nil; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("what the command started outlived it")

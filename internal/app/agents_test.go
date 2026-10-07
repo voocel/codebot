@@ -10,7 +10,7 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// Unsubscribing closes the channel, and a later publish does not send on it.
+// Unsubscribing closes the channel; a later publish must not send on it.
 func TestEventHub_UnsubscribeStopsDelivery(t *testing.T) {
 	h := NewAgentHub()
 	_, ch, cancel := h.Subscribe("researcher")
@@ -33,8 +33,6 @@ func TestEventHub_UnsubscribeStopsDelivery(t *testing.T) {
 	h.Publish("researcher", agentcore.RunEnd{})
 }
 
-// Slow consumers must not stall the publisher. We fill the buffer, publish
-// many more events, and assert Publish returns quickly each time.
 func TestEventHub_NonBlockingOnSlowConsumer(t *testing.T) {
 	h := NewAgentHub()
 	_, _, cancel := h.Subscribe("researcher") // never read from it
@@ -45,22 +43,18 @@ func TestEventHub_NonBlockingOnSlowConsumer(t *testing.T) {
 		h.Publish("researcher", agentcore.MessageStart{})
 	}
 	elapsed := time.Since(start)
-	// Concrete budget: 4×buffer publishes against a deadlocked consumer
-	// should be well under 100ms — anything close to a second means we are
-	// blocking.
+	// 4×buffer publishes against a stuck consumer should take well under
+	// 100ms; close to a second means Publish blocks.
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("publishing took %v with slow consumer; expected non-blocking", elapsed)
 	}
 }
 
-// Concurrent publishers + subscribers must not race or deadlock. Race
-// detector (`go test -race`) catches the rest; this test just exercises the
-// scheduling.
+// Meant to run under -race.
 func TestEventHub_Concurrent(t *testing.T) {
 	h := NewAgentHub()
 	var wg sync.WaitGroup
 
-	// 4 subscribers consuming in tight loops.
 	for range 4 {
 		_, ch, cancel := h.Subscribe("a")
 		wg.Go(func() {
@@ -71,7 +65,6 @@ func TestEventHub_Concurrent(t *testing.T) {
 		time.AfterFunc(200*time.Millisecond, cancel)
 	}
 
-	// 8 publishers writing concurrently.
 	for range 8 {
 		wg.Go(func() {
 			for range 1000 {
@@ -82,13 +75,9 @@ func TestEventHub_Concurrent(t *testing.T) {
 	wg.Wait()
 }
 
-// A late subscriber gets the history, oldest first, then the live events,
-// none twice. The history keeps the messages, not the deltas they streamed
-// as.
+// The history leaves out deltas and does not overlap the live events.
 func TestEventHub_LateSubscriberReplaysHistory(t *testing.T) {
 	h := NewAgentHub()
-	// Publish a few events BEFORE any subscriber attaches — these must be
-	// replayed when Subscribe is called, the delta left out.
 	h.Publish("alice", agentcore.MessageStart{})
 	h.Publish("alice", agentcore.MessageDelta{})
 	h.Publish("alice", agentcore.ToolStart{})
@@ -104,8 +93,6 @@ func TestEventHub_LateSubscriberReplaysHistory(t *testing.T) {
 		t.Errorf("history %s, want %s", got, want)
 	}
 
-	// Subsequent live events still arrive on the channel, picking up where
-	// history left off — no duplicates.
 	h.Publish("alice", agentcore.Retry{})
 	live := drainEvents(t, ch, 1, time.Second)
 	if types(live) != "agentcore.Retry" {
@@ -115,8 +102,6 @@ func TestEventHub_LateSubscriberReplaysHistory(t *testing.T) {
 
 func TestEventHub_HistoryRingTruncatesOldest(t *testing.T) {
 	h := NewAgentHub()
-	// Publish capacity+10 events; the ring should retain only the last
-	// `historyCapacity` of them in chronological order.
 	const overshoot = 10
 	for range historyCapacity + overshoot {
 		h.Publish("alice", agentcore.ToolStart{})
@@ -150,8 +135,6 @@ func TestEventHub_KnownAgentsIncludesStopped(t *testing.T) {
 	}
 }
 
-// --- helpers -----------------------------------------------------------------
-
 func drainEvents(t *testing.T, ch <-chan agentcore.Event, n int, timeout time.Duration) []agentcore.Event {
 	t.Helper()
 	out := make([]agentcore.Event, 0, n)
@@ -170,7 +153,6 @@ func drainEvents(t *testing.T, ch <-chan agentcore.Event, n int, timeout time.Du
 	return out
 }
 
-// types names the types of evs.
 func types(evs []agentcore.Event) string {
 	names := make([]string, len(evs))
 	for i, ev := range evs {

@@ -12,7 +12,6 @@ var (
 	ErrUserInvocationDenied  = errors.New("skill cannot be invoked by the user")
 )
 
-// Invoker is who invokes a skill.
 type Invoker int
 
 const (
@@ -27,20 +26,16 @@ type InvokeInput struct {
 	By        Invoker
 }
 
-// Invocation is a skill ready to run.
 type Invocation struct {
-	Spec Spec
-	// Prompt is the skill rendered with the invocation's arguments.
+	Spec   Spec
 	Prompt string
-	// Fork runs the skill in a sub-agent, Agent, instead of the conversation.
-	Fork  bool
-	Agent string
-	// AllowedTools and Model are the skill's, if it is privileged.
+	Fork   bool
+	Agent  string
+	// AllowedTools and Model are set only for a privileged skill.
 	AllowedTools []string
 	Model        string
 }
 
-// Invoke renders the named skill for an invocation.
 func (c *Catalog) Invoke(ctx context.Context, in InvokeInput) (*Invocation, error) {
 	spec, ok := c.Get(in.Name)
 	if !ok {

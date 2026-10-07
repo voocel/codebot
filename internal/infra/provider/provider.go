@@ -11,33 +11,28 @@ import (
 	llmprovider "github.com/voocel/litellm/provider"
 )
 
-// IsSupportedType reports whether codebot builds a provider of the given
-// type: one litellm builds, so codebot keeps no list of its own. Type
-// "gateway" reaches a litellm gateway, which holds the keys, makes the model
-// calls and bills them, so codebot can run where keys must not, say in a
-// sandbox.
+// IsSupportedType defers to litellm rather than keeping its own list. Type
+// "gateway" reaches a litellm gateway that holds the keys and makes the
+// calls, so codebot can run where keys must not live, such as a sandbox.
 func IsSupportedType(name string) bool {
 	return slices.Contains(llmprovider.Names(), name)
 }
 
-// ModelSpec names a model and how to reach the provider serving it.
 type ModelSpec struct {
-	// Provider is the configured provider name; Type is the litellm provider
-	// it speaks, which differs for custom providers.
+	// Type is the litellm provider that Provider speaks; they differ for
+	// custom providers.
 	Provider string
 	Type     string
 	Model    string
 	Conn     llmprovider.Config
 }
 
-// fallbackMaxTokens caps models missing from the model list on providers that
-// require a cap; every Claude 4 or later model accepts it.
+// fallbackMaxTokens is the output cap for unlisted models on providers that
+// require one; every Claude 4 or later model accepts it.
 const fallbackMaxTokens = 32000
 
-// NewModelFactory returns a factory that builds models with the output caps
-// and prices in models, forwarding clientOpts (e.g. litellm.WithObservers for
-// telemetry) to every client. A provider is named as configured, so replay
-// state reaches only the endpoint that issued it.
+// NewModelFactory names each provider as configured, so replay state goes
+// back only to the endpoint that issued it.
 func NewModelFactory(models *Models, clientOpts ...litellm.ClientOption) func(ModelSpec) (agentcore.Model, error) {
 	return func(spec ModelSpec) (agentcore.Model, error) {
 		conn := spec.Conn
@@ -52,7 +47,6 @@ func NewModelFactory(models *Models, clientOpts ...litellm.ClientOption) func(Mo
 		}
 		facts, _ := models.Lookup(spec)
 		model := agentcore.Model{Client: client, Request: litellm.Request{Model: spec.Model}, Pricing: facts.Pricing}
-		// Providers that require an output cap, such as Anthropic, get the model's.
 		if caps, _ := client.Capabilities(); caps.MaxTokensRequired {
 			model.Request.MaxTokens = new(cmp.Or(facts.MaxOutputTokens, fallbackMaxTokens))
 		}
@@ -60,9 +54,8 @@ func NewModelFactory(models *Models, clientOpts ...litellm.ClientOption) func(Mo
 	}
 }
 
-// WithCacheKey returns model with its requests routing the prompt cache by
-// key, as OpenAI's prompt_cache_key does, where its provider takes a key:
-// the others reject options they do not list.
+// WithCacheKey sets prompt_cache_key only on providers that accept it;
+// others reject options they do not know.
 func WithCacheKey(model agentcore.Model, key string) agentcore.Model {
 	const option = "prompt_cache_key"
 	if caps, _ := model.Client.Capabilities(); !slices.Contains(caps.ProviderOptions, option) {

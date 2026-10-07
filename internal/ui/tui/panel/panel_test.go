@@ -59,7 +59,7 @@ func TestPermission(t *testing.T) {
 		{[]string{"2"}, interact.AllowAlways},
 		{[]string{"esc"}, interact.Deny},
 		{[]string{"ctrl+c"}, interact.Deny},
-		// No letter answers: one typed by chance must not.
+		// Letters don't answer, so a stray keystroke can't.
 		{[]string{"y", "a", "s", "n", "enter"}, interact.AllowOnce},
 	} {
 		reply := make(chan interact.Verdict, 1)
@@ -80,15 +80,14 @@ func TestPermissionOffersWhatItRemembers(t *testing.T) {
 		t.Errorf("the option does not name what it remembers:\n%s", v)
 	}
 
-	// Nothing to remember, nothing offered beyond this call.
+	// Nothing to remember, so only this call is offered.
 	p = NewPermission(interact.Approval{Tool: "write", Confirm: true}, make(chan interact.Verdict, 1), nil)
 	if v := ansi.Strip(p.View(60, 20)); strings.Contains(v, "again") || strings.Contains(v, "all edits") {
 		t.Errorf("a call confirmed each time offers more:\n%s", v)
 	}
 }
 
-// The last option denies with what to do instead; esc there goes back to
-// the options.
+// esc in the feedback field goes back to the options.
 func TestPermissionDeniesWithFeedback(t *testing.T) {
 	reply := make(chan interact.Verdict, 1)
 	p := NewPermission(interact.Approval{Tool: "bash", Summary: "rm -rf build"}, reply, nil)
@@ -111,7 +110,7 @@ func TestPermissionDeniesWithFeedback(t *testing.T) {
 	}
 }
 
-// An edit offers the accept-edits mode, switched before the answer goes.
+// The mode switches before the answer is sent.
 func TestPermissionAcceptsEdits(t *testing.T) {
 	reply := make(chan interact.Verdict, 1)
 	switched := false
@@ -147,7 +146,7 @@ func TestAskCustomAnswer(t *testing.T) {
 	reply := make(chan interact.Answers, 1)
 	q := interact.Question{Question: "Name?", Options: []interact.Option{{Label: "A"}}}
 	a := NewAsk([]interact.Question{q}, reply)
-	press(a, "2") // the row for one's own answer
+	press(a, "2") // the free-form answer row
 	press(a, "b", "o", "b")
 	if !press(a, "enter") {
 		t.Fatal("the panel stayed")
@@ -229,13 +228,13 @@ func TestListGrowsAfterScrolling(t *testing.T) {
 	l.View(80, 8)
 	fits(t, l.View(80, 14), 80, 14) // the panel grows with the terminal
 
-	// Reloaded shorter under the cursor.
+	// Reload with fewer items than the cursor position.
 	l.Items = items[:3]
 	if v := ansi.Strip(l.View(80, 8)); !strings.Contains(v, "xxx") {
 		t.Errorf("after the reload:\n%s", v)
 	}
 
-	// Grouped, with titles longer than it is wide, a narrow list fits.
+	// A narrow grouped list with long titles still fits.
 	items = nil
 	for i := range 40 {
 		items = append(items, Item{Title: strings.Repeat("x", i), Detail: "detail", Group: []string{"one", "two"}[i/20]})

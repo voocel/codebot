@@ -21,37 +21,33 @@ import (
 	"github.com/voocel/codebot/internal/lib/detached"
 )
 
-// outcome is the raw result of running a hook's executor.
 type outcome struct {
 	stdout   []byte
 	exitCode int // command: real exit code; prompt/http: 0 success, 1 error
 	err      error
 }
 
-// executor runs a hook and returns its outcome.
 type executor interface {
 	execute(ctx context.Context, payload []byte, env []string) outcome
 }
 
-// commandExec runs command in a shell with payload on stdin.
 type commandExec struct {
-	shell   []string // the shell and its options, the command following
+	shell   []string // shell and flags; the command is appended
 	command string
 }
 
-// commandFor returns how he's command runs on goos: in sh, but on Windows,
-// its command_windows, if it has one, in PowerShell. Windows has no sh of
-// its own: a command alone needs one on PATH there, as Git for Windows
-// brings.
+// commandFor uses sh, except on Windows when command_windows is set, which
+// runs in PowerShell. Windows has no sh of its own, so a plain command there
+// needs one on PATH, such as the one Git for Windows provides.
 func commandFor(he config.HookEntry, goos string) (*commandExec, error) {
 	sh := &commandExec{shell: []string{"sh", "-c"}, command: he.Command}
 	switch {
 	case goos != "windows":
 		return sh, nil
 	case he.CommandWindows != "":
-		// powershell.exe comes with Windows; pwsh need not. The user agreed
-		// to the hook, so a script of it runs whatever the local execution
-		// policy; one set by group policy still holds.
+		// powershell.exe ships with Windows; pwsh may not. The user agreed
+		// to the hook, so bypass the local execution policy; a group policy
+		// still applies.
 		return &commandExec{shell: []string{"powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"}, command: he.CommandWindows}, nil
 	}
 	if _, err := exec.LookPath("sh"); err != nil {
@@ -84,8 +80,7 @@ func (c *commandExec) execute(ctx context.Context, payload []byte, env []string)
 	return outcome{stdout: stdout.Bytes()}
 }
 
-// promptExec sends a single-turn LLM query and returns the response as JSON.
-// The prompt template may contain $ARGUMENTS which is replaced with the payload.
+// promptExec replaces $ARGUMENTS in the prompt with the payload.
 type promptExec struct {
 	prompt string
 	model  func() agentcore.Model
@@ -107,7 +102,6 @@ func (p *promptExec) execute(ctx context.Context, payload []byte, _ []string) ou
 	return outcome{stdout: data}
 }
 
-// httpExec sends a POST request with the payload as JSON body.
 type httpExec struct {
 	url     string
 	headers map[string]string
@@ -145,8 +139,7 @@ func (h *httpExec) execute(ctx context.Context, payload []byte, _ []string) outc
 	return outcome{stdout: body}
 }
 
-// checkSSRF validates the URL scheme and performs a pre-flight DNS check
-// to block requests targeting private/reserved IP ranges.
+// checkSSRF rejects URLs that resolve to private or reserved addresses.
 func checkSSRF(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -160,7 +153,6 @@ func checkSSRF(rawURL string) error {
 		return fmt.Errorf("empty host in URL")
 	}
 
-	// Resolve and check all IPs before connecting.
 	ips, err := net.DefaultResolver.LookupHost(context.Background(), host)
 	if err != nil {
 		return fmt.Errorf("DNS lookup failed for %s: %w", host, err)
@@ -173,8 +165,8 @@ func checkSSRF(rawURL string) error {
 	return nil
 }
 
-// ssrfGuardedDial is a DialContext that rejects connections to private IPs.
-// This guards against DNS rebinding (host resolves differently on second lookup).
+// ssrfGuardedDial checks again at dial time against DNS rebinding, where the
+// host resolves differently on the second lookup.
 func ssrfGuardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -190,12 +182,11 @@ func ssrfGuardedDial(ctx context.Context, network, addr string) (net.Conn, error
 			return nil, fmt.Errorf("http hook: blocked private address %s (DNS rebinding guard)", ipStr)
 		}
 	}
-	// Connect to the first resolved IP to avoid TOCTOU with DNS rebinding.
+	// Dial the checked IP rather than the host, so it is not resolved again.
 	var dialer net.Dialer
 	return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
 }
 
-// isPrivateIP reports whether ip is in a private or reserved range.
 func isPrivateIP(ip net.IP) bool {
 	if ip == nil {
 		return true // treat unparseable as blocked
@@ -211,12 +202,10 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// parseHookResponse tries to extract {ok, reason} from LLM text output.
-// Falls back to ok=true if parsing fails (permissive).
+// parseHookResponse fails open: output it cannot parse counts as ok.
 func parseHookResponse(text string) (ok bool, reason string) {
 	text = strings.TrimSpace(text)
 
-	// Try JSON first
 	var resp struct {
 		OK     *bool  `json:"ok"`
 		Reason string `json:"reason"`
@@ -225,7 +214,7 @@ func parseHookResponse(text string) (ok bool, reason string) {
 		return *resp.OK, resp.Reason
 	}
 
-	// Try to find JSON in the text (LLM may wrap with explanation)
+	// The model may wrap the JSON in prose.
 	if start := strings.Index(text, "{"); start >= 0 {
 		if end := strings.LastIndex(text, "}"); end > start {
 			if json.Unmarshal([]byte(text[start:end+1]), &resp) == nil && resp.OK != nil {
@@ -234,5 +223,5 @@ func parseHookResponse(text string) (ok bool, reason string) {
 		}
 	}
 
-	return true, "" // permissive default
+	return true, ""
 }

@@ -19,7 +19,6 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// modelChoice is a model in /model, with the reasoning effort picked for it.
 type modelChoice struct {
 	provider, name string
 	efforts        []string
@@ -167,7 +166,17 @@ func maskKey(key string) string {
 }
 
 func mcp(a *app.App) Command {
-	return Command{Name: "mcp", Description: "Show the MCP servers", Run: func(string) tea.Cmd {
+	return Command{Name: "mcp", Args: "[login|logout <server>]", Description: "Show the MCP servers, or log in to one", Run: func(args string) tea.Cmd {
+		verb, name, _ := strings.Cut(strings.TrimSpace(args), " ")
+		name = strings.TrimSpace(name)
+		switch {
+		case verb == "login" && name != "":
+			return mcpLogin(a, name)
+		case verb == "logout" && name != "":
+			return mcpLogout(a, name)
+		case verb != "":
+			return note("Usage: /mcp [login|logout <server>]")
+		}
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -184,24 +193,71 @@ func mcp(a *app.App) Command {
 	}}
 }
 
+// loginTimeout bounds how long a login waits for the user in the browser.
+const loginTimeout = 5 * time.Minute
+
+func mcpLogin(a *app.App, name string) tea.Cmd {
+	start := func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancel()
+		l, err := a.LoginMCP(ctx, name)
+		if err != nil {
+			return transcript.Fail("Could not log in to " + name + ": " + err.Error())
+		}
+		openBrowser(l.URL)
+		wait := func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
+			defer cancel()
+			r, err := l.Wait(ctx)
+			if err != nil {
+				return transcript.Fail("Could not log in to " + name + ": " + err.Error())
+			}
+			return transcript.Note("Logged in to " + name + connected(r))
+		}
+		return tea.Sequence(note("Log in to "+name+" in the browser. If it did not open, visit:\n"+l.URL), wait)()
+	}
+	return tea.Sequence(note("Logging in to "+name+"…"), start)
+}
+
+func mcpLogout(a *app.App, name string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancel()
+		r, err := a.LogoutMCP(ctx, name)
+		if err != nil {
+			return transcript.Fail("Could not log out of " + name + ": " + err.Error())
+		}
+		return transcript.Note("Logged out of " + name + connected(r))
+	}
+}
+
 func mcpSummary(servers []app.MCPServer) string {
 	if len(servers) == 0 {
 		return "none"
 	}
-	var ok, failed, tools int
+	var ok, login, failed, tools int
 	for _, s := range servers {
-		if s.Error != "" {
+		switch {
+		case s.Login:
+			login++
+		case s.Error != "":
 			failed++
-			continue
+		default:
+			ok++
+			tools += s.ToolCount
 		}
-		ok++
-		tools += s.ToolCount
 	}
-	return fmt.Sprintf("%d connected · %d failed · %d tools", ok, failed, tools)
+	summary := fmt.Sprintf("%d connected · %d failed · %d tools", ok, failed, tools)
+	if login > 0 {
+		summary += fmt.Sprintf(" · %d waiting for login", login)
+	}
+	return summary
 }
 
 func mcpState(s app.MCPServer) string {
 	switch {
+	case s.Login:
+		return "needs login · /mcp login " + s.Name
 	case s.Error != "":
 		return "failed: " + s.Error
 	case s.ListError != "":
@@ -210,9 +266,6 @@ func mcpState(s app.MCPServer) string {
 	return fmt.Sprintf("%d tools", s.ToolCount)
 }
 
-// extensionRows lists the extensions in effect and where each comes from,
-// then what of the folder waits for trust, what is replaced and what failed
-// to load.
 func extensionRows(a *app.App, servers []app.MCPServer) [][2]string {
 	ext, t := a.Extensions(), a.Trust()
 	folder := transcript.HomePath(t.Root)

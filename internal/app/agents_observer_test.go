@@ -12,9 +12,8 @@ func background(agent string) coresub.Spawn {
 	return coresub.Spawn{Agent: agent, Mode: coresub.ModeBackground}
 }
 
-// A finished run keeps its name, so a later run of the same type does not
-// add to its transcript. A foreground run streams inline: it neither reaches
-// the hub nor takes a name.
+// A finished run keeps its name, so a later run of the same type gets a new
+// one. A foreground run never reaches the hub.
 func TestAgentEmit_KeepsFinishedRunsApart(t *testing.T) {
 	hub := NewAgentHub()
 	emit := agentEmit(hub)

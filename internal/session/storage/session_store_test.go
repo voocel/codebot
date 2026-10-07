@@ -43,8 +43,8 @@ func texts(msgs []agentcore.Message) []string {
 	return out
 }
 
-// Replay applies every entry kind, and keeps thinking whole: a truncated one
-// would break the signature and the prompt cache of a resumed session.
+// Thinking must survive replay intact: truncating it would break its
+// signature and the prompt cache of a resumed session.
 func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
@@ -89,8 +89,7 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	if state.Model != (Model{Provider: "p", Model: "m2", Effort: "high"}) {
 		t.Fatalf("model = %+v", state.Model)
 	}
-	// Usage counts every recorded response, the replaced one included, and
-	// the compaction.
+	// Usage includes the replaced response and the compaction.
 	if state.Usage.InputTokens != 25 || state.Usage.Cost.Total != 1 {
 		t.Fatalf("usage = %+v", state.Usage)
 	}
@@ -242,7 +241,7 @@ func TestManagerListsSessions(t *testing.T) {
 	if len(list) != 2 || list[0].ID != newer.Header().SessionID {
 		t.Fatalf("list = %+v", list)
 	}
-	// The harness's reminder is not the conversation's.
+	// The harness's reminder does not count as a conversation message.
 	if got := list[1]; got.MessageCount != 2 || got.FirstMessage != "fix the bug" || got.Cwd != "/work" {
 		t.Fatalf("info = %+v", got)
 	}

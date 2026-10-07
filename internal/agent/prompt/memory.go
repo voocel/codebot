@@ -8,17 +8,14 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// memoryMaxLines is where Memory truncates MEMORY.md, and the limit the
-// memory instructions state.
 const memoryMaxLines = 200
 
-// Memory tells the first 200 lines of the MEMORY.md of the project in cwd.
 func Memory(cwd string) Part {
 	content := loadMemory(config.MemoryFilePath(cwd))
 	if content == "" {
 		// The memory instructions promise MEMORY.md is always in context.
-		// Without this placeholder the model sees the promise and tries to
-		// read the file, which does not exist before anything is saved.
+		// Without a placeholder the model tries to read a file that doesn't
+		// exist until something is saved.
 		content = "Your MEMORY.md is currently empty. When you save new memories, they will appear here."
 	}
 	return Part{Key: "memory", Title: "Memory", Body: "Contents of " + config.MemoryFilePath(cwd) +
@@ -26,8 +23,6 @@ func Memory(cwd string) Part {
 		"\n\nMemories reflect what was true when they were written. Before relying on one, verify that the files, functions, or flags it mentions still exist — a memory saying X exists is not the same as X existing now."}
 }
 
-// loadMemory returns the first memoryMaxLines lines of the MEMORY.md at
-// path, "" when there is none.
 func loadMemory(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -47,7 +42,6 @@ func loadMemory(path string) string {
 		len(lines), memoryMaxLines, memoryMaxLines)
 }
 
-// memoryInstructions teaches the model how to use auto memory.
 func memoryInstructions(memoryDir string) string {
 	return fmt.Sprintf(`## Auto memory
 

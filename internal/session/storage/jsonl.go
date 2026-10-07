@@ -14,11 +14,9 @@ type jsonlScanResult struct {
 	endsWithNewline bool
 }
 
-// scanJSONLines reads JSONL without imposing a maximum line size.
-//
-// A process crash can leave the final write incomplete, so an invalid,
-// unterminated final line is ignored. Any malformed complete line is reported:
-// corruption in the middle of durable history must not be silently hidden.
+// scanJSONLines has no line size limit. An invalid unterminated final line,
+// left by a crash, is ignored; any other malformed line is an error so that
+// corruption in the history is never hidden.
 func scanJSONLines(r io.Reader, decode func([]byte) error) (jsonlScanResult, error) {
 	reader := bufio.NewReaderSize(r, 64*1024)
 	result := jsonlScanResult{endsWithNewline: true}
@@ -54,9 +52,8 @@ func scanJSONLines(r io.Reader, decode func([]byte) error) (jsonlScanResult, err
 	}
 }
 
-// normalizeJSONLTail makes a successfully scanned file safe for future
-// appends. It removes only bytes from an invalid unterminated tail and adds a
-// missing line terminator after a valid final record.
+// normalizeJSONLTail truncates an invalid unterminated tail, or terminates a
+// valid final record, so later appends start on a fresh line.
 func normalizeJSONLTail(f *os.File, scan jsonlScanResult) error {
 	info, err := f.Stat()
 	if err != nil {

@@ -10,8 +10,6 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
-// fakeConn is a controllable acpFileConn for exercising the editor read/write
-// paths without a real ACP transport.
 type fakeConn struct {
 	read  func(path string) (string, error)
 	write func(path, content string) error
@@ -32,8 +30,7 @@ func (f fakeConn) WriteTextFile(_ context.Context, p acp.WriteTextFileRequest) (
 	return acp.WriteTextFileResponse{}, f.write(p.Path, p.Content)
 }
 
-// A failed editor write must surface the error, never silently fall back to
-// disk — otherwise the on-disk file and the editor buffer desync.
+// Falling back to disk would desync the file from the editor buffer.
 func TestEditorFS_WriteFailsHardOnEditorError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.go")
@@ -70,8 +67,7 @@ func TestEditorFS_TextForDiff(t *testing.T) {
 			t.Fatalf("got %+v", s)
 		}
 	})
-	// The case codex flagged: editor errors but the file exists on disk. The
-	// disk copy may not match the unsaved buffer, so it must NOT be trusted.
+	// The disk copy may not match the unsaved buffer.
 	t.Run("editor error with file on disk is unreliable", func(t *testing.T) {
 		if s := editorErr.textForDiff(ctx, onDisk); s.reliable {
 			t.Fatalf("disk copy must not be trusted as the buffer: %+v", s)

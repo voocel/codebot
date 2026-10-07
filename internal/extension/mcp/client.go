@@ -16,6 +16,7 @@ import (
 
 	"github.com/voocel/codebot/internal/infra/config"
 
+	"github.com/voocel/mcp-sdk-go/auth"
 	mcpclient "github.com/voocel/mcp-sdk-go/client"
 	"github.com/voocel/mcp-sdk-go/protocol"
 	"github.com/voocel/mcp-sdk-go/transport"
@@ -23,10 +24,8 @@ import (
 	"github.com/voocel/mcp-sdk-go/transport/streamhttp"
 )
 
-// connectTimeout is the maximum time to wait for an MCP server handshake.
 const connectTimeout = 30 * time.Second
 
-// Client wraps a single MCP server connection.
 type Client struct {
 	name         string
 	sdk          *mcpclient.Client
@@ -34,13 +33,14 @@ type Client struct {
 	cancel       context.CancelFunc
 	subscription *mcpclient.Subscription
 	onChange     func() // called when server sends notifications/tools/list_changed
+	oauth        bool
 }
 
-// connect establishes an MCP connection using the transport specified in cfg.
-// onChange is called when the server sends a tools/list_changed notification.
-func connect(ctx context.Context, name string, cfg config.MCPServer, onChange func()) (*Client, error) {
+// connect calls onChange on each tools/list_changed notification. authz,
+// when not nil, authorizes an HTTP server's requests.
+func connect(ctx context.Context, name string, cfg config.MCPServer, authz *auth.Authorizer, onChange func()) (*Client, error) {
 	stderr := &tail{}
-	tr, err := buildTransport(cfg, stderr)
+	tr, err := buildTransport(cfg, authz, stderr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s: %w", name, err)
 	}
@@ -54,6 +54,7 @@ func connect(ctx context.Context, name string, cfg config.MCPServer, onChange fu
 		sdk:      sdk,
 		cancel:   lifetimeCancel,
 		onChange: onChange,
+		oauth:    authz != nil,
 	}
 
 	connectCtx, connectCancel := context.WithTimeout(ctx, connectTimeout)
@@ -103,12 +104,11 @@ func connect(ctx context.Context, name string, cfg config.MCPServer, onChange fu
 	}
 }
 
-// buildTransport returns the transport cfg configures, taken as written:
-// whatever cfg refers to is expanded already. A server it runs inherits
-// codebot's environment, cfg.Env over it, and writes its stderr to stderr.
-func buildTransport(cfg config.MCPServer, stderr *tail) (transport.Transport, error) {
+// buildTransport takes cfg as written; any expansion has happened already.
+// A stdio server inherits codebot's environment with cfg.Env on top.
+func buildTransport(cfg config.MCPServer, authz *auth.Authorizer, stderr *tail) (transport.Transport, error) {
 	if cfg.Type == "http" {
-		return buildHTTPTransport(cfg), nil
+		return buildHTTPTransport(cfg, authz), nil
 	}
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Dir = cfg.Cwd
@@ -121,8 +121,8 @@ func buildTransport(cfg config.MCPServer, stderr *tail) (transport.Transport, er
 	return stdio.NewCommand(cmd, &stdio.CommandOptions{Stderr: stderr})
 }
 
-// tail keeps the end of what a server writes to its stderr, which says why
-// it failed. The terminal never sees it: a TUI draws there.
+// tail keeps the end of a server's stderr to explain failures. Stderr must
+// not reach the terminal, where the TUI draws.
 type tail struct {
 	mu  sync.Mutex
 	buf []byte
@@ -140,7 +140,7 @@ func (t *tail) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// said returns the last lines written, after a newline; "" for none.
+// said returns the last lines prefixed with a newline, or "" if none.
 func (t *tail) said() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -151,17 +151,15 @@ func (t *tail) said() string {
 	return "\n" + strings.Join(lines[max(len(lines)-3, 0):], "\n")
 }
 
-func buildHTTPTransport(cfg config.MCPServer) *streamhttp.Transport {
-	var opts *streamhttp.TransportOptions
-	if len(cfg.Headers) > 0 {
-		opts = &streamhttp.TransportOptions{
-			HTTPClient: &http.Client{Transport: &headerTransport{
-				headers: cfg.Headers,
-				base:    http.DefaultTransport,
-			}},
-		}
+func buildHTTPTransport(cfg config.MCPServer, authz *auth.Authorizer) *streamhttp.Transport {
+	rt := http.DefaultTransport
+	if authz != nil {
+		rt = authz.Transport(rt)
 	}
-	return streamhttp.New(cfg.URL, opts)
+	if len(cfg.Headers) > 0 {
+		rt = &headerTransport{headers: cfg.Headers, base: rt}
+	}
+	return streamhttp.New(cfg.URL, &streamhttp.TransportOptions{HTTPClient: &http.Client{Transport: rt}})
 }
 
 func (c *Client) watchToolChanges(ctx context.Context) {
@@ -180,7 +178,6 @@ func (c *Client) watchToolChanges(ctx context.Context) {
 	log.Printf("mcp: the tool-change subscription of %s ended", c.name)
 }
 
-// headerTransport injects custom headers into every HTTP request.
 type headerTransport struct {
 	headers map[string]string
 	base    http.RoundTripper
@@ -194,10 +191,8 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(req)
 }
 
-// Name returns the server name.
 func (c *Client) Name() string { return c.name }
 
-// ListTools fetches the tool list from the server.
 func (c *Client) ListTools(ctx context.Context) ([]*protocol.Tool, error) {
 	if c.discover.Capabilities.Tools == nil {
 		return nil, nil
@@ -212,7 +207,6 @@ func (c *Client) ListTools(ctx context.Context) ([]*protocol.Tool, error) {
 	return tools, nil
 }
 
-// CallTool invokes a tool on the server.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*protocol.CallToolResult, error) {
 	return c.sdk.CallTool(ctx, &protocol.CallToolParams{
 		Name:      name,
@@ -220,12 +214,10 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	})
 }
 
-// Instructions returns server instructions from the discovery result, if any.
 func (c *Client) Instructions() string {
 	return c.discover.Instructions
 }
 
-// Close terminates the MCP subscription and underlying transport.
 func (c *Client) Close() error {
 	if c.cancel != nil {
 		c.cancel()

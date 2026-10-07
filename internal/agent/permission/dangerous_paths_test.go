@@ -13,12 +13,6 @@ func mkReq(tool, key, path string) Request {
 	return Request{ToolName: tool, Args: args}
 }
 
-// A path whose contents are credentials, or whose writing plants something
-// that runs later, is asked about each time: however its case is spelled, as
-// macOS and Windows filesystems collapse it, and when given relative to the
-// workspace. The IDE and agent loader dirs count (tasks autorun, run
-// configurations autolaunch, .claude hooks fire), and so does codebot's own
-// configuration.
 func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 	home := t.TempDir()
 
@@ -26,7 +20,6 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 		name string
 		req  Request
 	}{
-		// leak-class on read
 		{"read ssh rsa key", mkReq("read", "file_path", filepath.Join(home, ".ssh", "id_rsa"))},
 		{"read authorized_keys", mkReq("read", "file_path", filepath.Join(home, ".ssh", "authorized_keys"))},
 		{"read aws credentials", mkReq("read", "file_path", filepath.Join(home, ".aws", "credentials"))},
@@ -35,6 +28,7 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 		{"read pgpass", mkReq("read", "file_path", filepath.Join(home, ".pgpass"))},
 		{"read git-credentials", mkReq("read", "file_path", filepath.Join(home, ".git-credentials"))},
 		{"read gh token", mkReq("read", "file_path", filepath.Join(home, ".config", "gh", "hosts.yml"))},
+		{"read mcp oauth tokens", mkReq("read", "file_path", filepath.Join(home, ".codebot", "mcp-oauth.json"))},
 		{"glob authorized_keys", mkReq("glob", "path", filepath.Join(home, ".ssh", "authorized_keys"))},
 		{"read aws sso token", mkReq("read", "file_path", filepath.Join(home, ".aws", "sso", "cache", "token.json"))},
 		{"read aws cli cache", mkReq("read", "file_path", filepath.Join(home, ".aws", "cli", "cache", "role.json"))},
@@ -43,11 +37,9 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 		{"read gcloud adc", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"))},
 		{"read gcloud legacy", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "legacy_credentials", "me@example.com", "adc.json"))},
 
-		// leak-class on write
 		{"write authorized_keys", mkReq("write", "file_path", filepath.Join(home, ".ssh", "authorized_keys"))},
 		{"write netrc", mkReq("edit", "file_path", filepath.Join(home, ".netrc"))},
 
-		// implant-class on write
 		{"write bashrc", mkReq("write", "file_path", filepath.Join(home, ".bashrc"))},
 		{"write bash_profile", mkReq("write", "file_path", filepath.Join(home, ".bash_profile"))},
 		{"write zprofile", mkReq("write", "file_path", filepath.Join(home, ".zprofile"))},
@@ -62,21 +54,17 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 		{"write .gnupg/something", mkReq("write", "file_path", filepath.Join(home, ".gnupg", "trustdb.gpg"))},
 		{"write .aws/sso cache", mkReq("write", "file_path", filepath.Join(home, ".aws", "sso", "cache", "token.json"))},
 
-		// case variants
 		{"write .BASHRC", mkReq("write", "file_path", filepath.Join(home, ".BASHRC"))},
 		{"write .ZsHrC", mkReq("write", "file_path", filepath.Join(home, ".ZsHrC"))},
 		{"write .GitConfig", mkReq("write", "file_path", filepath.Join(home, ".GitConfig"))},
 		{"write .MCP.JSON", mkReq("write", "file_path", filepath.Join(home, ".MCP.JSON"))},
 
-		// relative to the workspace
 		{"write relative .bashrc", mkReq("write", "file_path", ".bashrc")},
 
-		// IDE and agent loaders
 		{"vscode tasks.json", mkReq("write", "file_path", filepath.Join(home, "proj", ".vscode", "tasks.json"))},
 		{"idea runConfig", mkReq("write", "file_path", filepath.Join(home, "proj", ".idea", "runConfigurations", "x.xml"))},
 		{"claude hooks", mkReq("write", "file_path", filepath.Join(home, "proj", ".claude", "hooks.json"))},
 
-		// codebot's own configuration, not its data
 		{"codebot settings", mkReq("write", "file_path", filepath.Join(home, "proj", ".codebot", "settings.json"))},
 		{"codebot consents", mkReq("write", "file_path", filepath.Join(home, ".codebot", "consent.json"))},
 		{"codebot skill", mkReq("write", "file_path", filepath.Join(home, ".codebot", "skills", "deploy", "SKILL.md"))},
@@ -95,8 +83,8 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 	}
 }
 
-// Everything else passes, codebot's harness-managed data (memory, sessions,
-// worktrees) included: matching its configuration must not spill over.
+// codebot's data (memory, sessions, worktrees) must not match as its
+// configuration.
 func TestCheckDangerousPath_Allowed(t *testing.T) {
 	home := t.TempDir()
 
@@ -128,9 +116,8 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 }
 
 func TestCheckDangerousPath_SymlinkDotfilesPattern(t *testing.T) {
-	// Real-world dotfile setup: ~/.bashrc → ~/dotfiles/bashrc. The raw path
-	// passed by the model is the .bashrc one, but resolving the symlink lands
-	// on a basename without the dot. We must match the raw form.
+	// ~/.bashrc → ~/dotfiles/bashrc: the resolved name has no dot, so the raw
+	// path must match.
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on Windows")
 	}
@@ -155,8 +142,7 @@ func TestCheckDangerousPath_SymlinkDotfilesPattern(t *testing.T) {
 }
 
 func TestCheckDangerousPath_BashCommandReferencesSSHKey(t *testing.T) {
-	// Plug the gap where bash readonly-fastpath would otherwise leak credentials
-	// embedded in the command string (no file_path arg to scan).
+	// bash has no file_path argument; the paths are in the command string.
 	home := t.TempDir()
 
 	tests := []struct {
@@ -185,8 +171,8 @@ func TestCheckDangerousPath_BashCommandReferencesSSHKey(t *testing.T) {
 	}
 }
 
-// A file not yet written through a link to a directory of codebot's own
-// configuration is written there: it is asked about as if named so.
+// A new file written through a link into codebot's configuration counts as
+// written there.
 func TestCheckDangerousPath_ThroughALinkedDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks")
@@ -206,8 +192,8 @@ func TestCheckDangerousPath_ThroughALinkedDirectory(t *testing.T) {
 }
 
 func TestCheckDangerousPath_SymlinkAttackPattern(t *testing.T) {
-	// Inverse: attacker plants project/innocent → ~/.ssh/id_rsa. The raw path
-	// is innocuous; only the resolved form reveals the leak.
+	// project/innocent → ~/.ssh/id_rsa: only the resolved path reveals the
+	// key.
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on Windows")
 	}

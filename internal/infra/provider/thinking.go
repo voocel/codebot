@@ -6,20 +6,17 @@ import (
 	"github.com/voocel/litellm"
 )
 
-// efforts are the reasoning efforts a user may pick besides "", the provider
-// default.
+// efforts excludes "", which means the provider default.
 var efforts = []string{"off", "low", "medium", "high", "xhigh", "max"}
 
-// ValidEffort reports whether effort is one a user may pick.
 func ValidEffort(effort string) bool {
 	return effort == "" || slices.Contains(efforts, effort)
 }
 
-// ThinkingLevels lists the reasoning efforts a user may pick for a model of
-// client that the model list says reasoning of, nil when it does not know:
-// "" always, and the others unless the model does not reason, each where
-// the provider sends it. Which efforts a reasoning model takes is the
-// vendor's call.
+// ThinkingLevels returns the efforts a user may pick. reasoning comes from
+// the model list and is nil when unknown. "" is always offered; the others
+// only if the model may reason and the provider can send that setting.
+// Which efforts a reasoning model accepts is left to the vendor.
 func ThinkingLevels(client *litellm.Client, reasoning *bool) []string {
 	levels := []string{""}
 	if reasoning != nil && !*reasoning {
@@ -34,8 +31,6 @@ func ThinkingLevels(client *litellm.Client, reasoning *bool) []string {
 	return levels
 }
 
-// Thinking is the request's setting for a reasoning effort; nil leaves the
-// provider default.
 func Thinking(effort string) *litellm.Thinking {
 	switch effort {
 	case "":

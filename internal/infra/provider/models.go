@@ -17,8 +17,7 @@ import (
 	llmprovider "github.com/voocel/litellm/provider"
 )
 
-// snapshot is LiteLLM's model list as of the last go generate, trimmed to the
-// vendors codebot users reach.
+// snapshot is LiteLLM's model list as of the last go generate.
 //
 //go:embed models.json
 var snapshot []byte
@@ -29,14 +28,11 @@ const (
 	fetchTimeout  = 30 * time.Second
 )
 
-// Models holds model facts (context window, output cap, reasoning, prices)
-// from LiteLLM's model list: the built-in snapshot until Refresh loads a
-// current one.
+// Models serves the built-in snapshot until Refresh loads a current list.
 type Models struct {
 	catalog catalog.Catalog
 }
 
-// NewModels returns the facts of the built-in snapshot.
 func NewModels() *Models {
 	m := &Models{}
 	if err := m.catalog.LoadFromReader(bytes.NewReader(snapshot)); err != nil {
@@ -45,10 +41,9 @@ func NewModels() *Models {
 	return m
 }
 
-// Lookup returns the facts for spec's model. Built-in provider types list it
-// under the name provider.CatalogName gives; compat providers reach vendors
-// litellm does not know, so the provider name is tried as the vendor prefix,
-// as for one named "moonshot", before the bare model name.
+// Lookup uses provider.CatalogName for built-in types. Compat providers reach
+// vendors litellm does not know, so it then tries the provider name as the
+// vendor prefix (e.g. "moonshot/<model>"), then the bare model name.
 func (m *Models) Lookup(spec ModelSpec) (catalog.Model, bool) {
 	if name, ok := llmprovider.CatalogName(spec.Type, spec.Model); ok {
 		return m.catalog.Get(name)
@@ -59,8 +54,8 @@ func (m *Models) Lookup(spec ModelSpec) (catalog.Model, bool) {
 	return m.catalog.Get(spec.Model)
 }
 
-// Refresh replaces the facts with LiteLLM's current list in the background,
-// reusing the copy in cacheDir while it is under a day old.
+// Refresh runs in the background and reuses the copy in cacheDir while it is
+// under a day old.
 func (m *Models) Refresh(cacheDir string) {
 	go func() {
 		if err := m.refresh(filepath.Join(cacheDir, listCacheFile)); err != nil {

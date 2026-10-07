@@ -15,20 +15,15 @@ import (
 	"github.com/voocel/codebot/internal/session"
 )
 
-// retryPolicy paces the model calls the agent and its sub-agents make again
-// after a transient failure.
 var retryPolicy = retry.Policy{MaxAttempts: 6, InitialDelay: time.Second, MaxDelay: 30 * time.Second}
 
-// configureLocked hands the session the spec for the conversation's current
-// state; it applies from the next run. Callers hold c.mu: building and
-// handing over the spec under one lock keeps concurrent changes in order.
+// configureLocked requires c.mu: building and handing over the spec under
+// one lock keeps concurrent changes in order. It applies from the next run.
 func (c *Conversation) configureLocked() { c.session.Configure(c.specLocked()) }
 
-// middleware wraps every tool call, the main agent's and its sub-agents',
-// outermost first: PreToolUse hooks, the permission check, telemetry,
-// PostToolUse hooks, tracking changes for PostStopValidation, and output
-// limiting. The limiter is innermost, so hooks and telemetry see the result
-// the model will see.
+// middleware applies to the main agent and its sub-agents, outermost first.
+// The limiter is innermost so hooks and telemetry see the result the model
+// will see.
 func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 	a := c.app
 	out := []agentcore.ToolMiddleware{c.hooks.PreToolUse(), a.permissions.Middleware(c.skillGrants, a.toolPermission)}
@@ -38,8 +33,7 @@ func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 	return append(out, c.hooks.PostToolUse(), c.validation.Track, c.limiter.Middleware())
 }
 
-// specLocked builds the RunSpec for the conversation's current state. It is
-// the only place a run's configuration comes from. Callers hold c.mu.
+// specLocked is the only source of a run's configuration. Callers hold c.mu.
 func (c *Conversation) specLocked() session.RunSpec {
 	a := c.app
 	tools := withToolSearch(slices.Concat(c.tools, c.mcpTools), c.model.model.Client)
@@ -60,8 +54,8 @@ func (c *Conversation) specLocked() session.RunSpec {
 		MaxToolConcurrency: 4,
 		Compactor:          compact.Summarizer{Notes: agentcoretools.FileOps},
 		CompactAt:          c.model.compactAt,
-		// Breakpoints on the freshest message and where the call before
-		// ended, so each call reads the one before from the cache.
+		// Breakpoints go on the newest message and where the previous call
+		// ended, so each call reads the previous one from the cache.
 		Cache:  a.cache(),
 		OnStop: c.stop,
 	}
@@ -73,16 +67,15 @@ func (c *Conversation) specLocked() session.RunSpec {
 		Config:   cfg,
 		WrapRun:  c.wrapRun,
 		Context: func(history []agentcore.Message) []agentcore.Message {
-			// The date is the run's.
+			// Use the date the run starts.
 			return contextMessages(append([]prompt.Part{prompt.Environment(cwd, time.Now())}, parts...), history)
 		},
 	}
 }
 
-// wrapRun gives each run the conversation's working directory, a trace span
-// and a file checkpoint for Undo.
 func (c *Conversation) wrapRun(ctx context.Context) (context.Context, func(error)) {
-	// Read live: a worktree entered mid-run moves the run's later tool calls.
+	// Read the cwd live so a worktree entered mid-run applies to later tool
+	// calls.
 	ctx = agentcoretools.WithCwd(ctx, c.Cwd)
 	ctx, span := c.app.tracer.StartRun(ctx, "agent run")
 	if c.snapshots != nil {
@@ -96,8 +89,7 @@ func (c *Conversation) wrapRun(ctx context.Context) (context.Context, func(error
 	}
 }
 
-// stop is the run's Stop: a failing PostStopValidation sends the agent back
-// to fix it.
+// stop sends the agent back to fix a failing PostStopValidation.
 func (c *Conversation) stop(ctx context.Context, _ agentcore.StopInfo) ([]agentcore.Message, error) {
 	if fix := c.validation.Check(ctx); fix != "" {
 		return []agentcore.Message{reminderMessage(fix)}, nil

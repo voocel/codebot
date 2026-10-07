@@ -61,8 +61,7 @@ func ParseRule(raw string) (Rule, error) {
 	return Rule{Raw: raw, Kind: "tool", Pattern: raw}, nil
 }
 
-// evaluate returns what the rules say of info: a deny rule wins over an
-// allow rule.
+// evaluate lets a deny rule win over an allow rule.
 func (rs *RuleSet) evaluate(info toolInfo) ruleAction {
 	if rs == nil {
 		return ""
@@ -298,9 +297,8 @@ func matchToolName(pattern, name string) bool {
 	return pattern == name
 }
 
-// hostOf returns the host raw, a URL, names: lowercased, without a port or
-// the dot ending a fully qualified name, as WebFetch(host) rules name it;
-// "" for no URL.
+// hostOf normalizes a URL's host as WebFetch(host) rules write it:
+// lowercased, without port or trailing dot.
 func hostOf(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {

@@ -4,54 +4,32 @@ import (
 	"encoding/json"
 )
 
-// classification is what a tool call does, as the engine weighs it.
-//
-// Fields by capability:
-//   - Read    : path is checked against ReadRoots and becomes the summary.
-//   - Write   : path is checked against WriteRoots and becomes the summary.
-//   - Exec    : command becomes the summary, and each command it runs an
-//     approval key (see commandKeys); workdir, if set, is checked against
-//     WriteRoots.
-//
-// url is what web_fetch fetches; it becomes the summary, which WebFetch(host)
-// rules match.
+// In a classification, path is checked against ReadRoots or WriteRoots by
+// capability. For exec, command yields the approval keys (see commandKeys)
+// and workdir is checked against WriteRoots. WebFetch(host) rules match url.
 type classification struct {
 	capability Capability
 	path       string
 	command    string
 	workdir    string
 	url        string
-	// confirm, when set, is why the user must confirm this call each time:
-	// the mode and stored approvals do not apply, and an allow covers this
-	// call only. Deny rules still apply first.
+	// confirm is why the user must confirm this call each time. The mode and
+	// stored approvals don't apply, and an allow covers only this call. Deny
+	// rules still apply first.
 	confirm string
 }
 
-// classify maps a tool request, run in workspace, to its capability and
-// operand fields, and asks to confirm each call that touches a dangerous
-// path (see checkDangerousPath).
 func classify(workspace string, req Request) classification {
 	c := classifyTool(req)
 	c.confirm = checkDangerousPath(workspace, req)
 	return c
 }
 
-// classifyTool maps a tool request to its capability and operand fields.
-// Tools whose request carries Metadata, the MCP tools, classify
-// themselves; this covers the rest:
-//   - read/glob/grep/ls       → Read  (path checked against ReadRoots)
-//   - write/edit              → Write (path checked against WriteRoots)
-//   - bash                    → Exec  (command + optional workdir)
-//   - web_fetch / web_search  → Read  (no local side effect: web_fetch only
-//     GETs, web_search only takes a query; a deny rule on the tool name,
-//     such as "web_fetch", turns them off, and WebFetch(host) the fetches
-//     of a host)
-//   - skill, todo_write, task control, subagent, ask_user,
-//     tool_search, worktree   → Internal (state changes authored by the
-//     model, with no side effects of their own to gate on)
-//
-// read/edit/write expose `file_path`; glob/grep/ls expose `path`. We probe
-// `file_path` first so the canonical argument wins when both are present.
+// classifyTool covers the built-in tools; MCP tools classify themselves
+// through Metadata. web_fetch only GETs and web_search only sends a query,
+// so both count as reads; a "web_fetch" or WebFetch(host) deny rule blocks
+// them. Internal tools change only model-authored state, so there is no
+// side effect to gate.
 func classifyTool(req Request) classification {
 	switch req.ToolName {
 	case "read":
@@ -89,8 +67,6 @@ func stringField(raw json.RawMessage, key string) string {
 	return value
 }
 
-// pathField reads the file path field, preferring file_path (used by
-// read/edit/write) and falling back to path (still used by glob/grep/ls).
 func pathField(raw json.RawMessage) string {
 	if v := stringField(raw, "file_path"); v != "" {
 		return v

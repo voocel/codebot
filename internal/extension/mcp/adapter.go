@@ -14,7 +14,6 @@ import (
 	"github.com/voocel/codebot/internal/agent/permission"
 )
 
-// newTool adapts the MCP tool t of server c, naming it mcp__<server>__<tool>.
 func newTool(c *Client, t *protocol.Tool) agentcore.Tool {
 	schema := t.InputSchema
 	if len(schema) == 0 {
@@ -32,6 +31,9 @@ func newTool(c *Client, t *protocol.Tool) agentcore.Tool {
 			}
 			result, err := c.CallTool(ctx, t.Name, argsMap)
 			if err != nil {
+				if c.oauth && needsLogin(err) {
+					return agentcore.Result{}, fmt.Errorf("%s needs the user to log in again: they can run /mcp login %s (%w)", c.Name(), c.Name(), err)
+				}
 				return agentcore.Result{}, err
 			}
 			text := extractText(result)
@@ -50,7 +52,6 @@ func label(t *protocol.Tool) string {
 	return t.Name
 }
 
-// permissionOf is how the permission engine sees the MCP tool t.
 func permissionOf(t *protocol.Tool) permission.Metadata {
 	capability := capabilityOf(t)
 	return permission.Metadata{
@@ -61,7 +62,6 @@ func permissionOf(t *protocol.Tool) permission.Metadata {
 	}
 }
 
-// extractText concatenates all TextContent from a CallToolResult.
 func extractText(result *protocol.CallToolResult) string {
 	var sb strings.Builder
 	for _, c := range result.Content {
@@ -129,14 +129,13 @@ func containsAny(s string, needles ...string) bool {
 	return false
 }
 
-// maxToolName is the longest tool name the vendors take, of letters,
-// digits, "_" and "-".
+// maxToolName is the longest tool name the model vendors accept. They also
+// allow only letters, digits, "_" and "-".
 const maxToolName = 64
 
-// toolName names the tool of server: mcp__<server>__<tool>, with what the
-// vendors refuse in a tool name made "-". A name so changed, or too long and
-// cut, is told apart by a hash of the whole as given: two tools never take
-// one name.
+// toolName returns mcp__<server>__<tool> with disallowed characters replaced
+// by "-". A name that had to be changed or truncated gets a hash of the
+// original appended, so two tools never share a name.
 func toolName(server, tool string) string {
 	given := "mcp__" + server + "__" + tool
 	name := strings.Map(func(r rune) rune {

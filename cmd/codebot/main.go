@@ -22,17 +22,15 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/onboarding"
 )
 
-// Set via ldflags by GoReleaser. Defaults are fallbacks for `go build` /
-// `go install`, where fillBuildInfo fills these in from build info.
+// Set via ldflags by GoReleaser; fillBuildInfo fills them for `go build`
+// and `go install`.
 var (
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
 )
 
-// fillBuildInfo backfills version, commit, and date from the build's embedded
-// info when ldflags did not inject them (`go build` / `go install`). The
-// ldflags-injected values from GoReleaser always take precedence.
+// fillBuildInfo never overrides values injected by ldflags.
 func fillBuildInfo() {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -85,8 +83,8 @@ func main() {
 		fail(err, "error")
 	}
 
-	// First-run onboarding happens before Boot: the wizard writes
-	// ~/.codebot/settings.json, then the normal boot path picks it up.
+	// Onboarding runs before Boot: the wizard writes ~/.codebot/settings.json
+	// for Boot to read.
 	if interactive {
 		if *setupFlag || config.NeedsSetup() {
 			result, err := onboarding.Run()
@@ -117,7 +115,6 @@ func main() {
 	}
 }
 
-// run boots the App for the chosen frontend and runs it.
 func run(opts app.Options, printMode, acpMode, jsonMode bool) error {
 	switch {
 	case acpMode:
@@ -150,7 +147,6 @@ func boot(opts app.Options) *app.App {
 	return a
 }
 
-// dirs is a repeatable flag of directories, made absolute.
 type dirs []string
 
 func (d *dirs) String() string { return strings.Join(*d, ",") }
@@ -167,8 +163,8 @@ func (d *dirs) Set(dir string) error {
 	return nil
 }
 
-// warn tells the user, where nobody can be asked, what of the extensions
-// was left out, and what of the folder is off until they trust it.
+// warn is for headless runs, where no one can be asked: it reports
+// extension problems and what stays off until the user trusts the folder.
 func warn(a *app.App) {
 	for _, err := range a.Extensions().Problems {
 		fmt.Fprintln(os.Stderr, "codebot: "+err.Error())
@@ -208,8 +204,8 @@ func fail(err error, prefix string) {
 	os.Exit(1)
 }
 
-// chooseSession resolves -c and -r to the session to open: "" starts a new
-// one. -r asks on the terminal, so it needs one.
+// chooseSession returns "" for a new session. -r asks on the terminal, so it
+// needs one.
 func chooseSession(cwd string, latest, pick, interactive bool) (string, error) {
 	if !latest && !pick {
 		return "", nil

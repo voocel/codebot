@@ -9,9 +9,8 @@ import (
 	"strings"
 )
 
-// ReadImage attempts to read image data from the system clipboard.
-// Returns PNG-encoded bytes on success.
-// Returns (nil, nil) when the clipboard contains no image.
+// ReadImage returns PNG bytes, or (nil, nil) when the clipboard holds no
+// image.
 func ReadImage() ([]byte, error) {
 	switch runtime.GOOS {
 	case "darwin":
@@ -23,8 +22,8 @@ func ReadImage() ([]byte, error) {
 	}
 }
 
-// readImageDarwin reads clipboard image on macOS via osascript with JXA.
-// Tries PNG first; falls back to NSImage (handles TIFF, JPEG, etc.) converted to PNG.
+// readImageDarwin tries PNG first, then converts any NSImage (TIFF, JPEG,
+// etc.) to PNG.
 func readImageDarwin() ([]byte, error) {
 	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", `
 ObjC.import('AppKit');
@@ -63,10 +62,7 @@ if (!pngData.isNil()) {
 	return data, nil
 }
 
-// readImageLinux reads clipboard image on Linux.
-// Tries wl-paste (Wayland), xclip, xsel in order.
 func readImageLinux() ([]byte, error) {
-	// Wayland: wl-paste
 	if path, _ := exec.LookPath("wl-paste"); path != "" {
 		data, err := exec.Command("wl-paste", "-t", "image/png").Output()
 		if err == nil && len(data) > 0 {
@@ -74,12 +70,10 @@ func readImageLinux() ([]byte, error) {
 		}
 	}
 
-	// X11: xclip
 	if path, _ := exec.LookPath("xclip"); path != "" {
 		return readWithXclip()
 	}
 
-	// X11: xsel
 	if path, _ := exec.LookPath("xsel"); path != "" {
 		data, err := exec.Command("xsel", "--clipboard", "--output").Output()
 		if err == nil && len(data) > 0 && isPNG(data) {
@@ -91,7 +85,6 @@ func readImageLinux() ([]byte, error) {
 	return nil, nil
 }
 
-// readWithXclip reads PNG image from clipboard via xclip.
 func readWithXclip() ([]byte, error) {
 	targets := exec.Command("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
 	out, err := targets.Output()
@@ -110,14 +103,11 @@ func readWithXclip() ([]byte, error) {
 	return data, nil
 }
 
-// isPNG checks if data starts with PNG signature.
 func isPNG(data []byte) bool {
 	return len(data) >= 8 &&
 		data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47
 }
 
-// splitLines splits byte data into trimmed non-empty lines.
-// Handles both \n and \r\n line endings.
 func splitLines(data []byte) []string {
 	var lines []string
 	start := 0

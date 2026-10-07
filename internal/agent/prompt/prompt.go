@@ -7,11 +7,8 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// --- The system prompt --------------------------------------------------------
-//
-// The system prompt holds nothing that changes while a conversation lasts:
-// what does is told in Parts (see part.go). Editing these sections changes
-// the prompt of every conversation from then on — keep edits intentional.
+// The system prompt must not change during a conversation; anything that
+// changes goes in a Part.
 
 const doingTasksInstructions = `## Doing tasks
 - Read the relevant code before changing it. Keep changes to what the task needs: no unrequested refactors, features, comments, or abstractions.
@@ -33,9 +30,7 @@ Be concise and direct. Lead with the answer or the action, skip preamble and res
 
 const identityPreamble = `You are an expert coding assistant working in the user's terminal, with direct access to the filesystem and shell. Your replies are visible to the user.`
 
-// System returns the system prompt for a conversation in the workspace cwd:
-// SYSTEM.md there verbatim, or the built-in prompt, then APPEND_SYSTEM.md
-// there. Tools are described by their specs, never listed here.
+// System never lists the tools: their specs describe them.
 func System(cwd string) string {
 	read := readIn(config.ProjectRoot(cwd), cwd)
 	system := readText(read, filepath.Join(cwd, "SYSTEM.md"))
@@ -55,8 +50,6 @@ func System(cwd string) string {
 	return system
 }
 
-// Suggestion is the instruction appended as a user message to generate
-// a prompt suggestion after the agent completes a turn.
 const Suggestion = `[SUGGESTION MODE: Suggest what the user might naturally type next.]
 
 FIRST: Look at the user's recent messages and original request.

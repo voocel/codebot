@@ -10,30 +10,26 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// chatView shows cells in a window, scrolled by lines. It renders only the
-// cells the window shows, and keeps what it rendered until a cell changes.
-//
-// Its position is a line of a cell, not a line of the whole, so it never
-// needs the height of what it does not show.
+// chatView renders only visible cells and caches them until they change.
+// Its scroll position is a line within a cell, not within the whole
+// transcript, so it never needs the height of off-screen cells.
 type chatView struct {
 	cells func() []transcript.Cell
-	// empty is what it shows without cells.
 	empty func(width, height int) []string
 
 	width, height int
-	params        transcript.Params // Expanded and Now; width is the view's
+	params        transcript.Params // Width is ignored; the view's own is used
 
-	follow bool // stay at the bottom as cells come
-	top    pos  // the first line shown, when not following
-	seen   int  // the cells there were when the view left the bottom
+	follow bool // stick to the bottom as cells arrive
+	top    pos  // first line shown, when not following
+	seen   int  // cell count when the view left the bottom
 
 	cache map[transcript.Cell]*rendered
-	rows  []pos // what each row of the last view showed
+	rows  []pos // the position each row of the last view showed
 	sel   selection
 }
 
-// pos is a line of a cell; the line after its last is the gap below it,
-// and the position past that the first line of the next cell.
+// pos is a line of a cell. The line after its last is the gap below it.
 type pos struct{ cell, line int }
 
 func (a pos) before(b pos) bool { return a.cell < b.cell || a.cell == b.cell && a.line < b.line }
@@ -45,8 +41,6 @@ type rendered struct {
 	lines    []string
 }
 
-// selection is text the user dragged over, from where the drag started to
-// where it is, in columns of lines.
 type selection struct {
 	on       bool
 	dragging bool
@@ -62,7 +56,7 @@ func newChatView(cells func() []transcript.Cell, empty func(int, int) []string) 
 	return &chatView{cells: cells, empty: empty, follow: true, cache: map[transcript.Cell]*rendered{}}
 }
 
-// lines returns the lines of cell i, the gap below it included.
+// lines includes the gap below the cell.
 func (v *chatView) lines(cells []transcript.Cell, i int) []string {
 	c := cells[i]
 	p := v.params
@@ -89,7 +83,7 @@ func (v *chatView) lines(cells []transcript.Cell, i int) []string {
 	return lines
 }
 
-// bottom is the top position that shows the last line at the bottom.
+// bottom is the top position that puts the last line at the bottom.
 func (v *chatView) bottom(cells []transcript.Cell) pos {
 	need := v.height
 	for i := len(cells) - 1; i >= 0; i-- {
@@ -102,7 +96,6 @@ func (v *chatView) bottom(cells []transcript.Cell) pos {
 	return pos{}
 }
 
-// view renders the window, height lines at most.
 func (v *chatView) view() []string {
 	cells := v.cells()
 	v.rows = v.rows[:0]
@@ -127,9 +120,7 @@ func (v *chatView) view() []string {
 	return out
 }
 
-// settle keeps the window's top on a line there is. The cell it is in may
-// have collapsed, wrapped anew or gone; the window then starts at the cell,
-// which stays in view.
+// settle keeps top valid after its cell collapsed, rewrapped or vanished.
 func (v *chatView) settle(cells []transcript.Cell) {
 	if v.follow {
 		return
@@ -143,7 +134,6 @@ func (v *chatView) settle(cells []transcript.Cell) {
 	}
 }
 
-// scroll moves the window by n lines, up when n is negative.
 func (v *chatView) scroll(n int) {
 	cells := v.cells()
 	if len(cells) == 0 {
@@ -185,7 +175,6 @@ func (v *chatView) toTop() {
 
 func (v *chatView) toBottom() { v.follow = true }
 
-// unseen is how many cells came since the view left the bottom.
 func (v *chatView) unseen() int {
 	if v.follow {
 		return 0
@@ -193,7 +182,6 @@ func (v *chatView) unseen() int {
 	return max(len(v.cells())-v.seen, 0)
 }
 
-// at returns the position row y of the last view showed.
 func (v *chatView) at(y int) (pos, bool) {
 	if y < 0 || y >= len(v.rows) {
 		return pos{}, false
@@ -201,7 +189,6 @@ func (v *chatView) at(y int) (pos, bool) {
 	return v.rows[y], true
 }
 
-// cell returns the cell at p.
 func (v *chatView) cell(p pos) transcript.Cell {
 	cells := v.cells()
 	if p.cell >= len(cells) {
@@ -230,8 +217,7 @@ func (v *chatView) drag(x, y int) {
 	}
 }
 
-// release ends a drag. It returns the text selected, "" for a click, which
-// clears the selection.
+// release returns "" for a click, which clears the selection.
 func (v *chatView) release() string {
 	if !v.sel.dragging {
 		return ""
@@ -246,7 +232,6 @@ func (v *chatView) release() string {
 
 func (v *chatView) clearSelection() { v.sel = selection{} }
 
-// span returns the selection's ends, first first.
 func (s selection) span() (point, point) {
 	if s.to.pos.before(s.from.pos) || s.to.pos == s.from.pos && s.to.col < s.from.col {
 		return s.to, s.from
@@ -254,7 +239,6 @@ func (s selection) span() (point, point) {
 	return s.from, s.to
 }
 
-// cols returns the columns of line p the selection covers.
 func (v *chatView) cols(p pos) (from, to int, ok bool) {
 	if !v.sel.on {
 		return 0, 0, false
@@ -288,8 +272,6 @@ func (v *chatView) highlight(line string, p pos) string {
 	return ansi.Cut(line, 0, from) + selectionStyle().Render(ansi.Strip(ansi.Cut(line, from, to))) + ansi.Cut(line, to, w)
 }
 
-// selected returns the text selected, without the marks and indents the
-// cells draw around it.
 func (v *chatView) selected() string {
 	cells := v.cells()
 	a, b := v.sel.span()
@@ -304,15 +286,13 @@ func (v *chatView) selected() string {
 	return tidy(out, a.col > 0)
 }
 
-// marks are what cells draw before their text.
 var marks = []string{"●", "⎿", "❯", "│", "▎", "✻", "▸", "✓", "!"}
 
-// bullets are the list markers markdown draws.
 var bullets = []string{"•", "◦", "▪"}
 
-// tidy turns the marks at the start of lines into spaces, the bullets into
-// markdown's, and drops the indent the lines share. A first line cut short
-// by the selection has lost its indent, so it does not count.
+// tidy blanks leading marks, turns bullets back into markdown and strips the
+// shared indent. A first line the selection cut has lost its indent, so it
+// doesn't count.
 func tidy(lines []string, cut bool) string {
 	indent := -1
 	for i, l := range lines {

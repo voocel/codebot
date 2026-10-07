@@ -9,7 +9,6 @@ import (
 	"github.com/voocel/litellm"
 )
 
-// hints say what to do about the provider failures a user can act on.
 var hints = map[litellm.ErrorType]string{
 	litellm.ErrorTypeContextOverflow: "context window full; run /compact or start a new session",
 	litellm.ErrorTypeQuota:           "quota exhausted",
@@ -18,10 +17,9 @@ var hints = map[litellm.ErrorType]string{
 	litellm.ErrorTypeOverloaded:      "provider overloaded; retry shortly",
 }
 
-// ErrorText is how err reads to the user. A provider failure the user can act
-// on says what to do; another a provider reported reads as its own message,
-// without the vendor's error code. Whatever err adds around the provider's
-// error stays.
+// ErrorText formats err for the user. Actionable provider errors become a
+// hint; other provider errors lose the vendor's error code. Context wrapped
+// around the provider error is kept.
 func ErrorText(err error) string {
 	switch {
 	case errors.Is(err, context.Canceled):

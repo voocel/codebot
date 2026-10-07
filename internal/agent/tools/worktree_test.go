@@ -2,8 +2,8 @@ package tools
 
 import "testing"
 
-// "keep" must never be taken for discard, and an unknown or missing action
-// is an error rather than either.
+// "keep" must never be treated as discard, and an unknown or missing action
+// is an error.
 func TestExitWorktree_ActionMapsToDiscard(t *testing.T) {
 	for _, tc := range []struct {
 		args        string

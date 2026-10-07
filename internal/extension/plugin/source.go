@@ -20,26 +20,24 @@ import (
 	"github.com/voocel/codebot/internal/lib/detached"
 )
 
-// Source is where a plugin comes from: a directory, or a git repository at
-// a ref, the plugin in it or in one of its directories.
 type Source struct {
-	Dir  string // a local plugin's directory; "" for a git one
-	URL  string // a git repository's
-	Path string // the plugin's directory in the repository, slashed; "" for its root
-	Ref  string // the tag, branch or commit to take; "" for the default branch
+	Dir  string // "" for a git plugin
+	URL  string
+	Path string // slash-separated directory in the repository; "" for its root
+	Ref  string // tag, branch or commit; "" for the default branch
 }
 
 // reSCP matches git's scp-like ssh address, user@host:path.
 var reSCP = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^/]`)
 
-// reHost matches a host's name with a dot in it, as "host/owner/repo"
-// starts: example.com, not .codebot or a directory's name.
+// reHost requires a dot, so "example.com/owner/repo" names a host but
+// "dir/owner/repo" does not.
 var reHost = regexp.MustCompile(`^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:[0-9]+)?$`)
 
-// ParseSource parses a plugin's source as settings declare it: a path,
-// absolute or relative to base, or a git repository, "host/owner/repo" or
-// an https or ssh URL, "//dir" naming the plugin's directory in it and
-// "#ref" pinning a tag, branch or commit.
+// ParseSource accepts a path (absolute, ~/ or relative to base) or a git
+// repository ("host/owner/repo", or an https or ssh URL). In a repository,
+// "//dir" selects the plugin directory and "#ref" pins a tag, branch or
+// commit.
 func ParseSource(raw, base string) (Source, error) {
 	raw = strings.TrimSpace(raw)
 	if dir, ok := localDir(raw, base); ok {
@@ -69,8 +67,7 @@ func ParseSource(raw, base string) (Source, error) {
 	return Source{URL: repo, Path: sub, Ref: ref}, nil
 }
 
-// cutPath cuts repo at the "//" that names a directory in it, past the
-// scheme's.
+// cutPath splits at the "//" after the scheme's "://".
 func cutPath(repo string) (before, after string, found bool) {
 	start := 0
 	if i := strings.Index(repo, "://"); i >= 0 {
@@ -93,8 +90,7 @@ func localDir(raw, base string) (string, bool) {
 	return "", false
 }
 
-// String tells the source as it is fetched and locked: the directory, or
-// the repository, the plugin's directory in it and the ref.
+// String is the canonical form; consents are keyed by it.
 func (s Source) String() string {
 	if s.Dir != "" {
 		return s.Dir
@@ -109,7 +105,7 @@ func (s Source) String() string {
 	return out
 }
 
-// key is a git source's repository, one key however the URL names it.
+// key identifies the repository the same way whichever URL form names it.
 func (s Source) key() string {
 	repo := s.URL
 	if reSCP.MatchString(repo) {
@@ -129,16 +125,14 @@ func (s Source) key() string {
 	}, strings.TrimPrefix(repo, "/"))
 }
 
-// Cached returns the directory the cache under cache keeps the commit of a
-// git source's repository in, cache/<repository>/<commit>: the plugins of
-// one repository share it.
+// Cached returns cache/<repository>/<commit>, shared by all plugins in the
+// repository.
 func Cached(s Source, cache, commit string) string {
 	key := s.key()
 	return filepath.Join(cache, named(path.Base(key), key), commit)
 }
 
-// DataDir returns the directory under root the plugin from s keeps its data
-// in: one for each source, whatever its ref, so that updates keep it.
+// DataDir ignores the ref, so the data survives updates.
 func DataDir(s Source, root string) string {
 	hint := filepath.Base(s.Dir)
 	if s.Dir == "" {
@@ -148,17 +142,15 @@ func DataDir(s Source, root string) string {
 	return filepath.Join(root, named(hint, s.String()))
 }
 
-// named names a directory for id: after hint, for the user to tell, and
-// id's digest, for no two to share it. It starts with no dot: that marks
-// what is under way.
+// named joins a readable hint with a digest of id, so no two ids share a
+// directory. It never starts with a dot, which marks a fetch in progress.
 func named(hint, id string) string {
 	sum := sha256.Sum256([]byte(id))
 	return strings.TrimLeft(hint, ".") + "-" + hex.EncodeToString(sum[:4])
 }
 
-// ReadCached reads the plugin of the git source s from the checkout of its
-// commit under cache, which the plugin's directory may not lead out of, and
-// marks the checkout used now: see SweepCache.
+// ReadCached touches the checkout so SweepCache keeps it, and rejects a
+// plugin directory that resolves outside the checkout.
 func ReadCached(s Source, cache, commit, data string) (*Plugin, []error, error) {
 	repo := Cached(s, cache, commit)
 	now := time.Now()
@@ -180,11 +172,9 @@ func ReadCached(s Source, cache, commit, data string) (*Plugin, []error, error) 
 	return Read(dir, data)
 }
 
-// Fetch fetches from git into the cache under cache the commit given, or
-// where it is "", the commit at the source's ref; it returns the commit. A
-// commit cached already is not fetched again. It runs the user's git, with
-// their credentials, over https or ssh alone, and never prompts. A fetch
-// that fails leaves nothing behind.
+// Fetch fetches commit, or the source's ref when commit is "", and returns
+// the commit. A cached commit is not fetched again, and a failed fetch
+// leaves nothing behind.
 func Fetch(ctx context.Context, s Source, cache, commit string) (string, error) {
 	want := commit
 	if want == "" {
@@ -229,7 +219,7 @@ func Fetch(ctx context.Context, s Source, cache, commit string) (string, error) 
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return "", err
 	}
-	// Another fetch, of this codebot or another, may have cached it first.
+	// Another fetch, possibly in another process, may have cached it first.
 	if err := os.Rename(tmp, dir); err != nil {
 		if _, statErr := os.Stat(dir); statErr != nil {
 			return "", err
@@ -238,13 +228,11 @@ func Fetch(ctx context.Context, s Source, cache, commit string) (string, error) 
 	return got, nil
 }
 
-// unusedAge is how long a commit no one reads stays cached: a session that
-// read it before may run it still.
+// unusedAge leaves room for sessions still running a commit they read
+// earlier.
 const unusedAge = 14 * 24 * time.Hour
 
-// SweepCache clears the cache under cache of the commits no one read for
-// unusedAge, and of the repositories left with none. A fetch under way,
-// named with a dot, stays.
+// SweepCache skips dot-named entries, which are fetches in progress.
 func SweepCache(cache string, now time.Time) error {
 	repos, err := os.ReadDir(cache)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -284,10 +272,9 @@ func SweepCache(cache string, now time.Time) error {
 	return nil
 }
 
-// Latest returns the commit at the git source's ref, as Fetch would take
-// it, asking the remote alone and fetching nothing: "" when the remote has
-// no such ref, as for a ref that is a commit. It runs git in cache, apart
-// from any repository.
+// Latest resolves the ref as Fetch would, with ls-remote and no fetch. It
+// returns "" when the remote has no such ref, as when the ref is a commit.
+// It runs git in cache, outside any repository.
 func Latest(ctx context.Context, s Source, cache string) (string, error) {
 	if err := os.MkdirAll(cache, 0o755); err != nil {
 		return "", err
@@ -303,8 +290,7 @@ func Latest(ctx context.Context, s Source, cache string) (string, error) {
 			refs[ref] = commit
 		}
 	}
-	// A fetch takes the first of these the remote has; a tag, at the
-	// commit it points to.
+	// The order git fetch resolves refs in; a tag resolves to its commit.
 	for _, f := range []string{"%s", "refs/%s", "refs/tags/%s", "refs/heads/%s", "refs/remotes/%s", "refs/remotes/%s/HEAD"} {
 		ref := fmt.Sprintf(f, want)
 		if commit := cmp.Or(refs[ref+"^{}"], refs[ref]); commit != "" {
@@ -314,19 +300,18 @@ func Latest(ctx context.Context, s Source, cache string) (string, error) {
 	return "", nil
 }
 
-// git runs git in dir and returns its output, trimmed. Of the transports
-// it takes https and ssh alone, nor does it ask for credentials: what the
-// user's git, as they set it up, and ssh agent hold is all it has. Detached,
-// ssh cannot ask for a passphrase or a host key, so it fails rather than
-// prompt, and cancelled, git's helpers, git-remote-https and ssh, go too.
+// git allows only https and ssh and never prompts: it uses whatever
+// credentials the user's git config and ssh agent already hold. Running
+// detached stops ssh from asking for a passphrase or host key, and
+// cancellation also kills git's helpers (git-remote-https, ssh).
 func git(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := detached.Command(ctx, "git", append([]string{
 		"-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
 		"-c", "core.hooksPath=" + os.DevNull,
 	}, args...)...)
 	cmd.Dir = dir
-	// The user's git-lfs would fetch large files from where the repository's
-	// .lfsconfig says; a plugin has no business with them.
+	// Skip LFS: the repository's .lfsconfig could point git-lfs anywhere, and
+	// plugins don't need large files.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "SSH_ASKPASS_REQUIRE=never")
 	out, err := cmd.Output()
 	if ee, ok := errors.AsType[*exec.ExitError](err); ok {

@@ -185,15 +185,30 @@
   },
 
   // MCP servers: stdio (local process) or http (remote endpoint). ${VAR} in
-  // env and headers takes from codebot's environment in your settings alone.
+  // env, headers and oauth.client_secret takes from codebot's environment in
+  // your settings alone.
   "mcp_servers": {
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp"]
     },
+    // Without an Authorization header, an HTTP server signs in with OAuth:
+    // /mcp login oauth-api.
+    "oauth-api": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp"
+    },
+    // An authorization server that takes no client metadata document, such
+    // as GitHub's, wants an OAuth app registered with it, its callback URL
+    // http://127.0.0.1/callback.
+    "registered-api": {
+      "type": "http",
+      "url": "https://mcp.example.org/mcp",
+      "oauth": { "client_id": "your-client-id", "client_secret": "${MCP_CLIENT_SECRET}" }
+    },
     "remote-api": {
       "type": "http",
-      "url": "https://mcp.deepwiki.com/mcp",
+      "url": "https://api.example.com/mcp",
       "headers": { "Authorization": "Bearer your-token-here" }
     }
   },

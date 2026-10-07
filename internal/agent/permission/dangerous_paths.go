@@ -6,48 +6,21 @@ import (
 	"strings"
 )
 
-// checkDangerousPath classifies a permission request's target path:
+// checkDangerousPath returns why a request must be confirmed every time, or
+// "". Credential paths qualify for reads and writes, so one allow never lets
+// later turns re-read them silently. Persistence paths (shell rc, .git/hooks,
+// loader configs) qualify for writes, where one Allow Always would keep an
+// implant alive.
 //
-//	reason != ""  → confirm every call (classification.confirm): the mode
-//	                and stored approvals are bypassed and only Allow Once /
-//	                Deny are offered; deny rules still apply. Two flavours
-//	                of path qualify:
+// Nothing is hard-denied: the user may well want help with ~/.ssh/config.
 //
-//	                  leak-class (read or write): SSH keys, ~/.aws, gcloud
-//	                  credentials, .netrc, .pgpass, .git-credentials, the
-//	                  GitHub CLI's hosts.yml — auto-allowing once would
-//	                  let later turns silently re-read them.
-//
-//	                  implant-class (write only): shell rc, .git/hooks,
-//	                  .gitconfig, .mcp.json, .claude.json, .ssh / .gnupg
-//	                  dirs, IDE & agent loader configs. A single Allow
-//	                  Always would propagate the implant forever.
-//
-//	reason == ""  → clean. The request falls through to the regular
-//	                permission pipeline.
-//
-// We deliberately do NOT hard-deny anything: the model is cooperative, the
-// user can see the prompt, and a one-time Allow Once is a fine answer to
-// "yes, look at my ~/.ssh/config to debug auth". The cost of asking is one
-// click; the cost of a wrong hard-deny is the user can't get help at all.
-//
-// All comparisons are case-insensitive (macOS / Windows filesystems collapse
-// case) and check both the raw user-supplied path AND the symlink-resolved
-// path. Both forms are needed because dotfiles can be symlinked in either
-// direction:
-//
-//	~/.bashrc → ~/dotfiles/bashrc  (chezmoi / stow):
-//	  raw matches forceAskBasenames[".bashrc"];
-//	  resolved would miss (.bashrc basename gone).
-//
-//	project/innocent → /etc/passwd  (attacker):
-//	  raw would miss;
-//	  resolved catches the real target.
+// Matching is case-insensitive, as macOS and Windows filesystems are, and
+// checks both the raw and the symlink-resolved path: ~/.bashrc →
+// ~/dotfiles/bashrc matches only raw, project/innocent → /etc/passwd only
+// resolved.
 func checkDangerousPath(workspace string, req Request) string {
-	// bash needs special handling: paths are embedded in the command string,
-	// not exposed as a structured argument. Without this, `bash cat ~/.ssh/id_rsa`
-	// would bypass the read-side checks entirely (cat is on the readonly
-	// whitelist, the bash tool itself has no `file_path` field).
+	// bash paths hide in the command string; without this, cat ~/.ssh/id_rsa
+	// would pass as a read-only command.
 	if req.ToolName == "bash" {
 		cmd := stringField(req.Args, "command")
 		if r := scanBashForSensitiveRead(workspace, cmd); r != "" {
@@ -79,23 +52,9 @@ func checkDangerousPath(workspace string, req Request) string {
 	return ""
 }
 
-// scanBashForSensitiveRead walks a bash command looking for path-like tokens
-// that match the sensitive-read list (SSH keys, cloud credentials, .netrc
-// and the like). Returns the matched-reason on first hit, or "" if clean. Used
-// both to poison the readonly bash fast-path and to force-ask once the
-// request reaches the engine.
-//
-// Tokenisation is intentionally simple (whitespace split, strip quotes) —
-// good enough to catch:
-//
-//	cat ~/.ssh/id_rsa
-//	grep secret /Users/x/.aws/credentials
-//	HOME=/foo cat ~/.netrc
-//	cat "~/.pgpass"
-//
-// Misses things a determined attacker could construct (here-docs, command
-// substitution rewriting paths). For those the regular Exec ask flow still
-// catches them in balanced mode.
+// scanBashForSensitiveRead tokenizes simply, by whitespace. Here-docs and
+// command substitution can evade it, but such commands are never read-only,
+// so they still get the regular exec prompt.
 func scanBashForSensitiveRead(workspace, cmd string) string {
 	for _, tok := range bashPathTokens(cmd) {
 		for _, p := range dangerousPathCandidates(workspace, tok) {
@@ -107,12 +66,8 @@ func scanBashForSensitiveRead(workspace, cmd string) string {
 	return ""
 }
 
-// bashPathTokens returns tokens from cmd that look like they could be paths:
-// contain a slash in either direction, start with ~, or start with .
-// (relative path). Backslashes count so Windows absolute paths
-// (C:\Users\...\.ssh\id_rsa) can't slip past; a stray bash escape that gets
-// through only costs a force-ask, never a wrong allow. Skips flag-shaped
-// tokens and strips surrounding quotes.
+// bashPathTokens counts backslashes so Windows paths can't slip past; a
+// stray shell escape only costs a prompt.
 func bashPathTokens(cmd string) []string {
 	var out []string
 	for t := range strings.FieldsSeq(cmd) {
@@ -127,10 +82,8 @@ func bashPathTokens(cmd string) []string {
 	return out
 }
 
-// matchSensitiveRead: paths whose contents are credential material. Reading
-// these leaks secrets into the LLM transcript, from which a later tool call
-// (web_fetch, bash curl) could exfiltrate. Force-ask catches both directions:
-// the user sees the prompt and can decide.
+// matchSensitiveRead matches credential files. Their contents would enter
+// the transcript, where a later tool call could exfiltrate them.
 func matchSensitiveRead(p string) string {
 	base, parent := splitLower(p)
 
@@ -142,36 +95,32 @@ func matchSensitiveRead(p string) string {
 			return "SSH authorized_keys"
 		}
 	}
-	// Besides credentials and config, ~/.aws caches tokens: sso/cache for
-	// SSO sign-ins, cli/cache for assumed roles.
+	// ~/.aws also caches tokens in sso/cache and cli/cache.
 	if hasPathSegment(p, ".aws") {
 		return "AWS credentials"
 	}
-	// gcloud keeps credentials.db, access_tokens.db,
-	// application_default_credentials.json and legacy_credentials/; the rest
-	// of its directory (configurations, logs) holds none.
+	// Only these gcloud files hold credentials: credentials.db,
+	// access_tokens.db, application_default_credentials.json and
+	// legacy_credentials/.
 	if hasPathSegment(p, "gcloud") && (strings.Contains(base, "credentials") || strings.HasPrefix(base, "access_tokens") || hasPathSegment(p, "legacy_credentials")) {
 		return "gcloud credentials"
 	}
 	if base == ".netrc" || base == ".pgpass" || base == ".git-credentials" {
 		return "credentials"
 	}
-	// The GitHub CLI's token, where no keyring holds it: ~/.config/gh, or
-	// on Windows %AppData%\GitHub CLI.
+	if parent == ".codebot" && base == "mcp-oauth.json" {
+		return "MCP OAuth tokens"
+	}
+	// The GitHub CLI keeps its token here when there is no keyring:
+	// ~/.config/gh, or %AppData%\GitHub CLI on Windows.
 	if base == "hosts.yml" && (parent == "gh" || parent == "github cli") {
 		return "GitHub CLI token"
 	}
 	return ""
 }
 
-// matchSensitiveWrite: write requests that earn a forced ask. Two cohorts:
-//
-//   - credentials (leak-class on write too — overwrite = lockout): what
-//     matchSensitiveRead lists.
-//   - persistence (implant-class): shell rc, .git/hooks, .gitconfig,
-//     .mcp.json, .claude.json, IDE & agent loader configs. A single Allow
-//     Always would propagate the implant forever, so we require per-call
-//     consent regardless.
+// matchSensitiveWrite adds persistence paths to the credential ones.
+// Overwriting a credential can lock the user out.
 func matchSensitiveWrite(p string) string {
 	if r := matchSensitiveRead(p); r != "" {
 		return r
@@ -182,12 +131,9 @@ func matchSensitiveWrite(p string) string {
 		return reason
 	}
 
-	// codebot's own configuration decides what runs unasked: settings carry
-	// hooks, MCP servers, plugins and permission rules; consent.json what the
-	// user agreed to run; skills and plugins may run commands and allow
-	// tools, then sub-agent definitions and stored approvals. The
-	// harness-managed data beside them (sessions, memory, snapshots,
-	// worktrees) is not configuration.
+	// codebot's own configuration decides what runs unasked: settings,
+	// consent.json, skills, plugins, sub-agents and stored approvals.
+	// Sessions, memory, snapshots and worktrees are data, not configuration.
 	lower := strings.ToLower(filepath.ToSlash(p))
 	if parent == ".codebot" && (base == "settings.json" || base == "consent.json") {
 		return "codebot settings"
@@ -198,12 +144,9 @@ func matchSensitiveWrite(p string) string {
 		}
 	}
 
-	// Whole-subtree force-ask: identity / credentials parent dirs +
-	// IDE & agent loader configs. .vscode/tasks.json autorun on file open,
-	// .idea/runConfigurations/*.xml are JetBrains autorun, .claude/ hosts
-	// agent hooks. All "edit me once → execute on every future open"
-	// patterns. Uses hasPathSegment so deeper paths like
-	// .idea/runConfigurations/x.xml still match.
+	// .ssh and .gnupg hold identity. Editing .vscode, .idea or .claude once
+	// runs code on every later open: tasks.json, runConfigurations and agent
+	// hooks autorun.
 	for _, seg := range []string{".ssh", ".gnupg"} {
 		if parent == seg || hasPathSegment(p, seg) {
 			return seg + " config"
@@ -218,10 +161,8 @@ func matchSensitiveWrite(p string) string {
 		return "Claude config"
 	}
 
-	// .git internals whose modification has lasting effect on the repo
-	// (hooks fire on every commit; config changes remote/identity). Other
-	// .git subdirs (info/, branches/, objects/) are deliberately left alone
-	// — they're either harmless or pack-managed.
+	// Hooks run on every commit and config sets remotes and identity. The
+	// rest of .git is harmless or managed by git.
 	if strings.Contains(lower, "/.git/hooks/") {
 		return ".git hooks"
 	}
@@ -231,9 +172,8 @@ func matchSensitiveWrite(p string) string {
 	return ""
 }
 
-// forceAskBasenames lists the persistence-class dotfiles. Kept to the ones
-// people actually use — .bash_login / .zshenv / .kshrc and friends are valid
-// but vanishingly rare; if they ever matter we can add them back.
+// forceAskBasenames covers the common persistence dotfiles only; rare ones
+// such as .zshenv and .kshrc are left out.
 var forceAskBasenames = map[string]string{
 	".bashrc":       "shell rc",
 	".bash_profile": "shell rc",
@@ -248,9 +188,6 @@ var forceAskBasenames = map[string]string{
 	".claude.json":  "Claude config",
 }
 
-// splitLower returns the lower-cased basename and immediate parent dir name.
-// Path is normalised to forward slashes first so we behave the same on
-// Windows.
 func splitLower(p string) (base, parent string) {
 	p = filepath.ToSlash(p)
 	base = strings.ToLower(filepath.Base(p))
@@ -258,20 +195,15 @@ func splitLower(p string) (base, parent string) {
 	return
 }
 
-// hasPathSegment reports whether name appears as a complete path segment
-// in p (case-insensitive). Used for matches like "~/.config/gcloud/..."
-// where the dir of interest is several levels above the basename.
 func hasPathSegment(p, name string) bool {
 	lower := strings.ToLower(filepath.ToSlash(p))
 	target := "/" + strings.ToLower(name) + "/"
 	return strings.Contains(lower, target)
 }
 
-// dangerousPathCandidates returns the path forms to match against: the
-// workspace-resolved cleaned path, and where symlinks lead it elsewhere,
-// the resolved form too. A file not yet written resolves through the
-// directories above it: one written through a link to .codebot/skills is
-// written there.
+// dangerousPathCandidates adds the symlink-resolved path when it differs. A
+// file not yet written resolves through its parent directories, so a write
+// through a link into .codebot/skills counts as one there.
 func dangerousPathCandidates(workspace, raw string) []string {
 	p := raw
 	if !filepath.IsAbs(p) && workspace != "" {

@@ -1,16 +1,12 @@
-// Package extension loads what extends codebot — skills, sub-agents, MCP
-// servers and hooks — from where they come from: built in, the user's, the
-// project's and the plugins'. Of two resources of one name the project's
-// wins over the user's, and the user's over a built-in one; a plugin's are
-// named after it, so they take no other's name; hooks replace none, they
-// all run.
+// Package extension loads skills, sub-agents, MCP servers and hooks from
+// built-ins, the user, the project and plugins. The project wins name clashes
+// over the user, and the user over built-ins; plugin resources are
+// namespaced, and all hooks run.
 //
-// What runs code or lets calls through unasked runs only as the user agreed
-// to it, item by item: see Surface and Consents. Their own settings and
-// files they wrote; a project, shared, may come from anyone, and a plugin
-// from its author. What is instructions for the model alone always loads.
-// Consent follows the thing agreed to, not who declares it: a plugin a
-// project declares runs as the user agreed to the plugin.
+// Anything that runs code or skips permission prompts needs the user's
+// consent item by item (see Surface and Consents), because a project or a
+// plugin may come from anyone. Consent belongs to the item, not to whoever
+// declares it. Instructions for the model always load.
 package extension
 
 import (
@@ -30,63 +26,53 @@ import (
 	"github.com/voocel/codebot/internal/lib/regular"
 )
 
-// Scope is where a resource comes from.
 type Scope string
 
 const (
 	Builtin Scope = "builtin"
 	User    Scope = "user"
 	Project Scope = "project"
-	// Session is a plugin given on the command line, for this session alone.
+	// Session marks a plugin given on the command line, for this session only.
 	Session Scope = "session"
 )
 
-// Set is the extensions in effect.
 type Set struct {
-	// Skills are the skill of each name that wins, by name.
+	// Skills, Agents and MCP hold the winner of each name.
 	Skills []skill.Spec
-	// Agents are the user's, the project's and the plugins' sub-agent of
-	// each name that wins; subagent.Definitions sets them over the built-in
-	// ones.
+	// Agents excludes the built-in ones; subagent.Definitions layers these
+	// over them.
 	Agents []subagent.AgentDefinition
-	// MCP are the MCP server of each name that wins, by name.
-	MCP []MCPServer
-	// Hooks are the user's hooks, the project's, then the plugins'.
+	MCP    []MCPServer
+	// Hooks are ordered user, project, then plugins.
 	Hooks []Hook
-	// Plugins are the plugins given on the command line and those the
-	// settings declare, the project's before the user's, in effect or not.
+	// Plugins lists command-line plugins, then the project's, then the
+	// user's, including those not in effect.
 	Plugins []Plugin
 
-	// Trust is how the user stands on the project's surface.
 	Trust Trust
-	// Granted are the project's grants in effect: of its hooks, MCP
-	// servers, plugins, allow rules and roots, those the user agreed to.
-	// See config.ForProject.
+	// Granted holds the project grants the user agreed to. See
+	// config.ForProject.
 	Granted config.Settings
 
-	// Shadowed are the resources another of their name replaces.
 	Shadowed []Shadow
-	// Problems are what was left out: files that failed to load, and the
-	// project's settings it may not set. They are told as a terminal is
-	// to show them.
+	// Problems lists what was left out: files that failed to load and
+	// project settings only the user may set. They are escaped for the
+	// terminal.
 	Problems []error
 }
 
-// Trust is how the user stands on a project's surface.
 type Trust struct {
-	// Root is the project's, "" for none: the home directory is no project.
+	// Root is "" outside a project; the home directory never counts as one.
 	Root string
 	Standing
-	// Denied says the user does not trust the project: none of its surface
-	// is in effect, nor are they asked about it.
+	// Denied means the user distrusts the project: none of its surface takes
+	// effect and they are not asked about it.
 	Denied bool
-	// ForRun says --trust trusts the project for this run, whatever the user
-	// decided.
+	// ForRun is set by --trust, which overrides the saved decision for this
+	// run.
 	ForRun bool
 }
 
-// Ask returns what of the surface to ask the user about: what they have
-// yet to decide on, unless they do not trust the project.
 func (t Trust) Ask() Surface {
 	if t.Denied {
 		return nil
@@ -94,49 +80,41 @@ func (t Trust) Ask() Surface {
 	return t.Standing.Ask()
 }
 
-// MCPServer is an MCP server and where it is configured: the settings of
-// Scope, or the plugin those declare.
 type MCPServer struct {
 	Name   string
 	Scope  Scope
-	Plugin string // the plugin bringing it, "" for one in settings
+	Plugin string // "" when configured in settings
 	config.MCPServer
 }
 
-// Hook is a hook and where it is configured: the settings of Scope, or the
-// plugin those declare.
 type Hook struct {
 	Event  string
 	Scope  Scope
-	Plugin string // the plugin bringing it, "" for one in settings
+	Plugin string // "" when configured in settings
 	config.HookEntry
 }
 
-// Shadow is a resource another of its name replaces.
+// Shadow is a resource replaced by another of the same name.
 type Shadow struct {
 	Kind string // "skill", "agent", "MCP server" or "plugin"
 	Name string
-	// Lost and Won say where the replaced resource and the one replacing it
-	// come from: a file, or "builtin".
+	// Lost and Won are the files of the replaced and the winning resource,
+	// or "builtin".
 	Lost, Won string
 }
 
-// Options says what to load.
 type Options struct {
-	// Cwd is where the extensions load for; Layers are the settings there.
-	Cwd    string
-	Layers config.Layers
-	// Consents are what the user agreed to.
+	Cwd      string
+	Layers   config.Layers
 	Consents Consents
-	// PluginDirs are plugins to load for this session alone, what they run
-	// agreed to: those the user gave on the command line.
+	// PluginDirs are command-line plugins, loaded for this session only with
+	// implicit consent.
 	PluginDirs []string
-	// TrustAll agrees for this session to what the project and the plugins
-	// it declares run.
+	// TrustAll consents, for this session, to everything the project and
+	// its declared plugins run.
 	TrustAll bool
 }
 
-// Load loads the extensions in effect.
 func Load(o Options) *Set {
 	s := &Set{}
 	l := o.Layers
@@ -170,15 +148,13 @@ func Load(o Options) *Set {
 	return s
 }
 
-// problem reports errs, told as a terminal is to show them: they quote
-// files.
+// problem escapes errs for the terminal, since they may quote file contents.
 func (s *Set) problem(errs ...error) {
 	for _, err := range errs {
 		s.Problems = append(s.Problems, fmt.Errorf("%s", printable.Escape(err.Error())))
 	}
 }
 
-// MCPConfig returns the MCP servers by name.
 func (s *Set) MCPConfig() map[string]config.MCPServer {
 	out := make(map[string]config.MCPServer, len(s.MCP))
 	for _, srv := range s.MCP {
@@ -187,7 +163,6 @@ func (s *Set) MCPConfig() map[string]config.MCPServer {
 	return out
 }
 
-// HooksConfig returns the hooks by event.
 func (s *Set) HooksConfig() config.HooksConfig {
 	out := config.HooksConfig{}
 	for _, h := range s.Hooks {
@@ -196,15 +171,12 @@ func (s *Set) HooksConfig() config.HooksConfig {
 	return out
 }
 
-// dir is a directory resources load from.
 type dir struct {
 	scope Scope
 	path  string
 }
 
-// skillDirs returns the directories skills load from at cwd, by precedence:
-// the project's .codebot/skills, its .agents/skills from cwd up to its root,
-// then the user's .codebot/skills and .agents/skills.
+// skillDirs returns the skill directories, highest precedence first.
 func skillDirs(cwd, root string) []dir {
 	var dirs []dir
 	if root != "" {
@@ -224,10 +196,10 @@ func skillDirs(cwd, root string) []dir {
 	return dirs
 }
 
-// loadSkills loads the skills that win, and returns the project's among
-// them, frozen: what its surface shows is what runs, until reloaded. Their
-// privileges wait on the user's consent. A project's skill file leading
-// outside it is left out: it would read the user's files into the prompt.
+// loadSkills returns the project's winning skills. They are frozen, so what
+// the user consents to is exactly what runs until the next reload. A project
+// skill whose file resolves outside the project is skipped, since it would
+// pull the user's files into the prompt.
 func (s *Set) loadSkills(cwd, root string) (project []skill.Spec) {
 	won := map[string]skill.Spec{}
 	add := func(spec skill.Spec) {
@@ -276,8 +248,7 @@ func skillOrigin(spec skill.Spec) string {
 	return spec.FilePath
 }
 
-// loadAgents loads the sub-agents of the project's .codebot/agents over the
-// user's. A project's file leading outside it is left out.
+// loadAgents skips project agent files that resolve outside the project.
 func (s *Set) loadAgents(cwd, root string) {
 	var dirs []dir
 	if root != "" {
@@ -311,11 +282,9 @@ func (s *Set) loadAgents(cwd, root string) {
 	}
 }
 
-// loadMCP sets the project's MCP servers over the user's. The ${VAR} in
-// the environment and headers of the user's are expanded from codebot's;
-// the project's are run as they read, which the user agreed to, never
-// carrying a secret of the user's where a project says. A server that is
-// not one kind is left out.
+// loadMCP expands ${VAR} only in the user's servers. Project servers run
+// exactly as written and consented to, so a project cannot send the user's
+// secrets to a server of its choosing.
 func (s *Set) loadMCP(root string, user, project map[string]config.MCPServer) {
 	add := func(name string, scope Scope, srv config.MCPServer) {
 		if err := srv.Check(); err != nil {
@@ -341,24 +310,29 @@ func (s *Set) loadMCP(root string, user, project map[string]config.MCPServer) {
 
 var reEnvVar = regexp.MustCompile(`\$\{([^}]+)\}`)
 
-// expandEnv expands ${VAR} from codebot's environment in the values of
-// srv's environment and headers.
 func expandEnv(srv config.MCPServer) config.MCPServer {
-	expand := func(m map[string]string) map[string]string {
+	expand := func(v string) string {
+		return reEnvVar.ReplaceAllStringFunc(v, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
+	}
+	expandAll := func(m map[string]string) map[string]string {
 		if m == nil {
 			return nil
 		}
 		out := make(map[string]string, len(m))
 		for k, v := range m {
-			out[k] = reEnvVar.ReplaceAllStringFunc(v, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
+			out[k] = expand(v)
 		}
 		return out
 	}
-	srv.Env, srv.Headers = expand(srv.Env), expand(srv.Headers)
+	srv.Env, srv.Headers = expandAll(srv.Env), expandAll(srv.Headers)
+	if srv.OAuth != nil {
+		oauth := *srv.OAuth
+		oauth.ClientSecret = expand(oauth.ClientSecret)
+		srv.OAuth = &oauth
+	}
 	return srv
 }
 
-// addHooks adds the hooks that run, and reports the others.
 func (s *Set) addHooks(hs []Hook) {
 	for _, h := range hs {
 		if err := hooks.Check(h.Event, h.HookEntry); err != nil {
@@ -369,7 +343,6 @@ func (s *Set) addHooks(hs []Hook) {
 	}
 }
 
-// hooksOf lists the hooks of cfg, by event.
 func hooksOf(scope Scope, cfg config.HooksConfig) []Hook {
 	var out []Hook
 	for _, event := range slices.Sorted(maps.Keys(cfg)) {

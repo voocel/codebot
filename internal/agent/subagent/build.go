@@ -13,46 +13,35 @@ import (
 	"github.com/voocel/codebot/internal/infra/provider"
 )
 
-// BuildDeps is what Agent needs from the conversation, shared by every
-// definition.
 type BuildDeps struct {
-	// Workspace is the parent's, which the sub-agents' read, write and edit
-	// work in, with a record of reads of their own.
+	// Workspace is the parent's; each run gets its own read state (see
+	// toolPool).
 	Workspace tools.Workspace
 
-	// MainTools are the main agent's tools the sub-agents draw on. They are
-	// built before the subagent tool itself, so a sub-agent cannot spawn
+	// MainTools excludes the subagent tool, so a sub-agent can't spawn
 	// another.
 	MainTools []agentcore.Tool
 
-	// DefaultModel runs the agents whose definition names no model.
 	DefaultModel agentcore.Model
-
-	// ResolveModel resolves a model a definition or a call names.
 	ResolveModel func(name string) (agentcore.Model, error)
 
-	// CompactAt is the token estimate above which a sub-agent run compacts
-	// its history, matching the parent's threshold.
+	// CompactAt and Retry match the parent's.
 	CompactAt int
+	Retry     retry.Policy
 
-	// Retry paces the model calls a sub-agent makes again after a transient
-	// failure, as the parent's does.
-	Retry retry.Policy
-
-	// SessionID is the parent session's identity, the base of each run's
-	// prompt-cache routing key.
+	// SessionID prefixes each run's prompt-cache key.
 	SessionID string
 
-	// Middleware wraps every tool call inside the sub-agents: a sub-agent
-	// runs its own loop and inherits none from the parent.
+	// Middleware wraps the sub-agents' tool calls; a sub-agent's loop
+	// inherits none from the parent.
 	Middleware []agentcore.ToolMiddleware
 
-	// Emit returns where the events of a run go, nil for nowhere.
+	// Emit may return nil to drop a run's events.
 	Emit func(coresub.Spawn) func(agentcore.Event) error
 }
 
-// Agent makes the sub-agent of a definition. Each run gets tools of its own,
-// see toolPool, and a prompt-cache key of its own: one conversation, one key.
+// Agent gives each run its own tools (see toolPool) and its own prompt-cache
+// key.
 func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 	model := deps.DefaultModel
 	if d.Model != "" && d.Model != "inherit" {
@@ -74,18 +63,16 @@ func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 			}
 			cfg := agentcore.Config{
 				Model: provider.WithCacheKey(m, deps.SessionID+"-"+s.ID),
-				// A breakpoint after the system prompt, so the spawns of an
-				// agent share its tools and prompt in the cache. A spawn's
-				// calls follow each other without waiting on a person: the
-				// vendor's default TTL serves them.
+				// Cache the system prompt so spawns of one agent share it.
+				// The default TTL suffices: a spawn's calls don't wait on a
+				// person.
 				System:     []litellm.Block{litellm.TextBlock{Text: d.SystemPrompt, Cache: &litellm.CacheControl{}}},
 				Tools:      toolPool(deps, d),
 				Middleware: deps.Middleware,
 				MaxTurns:   d.MaxTurns,
 				Retry:      deps.Retry,
-				// Breakpoints on the freshest message and where the call
-				// before ended, so each call reads the one before from the
-				// cache.
+				// Cache the latest message and where the previous call
+				// ended, so each call reuses the one before.
 				Cache:     &litellm.CacheControl{},
 				Compactor: compact.Summarizer{Notes: tools.FileOps},
 				CompactAt: deps.CompactAt,
@@ -96,16 +83,12 @@ func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 	}, nil
 }
 
-// mainAgentOnly are tools no sub-agent gets: ask_user, since the main agent
-// owns the dialogue with the user, and todo_write, since the checklist
-// belongs to the main conversation (a sub-agent's would live in its own
-// history, where nobody sees it).
+// mainAgentOnly: the main agent owns the dialogue with the user, and a
+// sub-agent's todo list would sit in a history nobody sees.
 var mainAgentOnly = []string{"ask_user", "todo_write"}
 
-// toolPool returns a sub-agent's tools: the main agent's, less mainAgentOnly
-// and the definition's disallowed ones, narrowed to its tools list. Read,
-// write and edit are rebuilt over a FileReadState of the run's own, so its
-// reads cannot vouch for the parent's writes, nor another run's.
+// toolPool rebuilds read, write and edit over the run's own read state, so
+// its reads can't vouch for writes by the parent or another run.
 func toolPool(deps BuildDeps, d *AgentDefinition) []agentcore.Tool {
 	narrowed := len(d.Tools) > 0 && !slices.Contains(d.Tools, "*")
 	w := deps.Workspace

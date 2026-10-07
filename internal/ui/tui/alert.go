@@ -10,13 +10,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// The user may leave codebot working. The terminal's title says what it
-// is up to, and once the terminal reports the user has gone to another
-// window, codebot alerts them when it needs them or is done. A terminal
-// that does not report focus gets no alerts.
+// Alerts fire only after the terminal reports losing focus, so terminals
+// that don't report focus get none.
 
-// title names the terminal's window or tab, marked while codebot works and
-// while it waits for the user.
 func (m *Model) title() string {
 	t := "codebot · " + filepath.Base(m.status.Cwd)
 	switch {
@@ -28,7 +24,6 @@ func (m *Model) title() string {
 	return t
 }
 
-// alert raises text where the user away will see it.
 func (m *Model) alert(text string) tea.Cmd {
 	if !m.away {
 		return nil
@@ -36,10 +31,8 @@ func (m *Model) alert(text string) tea.Cmd {
 	return tea.Raw(notification(text, os.Getenv))
 }
 
-// notification is what raises text in the terminal getenv describes: the
-// bell, which terminals flag the window with, after a desktop notification
-// in those known to show one. That one needs the system's permission, which
-// the terminal may not have, so the bell rings with it.
+// notification always rings the bell, which terminals flag the window with,
+// because a desktop notification needs OS permission the terminal may lack.
 func notification(text string, getenv func(string) string) string {
 	text = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -50,12 +43,11 @@ func notification(text string, getenv func(string) string) string {
 	return desktop(text, getenv) + "\a"
 }
 
-// desktop is what shows text as a desktop notification in the terminal
-// getenv describes, "" where none is known to show.
+// desktop returns "" for terminals not known to show desktop notifications.
 func desktop(text string, getenv func(string) string) string {
 	switch {
 	case getenv("TMUX") != "":
-		return "" // tmux keeps it to itself
+		return "" // tmux swallows it
 	case getenv("KITTY_WINDOW_ID") != "":
 		return ansi.DesktopNotification("codebot: " + text)
 	}

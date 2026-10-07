@@ -7,34 +7,29 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// Kind identifies a session event.
 type Kind int
 
 const (
-	// Agent passes a loop event through unchanged. A manual compaction is
-	// reported with the loop's compaction events as well.
+	// Agent carries a loop event unchanged; manual compactions report
+	// through the loop's compaction events too.
 	Agent Kind = iota
-	// RunStarted precedes the events of a run.
 	RunStarted
-	// Idle follows the last event of a run (or manual compaction) when
-	// nothing else is left to run.
+	// Idle follows a run or manual compaction when nothing is left to run.
 	Idle
-	// StatusChanged says Status has changed.
 	StatusChanged
-	// Error reports a failure outside any run, such as recording a model
+	// Error reports a failure outside any run, such as logging a model
 	// change.
 	Error
 )
 
-// Event is a session event.
 type Event struct {
 	Kind  Kind
 	Agent agentcore.Event // Kind == Agent
 	Err   error           // Kind == Error
 }
 
-// hub fans events out to subscribers, each with an unbounded queue drained
-// by its own goroutine, so publishing never blocks.
+// hub gives each subscriber an unbounded queue and its own goroutine, so
+// publishing never blocks.
 type hub struct {
 	mu     sync.Mutex
 	subs   map[*subscriber]struct{}
@@ -91,7 +86,7 @@ func (h *hub) publish(ev Event) {
 }
 
 // mark returns a function that waits until every current subscriber has
-// been handed the events published so far.
+// received the events published so far.
 func (h *hub) mark() func() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -115,7 +110,7 @@ func (h *hub) mark() func() {
 	}
 }
 
-// close ends every subscription once its queue is drained.
+// close ends each subscription after its queue drains.
 func (h *hub) close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -8,9 +8,6 @@ import (
 	"testing"
 )
 
-// writeAgentFile is a test helper: drops a markdown file into dir with the
-// given content, returns the full path. Errors are fatal — there is no
-// graceful path for a setup failure.
 func writeAgentFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -23,7 +20,6 @@ func writeAgentFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
-// Happy path: a well-formed file loads cleanly and every field round-trips.
 func TestLoadAgent_HappyPath(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "reviewer.md", `---
@@ -59,13 +55,8 @@ Look for null pointer risks and unhandled errors.
 	}
 }
 
-// One bad file shouldn't poison the directory: good files alongside bad
-// ones still load successfully. This is critical for the "iterate on a
-// custom agent" workflow — the user should still have their other agents.
-// Each bad file is reported for what is wrong with it: frontmatter missing
-// or never closed, an unknown key (the schema is strict, so a typo like
-// `tooLs:` fails loud instead of loading an agent without the intended
-// tools), or no system prompt.
+// Each broken file is reported with its own problem, and good files beside
+// it still load.
 func TestLoadAgent_PartialFailureIsolated(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "good.md", `---
@@ -98,8 +89,7 @@ Body.
 	}
 }
 
-// A directory that does not exist holds no agents: most projects have no
-// .codebot/agents/.
+// Most projects have no .codebot/agents/, so a missing dir is not an error.
 func TestLoadAgent_MissingDirIsOK(t *testing.T) {
 	defs, errs := LoadDir(filepath.Join(t.TempDir(), "agents"))
 	if defs != nil {
@@ -110,10 +100,8 @@ func TestLoadAgent_MissingDirIsOK(t *testing.T) {
 	}
 }
 
-// Non-markdown files are ignored. A README.md in the agents dir would be
-// rejected (it has no frontmatter), but a README.txt should be skipped
-// entirely so users can document their agent library inline. A file that
-// omits `name` is named by its filename stem.
+// A README.txt is skipped so users can document their agents. A file without
+// `name` is named after its filename.
 func TestLoadAgent_IgnoresNonMarkdown(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "README.txt", "not an agent\n")

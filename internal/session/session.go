@@ -1,12 +1,10 @@
-// Package session runs one conversation on an agentcore.Agent. A Session
-// keeps the log the history is replayed from, decides when inputs start,
-// steer or follow up runs, and publishes the events. It knows nothing about
-// the features built on it: everything a run needs arrives in a RunSpec.
+// Package session runs one conversation on an agentcore.Agent. It knows no
+// features; everything a run needs comes in a RunSpec.
 //
-// A Session is an actor. Every method enqueues an operation that a single
-// goroutine applies in order, so no method but Wait blocks on a run. Every
-// message and compaction is recorded in the log before it enters the
-// Agent's history, so History() always equals what the log replays to.
+// A Session is an actor: each method queues an operation for one goroutine,
+// so only Wait blocks on a run. Messages and compactions are written to the
+// log before they enter the Agent's history, so History always equals a
+// replay of the log.
 package session
 
 import (
@@ -22,67 +20,59 @@ import (
 	"github.com/voocel/codebot/internal/session/storage"
 )
 
-// ErrClosed is returned by calls on a closed session.
 var ErrClosed = errors.New("session closed")
 
-// Source says where an input comes from, which decides when it is processed.
+// Source decides when an input is processed.
 type Source int
 
 const (
-	// User input is inserted into a live run at its next tool boundary and
-	// starts a run otherwise. It clears a Cancel.
+	// User input steers a live run at its next tool boundary, or starts a
+	// run. It clears a previous Cancel.
 	User Source = iota
-	// Background input, such as a finished background task, is processed
-	// before a live run ends and starts a run otherwise — except after a
-	// Cancel, when it waits for the next User input.
+	// Background input, such as a finished background task, joins a live run
+	// before it ends, or starts a run. After a Cancel it waits for the next
+	// User input.
 	Background
 )
 
-// Input is a message for the conversation.
 type Input struct {
 	Source Source
 	Msg    agentcore.Message
 }
 
-// RunSpec describes how the next run is made.
 type RunSpec struct {
-	// Provider, Model and Effort name the model selection; they are
-	// recorded in the log whenever one of them changes.
+	// Provider, Model and Effort are logged whenever one of them changes.
 	Provider string
 	Model    string
 	Effort   string
-	Window   int // context window of the model, reported in Status
+	Window   int
 
-	// Config configures the runs; its Compactor, which Compact uses too,
-	// must be set. The Agent sets its Emit, Steering and FollowUp.
+	// Config.Compactor must be set. The Agent fills in Emit, Steering and
+	// FollowUp.
 	Config agentcore.Config
-	// WrapRun is called as each run starts and returns the run's
-	// context and a function called with the run's error when it ends.
+	// WrapRun returns the run's context and a callback for the run's error.
 	WrapRun func(ctx context.Context) (context.Context, func(err error))
-	// Context returns the messages that tell the model what
-	// history does not tell of its context as it now is. They go ahead of
-	// the inputs of each run, and after the history a compaction wrote,
-	// which drops the messages that told it before.
+	// Context returns messages describing the current environment that the
+	// history does not already carry. They are prepended to each run's
+	// inputs, and appended to a compacted history, since compaction drops
+	// the earlier copies.
 	Context func(history []agentcore.Message) []agentcore.Message
 }
 
-// Status is a snapshot of the session for display.
 type Status struct {
 	SessionID string
 	Provider  string
 	Model     string
 	Effort    string
 	Window    int
-	// Context estimates the tokens of the next request.
+	// Context is the estimated token count of the next request.
 	Context int
 	Running bool
-	// Usage sums every response of the session, including those a
-	// compaction replaced.
+	// Usage includes responses that a compaction later replaced.
 	Usage   agentcore.Usage
 	LastRun *agentcore.RunEnd
 }
 
-// Session is a running conversation. See the package documentation.
 type Session struct {
 	store *storage.Store
 	id    string
@@ -95,20 +85,19 @@ type Session struct {
 	statusMu sync.Mutex
 	status   Status
 
-	// Actor state, touched only by operations.
+	// Owned by the actor goroutine.
 	spec        RunSpec
 	recorded    storage.Model
 	run         *run
 	compacting  context.CancelFunc // non-nil while a manual compaction runs
 	compactWait *compactRequest    // a Compact waiting for the canceled run to end
-	pending     []Input            // inputs waiting for no run to be live
+	pending     []Input            // inputs waiting for the live run to end
 	waiters     []chan<- func()    // Waits to release at the next Idle
 	aborted     bool
 	closing     bool
 	finished    bool
 }
 
-// run is the state of the run under way.
 type run struct {
 	cancel   context.CancelFunc
 	canceled bool // a canceled run takes no more input
@@ -119,8 +108,7 @@ type compactRequest struct {
 	reply chan<- error
 }
 
-// Open starts a session on store, whose replayed state is state. When the
-// model spec selects differs from the recorded one, the change is recorded.
+// Open logs the model selection if spec changes it.
 func Open(store *storage.Store, state storage.State, spec RunSpec) (*Session, error) {
 	s := &Session{
 		store:    store,
@@ -141,19 +129,18 @@ func Open(store *storage.Store, state storage.State, spec RunSpec) (*Session, er
 	return s, nil
 }
 
-// Post queues an input. It never blocks; after Close it does nothing.
+// Post never blocks; after Close it does nothing.
 func (s *Session) Post(in Input) { s.ops.push(func() { s.post(in) }) }
 
-// Cancel stops the live run or compaction and drops User inputs that have
-// not entered the history. Background inputs wait for the next User input.
+// Cancel stops the live run or compaction and drops queued User inputs.
+// Queued Background inputs wait for the next User input.
 func (s *Session) Cancel() { s.ops.push(s.cancel) }
 
-// Configure replaces the spec. A live run keeps the spec it started with.
+// Configure leaves a live run on the spec it started with.
 func (s *Session) Configure(spec RunSpec) { s.ops.push(func() { s.configure(spec) }) }
 
-// Compact compacts the history with the spec's Compactor, canceling a live
-// run first. The summary is written in the background: the session keeps
-// accepting calls, and inputs posted meanwhile run once it is committed.
+// Compact cancels a live run first. The session keeps accepting calls while
+// the summary is written; inputs posted meanwhile run after it is committed.
 func (s *Session) Compact(ctx context.Context) error {
 	reply := make(chan error, 1)
 	if !s.ops.push(func() { s.compact(ctx, reply) }) {
@@ -162,10 +149,8 @@ func (s *Session) Compact(ctx context.Context) error {
 	return <-reply
 }
 
-// Query asks the model a one-off question after the current history and the
-// context it does not tell, sharing the conversation's request prefix and
-// prompt cache. Neither the question nor the answer enters the history.
-// maxTokens, if positive, bounds the answer.
+// Query asks a one-off question on top of the current history, reusing the
+// conversation's prompt cache. Neither the question nor the answer is kept.
 func (s *Session) Query(ctx context.Context, prompt string, maxTokens int) (string, error) {
 	var call agentcore.Call
 	if !s.do(func() {
@@ -186,10 +171,9 @@ func (s *Session) Query(ctx context.Context, prompt string, maxTokens int) (stri
 	return strings.TrimSpace(resp.Text()), nil
 }
 
-// Wait returns once the session is idle with every input posted before it
-// handled, and every subscriber has been handed the events up to that point
-// — the Idle event among them, unless nothing ran. It must not be called
-// from a subscriber, which would wait for itself.
+// Wait returns once the session is idle, every earlier input is handled and
+// every subscriber has received the events up to that point. Calling it from
+// a subscriber deadlocks.
 func (s *Session) Wait(ctx context.Context) error {
 	released := make(chan func(), 1)
 	if !s.ops.push(func() { s.wait(released) }) {
@@ -204,31 +188,29 @@ func (s *Session) Wait(ctx context.Context) error {
 	}
 }
 
-// History returns the history, including what a live run has recorded so
-// far.
+// History includes what a live run has recorded so far.
 func (s *Session) History() []agentcore.Message { return s.agent.Messages() }
 
-// Status returns the latest status.
 func (s *Session) Status() Status {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	return s.status
 }
 
-// Subscribe calls fn with every event from now on, in order, on a goroutine
-// of its own. A slow subscriber delays only itself.
+// Subscribe delivers events in order on a goroutine per subscriber, so a
+// slow subscriber delays only itself.
 func (s *Session) Subscribe(fn func(Event)) (unsubscribe func()) {
 	return s.events.subscribe(fn)
 }
 
-// Close cancels the live run, waits for it to end and closes the log. Events
-// already published are still delivered.
+// Close waits for the canceled run to end. Events already published are
+// still delivered.
 func (s *Session) Close() {
 	s.ops.push(s.close)
 	<-s.done
 }
 
-// do runs op on the actor and waits for it; false means the session is closed.
+// do runs op on the actor and waits; false means the session is closed.
 func (s *Session) do(op func()) bool {
 	done := make(chan struct{})
 	if !s.ops.push(func() { op(); close(done) }) {
@@ -277,8 +259,8 @@ func (s *Session) cancel() {
 	s.aborted = true
 	s.pending = slices.DeleteFunc(s.pending, func(in Input) bool { return in.Source == User })
 	if r := s.run; r != nil && !r.canceled {
-		// Cleared first, so the canceled run cannot take the user's input
-		// while it winds down.
+		// Clear the queues first so the winding-down run can't take user
+		// input.
 		r.canceled = true
 		_, followUp := s.agent.ClearQueues()
 		s.queue(Background, followUp)
@@ -289,7 +271,6 @@ func (s *Session) cancel() {
 	}
 }
 
-// queue adds msgs from source to the pending inputs.
 func (s *Session) queue(source Source, msgs []agentcore.Message) {
 	for _, m := range msgs {
 		s.pending = append(s.pending, Input{Source: source, Msg: m})
@@ -304,7 +285,6 @@ func (s *Session) wait(released chan<- func()) {
 	s.waiters = append(s.waiters, released)
 }
 
-// release lets the waiting Waits return once subscribers have caught up.
 func (s *Session) release() {
 	if len(s.waiters) == 0 {
 		return
@@ -328,7 +308,6 @@ func (s *Session) configure(spec RunSpec) {
 	s.refreshStatus()
 }
 
-// record logs the spec's model selection when it differs from the last one.
 func (s *Session) record() error {
 	m := storage.Model{Provider: s.spec.Provider, Model: s.spec.Model, Effort: s.spec.Effort}
 	if m == s.recorded {
@@ -381,7 +360,7 @@ func (s *Session) close() {
 	s.settle()
 }
 
-// settle decides what follows once a run or compaction has ended.
+// settle picks the next step after a run or compaction ends.
 func (s *Session) settle() {
 	switch {
 	case s.run != nil || s.compacting != nil:
@@ -424,8 +403,6 @@ func (s *Session) startPending() {
 	s.start(prompts)
 }
 
-// start runs prompts on the Agent, after the context they need; the run
-// hands control back to the actor when it ends.
 func (s *Session) start(prompts []agentcore.Message) {
 	prompts = append(s.spec.Context(s.agent.Messages()), prompts...)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -444,7 +421,7 @@ func (s *Session) start(prompts []agentcore.Message) {
 
 func (s *Session) runEnded() {
 	s.run = nil
-	// Inputs that arrived after the run last asked for them.
+	// Inputs that arrived after the run last drained its queues.
 	steering, followUp := s.agent.ClearQueues()
 	s.queue(User, steering)
 	s.queue(Background, followUp)
@@ -452,8 +429,8 @@ func (s *Session) runEnded() {
 	s.settle()
 }
 
-// observe records what enters the history before the Agent applies it, and
-// publishes every event. It runs on the goroutine of the run or compaction.
+// observe writes to the log before the Agent updates its history. It runs on
+// the run's or compaction's goroutine, not the actor's.
 func (s *Session) observe(ev agentcore.Event) error {
 	switch e := ev.(type) {
 	case agentcore.MessageEnd:
@@ -482,16 +459,14 @@ func (s *Session) observe(ev agentcore.Event) error {
 	return nil
 }
 
-// agentConfig is the Agent's Config for spec: one whose compactions tell the
-// context again.
 func (spec RunSpec) agentConfig() agentcore.Config {
 	cfg := spec.Config
 	cfg.Compactor = retelling{cfg.Compactor, spec.Context}
 	return cfg
 }
 
-// retelling is a Compactor that appends the context to the history it
-// wrote: the messages that told it are among those it replaced.
+// retelling appends the context messages to a compacted history, since
+// compaction replaced the earlier copies.
 type retelling struct {
 	agentcore.Compactor
 	context func(history []agentcore.Message) []agentcore.Message
@@ -506,12 +481,10 @@ func (r retelling) Compact(ctx context.Context, history []agentcore.Message, cal
 	return c, nil
 }
 
-// estimate estimates the next request with history, by the Agent's Config.
 func (s *Session) estimate(history []agentcore.Message) int {
 	return agentcore.Estimate(s.agent.Config(), history)
 }
 
-// refreshStatus recomputes the status from the actor state and announces it.
 func (s *Session) refreshStatus() {
 	s.updateStatus(func(st *Status) {
 		st.Provider, st.Model = s.spec.Provider, s.spec.Model
@@ -530,7 +503,7 @@ func (s *Session) updateStatus(fn func(*Status)) {
 
 func (s *Session) emit(ev Event) { s.events.publish(ev) }
 
-// mailbox is the actor's unbounded, ordered queue of operations.
+// mailbox is unbounded, so pushing never blocks.
 type mailbox struct {
 	mu     sync.Mutex
 	ops    []func()

@@ -11,22 +11,19 @@ import (
 	"github.com/voocel/codebot/internal/app"
 )
 
-// Transcript is the cells of a conversation.
 type Transcript struct {
 	cells  []Cell
-	reply  *Assistant       // the response streaming, until it ends
+	reply  *Assistant       // streaming response, nil when none
 	calls  map[string]*Tool // calls in flight, by ID
-	hidden map[string]bool  // calls the transcript leaves out, by ID
-	// now is when events happen; a field so tests can fix it.
+	hidden map[string]bool  // calls not shown, by ID
+	// now is a field so tests can fix the time.
 	now func() time.Time
 }
 
-// New returns an empty transcript.
 func New() *Transcript {
 	return &Transcript{calls: map[string]*Tool{}, hidden: map[string]bool{}, now: time.Now}
 }
 
-// Load returns the transcript of a saved history.
 func Load(history []agentcore.Message) *Transcript {
 	t := New()
 	for _, m := range history {
@@ -51,13 +48,10 @@ func Load(history []agentcore.Message) *Transcript {
 
 const compacted = "Earlier conversation compacted"
 
-// Cells returns the transcript's cells, oldest first.
 func (t *Transcript) Cells() []Cell { return t.cells }
 
-// Append adds c at the end.
 func (t *Transcript) Append(c Cell) { t.cells = append(t.cells, c) }
 
-// Apply takes an event of a run.
 func (t *Transcript) Apply(ev agentcore.Event) {
 	switch e := ev.(type) {
 	case agentcore.MessageStart:
@@ -73,7 +67,7 @@ func (t *Transcript) Apply(ev agentcore.Event) {
 		}
 		t.reply.bump()
 	case agentcore.Retry:
-		// The response so far is discarded.
+		// Discard the response so far.
 		t.drop(t.reply)
 		t.reply = nil
 	case agentcore.MessageEnd:
@@ -112,8 +106,6 @@ func (t *Transcript) Apply(ev agentcore.Event) {
 	}
 }
 
-// streaming returns the reply streaming, which joins the transcript with its
-// first content.
 func (t *Transcript) streaming() *Assistant {
 	if t.reply == nil {
 		t.reply = &Assistant{streaming: true}
@@ -122,8 +114,8 @@ func (t *Transcript) streaming() *Assistant {
 	return t.reply
 }
 
-// message takes a message entering the history. An assistant's calls join
-// with it, in the order it made them, whichever starts first.
+// message adds an assistant's calls in the order it made them, whichever
+// starts first.
 func (t *Transcript) message(m agentcore.Message) {
 	switch m.Role {
 	case litellm.RoleUser:
@@ -145,7 +137,7 @@ func (t *Transcript) message(m agentcore.Message) {
 			c = &Assistant{}
 			t.Append(c)
 		}
-		// The message is final: its content replaces what streamed.
+		// The final message replaces what streamed.
 		c.streaming = false
 		c.text.Reset()
 		c.text.WriteString(m.Text())
@@ -182,7 +174,6 @@ func (t *Transcript) end(id, result string, failed bool) {
 	}
 }
 
-// interrupt ends what the run left running.
 func (t *Transcript) interrupt() {
 	for id, c := range t.calls {
 		c.interrupt()
@@ -208,7 +199,6 @@ func (t *Transcript) drop(c Cell) {
 	}
 }
 
-// activity describes in a line what the transcript's run is doing.
 func (t *Transcript) activity() string {
 	for i := len(t.cells) - 1; i >= 0; i-- {
 		switch c := t.cells[i].(type) {

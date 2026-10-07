@@ -2,8 +2,7 @@ package app
 
 import "testing"
 
-// The reply room follows the model's output ceiling, within bounds, unless a
-// compaction ratio is set.
+// A compaction ratio, when set, overrides the output ceiling.
 func TestCompactReserveTracksModelOutputCeiling(t *testing.T) {
 	t.Parallel()
 

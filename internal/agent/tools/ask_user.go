@@ -18,8 +18,6 @@ type askUserArgs struct {
 	Questions []interact.Question `json:"questions"`
 }
 
-// NewAskUser returns the ask_user tool, which asks the user structured
-// multi-choice questions through ui.
 func NewAskUser(ui interact.UI) agentcore.Tool {
 	tool := agentcore.NewTool("ask_user", askUserDescription, askUserSchema(), func(ctx context.Context, a askUserArgs) (agentcore.Result, error) {
 		answers, err := ui.Ask(ctx, a.Questions)
@@ -111,9 +109,8 @@ func validateQuestions(questions []interact.Question) error {
 	return nil
 }
 
-// formatAnswers turns a response into the text the model sees.
-// Submit and Cancel share this path; Cancelled flips the framing and includes
-// "(unanswered)" placeholders so partial context still flows back.
+// formatAnswers marks unanswered questions on cancel, so the model still gets
+// the partial answers.
 func formatAnswers(questions []interact.Question, resp interact.Answers) string {
 	parts := make([]string, 0, len(questions))
 	anyAnswered := false
@@ -163,8 +160,6 @@ func formatAnswerList(answers []string) string {
 	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
-// pickPreview returns the preview of the first matched listed option. Custom
-// answers (user-typed text) have no preview to surface.
 func pickPreview(q interact.Question, answers []string) string {
 	for _, a := range answers {
 		for _, opt := range q.Options {

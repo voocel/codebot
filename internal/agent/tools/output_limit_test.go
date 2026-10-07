@@ -12,8 +12,6 @@ import (
 	"github.com/voocel/litellm"
 )
 
-// runLimited drives the middleware the way agentcore's chain does: the
-// limiter wraps the tool's run and is handed the call it is limiting.
 func runLimited(t *testing.T, name string) string {
 	t.Helper()
 	l := NewOutputLimiter(t.TempDir())
@@ -27,7 +25,6 @@ func runLimited(t *testing.T, name string) string {
 	return text(res)
 }
 
-// persistedPath returns the file a limited result points at, or "".
 func persistedPath(text string) string {
 	_, path, ok := strings.Cut(text, persistedPathLabel)
 	if !ok {
@@ -37,9 +34,8 @@ func persistedPath(text string) string {
 	return strings.TrimSpace(path)
 }
 
-// Outputs live in per-session directories, so the running session's own
-// directory was created minutes ago. Sweeping only it would never collect
-// anything — the whole point is reaching the sessions left behind.
+// The live session's directory is always too new to sweep, so the sweep must
+// reach the sessions left behind.
 func TestCleanOldOutputsSweepsEverySession(t *testing.T) {
 	t.Parallel()
 
@@ -74,9 +70,7 @@ func TestCleanOldOutputsSweepsEverySession(t *testing.T) {
 	}
 }
 
-// Opting out is a short, deliberate list; everything else must be covered.
-// A whitelist is what let MCP results through with no size handling at all.
-// A limited result names a file that opens: persisting is the whole point.
+// A limited result must name a file that exists.
 func TestLimiterCoversEverythingExceptOptOuts(t *testing.T) {
 	t.Parallel()
 
@@ -84,8 +78,6 @@ func TestLimiterCoversEverythingExceptOptOuts(t *testing.T) {
 		tool    string
 		limited bool
 	}{
-		// Persisted output is read back with read, so truncating its results
-		// loops. Skill output is a procedure to follow, not data to sample.
 		{"read", false},
 		{"skill", false},
 		{"bash", true},
@@ -102,8 +94,7 @@ func TestLimiterCoversEverythingExceptOptOuts(t *testing.T) {
 	}
 }
 
-// Only a result of one text block is limited; images and the like pass
-// through whole.
+// Only single-text-block results are limited; images pass through whole.
 func TestLimiterPassesOtherResults(t *testing.T) {
 	t.Parallel()
 

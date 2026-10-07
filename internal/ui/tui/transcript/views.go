@@ -13,10 +13,8 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// args are a tool call's arguments.
 type args map[string]any
 
-// str returns the first of keys that holds a non-empty string.
 func (a args) str(keys ...string) string {
 	for _, k := range keys {
 		if s, ok := a[k].(string); ok && s != "" {
@@ -26,10 +24,9 @@ func (a args) str(keys ...string) string {
 	return ""
 }
 
-// view is how the calls of one tool show: a name, the argument the header
-// shows, and the body under it.
+// view is how one tool's calls render.
 type view struct {
-	title string // "" for the tool's own name, made readable
+	title string // "" humanizes the tool's name
 	label func(t *Tool) string
 	arg   func(a args) string
 	body  func(t *Tool, width int, expanded bool) []string
@@ -45,7 +42,7 @@ func (v view) name(t *Tool) string {
 	return humanize(t.Name)
 }
 
-// views is set in init: agentBody, among them, reads views itself.
+// views is set in init because agentBody, one of them, reads views.
 var views map[string]view
 
 func init() {
@@ -87,8 +84,6 @@ func viewOf(tool string) view {
 	return v
 }
 
-// humanize makes a tool name readable: "task_output" reads "Task Output".
-// Title names a tool the way its calls are shown: "Bash", "Web Search".
 func Title(name string) string {
 	if v, ok := views[name]; ok && v.title != "" {
 		return v.title
@@ -109,7 +104,6 @@ func humanize(name string) string {
 
 func pathArg(a args) string { return ShortPath(a.str("file_path", "path")) }
 
-// anyArg is the first string argument, by name.
 func anyArg(a args) string {
 	keys := make([]string, 0, len(a))
 	for k := range a {
@@ -124,8 +118,8 @@ func anyArg(a args) string {
 	return ""
 }
 
-// ShortPath shortens p for display: relative to the working directory when
-// inside it, else with ~ for the home directory.
+// ShortPath makes p relative to the working directory when inside it, else
+// abbreviates the home directory as ~.
 func ShortPath(p string) string {
 	if p == "" {
 		return ""
@@ -138,8 +132,8 @@ func ShortPath(p string) string {
 	return HomePath(p)
 }
 
-// HomePath shows p from the home directory, "~/project", for a directory
-// that is the place itself rather than a file in the work.
+// HomePath abbreviates the home directory as ~. Use it for the workspace
+// itself, where ShortPath would show ".".
 func HomePath(p string) string {
 	if home != "" && (p == home || strings.HasPrefix(p, home+string(filepath.Separator))) {
 		return "~" + p[len(home):]
@@ -152,7 +146,6 @@ var (
 	home, _ = os.UserHomeDir()
 )
 
-// lines splits the text of a result into lines.
 func lines(s string) []string {
 	s = strings.TrimRight(s, "\n")
 	if s == "" {
@@ -161,7 +154,6 @@ func lines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
-// output wraps text for a body in st.
 func output(text string, width int) []string {
 	return markdown.Wrap(text, theme.MutedText, bodyWidth(width))
 }
@@ -217,8 +209,8 @@ func readBody(t *Tool, width int, expanded bool) []string {
 	return clip(output(t.Result, width), 200)
 }
 
-// readCount counts the lines read shows, each after its number and a tab;
-// a note on how far the file goes follows them.
+// readCount counts the numbered lines in a read result, ignoring the
+// trailing note about the file's length.
 func readCount(result string) int {
 	n := 0
 	for _, l := range lines(result) {
@@ -234,7 +226,7 @@ func readCount(result string) int {
 func editBody(t *Tool, width int, expanded bool) []string {
 	diff := t.Preview
 	if t.State != Running {
-		// The result names the file over the diff.
+		// The first line of the result names the file.
 		_, diff, _ = strings.Cut(t.Result, "\n")
 	}
 	out := renderDiff(diff, t.args.str("file_path", "path"), bodyWidth(width))
@@ -244,8 +236,8 @@ func editBody(t *Tool, width int, expanded bool) []string {
 	return clip(out, 24)
 }
 
-// writeBody shows the diff a write awaits approval with, then what it
-// wrote: the history keeps the content, not the diff.
+// writeBody shows the diff while awaiting approval, then the written
+// content, because the history keeps the content, not the diff.
 func writeBody(t *Tool, width int, expanded bool) []string {
 	path := t.args.str("file_path", "path")
 	if t.State == Running {
@@ -310,8 +302,8 @@ func agentLabel(t *Tool) string {
 	}
 }
 
-// agentBody shows the sub-agents' progress while they run, then their
-// answer: the history keeps the answer, not the progress.
+// agentBody shows progress while the sub-agents run, then their answer,
+// because the history keeps the answer, not the progress.
 func agentBody(t *Tool, width int, expanded bool) []string {
 	if t.State != Running {
 		return outputBody(t, width, expanded)

@@ -76,8 +76,7 @@ func TestLoadDirReportsInvalidSkill(t *testing.T) {
 	}
 }
 
-// A skill gated on Paths is active only in a workspace holding a match, so a
-// conversation that moves into a worktree sees the skills of the worktree.
+// Moving into a worktree changes which Paths-gated skills are active.
 func TestCatalogActivationFollowsTheWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -105,7 +104,7 @@ func TestCatalogActivationFollowsTheWorkspace(t *testing.T) {
 	}
 }
 
-// What git keeps is not the workspace.
+// Files inside .git don't activate a skill.
 func TestCatalogActivationIgnoresGit(t *testing.T) {
 	t.Parallel()
 
@@ -127,7 +126,7 @@ func writeSkillFile(t *testing.T, path, content string) {
 	}
 }
 
-// A frozen skill runs as it was when frozen, whatever its file says since.
+// A frozen skill ignores later edits to its file.
 func TestFreeze(t *testing.T) {
 	spec := fileSkill(t, "---\ndescription: d\n---\nbefore\n", false)
 	frozen, err := spec.Freeze()

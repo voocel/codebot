@@ -17,8 +17,7 @@ import (
 
 const currentVersion = 5
 
-// Store appends to a single session JSONL file. Appends are serialized, so a
-// Store may be shared between goroutines.
+// Store is safe for concurrent use.
 type Store struct {
 	path   string
 	header Header
@@ -26,7 +25,6 @@ type Store struct {
 	file   *os.File
 }
 
-// create creates a new session file in dir.
 func create(dir, cwd string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create session dir: %w", err)
@@ -51,8 +49,7 @@ func create(dir, cwd string) (*Store, error) {
 	return s, nil
 }
 
-// open opens an existing session file for appending and replays it. A torn
-// final line left by a crash is cut off first.
+// open cuts off a torn final line left by a crash before appending.
 func open(path string) (*Store, State, error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
@@ -69,7 +66,6 @@ func open(path string) (*Store, State, error) {
 	return &Store{path: path, header: h, file: f}, state, nil
 }
 
-// Replay reads the state of the session file at path.
 func Replay(path string) (State, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -135,28 +131,22 @@ func (s *State) apply(e entry, h *Header) error {
 	return nil
 }
 
-// Append records a message appended to the history.
 func (s *Store) Append(m agentcore.Message) error {
 	return s.append(entryMessage, m)
 }
 
-// AppendCompaction records a compaction replacing the whole history.
 func (s *Store) AppendCompaction(c *agentcore.Compaction) error {
 	return s.append(entryCompaction, compaction{Messages: c.Messages, Usage: c.Usage})
 }
 
-// AppendModel records the model the session runs on from here on.
 func (s *Store) AppendModel(m Model) error {
 	return s.append(entryModel, m)
 }
 
-// Header returns the session header.
 func (s *Store) Header() Header { return s.header }
 
-// Path returns the session file path.
 func (s *Store) Path() string { return s.path }
 
-// Close closes the session file.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -189,10 +179,9 @@ func (s *Store) append(kind entryKind, data any) error {
 		return fmt.Errorf("locate append offset: %w", err)
 	}
 	if _, err := s.file.Write(line); err != nil {
-		// A short write leaves a partial, unterminated line. Left in place, the
-		// next successful append splices onto it into a newline-terminated but
-		// malformed line that recovery cannot skip — permanently unresumable.
-		// Roll back to the pre-write offset so the torn bytes never durably land.
+		// Roll back a short write. Otherwise the next append would join the
+		// torn bytes into a terminated but malformed line, which recovery
+		// cannot skip, and the session could never be resumed.
 		if _, seekErr := s.file.Seek(offset, io.SeekStart); seekErr == nil {
 			_ = s.file.Truncate(offset)
 		}

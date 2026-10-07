@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// span is text in one style.
 type span struct {
 	text string
 	st   lipgloss.Style
@@ -32,8 +31,7 @@ func spansText(spans []span) string {
 
 func spansWidth(spans []span) int { return ansi.StringWidth(spansText(spans)) }
 
-// Wrap lays plain text out in lines at most width wide, in st, keeping its
-// line breaks and spacing.
+// Wrap wraps plain text, keeping its line breaks and spacing.
 func Wrap(s string, st lipgloss.Style, width int) []string {
 	width = max(width, 1)
 	var out []string
@@ -48,9 +46,8 @@ func Wrap(s string, st lipgloss.Style, width int) []string {
 	return out
 }
 
-// layout lays spans out in lines at most width wide, breaking between words
-// and inside a word longer than a line. Runs of spaces read as one, as
-// markdown has them.
+// layout breaks between words, and inside a word longer than a line. Runs of
+// spaces collapse to one, as in markdown.
 func layout(spans []span, width int) []string {
 	l := liner{width: width}
 	for _, s := range spans {
@@ -87,10 +84,10 @@ type liner struct {
 	line  strings.Builder
 	lineW int
 
-	word  []span // the word being read, in pieces of one style
+	word  []span // the word being read, one span per style
 	wordW int
-	// space is the style of a space waiting to go between the line's last
-	// word and the next; nil when none waits.
+	// space is the style of the pending space before the next word; nil
+	// when none is pending.
 	space *lipgloss.Style
 }
 
@@ -106,7 +103,6 @@ func (l *liner) newline() {
 	l.space = nil
 }
 
-// endWord puts the word read on the line, on the next one if it does not fit.
 func (l *liner) endWord() {
 	defer func() { l.word, l.wordW = nil, 0 }()
 	if l.wordW == 0 {
@@ -139,7 +135,7 @@ func (l *liner) endWord() {
 					l.newline()
 					continue
 				}
-				// A character wider than the whole line goes on its own.
+				// A character wider than the line goes on a line of its own.
 				_, size := utf8.DecodeRuneInString(text)
 				head = text[:size]
 			}

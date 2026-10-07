@@ -6,25 +6,11 @@ import (
 	"strings"
 )
 
-// isReadonlyBash reports whether a shell command can be treated as a Read
-// capability — i.e. has no observable local side effect, so balanced mode can
-// pass it through without prompting.
-//
-// The check is intentionally conservative. We don't parse shell, we don't
-// open files, we don't follow PATH. Instead:
-//
-//  1. Any output / input redirection ( > >> < ) disqualifies the whole command.
-//  2. Each segment of a compound command (split on && || ; |) must be a
-//     known readonly command. One non-readonly segment poisons the lot.
-//  3. Per-command flag rules trim a few known-write modes (sed -i, find
-//     -exec / -delete, env CMD ...).
-//  4. Leading VAR=val assignments are not even attempted — too easy to slip a
-//     LD_PRELOAD-style attack through, the cost of asking is small.
-//
-// False negatives (treating a readonly command as non-readonly) are fine —
-// the user just sees an extra ask card. False positives (auto-allowing a
-// command with side effects) are NOT — they bypass user oversight in
-// balanced mode entirely. When in doubt, return false.
+// isReadonlyBash reports whether balanced mode may run cmd without asking.
+// It is deliberately conservative and does not parse shell: any redirect
+// disqualifies cmd, and every segment must be a known read-only command. A
+// false negative costs one prompt; a false positive skips the user entirely,
+// so when in doubt it returns false.
 func isReadonlyBash(cmd string) bool {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
@@ -38,23 +24,18 @@ func isReadonlyBash(cmd string) bool {
 			return false
 		}
 	}
-	// Even if every segment is a readonly command, treating the whole thing
-	// as Read would skip the dangerous-path check. `cat ~/.ssh/id_rsa` is
-	// not "readonly" in the sense we want for an auto-pass — it leaks a
-	// credential. Force it back to Exec so the regular ask flow runs.
+	// cat ~/.ssh/id_rsa reads, but leaks a credential; keep it on the
+	// regular ask flow.
 	if scanBashForSensitiveRead("", cmd) != "" {
 		return false
 	}
 	return true
 }
 
-// readonlyBashCommands lists base commands with no local side effect (when
-// invoked safely — see per-command checks in isReadonlySegment for the
-// caveats). awk is deliberately excluded: its `system()` function makes
-// arbitrary execution trivial and the heuristic to detect it is not worth
-// the risk for a small UX win.
+// readonlyBashCommands have no local side effect when invoked safely; see
+// isReadonlySegment for the per-command checks. awk is excluded because
+// system() makes arbitrary execution trivial.
 var readonlyBashCommands = map[string]bool{
-	// system/environment introspection
 	"pwd":      true,
 	"whoami":   true,
 	"id":       true,
@@ -65,7 +46,6 @@ var readonlyBashCommands = map[string]bool{
 	"type":     true,
 	"printenv": true,
 
-	// file listing / metadata (no content mutation)
 	"ls":       true,
 	"tree":     true,
 	"stat":     true,
@@ -78,14 +58,12 @@ var readonlyBashCommands = map[string]bool{
 	"du":       true,
 	"wc":       true,
 
-	// file content reads
 	"cat":  true,
 	"head": true,
 	"tail": true,
 	"less": true,
 	"more": true,
 
-	// search / filter / transform (read-only invocations only)
 	"grep":    true,
 	"egrep":   true,
 	"fgrep":   true,
@@ -104,16 +82,11 @@ var readonlyBashCommands = map[string]bool{
 	"echo":    true,
 	"printf":  true,
 
-	// git read-only subcommands (handled in subcommand check)
 	"git": true,
 }
 
-// gitReadonlySubcommands gates the "git" entry above. Kept tight: only the
-// handful of subcommands a coding agent actually runs constantly. Edge
-// commands (rev-parse, ls-files, config --list, remote -v, branch -a) fall
-// through to ask — one click to allow session covers the rest of the session.
-// Smaller whitelist also means no per-flag mutation checks: any other "git X"
-// just isn't readonly, simpler to reason about.
+// gitReadonlySubcommands is kept small on purpose: any other git subcommand
+// asks, which spares per-flag mutation checks.
 var gitReadonlySubcommands = map[string]bool{
 	"status": true,
 	"log":    true,
@@ -127,9 +100,8 @@ func isReadonlySegment(seg string) bool {
 	if len(tokens) == 0 {
 		return false
 	}
-	// Reject env-var prefixes outright. NODE_ENV=prod is harmless but
-	// LD_PRELOAD=/tmp/evil.so is not, and we don't want to maintain a
-	// whitelist of safe env names just for an auto-pass.
+	// NODE_ENV=prod is harmless but LD_PRELOAD=/tmp/evil.so is not; reject
+	// every assignment rather than keep a list of safe names.
 	if strings.ContainsRune(tokens[0], '=') {
 		return false
 	}
@@ -153,8 +125,7 @@ func isReadonlySegment(seg string) bool {
 			}
 		}
 	case "git":
-		// "git" alone (help screen) is fine; otherwise the subcommand must
-		// be in the tight readonly whitelist.
+		// Bare "git" only prints help.
 		if len(tokens) < 2 {
 			return true
 		}
@@ -165,11 +136,8 @@ func isReadonlySegment(seg string) bool {
 	return true
 }
 
-// hasUnquotedRedirect scans for shell redirection / process-substitution
-// characters outside quotes. Any `<` or `>` disqualifies the command from
-// the readonly fast-path. We do NOT try to distinguish `2>&1` (technically
-// stderr-to-stdout, no write) from `> file`; the former is rare enough in
-// readonly commands that an extra ask is fine.
+// hasUnquotedRedirect does not tell 2>&1 from > file; an extra prompt for
+// the rare 2>&1 is fine.
 func hasUnquotedRedirect(cmd string) bool {
 	inSingle, inDouble, escaped := false, false, false
 	for i := 0; i < len(cmd); i++ {
@@ -200,10 +168,6 @@ func hasUnquotedRedirect(cmd string) bool {
 	return false
 }
 
-// splitBashSegments splits a shell command on unquoted &&, ||, ;, | into
-// individual segments. Mirrors permission/rules.go:splitShellSegments
-// (kept private there); duplicated here to avoid widening that package's API
-// surface for a single caller.
 func splitBashSegments(cmd string) []string {
 	var (
 		parts    []string
@@ -262,11 +226,10 @@ func splitBashSegments(cmd string) []string {
 	return parts
 }
 
-// commandKeys returns the approval key of each command cmd runs that is
-// not read-only, "exec:go test", so that remembering them allows cmd again.
-// It returns nil, nothing to remember, when cmd may do more than its
-// commands say, when it is destructive, or when a command is set up by
-// variables or runs another it is given.
+// commandKeys returns an approval key ("exec:go test") for each command in
+// cmd that is not read-only. It returns nil, so nothing is remembered, when
+// cmd is opaque or destructive, or when a command is prefixed by variables
+// or runs another command.
 func commandKeys(cmd string) []string {
 	if opaque(cmd) || destructiveCommandWarning(cmd) != "" {
 		return nil
@@ -287,10 +250,9 @@ func commandKeys(cmd string) []string {
 	return keys
 }
 
-// commandPrefix names the command seg runs, which is what an approval
-// remembers: "git commit -m 'fix x'" → "git commit", "ls -la" → "ls",
-// "./script.sh arg" → "./script.sh". It is "" for a command that leading
-// variables set up (LD_PRELOAD=…) or that runs another (sudo, xargs, sh).
+// commandPrefix is what an approval remembers: "git commit -m x" → "git
+// commit", "./script.sh arg" → "./script.sh". It is "" for a command behind
+// variable assignments (LD_PRELOAD=…) or one that runs another (sudo, sh).
 func commandPrefix(seg string) string {
 	tokens := strings.Fields(seg)
 	if len(tokens) == 0 || envVarAssignRE.MatchString(tokens[0]) || runsAnother[tokens[0]] {
@@ -303,8 +265,8 @@ func commandPrefix(seg string) string {
 	return tokens[0]
 }
 
-// runsAnother lists the commands that run a command they are given:
-// remembering one would allow anything.
+// The commands in runsAnother run a command they are given, so remembering
+// one would allow anything.
 var runsAnother = map[string]bool{
 	"bash": true, "sh": true, "zsh": true, "fish": true, "dash": true, "ksh": true,
 	"eval": true, "exec": true, "source": true, ".": true, "command": true, "builtin": true,
@@ -312,10 +274,9 @@ var runsAnother = map[string]bool{
 	"nice": true, "timeout": true, "time": true, "watch": true, "chroot": true,
 }
 
-// opaque reports whether cmd may do more than its commands say: substitute
-// a command's output, run a job in the background or another line, or
-// write a file through redirection. Only single quotes keep these out;
-// a substitution runs inside double quotes too.
+// opaque reports whether cmd may do more than its commands show: command
+// substitution, background jobs, extra lines or redirection to a file. Only
+// single quotes disarm these; substitution still runs inside double quotes.
 func opaque(cmd string) bool {
 	single, double := false, false
 	for i := 0; i < len(cmd); i++ {
@@ -341,7 +302,7 @@ func opaque(cmd string) bool {
 		case c == '&' && next == '&':
 			i++
 		case c == '&':
-			// Only part of a redirection, 2>&1 or &>, does not background.
+			// The & in 2>&1 or &> is a redirection, not a background job.
 			if next != '>' && (i == 0 || cmd[i-1] != '>') {
 				return true
 			}
@@ -354,8 +315,8 @@ func opaque(cmd string) bool {
 	return false
 }
 
-// writesFile reports whether the redirection target that rest starts with
-// is a file: not a descriptor (&1) or /dev/null.
+// writesFile reports whether the redirect target is a file, not &N or
+// /dev/null.
 func writesFile(rest string) bool {
 	rest = strings.TrimLeft(strings.TrimPrefix(rest, ">"), " \t")
 	if strings.HasPrefix(rest, "&") {

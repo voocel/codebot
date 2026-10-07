@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// Git tells the state of the repository cwd is in, as of now: nothing
-// outside a repository.
+// Git snapshots the repository containing cwd; the body is empty outside a
+// repository.
 func Git(cwd string) Part {
 	p := Part{Key: "git", Title: "Git"}
 	branch := gitExec(cwd, "rev-parse", "--abbrev-ref", "HEAD")
@@ -37,14 +37,11 @@ func Git(cwd string) Part {
 	return p
 }
 
-// detectMainBranch tries to determine the main/default branch name.
 func detectMainBranch(cwd string) string {
-	// Try origin HEAD symbolic ref first.
 	ref := gitExec(cwd, "symbolic-ref", "refs/remotes/origin/HEAD")
 	if ref != "" {
 		return strings.TrimPrefix(ref, "refs/remotes/origin/")
 	}
-	// Fallback: check if common branch names exist.
 	for _, name := range []string{"main", "master"} {
 		if gitExec(cwd, "rev-parse", "--verify", "--quiet", "refs/heads/"+name) != "" {
 			return name

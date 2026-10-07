@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/mcp-sdk-go/auth"
 
 	"github.com/voocel/codebot/internal/agent/permission"
 	"github.com/voocel/codebot/internal/agent/skill"
@@ -16,28 +18,19 @@ import (
 	"github.com/voocel/codebot/internal/lib/printable"
 )
 
-// Extensions are the extensions in effect; see the extension package.
 type Extensions = extension.Set
 
-// Surface is what of a project takes effect only once the user trusts it.
 type Surface = extension.Surface
 
-// Skill is a loaded skill.
 type Skill = skill.Spec
 
-// Trust is how the user stands on the project's surface: see
-// extension.Trust.
 type Trust = extension.Trust
 
-// extensions are the extensions loaded, with what the conversations take
-// of them.
 type extensions struct {
 	*extension.Set
 	skills *skill.Catalog
 }
 
-// load loads the extensions and the settings under layers, as the user
-// agreed to what runs.
 func (a *App) load(layers config.Layers) (*extensions, config.Resolved, error) {
 	consents, err := extension.ReadConsents()
 	if err != nil {
@@ -51,19 +44,17 @@ func (a *App) load(layers config.Layers) (*extensions, config.Resolved, error) {
 	return &extensions{Set: set, skills: skill.NewCatalog(set.Skills)}, settings, nil
 }
 
-// Extensions returns the extensions in effect.
 func (a *App) Extensions() *Extensions { return a.ext.Load().Set }
 
-// Printable returns s, read from a file, as a terminal is to show it: what
-// a terminal would act on rather than show, escaped.
+// Printable escapes what a terminal would act on rather than display, for
+// text read from files.
 func Printable(s string) string { return printable.Escape(s) }
 
-// Trust returns how the user stands on the project's surface.
 func (a *App) Trust() Trust { return a.Extensions().Trust }
 
-// SetTrust records what the user decided of the project's surface they
-// were shown: they agreed to agreed, of it, and declined the rest. The
-// extensions reload.
+// SetTrust records the user's decision on the shown part of the project's
+// surface: agreed is accepted and the rest of shown is declined. The
+// extensions then reload.
 func (a *App) SetTrust(ctx context.Context, shown, agreed Surface) (ReloadReport, error) {
 	surface := a.Trust().Surface
 	if err := a.decideProject(func(c extension.Consent) extension.Consent { return c.Decided(surface, shown, agreed) }); err != nil {
@@ -72,8 +63,8 @@ func (a *App) SetTrust(ctx context.Context, shown, agreed Surface) (ReloadReport
 	return a.refresh(ctx)
 }
 
-// DenyTrust records that the user does not trust the project: none of what
-// it runs takes effect, nor are they asked about it. The extensions reload.
+// DenyTrust marks the project untrusted: nothing it runs takes effect and
+// the user is not asked again. The extensions then reload.
 func (a *App) DenyTrust(ctx context.Context) (ReloadReport, error) {
 	if err := a.decideProject(func(extension.Consent) extension.Consent { return extension.Consent{Denied: true} }); err != nil {
 		return ReloadReport{}, err
@@ -81,8 +72,8 @@ func (a *App) DenyTrust(ctx context.Context) (ReloadReport, error) {
 	return a.refresh(ctx)
 }
 
-// agreeToProject adds it to what the user agreed to of the project, unless
-// they do not trust it: they wrote it there themselves.
+// agreeToProject records consent for an item the user added to the project
+// themselves, unless the project is denied.
 func (a *App) agreeToProject(it extension.Item) error {
 	return a.decideProject(func(c extension.Consent) extension.Consent {
 		if !c.Denied {
@@ -92,7 +83,6 @@ func (a *App) agreeToProject(it extension.Item) error {
 	})
 }
 
-// decideProject applies decide to what the user decided of the project.
 func (a *App) decideProject(decide func(extension.Consent) extension.Consent) error {
 	root := a.Trust().Root
 	return extension.EditConsents(func(cs *extension.Consents) { cs.Projects[root] = decide(cs.Projects[root]) })
@@ -100,21 +90,18 @@ func (a *App) decideProject(decide func(extension.Consent) extension.Consent) er
 
 func (a *App) skillCatalog() *skill.Catalog { return a.ext.Load().skills }
 
-// ReloadReport says what is in effect once the extensions reload.
 type ReloadReport struct {
 	Skills  int
-	Plugins int // on
+	Plugins int // plugins that are on
 	MCP     MCPReport
 }
 
-// Reload rereads the extensions and the permission rules, puts them in
-// effect and restarts the MCP servers, those of a plugin under development
-// among them; the conversation picks them up from its next run. The other
-// settings take effect as codebot restarts.
+// Reload rereads extensions and permission rules and restarts all MCP
+// servers, including those of plugins under development. The conversation
+// picks them up on its next run; other settings need a codebot restart.
 func (a *App) Reload(ctx context.Context) (ReloadReport, error) { return a.apply(ctx, true) }
 
-// refresh rereads the extensions and puts them in effect, reconnecting the
-// MCP servers that changed alone.
+// refresh is Reload without restarting unchanged MCP servers.
 func (a *App) refresh(ctx context.Context) (ReloadReport, error) { return a.apply(ctx, false) }
 
 func (a *App) apply(ctx context.Context, restart bool) (ReloadReport, error) {
@@ -132,12 +119,9 @@ func (a *App) apply(ctx context.Context, restart bool) (ReloadReport, error) {
 	return r, nil
 }
 
-// Connect connects the MCP servers in effect. Frontends call it once
-// subscribed.
+// Connect is called by frontends once they have subscribed.
 func (a *App) Connect(ctx context.Context) MCPReport { return a.connectMCP(ctx, false) }
 
-// reload reads the extensions and the permission rules afresh and puts
-// them in effect.
 func (a *App) reload() error {
 	a.reloading.Lock()
 	defer a.reloading.Unlock()
@@ -162,17 +146,16 @@ func (a *App) reload() error {
 	return nil
 }
 
-// MCPReport summarizes connecting MCP servers.
 type MCPReport struct {
 	Servers   int
 	Connected int
 	Tools     int
 	Errors    []string
+	Login     []string // servers that want an OAuth login: /mcp login
 }
 
-// connectMCP connects the MCP servers in effect, and disconnects those no
-// longer; with restart, it reconnects all of them. Their tools join the
-// conversation from its next run.
+// connectMCP also disconnects servers no longer configured; restart
+// reconnects all of them.
 func (a *App) connectMCP(ctx context.Context, restart bool) MCPReport {
 	a.connecting.Lock()
 	defer a.connecting.Unlock()
@@ -180,23 +163,58 @@ func (a *App) connectMCP(ctx context.Context, restart bool) MCPReport {
 		a.mcp.Configure(ctx, nil)
 	}
 	servers := a.Extensions().MCPConfig()
-	errs := a.mcp.Configure(ctx, servers)
-	report := MCPReport{Servers: len(servers), Connected: len(servers) - len(errs), Tools: a.refreshMCP()}
-	for _, err := range errs {
-		report.Errors = append(report.Errors, err.Error())
+	failures := a.mcp.Configure(ctx, servers)
+	report := MCPReport{Servers: len(servers), Connected: len(servers) - len(failures), Tools: a.refreshMCP()}
+	for _, f := range failures {
+		if f.Login {
+			report.Login = append(report.Login, f.Server)
+		} else {
+			report.Errors = append(report.Errors, f.Server+": "+f.Err.Error())
+		}
 	}
+	slices.Sort(report.Login)
 	return report
 }
 
-// mcpOffer is what the connected MCP servers offer.
+// MCPLogin is an OAuth login waiting for the user to authorize in a browser.
+type MCPLogin struct {
+	URL   string // the page to open
+	app   *App
+	login *auth.Login
+}
+
+// LoginMCP starts an OAuth login to the MCP server name.
+func (a *App) LoginMCP(ctx context.Context, name string) (*MCPLogin, error) {
+	l, err := a.mcp.Login(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return &MCPLogin{URL: l.URL, app: a, login: l}, nil
+}
+
+// Wait waits for the user to authorize, then connects the servers that
+// failed.
+func (l *MCPLogin) Wait(ctx context.Context) (MCPReport, error) {
+	if err := l.login.Wait(ctx); err != nil {
+		return MCPReport{}, err
+	}
+	return l.app.connectMCP(context.WithoutCancel(ctx), false), nil
+}
+
+// LogoutMCP forgets the server's OAuth token and connects it again without.
+func (a *App) LogoutMCP(ctx context.Context, name string) (MCPReport, error) {
+	if err := a.mcp.Logout(name); err != nil {
+		return MCPReport{}, err
+	}
+	return a.connectMCP(ctx, false), nil
+}
+
 type mcpOffer struct {
 	tools        []agentcore.Tool
 	permissions  map[string]permission.Metadata
 	instructions string
 }
 
-// refreshMCP reloads what the MCP servers offer into the conversation and
-// returns the number of tools.
 func (a *App) refreshMCP() int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -209,14 +227,12 @@ func (a *App) refreshMCP() int {
 	return len(tools)
 }
 
-// toolPermission is how the permission engine sees a tool that classifies
-// itself, an MCP tool; zero for the others.
+// toolPermission returns an MCP tool's self-declared permission metadata;
+// zero for other tools.
 func (a *App) toolPermission(name string) permission.Metadata {
 	return a.offered.Load().permissions[name]
 }
 
-// MCPServer is the state of a configured MCP server.
 type MCPServer = mcp.ServerStatus
 
-// MCPStatus reports each configured MCP server.
 func (a *App) MCPStatus(ctx context.Context) []MCPServer { return a.mcp.Status(ctx) }

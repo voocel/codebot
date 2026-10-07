@@ -8,8 +8,7 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// call runs tool on args as the loop does, its Check first, and returns the
-// result's text.
+// call runs Check before the tool, as the loop does.
 func call(t *testing.T, tool agentcore.Tool, args string) (string, error) {
 	t.Helper()
 	if tool.Check != nil {

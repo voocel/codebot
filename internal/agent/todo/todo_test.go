@@ -29,8 +29,7 @@ func todoCall(id, args string) agentcore.Message {
 	}
 }
 
-// The current list is the last call that succeeded; a rejected call leaves
-// the previous one in force.
+// A rejected call leaves the previous list in force.
 func TestFromHistoryTakesLastSuccessfulCall(t *testing.T) {
 	t.Parallel()
 

@@ -1,9 +1,8 @@
 //go:build ignore
 
-// gen_models.go snapshots LiteLLM's model list into models.json, keeping the
-// chat models of the vendors codebot users reach and the fields
-// catalog.LoadFromReader reads.
-// Usage: go generate ./internal/provider/...
+// gen_models.go snapshots LiteLLM's model list into models.json, keeping only
+// the chat models of vendors and the fields catalog.LoadFromReader reads.
+// Run: go generate ./internal/infra/provider
 
 package main
 
@@ -22,17 +21,16 @@ import (
 	"github.com/voocel/litellm/catalog"
 )
 
-// vendors are LiteLLM provider names: those codebot builds, plus those
-// reached through a compat provider.
+// vendors are the LiteLLM provider names codebot builds directly or reaches
+// through a compat provider.
 var vendors = []string{
 	"anthropic", "bedrock", "bedrock_converse", "dashscope", "deepseek",
 	"gemini", "minimax", "mistral", "moonshot", "ollama", "openai",
 	"openrouter", "xai", "xiaomi_mimo", "zai",
 }
 
-// read reports whether catalog.LoadFromReader reads a field: the model's
-// facts, its rates, those of its long-input tiers, as
-// input_cost_per_token_above_200k_tokens, and a tiered_pricing table.
+// read reports whether catalog.LoadFromReader uses field. Long-input tier
+// rates look like input_cost_per_token_above_200k_tokens.
 func read(field string) bool {
 	return slices.Contains(fields, field) || field == "tiered_pricing" || tierRate.MatchString(field)
 }

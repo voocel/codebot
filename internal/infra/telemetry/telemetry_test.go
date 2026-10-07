@@ -7,8 +7,8 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// The exact attribute keys matter: a typo silently breaks session grouping on
-// the backend (the very bug this feature fixes), so pin them down.
+// A typo in the attribute keys silently breaks session grouping on the
+// backend.
 func TestSessionSpanAttributes(t *testing.T) {
 	got := sessionSpanAttributes("sess-42")
 	m := make(map[string]string, len(got))

@@ -25,7 +25,6 @@ import (
 
 const timeout = 10 * time.Second
 
-// call is what the model received in one call.
 type call struct {
 	system   []string
 	msgs     []agentcore.Message
@@ -47,8 +46,7 @@ func script(replies ...litellmtest.Reply) *fakeModel { return &fakeModel{replies
 
 func (m *fakeModel) Name() string { return "fake" }
 
-// Capabilities has deferred tools loaded on reference and reasoning
-// efforts, as Anthropic does.
+// Capabilities mimics Anthropic: deferred tools and reasoning efforts.
 func (m *fakeModel) Capabilities() litellm.Capabilities {
 	return litellm.Capabilities{DeferredTools: !m.cannotDefer, ThinkingEffort: true}
 }
@@ -173,7 +171,8 @@ type setup struct {
 	plugins  []string // given on the command line, see Options.PluginDirs
 }
 
-// boot starts an App in a throwaway home and workspace, its models scripted.
+// boot starts an App with a temporary home and workspace and scripted
+// models.
 func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 	t.Helper()
 	home := t.TempDir()
@@ -267,7 +266,7 @@ func gitInit(t *testing.T, dir string) {
 	}
 }
 
-// submit sends text and waits for the conversation to go idle.
+// submit waits for the conversation to go idle.
 func (e *env) submit(text string) {
 	e.t.Helper()
 	c := e.app.Current()
@@ -281,9 +280,9 @@ func (e *env) submit(text string) {
 	}
 }
 
-// texts renders the history: "user:hi", "assistant:done", "call:write",
-// "tool:w1" ("tool:w1!" for an error). The messages telling the context are
-// left out; see told.
+// texts renders the history as "user:hi", "assistant:done", "call:write",
+// "tool:w1" ("tool:w1!" for an error), leaving out context messages; see
+// told.
 func texts(msgs []agentcore.Message) []string {
 	var out []string
 	for _, m := range msgs {
@@ -308,7 +307,7 @@ func texts(msgs []agentcore.Message) []string {
 	return out
 }
 
-// told returns the keys of the context parts msgs tell, in order.
+// told returns the keys of the context messages in msgs, in order.
 func told(msgs []agentcore.Message) []string {
 	var keys []string
 	for _, m := range msgs {
@@ -319,8 +318,8 @@ func told(msgs []agentcore.Message) []string {
 	return keys
 }
 
-// extends reports whether the call cur starts with the call prev: the same
-// system prompt, then prev's messages.
+// extends reports whether cur starts with prev: the same system prompt,
+// then prev's messages.
 func extends(cur, prev call) bool {
 	if !slices.Equal(cur.system, prev.system) || len(cur.msgs) < len(prev.msgs) {
 		return false
@@ -333,8 +332,8 @@ func extends(cur, prev call) bool {
 	return true
 }
 
-// The context is told again only as it changes, after what was told
-// before: every request starts with the one before it.
+// Context is resent only when it changes, after the earlier messages, so
+// every request extends the previous one.
 func TestContextChangesAreAppended(t *testing.T) {
 	model := script()
 	e := boot(t, setup{git: true}, map[string]*fakeModel{"claude-sonnet-4-5": model})
@@ -353,7 +352,7 @@ func TestContextChangesAreAppended(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.submit("three")
-	// The new file, and the git status that shows it.
+	// The new file and the git status showing it.
 	if got := told(c.History())[5:]; !slices.Equal(got, []string{"project", "git"}) {
 		t.Fatalf("told after the reload %q", got)
 	}
@@ -364,8 +363,8 @@ func TestContextChangesAreAppended(t *testing.T) {
 	}
 }
 
-// A resumed conversation has the requests it had, and is told what changed
-// since.
+// A resumed conversation keeps its earlier requests and is told what
+// changed since.
 func TestResumeTellsWhatChanged(t *testing.T) {
 	model := script()
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
@@ -388,9 +387,8 @@ func TestResumeTellsWhatChanged(t *testing.T) {
 	}
 }
 
-// A side question is asked as the conversation's calls are, thinking
-// included, so it reads the conversation from the prompt cache, and adds
-// nothing to it.
+// A side question uses the conversation's settings, thinking included, so it
+// hits the prompt cache. It adds nothing to the history.
 func TestSideCallsExtendTheConversation(t *testing.T) {
 	model := script(text("hello"), text("an answer"), text("run the tests"))
 	e := boot(t, setup{settings: map[string]any{"reasoning_effort": "high"}}, map[string]*fakeModel{"claude-sonnet-4-5": model})
@@ -419,8 +417,7 @@ func TestSideCallsExtendTheConversation(t *testing.T) {
 	}
 }
 
-// Every breakpoint takes the frontend's TTL: an hour where a person paces
-// the turns.
+// Every cache breakpoint uses the frontend's TTL.
 func TestCacheTTL(t *testing.T) {
 	for _, ttl := range []string{"", "1h"} {
 		model := script()
@@ -433,8 +430,7 @@ func TestCacheTTL(t *testing.T) {
 	}
 }
 
-// Context a UserPromptSubmit hook adds goes ahead of the input, in a message
-// of its own.
+// The hook's context gets a message of its own.
 func TestHookContextGoesAheadOfTheInput(t *testing.T) {
 	hooks := map[string]any{"UserPromptSubmit": []map[string]any{{"type": "command", "command": `echo '{"additional_context":"be concise"}'`}}}
 	e := boot(t, setup{settings: map[string]any{"hooks": hooks}}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
@@ -447,8 +443,8 @@ func TestHookContextGoesAheadOfTheInput(t *testing.T) {
 	}
 }
 
-// MCP tools join a conversation and stay: a tool its server stops offering
-// fails when called.
+// A tool its MCP server stops offering stays in the conversation and fails
+// when called.
 func TestGrowTools(t *testing.T) {
 	tool := func(name, version string) agentcore.Tool {
 		return agentcore.Tool{Name: name, Description: version, Run: func(context.Context, json.RawMessage) (agentcore.Result, error) {
@@ -493,7 +489,7 @@ func TestOpenResumesASession(t *testing.T) {
 	if got := texts(resumed.History()); !slices.Equal(got, []string{"user:hi", "assistant:hello"}) {
 		t.Fatalf("resumed history = %q", got)
 	}
-	// The replaced conversation is closed: its input goes nowhere.
+	// The replaced conversation is closed, so its input goes nowhere.
 	n := len(resumed.History())
 	_ = first.Submit(context.Background(), []litellm.Block{litellm.Text("late")})
 	if got := len(resumed.History()); got != n {
@@ -540,8 +536,8 @@ func TestSubagentToolCallsAskTheUI(t *testing.T) {
 	}
 }
 
-// The tools a skill allows run unasked for the rest of the run that invoked
-// it, and are asked about again in the next one.
+// A skill's allowed tools run without asking for the rest of the run that
+// invoked it, and ask again in the next run.
 func TestSkillGrantsLastForTheRun(t *testing.T) {
 	model := script(
 		use("k1", "skill", map[string]string{"skill": "toucher"}),
@@ -574,9 +570,8 @@ func TestSkillGrantsLastForTheRun(t *testing.T) {
 	}
 }
 
-// A vendor that takes deferred tools is sent tool_search, which loads the
-// tools it is not sent, web_fetch among them; one that cannot is sent every
-// tool.
+// A vendor that supports deferred tools gets tool_search to load the rest,
+// web_fetch among them; other vendors get every tool.
 func TestDeferredToolsLoadThroughToolSearch(t *testing.T) {
 	for _, cannotDefer := range []bool{false, true} {
 		model := script()
@@ -659,8 +654,8 @@ func TestPostStopValidationSendsTheAgentBackOnce(t *testing.T) {
 	}
 }
 
-// A sub-agent's edits count too: they run the PostToolUse hooks and the
-// validation that follows them.
+// A sub-agent's edits also run the PostToolUse hooks and the validation
+// after them.
 func TestSubagentEditsAreValidated(t *testing.T) {
 	model := script(
 		use("s1", "subagent", map[string]string{"agent": "general-purpose", "task": "write a.txt"}),
@@ -734,7 +729,7 @@ func TestWorktreeMovesTheConversation(t *testing.T) {
 		t.Fatalf("cwd = %q, worktree = %q, want %q", c.Cwd(), c.Worktree(), dir)
 	}
 	e.submit("again")
-	// The model is told of the move after what it was told before.
+	// The move is told after the earlier context.
 	history := c.History()
 	if got := told(history)[5:]; !slices.Equal(got, []string{"environment", "git"}) {
 		t.Fatalf("told after the move %q", got)
@@ -762,7 +757,7 @@ func TestWorktreeMovesTheConversation(t *testing.T) {
 func TestWorktreeSkillsFollowTheWorkspace(t *testing.T) {
 	e := boot(t, setup{git: true}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeSkill(t, filepath.Join(os.Getenv("HOME"), ".codebot", "skills"), "marked", "---\ndescription: only where marker.txt is\npaths: [marker.txt]\n---\nbody\n")
-	// The marker is in the workspace, but not in git: a worktree has none.
+	// The marker is untracked, so a worktree doesn't have it.
 	if err := os.WriteFile(filepath.Join(e.cwd, "marker.txt"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -788,8 +783,8 @@ func TestWorktreeSkillsFollowTheWorkspace(t *testing.T) {
 		t.Fatal("skill is active in a worktree without its marker")
 	}
 
-	// What is active is looked up as the conversation moves or reloads, as
-	// what the model is told is.
+	// Active skills are recomputed on move and reload, like the context the
+	// model sees.
 	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}

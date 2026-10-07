@@ -10,9 +10,7 @@ import (
 
 var _ interact.UI = (*Server)(nil)
 
-// Approve forwards a permission decision to the editor via
-// session/request_permission. A persistent allow is offered when there is
-// something to remember, and named for it.
+// Approve offers a persistent allow only when there is a rule to remember.
 func (s *Server) Approve(ctx context.Context, p interact.Approval) (interact.Verdict, error) {
 	opts := []acp.PermissionOption{
 		{Kind: acp.PermissionOptionKindAllowOnce, Name: "Allow", OptionId: "allow_once"},
@@ -30,8 +28,8 @@ func (s *Server) Approve(ctx context.Context, p interact.Approval) (interact.Ver
 	if title == "" {
 		title = p.Tool
 	}
-	// The editor already shows the tool call the approval is for; a hook
-	// command has none, so it is named by the tool.
+	// A hook command has no tool call of its own for the editor to show, so
+	// the approval is labeled with the tool name.
 	id := p.ToolID
 	if id == "" {
 		id = p.Tool
@@ -60,8 +58,7 @@ func (s *Server) Approve(ctx context.Context, p interact.Approval) (interact.Ver
 	return interact.Verdict{Choice: choice}, nil
 }
 
-// Ask is unsupported: ACP has no way to pose questions, so the App runs
-// without ask_user.
+// ACP can't pose questions, so the App runs without ask_user.
 func (s *Server) Ask(context.Context, []interact.Question) (interact.Answers, error) {
 	return interact.Answers{}, interact.ErrUnsupported
 }

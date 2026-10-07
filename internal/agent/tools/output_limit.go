@@ -12,55 +12,39 @@ import (
 )
 
 const (
-	// outputLimit is the largest tool output kept whole in the transcript.
-	outputLimit      = 30 * 1024
+	outputLimit      = 30 * 1024 // bytes kept whole in the transcript
 	outputCleanupAge = 7 * 24 * time.Hour
 
-	// ToolOutputsSubdir names the per-session directory holding output too
-	// large to keep in the transcript. Lives here rather than in config
-	// because this package is what writes into it.
 	ToolOutputsSubdir = "tool-outputs"
 
-	// persistedPathLabel introduces the file a truncated result was saved to.
 	persistedPathLabel = "Full output saved to: "
 	persistedOpenTag   = "<persisted-output>"
 	persistedCloseTag  = "</persisted-output>"
 	saveFailedPath     = "(save failed)"
 )
 
-// unlimitedTools opt out of truncation; everything else is limited, MCP
-// included. A whitelist would need extending per tool and silently misses the
-// ones registered at runtime — that is how MCP results went unhandled.
+// unlimitedTools is an opt-out list, so tools registered at runtime, such as
+// MCP tools, are limited by default.
 //
-//   - read: persisted output is read back with it, so truncating loops.
-//   - skill: its output is a procedure to follow, not data to sample, and the
-//     model has no reason to suspect a preview is incomplete. opencode
-//     protects it for the same reason (PRUNE_PROTECTED_TOOLS).
+//   - read: persisted output is read back with it, so truncating would loop.
+//   - skill: its output is a procedure to follow, not data to sample.
 var unlimitedTools = map[string]struct{}{
 	"read":  {},
 	"skill": {},
 }
 
-// OutputLimiter truncates oversized tool output to disk, leaving a head/tail
-// preview and a path in the transcript.
-//
-// It is middleware rather than part of each tool so that it covers every
-// tool, MCP tools included, and so that hooks and telemetry,
-// installed outside it, observe the same shortened result the model will see.
+// OutputLimiter saves oversized tool output to disk and leaves a head/tail
+// preview with the path. As middleware it covers every tool, MCP included.
 type OutputLimiter struct {
 	dir string
 }
 
-// NewOutputLimiter saves oversized output under dir, the conversation's
-// tool-outputs directory.
 func NewOutputLimiter(dir string) *OutputLimiter {
 	return &OutputLimiter{dir: dir}
 }
 
-// Middleware returns the hook to register with agentcore. Install it innermost
-// (last in the middleware slice) so hooks and telemetry observe the same
-// shortened result the model will see. It limits results of one text block,
-// as tools return text; images and the like pass through.
+// Middleware must be installed innermost (last in the slice) so hooks and
+// telemetry see the same shortened result as the model.
 func (l *OutputLimiter) Middleware() agentcore.ToolMiddleware {
 	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
 		res, err := next(ctx, call)
@@ -80,7 +64,6 @@ func (l *OutputLimiter) Middleware() agentcore.ToolMiddleware {
 	}
 }
 
-// truncateAndSave saves result and returns its preview.
 func (l *OutputLimiter) truncateAndSave(toolName, result string) string {
 	return truncatedOutputSummary(result, l.saveToFile(toolName, result))
 }
@@ -129,12 +112,8 @@ func truncatedOutputSummary(text, path string) string {
 	)
 }
 
-// CleanOldOutputs removes tool output files older than 7 days from every
-// session under sessionsRoot.
-//
-// It sweeps all sessions rather than the live one because outputs are stored
-// per session: the running session's own directory was created minutes ago and
-// can never hold anything old enough to collect.
+// CleanOldOutputs sweeps every session, not just the live one, whose
+// directory is too new to hold anything old enough to delete.
 func CleanOldOutputs(sessionsRoot string) {
 	sessions, err := os.ReadDir(sessionsRoot)
 	if err != nil {

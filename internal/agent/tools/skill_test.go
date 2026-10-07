@@ -13,7 +13,7 @@ import (
 	"github.com/voocel/codebot/internal/agent/skill"
 )
 
-// skillCatalog loads the skill files given, by name, as privileged skills.
+// skillCatalog loads the given skill files as privileged skills.
 func skillCatalog(t *testing.T, files map[string]string) func() *skill.Catalog {
 	t.Helper()
 	dir := t.TempDir()
@@ -35,7 +35,6 @@ func skillCatalog(t *testing.T, files map[string]string) func() *skill.Catalog {
 
 func ignoreInvocation(*skill.Invocation) {}
 
-// run invokes the tool and returns its text, an inline skill's prompt.
 func run(t *testing.T, tool agentcore.Tool, name, args string) string {
 	t.Helper()
 	raw, _ := json.Marshal(skillArgs{Skill: name, Args: args})
@@ -46,8 +45,7 @@ func run(t *testing.T, tool agentcore.Tool, name, args string) string {
 	return text
 }
 
-// The model cannot invoke a skill kept for manual invocation, nor one that
-// does not exist; it is told so in text.
+// Refusals reach the model as text, not errors.
 func TestSkillToolDisableModelInvocation(t *testing.T) {
 	t.Parallel()
 
@@ -62,8 +60,8 @@ func TestSkillToolDisableModelInvocation(t *testing.T) {
 	}
 }
 
-// A forked skill runs as a sub-agent once its invocation is seen, with the
-// skill's agent and model, or the general-purpose agent when it names none.
+// A forked skill runs on its own agent and model, or on general-purpose when
+// it names no agent.
 func TestSkillToolContextFork(t *testing.T) {
 	t.Parallel()
 
@@ -105,8 +103,8 @@ func TestSkillToolContextFork(t *testing.T) {
 	}
 }
 
-// An inline skill returns its prompt, and the invocation, the source of the
-// conversation's grants, reaches the caller with the tools it allows.
+// The invocation reaches the caller with its allowed tools, which become the
+// conversation's grants.
 func TestSkillToolReportsInvocations(t *testing.T) {
 	t.Parallel()
 

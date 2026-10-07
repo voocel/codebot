@@ -15,7 +15,7 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// fetchTimeout bounds fetching plugins: git that hangs gives up.
+// fetchTimeout stops a hanging git fetch.
 const fetchTimeout = 5 * time.Minute
 
 func plugins(a *app.App) Command {
@@ -55,8 +55,6 @@ func plugins(a *app.App) Command {
 	}
 }
 
-// reloaded runs change off the TUI's goroutine and notes done once it has,
-// with what the reload connected.
 func reloaded(change func(context.Context) (app.ReloadReport, error), done string) tea.Cmd {
 	return func() tea.Msg {
 		r, err := change(context.Background())
@@ -67,16 +65,18 @@ func reloaded(change func(context.Context) (app.ReloadReport, error), done strin
 	}
 }
 
-// connected sums up what connecting MCP servers did, "" for none.
 func connected(r app.MCPReport) string {
 	if r.Servers == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" · %d MCP tools (%d servers connected, %d failed)", r.Tools, r.Connected, len(r.Errors))
+	s := fmt.Sprintf(" · %d MCP tools (%d servers connected, %d failed)", r.Tools, r.Connected, len(r.Errors))
+	for _, name := range r.Login {
+		s += " · " + name + " needs login: /mcp login " + name
+	}
+	return s
 }
 
-// PendingPlugins tells how many plugins wait for /plugins install: to be
-// installed, or to have what they run decided on; "" for none.
+// PendingPlugins counts plugins that need installing or a consent decision.
 func PendingPlugins(a *app.App) string {
 	n := 0
 	for _, pl := range a.Plugins() {
@@ -93,7 +93,6 @@ func PendingPlugins(a *app.App) string {
 	return fmt.Sprintf("%d plugins wait for you · /plugins install", n)
 }
 
-// pluginKey identifies a plugin: by whose it is, and its source there.
 type pluginKey struct{ scope, source string }
 
 func keyOf(pl app.Plugin) pluginKey { return pluginKey{string(pl.Scope), pl.Source} }
@@ -133,8 +132,6 @@ func pluginTitle(pl app.Plugin) string {
 	return pl.Title()
 }
 
-// pluginDetail sums a plugin up for its row: what it brings, where it is
-// from, and where it stands.
 func pluginDetail(pl app.Plugin) string {
 	var parts []string
 	if pl.Plugin != nil {
@@ -148,8 +145,6 @@ func pluginDetail(pl app.Plugin) string {
 	return strings.Join(append(parts, pluginState(pl)), " · ")
 }
 
-// pluginState tells where a plugin stands, and what the user may do about
-// it.
 func pluginState(pl app.Plugin) string {
 	switch pl.State {
 	case app.PluginOn:
@@ -170,7 +165,6 @@ func pluginState(pl app.Plugin) string {
 
 func short(commit string) string { return commit[:min(7, len(commit))] }
 
-// versioned names a plugin with its version, where it has one.
 func versioned(name, version string) string {
 	if version == "" {
 		return name
@@ -178,8 +172,8 @@ func versioned(name, version string) string {
 	return name + " " + version
 }
 
-// brings counts what a plugin brings: skills, agents, MCP servers and
-// hooks, those it has none of left out but skills and MCP.
+// brings always lists skills and MCP servers, and agents and hooks only
+// when there are some.
 func brings(p *app.PluginContent) string {
 	hooks := 0
 	for _, hs := range p.Hooks {
@@ -236,9 +230,8 @@ func pluginRows(pl app.Plugin) [][2]string {
 	return rows
 }
 
-// offerPanel asks the user, under title, to decide on what the plugin
-// offered runs that they have yet to: accept agrees to what they check and
-// declines the rest; done tells what it did.
+// offerPanel asks about the plugin's undecided items. accept agrees to the
+// checked items and declines the rest.
 func offerPanel(a *app.App, o *app.PluginOffer, title, accept, done string) tea.Cmd {
 	where := o.Source
 	if o.Commit != "" {

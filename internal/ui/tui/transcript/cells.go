@@ -11,8 +11,6 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Prompt is what the user sent: a message to the agent, a slash command or a
-// "!" shell line, shown on a band.
 type Prompt struct {
 	rev
 	still
@@ -22,7 +20,6 @@ type Prompt struct {
 	toggled bool
 }
 
-// PromptKind says what a prompt went to.
 type PromptKind int
 
 const (
@@ -31,7 +28,7 @@ const (
 	ToShell
 )
 
-// promptLines is how many lines of a long prompt show collapsed.
+// promptLines is how many lines of a long prompt show when collapsed.
 const promptLines = 12
 
 func (c *Prompt) Toggle() { c.toggled = !c.toggled; c.bump() }
@@ -83,7 +80,6 @@ func (c *Prompt) Render(p Params) []string {
 	return out
 }
 
-// Assistant is a reply: what the model thought, then what it said.
 type Assistant struct {
 	rev
 	still
@@ -92,8 +88,8 @@ type Assistant struct {
 	streaming bool
 	toggled   bool
 
-	// The rendered prefix of a streaming reply, up to the last break between
-	// blocks, which later text does not change.
+	// stable is the end of the streaming text's prefix that is complete
+	// markdown blocks; later text can't change how it renders.
 	stable      int
 	stableWidth int
 	stableLines []string
@@ -127,7 +123,8 @@ func (c *Assistant) renderThinking(thinking string, p Params) []string {
 	if p.Expanded != c.toggled {
 		return indent(markdown.Wrap(thinking, style, p.Width-2), head)
 	}
-	// Collapsed: the latest line while it streams, the first once done.
+	// Collapsed, show the latest line while streaming and the first once
+	// done.
 	line := firstLine(thinking)
 	if c.streaming && strings.TrimSpace(c.text.String()) == "" {
 		lines := strings.Split(thinking, "\n")
@@ -143,8 +140,7 @@ func (c *Assistant) renderThinking(thinking string, p Params) []string {
 	return []string{head + style.Render(fit(label+line, p.Width-2))}
 }
 
-// renderText renders the reply's markdown. While it streams, the blocks
-// before the last break between them are rendered once.
+// renderText renders complete blocks of a streaming reply only once.
 func (c *Assistant) renderText(text string, width int) []string {
 	if !c.streaming {
 		return markdown.Render(text, width)
@@ -165,8 +161,8 @@ func (c *Assistant) renderText(text string, width int) []string {
 	return append(append(out, ""), markdown.Render(rest, width)...)
 }
 
-// stableCut is where the last blank line outside a code fence ends: the
-// blocks before it are complete.
+// stableCut returns the end of the last blank line outside a code fence;
+// the blocks before it are complete.
 func stableCut(text string) int {
 	cut, fenced, at := 0, false, 0
 	for _, line := range strings.SplitAfter(text, "\n") {
@@ -182,21 +178,18 @@ func stableCut(text string) int {
 	return cut
 }
 
-// Level is the kind of a Notice.
 type Level int
 
 const (
-	// Info is something the harness did: compacted, interrupted.
+	// Info is something the harness did, such as compacting.
 	Info Level = iota
-	// Error is something that failed.
 	Error
 	// Output is what a command printed.
 	Output
-	// Summary sums up a run.
 	Summary
 )
 
-// Notice is a message from the harness or a command rather than the agent.
+// Notice is a message from the harness or a command, not the agent.
 type Notice struct {
 	rev
 	still
@@ -204,13 +197,10 @@ type Notice struct {
 	Text  string
 }
 
-// Note returns an Info notice.
 func Note(text string) *Notice { return &Notice{Level: Info, Text: text} }
 
-// Fail returns an Error notice.
 func Fail(text string) *Notice { return &Notice{Level: Error, Text: text} }
 
-// Print returns an Output notice.
 func Print(text string) *Notice { return &Notice{Level: Output, Text: text} }
 
 func (c *Notice) Attached() bool { return c.Level != Summary }

@@ -13,13 +13,12 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// kindSkill marks the prompt of a skill the user invoked as a command. Its
-// first block is the command as typed, the rest the skill.
+// kindSkill marks a skill invoked as a command. The first block is the
+// command as typed; the rest is the skill prompt.
 const kindSkill = "skill"
 
-// UserText is what frontends show of a user message: the user's words, or
-// the command that invoked a skill. ok is false for a message the harness
-// added, such as context or a task notification.
+// UserText returns what frontends show of a user message. ok is false for
+// harness-added messages such as context or task notifications.
 func UserText(m agentcore.Message) (text string, ok bool) {
 	switch m.Kind {
 	case "":
@@ -34,9 +33,9 @@ func UserText(m agentcore.Message) (text string, ok bool) {
 	return "", false
 }
 
-// HiddenToolCall reports whether a tool call is bookkeeping that frontends
-// leave out of the transcript: todo_write, shown as the todo list instead,
-// and reads of the auto memory, which hydrate the context like AGENTS.md.
+// HiddenToolCall reports bookkeeping calls that frontends leave out of the
+// transcript: todo_write, shown as the todo list, and auto-memory reads,
+// which load context the way AGENTS.md does.
 func HiddenToolCall(tool string, args json.RawMessage) bool {
 	switch tool {
 	case todo.ToolName:
@@ -51,7 +50,7 @@ func HiddenToolCall(tool string, args json.RawMessage) bool {
 	return false
 }
 
-// isMemoryPath reports whether path lies in some project's memory directory
+// isMemoryPath reports whether path is in any project's memory directory
 // (see config.MemoryDir).
 func isMemoryPath(path string) bool {
 	if rest, ok := strings.CutPrefix(path, "~/"); ok {

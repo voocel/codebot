@@ -18,7 +18,7 @@ import (
 	"github.com/voocel/codebot/internal/lib/regular"
 )
 
-// server is an MCP server as mcp.json gives it.
+// server is an mcp.json entry.
 type server struct {
 	Type    string            `json:"type"`
 	Command string            `json:"command"`
@@ -29,8 +29,8 @@ type server struct {
 	Headers map[string]string `json:"headers"`
 }
 
-// readMCP reads mcp.json. A file that breaks the format leaves out all its
-// servers, a broken server only itself.
+// readMCP drops every server if mcp.json breaks the format, and only the
+// broken server otherwise.
 func (p *Plugin) readMCP() (problems []error) {
 	path := filepath.Join(p.Root, "mcp.json")
 	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
@@ -80,10 +80,8 @@ func (p *Plugin) decodeServer(raw json.RawMessage) (config.MCPServer, error) {
 	return p.mcpServer(s)
 }
 
-// mcpServer makes s ready to run: its command and working directory
-// resolved in the plugin, PLUGIN_ROOT and PLUGIN_DATA expanded in its
-// arguments, environment and working directory, and set in its
-// environment. Nothing else is expanded.
+// mcpServer expands only ${PLUGIN_ROOT} and ${PLUGIN_DATA}, and sets both in
+// the server's environment.
 func (p *Plugin) mcpServer(s server) (config.MCPServer, error) {
 	switch s.Type {
 	case "stdio":
@@ -130,8 +128,6 @@ func (p *Plugin) mcpServer(s server) (config.MCPServer, error) {
 	return srv, nil
 }
 
-// command resolves a stdio server's command: an executable's bare name, or
-// a path in the plugin starting "./".
 func (p *Plugin) command(c string) (string, error) {
 	if rel, ok := strings.CutPrefix(c, "./"); ok {
 		return p.inside(filepath.Join(p.Root, filepath.FromSlash(rel)))
@@ -142,9 +138,6 @@ func (p *Plugin) command(c string) (string, error) {
 	return c, nil
 }
 
-// cwd resolves a stdio server's working directory, the plugin's when
-// unset: a path in the plugin starting "./", or one in PLUGIN_ROOT or
-// PLUGIN_DATA.
 func (p *Plugin) cwd(c string) (string, error) {
 	for prefix, dir := range map[string]string{"./": p.Root, "${PLUGIN_ROOT}": p.Root, "${PLUGIN_DATA}": p.Data} {
 		rest, ok := strings.CutPrefix(c, prefix)
@@ -166,8 +159,6 @@ func (p *Plugin) cwd(c string) (string, error) {
 	return "", fmt.Errorf("cwd %q is not in the plugin or its data", c)
 }
 
-// checkURL checks a remote server's URL: absolute, HTTPS but to this
-// machine, with no user or fragment.
 func checkURL(raw string) error {
 	u, err := url.Parse(raw)
 	switch {
@@ -191,7 +182,6 @@ func loopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// checkHeaders refuses a header given twice in different case.
 func checkHeaders(h map[string]string) error {
 	seen := map[string]bool{}
 	for k := range h {

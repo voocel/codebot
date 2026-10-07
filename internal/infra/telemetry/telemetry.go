@@ -1,9 +1,7 @@
-// Package telemetry wires codebot's observability. It builds an OTLP/HTTP
-// trace exporter for the configured backend (e.g. Langfuse), returns a litellm
-// observer for generation spans, and exposes a small Tracer for agent-run/tool
-// spans. Every span is tagged with the current session id so the backend can
-// group a session's work. When disabled it is a no-op, so the rest of the app
-// stays unaware of OpenTelemetry.
+// Package telemetry exports traces over OTLP/HTTP (e.g. to Langfuse):
+// generation spans through a litellm observer, run and tool spans through
+// Tracer. Every span carries the current session id. When disabled, all of
+// it is a no-op.
 package telemetry
 
 import (
@@ -25,19 +23,16 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Tracer creates codebot-level spans that share the same tracer provider as the
-// litellm observer. It is nil when telemetry is disabled.
+// A nil Tracer does nothing; Setup returns nil when telemetry is disabled.
 type Tracer struct {
 	tracer    trace.Tracer
 	sessionID atomic.Pointer[string]
 }
 
-// Run holds an open agent-run span; End closes it when the run ends.
 type Run struct {
 	span trace.Span
 }
 
-// StartRun starts an agent-run span and returns the context the run uses.
 func (t *Tracer) StartRun(ctx context.Context, name string) (context.Context, *Run) {
 	if t == nil {
 		return ctx, nil
@@ -47,7 +42,6 @@ func (t *Tracer) StartRun(ctx context.Context, name string) (context.Context, *R
 	return ctx, &Run{span: span}
 }
 
-// End finishes the agent-run span and records err when present.
 func (r *Run) End(err error) {
 	if r == nil {
 		return
@@ -59,7 +53,6 @@ func (r *Run) End(err error) {
 	r.span.End()
 }
 
-// ToolMiddleware emits one child span per tool execution.
 func (t *Tracer) ToolMiddleware() agentcore.ToolMiddleware {
 	if t == nil {
 		return nil
@@ -83,7 +76,6 @@ func (t *Tracer) ToolMiddleware() agentcore.ToolMiddleware {
 	}
 }
 
-// SetSession tags the spans from now on with the session id.
 func (t *Tracer) SetSession(id string) {
 	if t == nil {
 		return
@@ -99,9 +91,8 @@ func (t *Tracer) sessionAttributes() []attribute.KeyValue {
 	return sessionSpanAttributes(*id)
 }
 
-// Setup builds the trace pipeline for cfg and returns a litellm observer, a
-// codebot tracer, and a shutdown func that flushes pending spans. When telemetry
-// is disabled it returns (nil, nil, noop, nil).
+// Setup returns (nil, nil, noop, nil) when telemetry is disabled. The
+// returned shutdown flushes pending spans.
 func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Observer, *Tracer, func(context.Context) error, error) {
 	noop := func(context.Context) error { return nil }
 	if !cfg.Enabled || cfg.Endpoint == "" {
@@ -121,9 +112,9 @@ func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Observer, *
 		return nil, nil, noop, fmt.Errorf("telemetry: otlp exporter: %w", err)
 	}
 
-	// Name the service so backends show "codebot" instead of the OTel default
-	// "unknown_service". Merge onto the default resource to keep telemetry.sdk.*;
-	// matching the default schema URL keeps the merge error-free.
+	// Name the service so backends show "codebot" instead of
+	// "unknown_service". Merging onto the default resource keeps
+	// telemetry.sdk.*; using the default schema URL avoids a merge error.
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(resource.Default().SchemaURL(), attribute.String("service.name", "codebot")),
@@ -146,11 +137,9 @@ func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Observer, *
 	return observer, tracer, tp.Shutdown, nil
 }
 
-// sessionSpanAttributes maps a session id to the span attributes used to group
-// a run's generations on the backend. langfuse.session.id is Langfuse's primary
-// session key; session.id is the generic fallback other OTLP backends read. An
-// empty id yields nil (no tagging) — exact key strings matter, a typo silently
-// breaks session grouping, so they are asserted in tests.
+// sessionSpanAttributes sets langfuse.session.id for Langfuse and session.id
+// for other OTLP backends. Tests pin the exact keys, since a typo silently
+// breaks session grouping.
 func sessionSpanAttributes(id string) []attribute.KeyValue {
 	if id == "" {
 		return nil

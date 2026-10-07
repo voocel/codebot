@@ -8,17 +8,13 @@ import (
 	"strings"
 )
 
-// gitRunner executes git against a shadow repository: a standalone --git-dir
-// whose --work-tree points at the real workspace. Every snapshot operation
-// stays isolated from the user's own .git (index, branches, reflog, history).
 type gitRunner struct {
 	gitDir   string
 	workTree string
 }
 
-// baseArgs are prepended to every invocation. The core.* flags mirror
-// opencode's shadow-repo config for cross-platform stability; quotepath=false
-// keeps non-ASCII paths verbatim so -z output stays byte-clean for splitting.
+// baseArgs pins settings that would otherwise vary with the user's config
+// and platform. quotepath=false keeps non-ASCII paths verbatim in -z output.
 func (g gitRunner) baseArgs() []string {
 	return []string{
 		"--git-dir=" + g.gitDir,
@@ -27,21 +23,18 @@ func (g gitRunner) baseArgs() []string {
 		"-c", "core.longpaths=true",
 		"-c", "core.symlinks=true",
 		"-c", "core.quotepath=false",
-		// Pin fsmonitor off so a user's global core.fsmonitor can't make this
-		// shadow repo spawn a filesystem-watcher daemon over their workspace.
+		// A global core.fsmonitor would start a watcher daemon over the
+		// workspace.
 		"-c", "core.fsmonitor=false",
-		// Disable implicit auto-gc on writes; reclamation is driven explicitly
-		// by backgroundGC so a normal `git add` never races our own gc.
+		// Only backgroundGC collects, so `git add` never races a gc.
 		"-c", "gc.auto=0",
 	}
 }
 
-// run executes git and returns raw stdout. stderr is folded into the error.
+// run folds stderr into the error.
 func (g gitRunner) run(args ...string) (string, error) {
 	cmd := exec.Command("git", append(g.baseArgs(), args...)...)
-	// Anchor relative pathspecs and path output to the work-tree root. Without
-	// this, running from a subdirectory of the work-tree makes git emit paths
-	// relative to that subdir, breaking filepath.Join(workTree, rel).
+	// Run from the root so git prints paths relative to the work tree.
 	cmd.Dir = g.workTree
 	cmd.Env = noPromptEnv()
 	var stdout, stderr bytes.Buffer
@@ -53,7 +46,6 @@ func (g gitRunner) run(args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
-// runZ runs git and splits NUL-delimited stdout (the -z form) into entries.
 func (g gitRunner) runZ(args ...string) ([]string, error) {
 	out, err := g.run(args...)
 	if err != nil {
@@ -62,8 +54,7 @@ func (g gitRunner) runZ(args ...string) ([]string, error) {
 	return splitNUL(out), nil
 }
 
-// noPromptEnv disables git/SSH credential prompts so an operation against a
-// private remote can never block the host process waiting on /dev/tty.
+// noPromptEnv keeps git from blocking on a credential prompt.
 func noPromptEnv() []string {
 	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=")
 }

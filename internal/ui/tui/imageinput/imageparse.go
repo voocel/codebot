@@ -1,5 +1,5 @@
-// Package imageinput handles image input from clipboard paste and file drag-drop,
-// converting raw data to image blocks.
+// Package imageinput turns clipboard images and dropped image files into
+// image blocks.
 package imageinput
 
 import (
@@ -12,10 +12,8 @@ import (
 	"github.com/voocel/litellm"
 )
 
-// maxImageSize is the upper limit for a single image (20 MB).
 const maxImageSize = 20 << 20
 
-// supportedMIME lists MIME types accepted by the LLM.
 var supportedMIME = map[string]bool{
 	"image/png":  true,
 	"image/jpeg": true,
@@ -23,8 +21,6 @@ var supportedMIME = map[string]bool{
 	"image/webp": true,
 }
 
-// FromBytes validates raw image data and returns an image block.
-// Checks size limit and MIME type.
 func FromBytes(data []byte) (litellm.ImageBlock, error) {
 	if int64(len(data)) > maxImageSize {
 		return litellm.ImageBlock{}, fmt.Errorf("image too large (%d bytes, max %d)", len(data), maxImageSize)
@@ -36,27 +32,25 @@ func FromBytes(data []byte) (litellm.ImageBlock, error) {
 	return litellm.ImageBlock{Data: data, MIME: mime}, nil
 }
 
-// imageExts lists file extensions recognized as images for drag-drop.
 var imageExts = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true,
 	".gif": true, ".webp": true,
 }
 
-// ParseDroppedPath extracts an image file path from bracketed-paste text.
-// Handles terminal drag-drop formats: quoted, backslash-escaped, raw.
-// Returns "" if the text is not an image file path.
+// ParseDroppedPath extracts an image path from a terminal drag-and-drop
+// paste, which may be quoted, backslash-escaped or raw. It returns "" for
+// anything else.
 func ParseDroppedPath(text string) string {
 	p := strings.TrimSpace(text)
 	if p == "" || strings.ContainsAny(p, "\n\r") {
 		return "" // empty or multi-file drop
 	}
-	// Strip surrounding quotes (single or double).
 	if len(p) >= 2 {
 		if (p[0] == '\'' && p[len(p)-1] == '\'') || (p[0] == '"' && p[len(p)-1] == '"') {
 			p = p[1 : len(p)-1]
 		}
 	}
-	// Unescape backslash sequences (macOS Terminal escapes spaces, parens, etc.).
+	// macOS Terminal escapes spaces, parens, etc.
 	if strings.Contains(p, `\`) {
 		var b strings.Builder
 		b.Grow(len(p))
@@ -74,7 +68,6 @@ func ParseDroppedPath(text string) string {
 	return p
 }
 
-// LoadFile reads an image file and returns a validated image block.
 func LoadFile(path string) (litellm.ImageBlock, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

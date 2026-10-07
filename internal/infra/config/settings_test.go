@@ -73,8 +73,23 @@ func TestValidateResolved(t *testing.T) {
 	}
 }
 
-// Every field of Settings is in one class of what a project may do with
-// it, so a new one cannot slip in unclassified: see ForProject.
+// A new Settings field fails this test until ForProject classifies it.
+func TestMCPServerOAuth(t *testing.T) {
+	for _, tc := range []struct {
+		srv MCPServer
+		ok  bool
+	}{
+		{MCPServer{Type: "http", URL: "https://x", OAuth: &MCPOAuth{ClientID: "id", ClientSecret: "s"}}, true},
+		{MCPServer{Type: "http", URL: "https://x", OAuth: &MCPOAuth{ClientSecret: "s"}}, false},
+		{MCPServer{Type: "http", URL: "https://x", OAuth: &MCPOAuth{ClientID: "id"}, Headers: map[string]string{"authorization": "Bearer t"}}, false},
+		{MCPServer{Command: "x", OAuth: &MCPOAuth{ClientID: "id"}}, false},
+	} {
+		if err := tc.srv.Check(); (err == nil) != tc.ok {
+			t.Errorf("%+v: %v", tc.srv, err)
+		}
+	}
+}
+
 func TestForProjectClassifiesEveryField(t *testing.T) {
 	class := map[string]string{
 		"provider": "open", "model": "open", "reasoning_effort": "open", "max_turns": "open",
@@ -120,7 +135,7 @@ func TestForProjectClassifiesEveryField(t *testing.T) {
 		t.Errorf("grants %+v %+v", grants, grants.Permissions)
 	}
 
-	// Resolving takes the grants given alone.
+	// Resolve applies only the grants passed to it.
 	effort := "high"
 	s.ReasoningEffort = &effort
 	r, err := Layers{Root: t.TempDir(), Project: s}.Resolve(t.TempDir(), Settings{})
@@ -132,8 +147,8 @@ func TestForProjectClassifiesEveryField(t *testing.T) {
 	}
 }
 
-// Merging overrides a provider's fields one by one, its extras whole, and
-// leaves the layers as they were: they are merged again on reload.
+// Merging overrides provider fields one by one and Extra as a whole. It must
+// not modify its inputs, which are merged again on reload.
 func TestMergeLeavesItsInputs(t *testing.T) {
 	base := Settings{
 		Providers:   map[string]*ProviderConfig{"p": {API: "chat", APIKey: "k", Extra: &ProviderExtra{UserAgent: "base/1.0"}}},
@@ -174,8 +189,7 @@ func TestProjectRoot(t *testing.T) {
 	}
 }
 
-// A project's roots are relative to its root, wherever in it codebot runs;
-// the user's, to where it runs.
+// Project roots resolve against the project root, user roots against cwd.
 func TestProjectRootsAreTheProjects(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(root, "sub")
@@ -193,8 +207,8 @@ func TestProjectRootsAreTheProjects(t *testing.T) {
 	}
 }
 
-// A project's settings are its own: a file leading outside it is refused,
-// and editing one writes where it leads.
+// Project settings that resolve outside the project are refused. A symlinked
+// user settings file is written through and stays a symlink.
 func TestProjectSettingsStayInTheProject(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks")
@@ -225,8 +239,8 @@ func TestProjectSettingsStayInTheProject(t *testing.T) {
 	if data, _ := os.ReadFile(UserSettingsPath()); strings.Contains(string(data), "kit") {
 		t.Errorf("the user's settings changed: %s", data)
 	}
-	// Nor through its directory, where no file is yet: the file it would
-	// make is not the project's.
+	// The same holds when the .codebot directory itself leads out and no
+	// settings file exists yet.
 	other, away := t.TempDir(), t.TempDir()
 	if err := os.MkdirAll(filepath.Join(other, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -241,7 +255,7 @@ func TestProjectSettingsStayInTheProject(t *testing.T) {
 		t.Error("the project's settings were written outside it")
 	}
 
-	// The user's settings may be a link, to their dotfiles say, which stays.
+	// The user's settings may link into their dotfiles.
 	dotfiles := filepath.Join(home, "dotfiles.json")
 	if err := os.Rename(UserSettingsPath(), dotfiles); err != nil {
 		t.Fatal(err)

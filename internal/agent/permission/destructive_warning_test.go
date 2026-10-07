@@ -8,7 +8,6 @@ func TestDestructiveCommandWarning(t *testing.T) {
 		cmd         string
 		wantWarning bool
 	}{
-		// Git
 		{"git reset hard", "git reset --hard HEAD~1", true},
 		{"git push force", "git push --force origin main", true},
 		{"git push -f short", "git push -f origin feature", true},
@@ -21,7 +20,6 @@ func TestDestructiveCommandWarning(t *testing.T) {
 		{"git commit amend", "git commit --amend -m fix", true},
 		{"git status", "git status", false},
 
-		// rm
 		{"rm -rf", "rm -rf /tmp/x", true},
 		{"rm -fr", "rm -fr /tmp/x", true},
 		{"rm -r", "rm -r /tmp/x", true},
@@ -29,20 +27,16 @@ func TestDestructiveCommandWarning(t *testing.T) {
 		{"rm one file", "rm /tmp/x", false},
 		{"compound rm-rf at tail", "ls && rm -rf /tmp/x", true},
 
-		// privilege escalation
 		{"sudo cmd", "sudo apt update", true},
 		{"compound sudo", "cd /tmp && sudo rm x", true},
 		{"sudoers in path is not sudo", "cat /etc/sudoers", false},
 
-		// DB
 		{"drop table", "psql -c 'DROP TABLE users'", true},
 		{"delete from", `psql -c "DELETE FROM users;"`, true},
 
-		// Infra
 		{"kubectl delete", "kubectl delete pod foo", true},
 		{"terraform destroy", "terraform destroy -auto-approve", true},
 
-		// Benign
 		{"build", "go build ./...", false},
 	}
 

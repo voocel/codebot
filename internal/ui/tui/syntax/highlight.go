@@ -1,6 +1,6 @@
-// Package syntax colors code with chroma for the terminal. It emits only
-// foreground SGR codes and foreground-only resets, never a full reset, so the
-// code keeps a background an enclosing style paints, as a diff line's.
+// Package syntax colors code with chroma. It emits only foreground codes and
+// resets, never a full reset, so an enclosing background such as a diff
+// line's survives.
 package syntax
 
 import (
@@ -14,9 +14,9 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// The base styles paint strings green, which blends into the added-line
-// background of a diff, so strings get another hue. tango also paints
-// structural tokens bold black; lightExtras retones them.
+// The base styles paint strings green, which blends into a diff's added-line
+// background, so strings get another hue. tango also paints structural
+// tokens bold black, which lightExtras retones.
 var lightExtras = chroma.StyleEntries{
 	chroma.Punctuation:   "nobold #57606A",
 	chroma.NameFunction:  "#6F42C1",
@@ -46,11 +46,9 @@ func mustStyle(base, stringHex string, extras chroma.StyleEntries) *chroma.Style
 	return s
 }
 
-// File colors code from the file at path, chosen by its name; code it has no
-// lexer for comes back as it is.
+// File returns code unchanged when no lexer matches path.
 func File(code, path string) string { return highlight(code, lexers.Match(path)) }
 
-// Lang colors code in the language a markdown fence names.
 func Lang(code, lang string) string {
 	if lang == "" {
 		return code
@@ -78,8 +76,7 @@ func highlight(code string, lexer chroma.Lexer) string {
 	return out.String()
 }
 
-// writeToken writes text in entry's foreground, bold and italic, and resets
-// just those.
+// writeToken resets only the attributes it set.
 func writeToken(out *strings.Builder, entry chroma.StyleEntry, text string) {
 	if text == "" {
 		return
@@ -98,7 +95,7 @@ func writeToken(out *strings.Builder, entry chroma.StyleEntry, text string) {
 		out.WriteString(text)
 		return
 	}
-	// A token may span lines; each line gets its own codes so lines stand
+	// A token may span lines; each line gets its own codes so it stands
 	// alone once split.
 	open := "\x1b[" + strings.Join(on, ";") + "m"
 	for i, line := range strings.Split(text, "\n") {

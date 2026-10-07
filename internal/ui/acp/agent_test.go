@@ -9,8 +9,6 @@ import (
 	agentcore "github.com/voocel/agentcore"
 )
 
-// The run's end maps to the stop reason the editor shows; a failed run is a
-// failed prompt, carrying the run's error.
 func TestTurnResultMapsTheRunsEnd(t *testing.T) {
 	end := func(r agentcore.EndReason) *agentcore.RunEnd { return &agentcore.RunEnd{Reason: r} }
 	tests := []struct {

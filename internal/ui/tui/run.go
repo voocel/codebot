@@ -1,5 +1,5 @@
-// Package tui is codebot's terminal interface: a full-screen view of the
-// conversation over an editor. See docs/tui-plan.md.
+// Package tui is codebot's full-screen terminal interface. See
+// docs/tui-plan.md.
 package tui
 
 import (
@@ -23,8 +23,7 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// UI asks the user through panels. It is the interact.UI the App boots with;
-// Run binds it to the screen.
+// UI is the interact.UI the App boots with; Run binds it to the program.
 type UI struct {
 	program atomic.Pointer[tea.Program]
 }
@@ -33,10 +32,10 @@ var _ interact.UI = (*UI)(nil)
 
 func (u *UI) send(msg tea.Msg) { u.program.Load().Send(msg) }
 
-// Approve shows a permission request and waits for the answer.
 func (u *UI) Approve(ctx context.Context, req interact.Approval) (interact.Verdict, error) {
 	reply := make(chan interact.Verdict, 1)
-	// The panel answers on the send side, which is how it is known.
+	// The panel replies on answer, which also identifies the request for
+	// withdrawMsg.
 	answer := (chan<- interact.Verdict)(reply)
 	u.send(approveMsg{req, answer})
 	select {
@@ -48,7 +47,6 @@ func (u *UI) Approve(ctx context.Context, req interact.Approval) (interact.Verdi
 	}
 }
 
-// Ask shows the questions and waits for the answers.
 func (u *UI) Ask(ctx context.Context, qs []interact.Question) (interact.Answers, error) {
 	reply := make(chan interact.Answers, 1)
 	answer := (chan<- interact.Answers)(reply)
@@ -62,8 +60,8 @@ func (u *UI) Ask(ctx context.Context, qs []interact.Question) (interact.Answers,
 	}
 }
 
-// Run shows a's conversations until the user quits, then leaves the
-// conversation in the terminal. ui must be the UI a was booted with.
+// Run prints the conversation to the terminal on exit. ui must be the UI a
+// was booted with.
 func Run(a *app.App, ui *UI, version string) error {
 	defer logTo(filepath.Join(config.UserConfigDir(), "codebot.log"))()
 	theme.Detect()
@@ -72,11 +70,11 @@ func Run(a *app.App, ui *UI, version string) error {
 	ui.program.Store(p)
 
 	// The App publishes some events on the caller's goroutine, which may be
-	// the program's own; queue them so publishing never waits for Update.
+	// the program's; queue them so publishing never waits for Update.
 	q := newQueue(p)
 	defer q.close()
 	unsubscribe := a.Subscribe(func(ev app.Event) {
-		if msg := message(a, ev); msg != nil {
+		if msg := message(ev); msg != nil {
 			q.push(msg)
 		}
 		if ev.Kind == app.SessionEvent && ev.Session.Kind == session.Idle {
@@ -103,9 +101,8 @@ func Run(a *app.App, ui *UI, version string) error {
 	return nil
 }
 
-// logTo sends the standard logger, which writes to the terminal the TUI
-// draws on, to the file at path until restore; nowhere when it cannot be
-// opened.
+// logTo keeps the standard logger off the terminal the TUI draws on. It
+// discards logs when path can't be opened.
 func logTo(path string) (restore func()) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -119,7 +116,6 @@ func logTo(path string) (restore func()) {
 	}
 }
 
-// goodbye prints the conversation to the terminal the TUI leaves.
 func (m *Model) goodbye() {
 	if m.width == 0 || len(m.t.Cells()) == 0 {
 		return
@@ -131,8 +127,7 @@ func (m *Model) goodbye() {
 	}
 }
 
-// message returns the TUI's message for an App event, nil for none.
-func message(a *app.App, ev app.Event) tea.Msg {
+func message(ev app.Event) tea.Msg {
 	switch ev.Kind {
 	case app.Opened:
 		return openedMsg{ev.Conversation}
@@ -147,7 +142,7 @@ func message(a *app.App, ev app.Event) tea.Msg {
 		case session.RunStarted:
 			return runStartedMsg{}
 		case session.StatusChanged:
-			return statusMsg{a.Current().Status()}
+			return statusMsg{ev.Conversation, ev.Conversation.Status()}
 		case session.Idle:
 			return idleMsg{}
 		case session.Error:
@@ -157,7 +152,6 @@ func message(a *app.App, ev app.Event) tea.Msg {
 	return nil
 }
 
-// suggest predicts what the user may type next.
 func suggest(conv *app.Conversation, q *queue) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -166,8 +160,7 @@ func suggest(conv *app.Conversation, q *queue) {
 	}
 }
 
-// queue sends messages to the program in order without making the sender
-// wait.
+// queue delivers messages in order without blocking the sender.
 type queue struct {
 	mu     sync.Mutex
 	cond   *sync.Cond

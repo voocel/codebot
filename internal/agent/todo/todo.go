@@ -1,6 +1,6 @@
 // Package todo is the session's checklist. The model rewrites it whole with
-// todo_write, so the current list is the last accepted call in the
-// conversation and nothing is stored beside the history.
+// todo_write, so the current list is the last accepted call in the history;
+// nothing else is stored.
 package todo
 
 import (
@@ -12,7 +12,6 @@ import (
 	"github.com/voocel/litellm"
 )
 
-// ToolName is the tool that writes the list.
 const ToolName = "todo_write"
 
 type Status string
@@ -28,8 +27,6 @@ type Item struct {
 	Status  Status `json:"status"`
 }
 
-// Parse decodes todo_write arguments and enforces the list's invariants:
-// every item has content and a known status, and at most one is in progress.
 func Parse(args json.RawMessage) ([]Item, error) {
 	var in struct {
 		Todos []Item `json:"todos"`
@@ -56,8 +53,8 @@ func Parse(args json.RawMessage) ([]Item, error) {
 	return in.Todos, nil
 }
 
-// FromHistory returns the list set by the last successful todo_write call, or
-// nil when there is none (never written, or summarized away by compaction).
+// FromHistory returns nil if todo_write never succeeded or compaction
+// summarized the calls away.
 func FromHistory(msgs []agentcore.Message) []Item {
 	calls := make(map[string]json.RawMessage)
 	var current []Item
@@ -83,7 +80,6 @@ func FromHistory(msgs []agentcore.Message) []Item {
 	return current
 }
 
-// Counts tallies the list by status.
 func Counts(items []Item) (pending, inProgress, completed int) {
 	for _, it := range items {
 		switch it.Status {

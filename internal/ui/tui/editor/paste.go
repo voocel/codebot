@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// A paste longer than pasteInline runes goes into the input as a reference,
-// "[Pasted text #2 +40 lines]", which sending expands. The input stays
-// readable, and the transcript shows the whole text.
+// Pastes longer than pasteInline runes enter the input as a reference like
+// "[Pasted text #2 +40 lines]", expanded on send. This keeps the input
+// readable; the transcript shows the full text.
 const pasteInline = 1000
 
 const pasteUnavailable = "[Pasted text unavailable]"
@@ -20,13 +20,11 @@ var (
 	pasteRefAtStart = regexp.MustCompile(`^\[Pasted text #\d+(?: \+\d+ lines)?\]`)
 )
 
-// pastes holds the bodies of the paste references made in the session.
 type pastes struct {
 	bodies map[int]string
 	next   int
 }
 
-// ref returns the reference to body, holding it.
 func (p *pastes) ref(body string) string {
 	id := p.hold(body)
 	if n := strings.Count(body, "\n"); n > 0 {
@@ -49,7 +47,6 @@ func (p *pastes) hold(body string) int {
 	return p.next
 }
 
-// expand replaces the references in text with their bodies.
 func (p *pastes) expand(text string) string {
 	return pasteRef.ReplaceAllStringFunc(text, func(ref string) string {
 		id, _ := strconv.Atoi(pasteRef.FindStringSubmatch(ref)[1])
@@ -60,7 +57,6 @@ func (p *pastes) expand(text string) string {
 	})
 }
 
-// of returns the bodies text references, for its history entry.
 func (p *pastes) of(text string) map[int]string {
 	var out map[int]string
 	for _, m := range pasteRef.FindAllStringSubmatch(text, -1) {
@@ -75,8 +71,8 @@ func (p *pastes) of(text string) map[int]string {
 	return out
 }
 
-// adopt takes a history entry's text, holding its bodies under ids of this
-// session.
+// adopt re-registers a history entry's paste bodies under this session's
+// ids and returns its text with the references renumbered.
 func (p *pastes) adopt(e entry) string {
 	return pasteRef.ReplaceAllStringFunc(e.text, func(ref string) string {
 		id, _ := strconv.Atoi(pasteRef.FindStringSubmatch(ref)[1])
@@ -91,8 +87,7 @@ func (p *pastes) adopt(e entry) string {
 	})
 }
 
-// refBefore returns the length in runes of a reference ending at col of
-// line, 0 if none does.
+// refBefore returns the rune length of a reference ending at col, or 0.
 func refBefore(line []rune, col int) int {
 	if col <= 0 || col > len(line) {
 		return 0
@@ -105,8 +100,7 @@ func refBefore(line []rune, col int) int {
 	return len([]rune(before[loc[0]:]))
 }
 
-// refAfter returns the length in runes of a reference starting at col of
-// line, 0 if none does.
+// refAfter returns the rune length of a reference starting at col, or 0.
 func refAfter(line []rune, col int) int {
 	if col < 0 || col >= len(line) {
 		return 0

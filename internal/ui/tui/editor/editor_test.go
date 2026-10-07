@@ -14,7 +14,6 @@ func newEditor() *Editor {
 	return newEditorIn("")
 }
 
-// newEditorIn returns an editor mentioning the files under root.
 func newEditorIn(root string) *Editor {
 	e := New(func() []Completion {
 		return []Completion{{Name: "help", Run: true}, {Name: "model", Aliases: []string{"m"}, Run: true}, {Name: "btw"}}
@@ -45,7 +44,7 @@ func keyPress(k string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
 }
 
-// press presses keys, doing the work they start as the program would, and
+// press runs the commands each key returns, as the program would, and
 // returns the input sent, if any.
 func press(e *Editor, keys ...string) *Input {
 	var in *Input
@@ -84,7 +83,6 @@ func write(e *Editor, text string) {
 	}
 }
 
-// labels lists what the menu offers.
 func labels(e *Editor) []string {
 	var out []string
 	for _, it := range e.menu {
@@ -122,7 +120,7 @@ func TestLongPasteGoesInAsAReference(t *testing.T) {
 		t.Errorf("sent %+v", in)
 	}
 
-	// Backspace takes a reference whole.
+	// Backspace deletes a reference as a whole.
 	e.Update(tea.PasteMsg{Content: body})
 	press(e, "backspace")
 	if !e.Empty() {
@@ -260,7 +258,7 @@ func TestMentionsAFile(t *testing.T) {
 		t.Error("the menu stayed after the mention")
 	}
 
-	// A directory goes on to what it holds.
+	// Picking a directory lists its contents.
 	write(e, "and @sr")
 	press(e, "tab")
 	if got, want := labels(e), []string{"src/view.go", "src/editor.go"}; e.ta.Value() != "look at @src/editor.go and @src/" || !reflect.DeepEqual(got, want) {
@@ -275,7 +273,7 @@ func TestMentionsAFile(t *testing.T) {
 		t.Errorf("the input holds %q", got)
 	}
 
-	// Mail is no mention.
+	// An email address is not a mention.
 	e.Clear()
 	write(e, "me@ex")
 	if e.Menu(60) != nil {
@@ -326,7 +324,7 @@ func TestSearchesTheHistory(t *testing.T) {
 		t.Error("the search went on after picking")
 	}
 
-	// esc goes back to what the input held.
+	// esc restores the input.
 	e.Clear()
 	write(e, "draft")
 	press(e, "ctrl+r")

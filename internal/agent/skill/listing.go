@@ -17,11 +17,9 @@ const (
 
 const listingHeader = "The following skills are available for use with the Skill tool:\n\n"
 
-// Listing renders the skills the model may invoke for the system prompt.
-// The ones used most, by usage score, then those from the most trusted
-// sources, win the budget. The listing itself is ordered by source and name,
-// so it changes only when the skills in it do, not as usage scores decay: it
-// sits in the cached prefix of every request.
+// Listing fills the budget with the most used skills first but prints them
+// sorted by name, so the text changes only when the set of skills does, not
+// as usage scores decay. It sits in the cached prefix of every request.
 func Listing(skills []Spec, usage map[string]float64) string {
 	ranked := slices.Clone(skills)
 	slices.SortStableFunc(ranked, func(a, b Spec) int {
@@ -76,7 +74,6 @@ func Listing(skills []Spec, usage map[string]float64) string {
 	return sb.String()
 }
 
-// compareStable orders skills by name: nothing that changes with time.
 func compareStable(a, b Spec) int { return strings.Compare(a.Name, b.Name) }
 
 func skillIsActive(spec Spec, cwd string) bool {

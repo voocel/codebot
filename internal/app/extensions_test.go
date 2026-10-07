@@ -14,7 +14,6 @@ import (
 	"github.com/voocel/codebot/internal/interact"
 )
 
-// writeSkill writes the skill name, of text, into dir.
 func writeSkill(t *testing.T, dir, name, text string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
@@ -25,10 +24,9 @@ func writeSkill(t *testing.T, dir, name, text string) {
 	}
 }
 
-// A project's hooks, MCP servers and allow rules take effect only once the
-// user agrees to them; where calls go and whose keys they carry, never.
-// What the project adds since waits for them again, alone: the rest runs
-// on.
+// A project's hooks, MCP servers and allow rules take effect only after the
+// user agrees; provider endpoints and keys never do. Items added later wait
+// for consent while the agreed ones keep running.
 func TestTheProjectWaitsForTrust(t *testing.T) {
 	model := script(
 		use("b1", "bash", map[string]string{"command": "touch denied"}),
@@ -111,8 +109,8 @@ func TestTheProjectWaitsForTrust(t *testing.T) {
 	}
 }
 
-// What the user declines of a project stays off, unasked, while what they
-// agreed to runs; they may agree to it later.
+// Declined items stay off without asking again while agreed ones run; the
+// user can still agree later.
 func TestDeclinedItemsAreNotAskedAgain(t *testing.T) {
 	project := map[string]any{"permissions": map[string]any{"allow": []string{"Bash(make *)", "Bash(rm *)"}}}
 	e := boot(t, setup{project: project}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
@@ -136,7 +134,6 @@ func TestDeclinedItemsAreNotAskedAgain(t *testing.T) {
 	}
 }
 
-// A project the user distrusted stays so, unasked.
 func TestADistrustedProjectIsNotAskedAbout(t *testing.T) {
 	project := map[string]any{"permissions": map[string]any{"allow": []string{"Bash(touch *)"}}}
 	e := boot(t, setup{project: project}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
@@ -148,8 +145,8 @@ func TestADistrustedProjectIsNotAskedAbout(t *testing.T) {
 	}
 }
 
-// A project's skills are its instructions, in effect untrusted; what they
-// may do only where agreed to waits.
+// Project skills load without trust since they are only instructions;
+// their shell commands wait for consent.
 func TestProjectSkillsWaitForTrustToRun(t *testing.T) {
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	writeSkill(t, filepath.Join(e.cwd, ".agents", "skills"), "deploy", "---\ndescription: deploys\n---\nState: !`echo live`\n")

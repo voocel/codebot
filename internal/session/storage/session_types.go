@@ -7,7 +7,6 @@ import (
 	"github.com/voocel/agentcore"
 )
 
-// entryKind identifies the type of a JSONL entry.
 type entryKind string
 
 const (
@@ -17,14 +16,13 @@ const (
 	entryModel      entryKind = "model"      // records the model the session runs on
 )
 
-// entry is a single JSONL line in the session file.
 type entry struct {
 	Kind      entryKind       `json:"kind"`
 	Timestamp time.Time       `json:"timestamp"`
 	Data      json.RawMessage `json:"data"`
 }
 
-// Header is the first line of a session file.
+// Header is the first line of the file.
 type Header struct {
 	Version   int       `json:"version"`
 	SessionID string    `json:"session_id"`
@@ -32,31 +30,25 @@ type Header struct {
 	Created   time.Time `json:"created"`
 }
 
-// Model is a model selection as recorded in the log.
 type Model struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	Effort   string `json:"effort,omitempty"`
 }
 
-// compaction is the data of a compaction entry: the history that replaced
-// the one before, and what writing it used.
 type compaction struct {
 	Messages []agentcore.Message `json:"messages"`
 	Usage    *agentcore.Usage    `json:"usage,omitempty"`
 }
 
-// State is what a session log replays to.
 type State struct {
 	Messages []agentcore.Message
-	// Model is the last recorded model selection; zero when none was recorded.
-	Model Model
-	// Usage sums every recorded response, including those a compaction later
-	// replaced, and every compaction.
+	Model    Model // zero when none was recorded
+	// Usage includes responses that a compaction later replaced, and the
+	// compactions themselves.
 	Usage agentcore.Usage
 }
 
-// SessionInfo is a summary of a session for listing.
 type SessionInfo struct {
 	ID           string
 	Path         string

@@ -13,7 +13,6 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
-// Permission asks to allow a tool call or hook command.
 type Permission struct {
 	req   interact.Approval
 	reply chan<- interact.Verdict
@@ -21,19 +20,18 @@ type Permission struct {
 	menu  menu
 	head  head
 	queue
-	instead field // what to do instead, with the last option
+	instead field // feedback for the deny-with-instructions option
 }
 
 type option struct {
 	label  string
 	choice interact.Choice
-	// first is done before the answer goes, so that it holds for the
-	// calls after this one.
+	// first runs before the answer is sent so it applies to the calls that
+	// follow.
 	first func()
 }
 
-// NewPermission returns the panel for req, which answers on reply.
-// acceptEdits switches to the accept-edits mode, offered for an edit.
+// acceptEdits switches to the accept-edits mode; it is offered for edits.
 func NewPermission(req interact.Approval, reply chan<- interact.Verdict, acceptEdits func()) *Permission {
 	opts := []option{{label: "Yes", choice: interact.AllowOnce}}
 	if req.Remember != "" {
@@ -90,7 +88,7 @@ func (p *Permission) View(width, height int) string {
 		lines = append(lines, markdown.Wrap("⚠ "+p.req.Warning, theme.ErrorText, width-2)...)
 	}
 	lines = append(lines, p.summary(width-2)...)
-	// Why a call is asked each time; the usual why is the mode's.
+	// Explain why this call is asked every time; otherwise the mode is why.
 	switch {
 	case p.req.OutsideRoots:
 		lines = append(lines, theme.WarmText.Render("Reaches outside the workspace · asked each time"))
@@ -117,8 +115,6 @@ func (p *Permission) View(width, height int) string {
 	return frame(p.queue.title("Allow "+transcript.Title(p.req.Tool)+"?"), body, hint, width, height)
 }
 
-// summary shows what the call does: a command highlighted as one, a file
-// from the workspace.
 func (p *Permission) summary(width int) []string {
 	s := strings.TrimSpace(p.req.Summary)
 	switch p.req.Tool {

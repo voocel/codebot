@@ -11,8 +11,8 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// The system prompt is the cached prefix: what changes while a conversation
-// lasts is told in Parts.
+// The system prompt is the cached prefix; anything that changes belongs in a
+// Part.
 func TestSystemHoldsNothingThatChanges(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
@@ -44,8 +44,8 @@ func TestSystemFiles(t *testing.T) {
 	}
 }
 
-// A project's AGENTS.md and SYSTEM.md leading outside it are not read: the
-// user's files are not the project's to read into the prompt.
+// Symlinked AGENTS.md and SYSTEM.md that point outside the project are not
+// read, so a repository can't pull the user's files into the prompt.
 func TestProjectFilesStayInTheProject(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks")
@@ -74,8 +74,8 @@ func TestProjectFilesStayInTheProject(t *testing.T) {
 		t.Errorf("prompt %q", got)
 	}
 
-	// A repository the project is checked out in reads nothing outside it
-	// either, while the user's own file leads where they like.
+	// From a nested repository, the outer project's files still stay inside
+	// it, while ~/.codebot/AGENTS.md may point anywhere.
 	sub := filepath.Join(root, "vendor", "sub")
 	if err := os.MkdirAll(filepath.Join(sub, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -95,8 +95,8 @@ func TestProjectFilesStayInTheProject(t *testing.T) {
 	}
 }
 
-// A part with nothing to tell says so, which retracts what it told before;
-// MEMORY.md is promised to be in context, so an empty one says so too.
+// An empty part renders as "None." to retract its earlier content. An empty
+// MEMORY.md gets a placeholder because the instructions promise it is there.
 func TestPartWithNothingToTellSaysSo(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if got := MCP("").Text(); got != "# MCP Server Instructions\n\nNone." {

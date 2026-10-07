@@ -11,7 +11,6 @@ func TestIsReadonlyBash(t *testing.T) {
 		cmd  string
 		want bool
 	}{
-		// --- simple readonly ---
 		{"ls", "ls", true},
 		{"grep recursive", "grep -r foo .", true},
 		{"git status", "git status", true},
@@ -20,7 +19,6 @@ func TestIsReadonlyBash(t *testing.T) {
 		{"compound readonly", "ls && pwd && cat README.md", true},
 		{"pipe readonly", "cat file | grep foo | wc -l", true},
 
-		// --- non-readonly: mutating commands ---
 		{"rm", "rm file", false},
 		{"mv", "mv a b", false},
 		{"cp", "cp a b", false},
@@ -28,49 +26,40 @@ func TestIsReadonlyBash(t *testing.T) {
 		{"git commit", "git commit -m fix", false},
 		{"git reset", "git reset --hard", false},
 		{"git push", "git push", false},
-		// non-whitelisted git subcommands fall through (one ask + allow-session covers).
 		{"git branch", "git branch", false},
 		{"git config", "git config --list", false},
 		{"git remote", "git remote -v", false},
 		{"git ls-files", "git ls-files", false},
 
-		// --- non-readonly: dangerous flags inside otherwise-readonly cmd ---
 		{"find -exec", "find . -name '*.tmp' -exec rm {} \\;", false},
 		{"find -delete", "find . -name 'x' -delete", false},
 		{"sed -i", "sed -i 's/x/y/' file", false},
 		{"sed --in-place", "sed --in-place 's/a/b/' file", false},
 
-		// --- non-readonly: redirection ---
 		{"echo redirect", "echo hi > out.txt", false},
 		{"cat redirect append", "cat file >> log.txt", false},
 		{"cat input redirect", "cat < input.txt", false},
 
-		// --- non-readonly: any segment of compound poisons ---
 		{"mixed compound", "ls && rm -rf /tmp/x", false},
 		{"mixed pipe", "cat file | tee out.txt", false},
 
-		// --- non-readonly: a substitution or another line runs whatever it holds ---
 		{"command substitution", "ls $(touch x)", false},
 		{"backticks", "ls `touch x`", false},
 		{"another line", "ls\ntouch x", false},
 		{"background", "cat a & touch x", false},
 
-		// --- non-readonly: env-var prefix rejected outright ---
 		{"env var prefix", "NODE_ENV=prod ls", false},
 
-		// --- excluded commands (intentionally not on whitelist) ---
 		{"awk excluded", "awk '{print $1}' file", false},
 		{"tee excluded", "tee out.txt", false},
 		{"bash invoked", "bash -c 'ls'", false},
 		{"sudo", "sudo ls", false},
 
-		// --- sensitive paths poison readonly fast-path ---
 		{"cat ssh key", "cat ~/.ssh/id_rsa", false},
 		{"grep into netrc", "grep secret ~/.netrc", false},
 		{"head aws creds", "head /Users/x/.aws/credentials", false},
 		{"public key fine", "cat ~/.ssh/id_rsa.pub", true},
 
-		// --- edge ---
 		{"empty", "", false},
 	}
 

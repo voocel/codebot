@@ -17,21 +17,18 @@ import (
 	"github.com/voocel/codebot/internal/interact"
 )
 
-// Config is what an Engine is made from.
 type Config struct {
 	Cwd   string
 	Mode  interact.Mode
 	Rules *RuleSet
 	Roots FilesystemRoots
-	// UI is asked whatever the mode does not allow on its own; without one,
-	// that is denied.
+	// Without a UI, anything that needs asking is denied.
 	UI      interact.UI
 	OnAudit func(AuditEntry)
 }
 
-// Engine decides tool calls. Its mode, its rules and roots, which follow
-// the settings as reloaded, and the approvals given while it runs change;
-// what one conversation allows on top travels with its requests, see
+// Engine holds process-wide state: mode, rules, roots and stored approvals.
+// What one conversation allows on top comes with each request; see
 // Middleware.
 type Engine struct {
 	workspace string
@@ -61,11 +58,10 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}, nil
 }
 
-// Middleware decides the tool calls of one conversation, refusing those it
-// does not allow. grants returns what the conversation allows beyond the mode
-// at the time of each call, such as the tools of the skills its run invoked;
-// meta returns how the engine sees the tools that classify themselves, such
-// as MCP tools.
+// Middleware gates one conversation's tool calls. grants is called for each
+// call and returns extra allowances, such as the tools of skills invoked in
+// the run. meta returns the Metadata of self-classifying tools such as MCP
+// tools.
 func (e *Engine) Middleware(grants func() []Rule, meta func(tool string) Metadata) agentcore.ToolMiddleware {
 	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
 		decision, err := e.Decide(ctx, Request{
@@ -74,8 +70,7 @@ func (e *Engine) Middleware(grants func() []Rule, meta func(tool string) Metadat
 			ToolLabel: call.Tool.Label,
 			Args:      call.Args,
 			Metadata:  meta(call.Name),
-			// Paths resolve against the directory the tool runs in, which
-			// moves with a worktree entered mid-run.
+			// The tool's cwd moves when a worktree is entered mid-run.
 			Workspace: agentcoretools.CwdFromContext(ctx),
 			Grants:    grants(),
 		})
@@ -89,7 +84,6 @@ func (e *Engine) Middleware(grants func() []Rule, meta func(tool string) Metadat
 	}
 }
 
-// Configure replaces the rules and the roots, from the next decision on.
 func (e *Engine) Configure(rules *RuleSet, roots FilesystemRoots) {
 	roots = normalizeFilesystemRoots(e.workspace, roots)
 	e.mu.Lock()
@@ -98,10 +92,6 @@ func (e *Engine) Configure(rules *RuleSet, roots FilesystemRoots) {
 }
 
 func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
-	// A per-request Workspace (e.g. a worktree the harness entered mid-run)
-	// wins over the engine's construction-time workspace, so relative operand
-	// paths are normalized, checked, and audited against the directory the
-	// tool actually runs in. Empty preserves the original behaviour.
 	e.mu.RLock()
 	rules, roots := e.rules, e.roots
 	e.mu.RUnlock()
@@ -119,16 +109,14 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 		return decision, nil
 	}
 
-	// A call outside the roots, or one the harness wants confirmed each
-	// time, asks whatever the mode and the stored approvals say.
+	// Outside-roots and confirm-each-time calls ask regardless of the mode
+	// and stored approvals.
 	if info.askEachTime() {
 		return e.ask(ctx, info)
 	}
 
-	// Harness-declared internal path: silent allow for the requested
-	// capability. Deny rules above still apply, so this only bypasses the
-	// mode-based ask that would otherwise interrupt every memory or scratch
-	// write.
+	// Skips the mode prompt that would otherwise interrupt every memory
+	// write. Deny rules above still apply.
 	if info.internalPath {
 		decision := allowDecision(DecisionSourceInternal, info, "harness-managed path")
 		e.audit(info, decision)
@@ -206,7 +194,6 @@ func (e *Engine) Mode() interact.Mode {
 	return e.mode
 }
 
-// ask puts the request to the user and audits the outcome.
 func (e *Engine) ask(ctx context.Context, info toolInfo) (*Decision, error) {
 	if e.ui == nil {
 		msg := info.reason
@@ -241,9 +228,6 @@ func (e *Engine) ask(ctx context.Context, info toolInfo) (*Decision, error) {
 	return decision, nil
 }
 
-// resolve turns the user's answer into a decision, remembering what an
-// always allows. A denial tells the agent it was the user's, and what they
-// said to do instead.
 func (e *Engine) resolve(info toolInfo, v interact.Verdict) *Decision {
 	d := &Decision{
 		Kind:         DecisionAllowOnce,
@@ -267,7 +251,6 @@ func (e *Engine) resolve(info toolInfo, v interact.Verdict) *Decision {
 	return d
 }
 
-// remembered reports whether the user always allowed what the call does.
 func (e *Engine) remembered(info toolInfo) bool {
 	for _, key := range info.keys {
 		if !e.store.Has(key) {
@@ -298,20 +281,19 @@ type toolInfo struct {
 	tool       string
 	capability Capability
 	summary    string
-	// keys are what remembering the call stores, all of which allow it
-	// again; remember says what they allow, for the user.
+	// keys are stored on Allow Always; the call is allowed again only when
+	// all of them are stored. remember describes them to the user.
 	keys         []string
 	remember     string
 	reason       string
 	hardDeny     string
 	outsideRoots bool
-	confirm      bool // the classifier asked to confirm each call
+	confirm      bool
 	internalPath bool
 	workspace    string
 	roots        []string
 }
 
-// orReason gives the request a reason when its classification gave none.
 func (i toolInfo) orReason(reason string) toolInfo {
 	if i.reason == "" {
 		i.reason = reason
@@ -319,14 +301,11 @@ func (i toolInfo) orReason(reason string) toolInfo {
 	return i
 }
 
-// askEachTime reports whether the call is confirmed every time.
 func (i toolInfo) askEachTime() bool { return i.outsideRoots || i.confirm }
 
-// rememberable reports whether always allowing the call can be remembered.
 func (i toolInfo) rememberable() bool { return len(i.keys) > 0 && !i.askEachTime() }
 
-// ruleAction is what the matching rule says of a request; "" when none
-// matches.
+// ruleAction is "" when no rule matches.
 type ruleAction string
 
 const (
@@ -383,9 +362,6 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 				info.summary = path
 			}
 			if deny != "" {
-				// Harness-declared internal paths bypass the user-roots check.
-				// InternalWritable implies readability — populating only the
-				// writable list is the common case for fully-managed dirs.
 				if pathInRoots(path, roots.InternalReadable) || pathInRoots(path, roots.InternalWritable) {
 					info.internalPath = true
 				} else {
@@ -468,9 +444,8 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 	return info
 }
 
-// checkedPath resolves raw against workspace, then verifies it falls within
-// at least one of roots. Returns the absolute path plus a deny message when
-// the path lies outside; an empty raw input returns ("", "").
+// checkedPath returns the absolute path, and a deny message if it lies
+// outside roots.
 func checkedPath(workspace string, roots []string, raw, rootLabel string) (string, string) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -497,12 +472,6 @@ func checkedPath(workspace string, roots []string, raw, rootLabel string) (strin
 	return path, fmt.Sprintf("path outside %s roots denied: %s", rootLabel, path)
 }
 
-// pathInRoots reports whether path resolves under any of the given roots.
-// Both sides are passed through resolveSymlinks so a symlink inside or below
-// a root resolves consistently with the canonical comparison checkedPath
-// performs. A miss returns false without producing a deny message — callers
-// such as inspectRequest's InternalReadable/InternalWritable check fall
-// through to the next decision step on miss.
 func pathInRoots(path string, roots []string) bool {
 	if path == "" || len(roots) == 0 {
 		return false
@@ -612,8 +581,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// commands names the commands keys allow: "`go test` and `go vet`
-// commands".
+// commands describes keys to the user: "`go test` and `go vet` commands".
 func commands(keys []string) string {
 	if len(keys) == 0 {
 		return ""

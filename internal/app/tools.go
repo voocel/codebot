@@ -14,13 +14,12 @@ import (
 	"github.com/voocel/codebot/internal/agent/tools"
 )
 
-// buildTools builds the conversation's own tools for the current model. MCP
-// tools are added per run, see spec. Callers hold c.mu.
+// buildTools leaves out MCP tools, which specLocked adds. Callers hold c.mu.
 func (c *Conversation) buildTools() []agentcore.Tool {
 	a := c.app
 	ws := agentcoretools.Workspace{Dir: c.cwd, FS: a.opts.FS, Files: c.files, Tasks: c.tasks}
 
-	// Sub-agents get every tool up to here, each re-pooled per agent.
+	// Sub-agents get every tool up to here, re-pooled per agent.
 	out := append(ws.Tools(),
 		tools.NewWebFetch(a.settings.SearchProvider, a.settings.SearchAPIKey),
 		tools.NewWebSearch(a.settings.SearchProvider, a.settings.SearchAPIKey),
@@ -47,7 +46,6 @@ func (c *Conversation) buildTools() []agentcore.Tool {
 	return append(out, c.tasks.Tools()...)
 }
 
-// buildSubagents builds the subagent tool over the given tools.
 func (c *Conversation) buildSubagents(pool []agentcore.Tool, ws agentcoretools.Workspace) agentcore.Tool {
 	a, model := c.app, c.model
 	deps := subagent.BuildDeps{
@@ -58,8 +56,7 @@ func (c *Conversation) buildSubagents(pool []agentcore.Tool, ws agentcoretools.W
 		CompactAt:    model.compactAt,
 		Retry:        retryPolicy,
 		SessionID:    c.id,
-		// A sub-agent runs its own loop: the main loop's middleware does not
-		// reach it.
+		// A sub-agent runs its own loop, so it needs its own middleware.
 		Middleware: c.middleware(),
 		Emit:       agentEmit(c.agents),
 	}
@@ -75,7 +72,6 @@ func (c *Conversation) buildSubagents(pool []agentcore.Tool, ws agentcoretools.W
 	return coresub.New(c.tasks, agents...)
 }
 
-// forkSkill runs a forked skill in a sub-agent.
 func (c *Conversation) forkSkill(ctx context.Context, args json.RawMessage) (agentcore.Result, error) {
 	c.mu.Lock()
 	agents := c.subagents
@@ -83,8 +79,7 @@ func (c *Conversation) forkSkill(ctx context.Context, args json.RawMessage) (age
 	return agents.Run(ctx, args)
 }
 
-// coreToolNames stay visible when the model supports tool search; the rest
-// load on demand. Frequently used tools stay so the first turn needs no
+// coreToolNames stay visible under tool search so the first turn needs no
 // search round-trip.
 var coreToolNames = map[string]bool{
 	"read":       true,
@@ -98,11 +93,10 @@ var coreToolNames = map[string]bool{
 	"ask_user":   true,
 }
 
-// withToolSearch defers the non-core tools behind tool_search when the
-// model's adapter defers tools, as Anthropic's does: the models it serves are
-// taken to be Claude 4.5 or later, which take deferred tools. Elsewhere a
-// tool search would add each tool it finds to the request mid-session, which
-// restarts the prompt cache and invalidates Claude's thinking.
+// withToolSearch defers non-core tools only when the adapter supports
+// deferred tools natively. Otherwise each tool found would be added to the
+// request mid-session, which invalidates the prompt cache and Claude's
+// thinking.
 func withToolSearch(all []agentcore.Tool, client *litellm.Client) []agentcore.Tool {
 	if caps, _ := client.Capabilities(); !caps.DeferredTools {
 		return all

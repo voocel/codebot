@@ -18,22 +18,18 @@ import (
 
 const fetchMaxRead = 5 << 20 // bytes downloaded at most
 
-// webClient makes the web tools' requests.
 var webClient = &http.Client{Timeout: 30 * time.Second}
 
-// webNotConfigured is what the web tools answer without the API key their
-// provider needs.
 const webNotConfigured = "Web search and fetch are not configured: tavily needs an API key (search_api_key in the settings, or TAVILY_API_KEY), or set search_provider to jina."
 
 type fetcher interface {
 	fetch(ctx context.Context, targetURL string) (string, error)
 }
 
-// NewWebFetch returns the web_fetch tool, which fetches a web page as
-// markdown through provider, "tavily" or "jina". Jina works without a key,
-// tavily does not.
+// NewWebFetch takes provider "tavily" or "jina"; only jina works without an
+// API key.
 func NewWebFetch(provider, apiKey string) agentcore.Tool {
-	var f fetcher // nil without the API key the provider needs
+	var f fetcher // nil without the provider's API key
 	switch {
 	case provider == "jina":
 		f = jinaFetcher{apiKey}
@@ -81,7 +77,6 @@ func webFetch(ctx context.Context, f fetcher, a webFetchArgs) (agentcore.Result,
 	return agentcore.TextResult(content), nil
 }
 
-// tavilyFetcher extracts pages with POST https://api.tavily.com/extract.
 type tavilyFetcher struct{ apiKey string }
 
 type tavilyExtractResponse struct {
@@ -128,7 +123,6 @@ func (p tavilyFetcher) fetch(ctx context.Context, targetURL string) (string, err
 	return tr.Results[0].RawContent, nil
 }
 
-// jinaFetcher reads pages with GET https://r.jina.ai/{url}.
 type jinaFetcher struct{ apiKey string }
 
 func (p jinaFetcher) fetch(ctx context.Context, targetURL string) (string, error) {

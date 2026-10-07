@@ -10,27 +10,23 @@ import (
 	"github.com/voocel/codebot/internal/workspace/worktree"
 )
 
-// worktreeState is the sandbox the conversation works in.
 type worktreeState struct {
 	slug   string
 	dir    string
 	branch string
 }
 
-// WorktreeExit reports what ExitWorktree did.
 type WorktreeExit struct {
 	Slug       string
 	Dir        string
 	Branch     string
 	HadChanges bool
-	Kept       bool // the changes were kept for review instead of removed
-	// BranchKept says the clean checkout was removed but its branch kept,
-	// because it holds commits not reachable elsewhere.
+	Kept       bool // changes kept for review instead of removed
+	// BranchKept means the clean checkout was removed but its branch was
+	// kept, because it holds commits not reachable elsewhere.
 	BranchKept bool
 }
 
-// forModel describes the exit to the model, which leaves through the tool
-// rather than the /worktree command.
 func (r WorktreeExit) forModel() string {
 	switch {
 	case r.Kept:
@@ -44,7 +40,6 @@ func (r WorktreeExit) forModel() string {
 	}
 }
 
-// Worktree is the sandbox directory the conversation works in, "" outside one.
 func (c *Conversation) Worktree() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -54,8 +49,6 @@ func (c *Conversation) Worktree() string {
 	return c.worktree.dir
 }
 
-// EnterWorktree creates a sandbox worktree of the workspace and moves the
-// conversation into it.
 func (c *Conversation) EnterWorktree(name string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -71,8 +64,8 @@ func (c *Conversation) EnterWorktree(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// A clean checkout lacks the local files (.env, ...); one that cannot be
-	// copied is reported so the sandbox does not fail mysteriously later.
+	// A fresh checkout lacks untracked local files such as .env. Report the
+	// ones that fail to copy so the sandbox doesn't fail mysteriously later.
 	if failed, err := worktree.CopyIncludes(root, dir, worktree.DefaultIncludes); err != nil {
 		log.Printf("worktree %q: copy local files: %v", slug, err)
 	} else if len(failed) > 0 {
@@ -84,10 +77,9 @@ func (c *Conversation) EnterWorktree(name string) (string, error) {
 	return dir, nil
 }
 
-// ExitWorktree moves the conversation back to the workspace. A sandbox with
-// uncommitted changes is kept for review unless discard is set; otherwise it
-// is removed with its branch. Removal is data-safe: git refuses to drop a
-// branch with unmerged commits.
+// ExitWorktree keeps a sandbox with uncommitted changes for review unless
+// discard is set; otherwise it removes the sandbox and its branch. git
+// refuses to drop a branch with unmerged commits.
 func (c *Conversation) ExitWorktree(discard bool) (WorktreeExit, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -101,7 +93,7 @@ func (c *Conversation) ExitWorktree(discard bool) (WorktreeExit, error) {
 	}
 	res := WorktreeExit{Slug: wt.slug, Dir: wt.dir, Branch: wt.branch, HadChanges: changed}
 	if !changed || discard {
-		// Remove before leaving: on failure the conversation stays in the
+		// Remove before leaving, so on failure the conversation stays in the
 		// intact sandbox and the user can retry.
 		if res.BranchKept, err = worktree.Remove(c.app.cwd, wt.dir, wt.branch, discard); err != nil {
 			return res, err
@@ -115,22 +107,19 @@ func (c *Conversation) ExitWorktree(discard bool) (WorktreeExit, error) {
 	return res, nil
 }
 
-// moveLocked points the conversation at dir: tools, checkpoints and the
-// workspace the model is told about. Callers hold c.mu.
 func (c *Conversation) moveLocked(dir string) {
 	c.cwd = dir
 	if c.snapshots != nil {
 		c.snapshots.Rebind(config.SnapshotDir(dir), dir, config.UndoStatePath(dir, c.id))
 	}
 	c.skills, c.workspace = c.app.workspace(dir)
-	// Tools follow the cwd through the run's context at once; the model is
-	// told of the move as the next run starts.
+	// Tools see the new cwd at once through the run's context; the model is
+	// told when the next run starts.
 	c.configureLocked()
 }
 
-// cleanWorktreeOrphans removes leftover codebot worktrees without uncommitted
-// changes, which a crashed process never cleaned. Dirty ones stay: unreviewed
-// work is never destroyed.
+// cleanWorktreeOrphans removes clean worktrees left by a crashed process.
+// Dirty ones stay, so unreviewed work is never destroyed.
 func cleanWorktreeOrphans(root string) {
 	if !worktree.IsRepo(root) {
 		return
@@ -152,8 +141,6 @@ func cleanWorktreeOrphans(root string) {
 	}
 }
 
-// cleanWorktreeArtifacts removes the checkpoint repository and sessions kept
-// under ~/.codebot for a worktree's directory.
 func cleanWorktreeArtifacts(dir string) {
 	_ = os.RemoveAll(config.SnapshotDir(dir))
 	_ = os.RemoveAll(config.SessionsDir(dir))

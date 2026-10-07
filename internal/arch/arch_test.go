@@ -1,20 +1,18 @@
-// Package arch checks the dependency rules between codebot's packages. The
-// directories under internal are its layers, each depending only on those
-// below it:
+// Package arch enforces the dependency rules between codebot's packages. Each
+// directory under internal is a layer that depends only on the layers below:
 //
 //	ui/         frontends: tui, print, acp
 //	app/        assembly: App and Conversation
-//	extension/  what users plug in: skills, sub-agents, MCP servers, hooks,
-//	            plugins, and what of them the user agreed to run
-//	agent/      what the agent runs with: tools, skills, sub-agents, prompt,
-//	            permissions, todos
+//	extension/  user extensions (skills, sub-agents, MCP servers, hooks,
+//	            plugins) and the user's consent to run them
+//	agent/      tools, skills, sub-agents, prompt, permissions, todos
 //	session/    the conversation actor and its log
-//	workspace/  what codebot does to the repository: checkpoints, worktrees
+//	workspace/  repository changes: checkpoints, worktrees
 //	infra/      settings, models, telemetry
 //
-// agent, session and workspace share a layer and do not depend on one
-// another; app joins them. interact, the contract with the frontends, and
-// lib, generic helpers, are leaves any layer may use.
+// agent, session and workspace form one layer and do not import each other;
+// app joins them. interact (the frontend contract) and lib (generic helpers)
+// are leaves that any layer may use.
 package arch
 
 import (
@@ -30,42 +28,41 @@ import (
 
 const module = "github.com/voocel/codebot/"
 
-// allowed lists, for a package or a package and those under it ("x/..."),
-// the codebot packages it may import; the most specific pattern applies.
-// Packages not listed are unconstrained.
+// allowed maps a package pattern ("x" or "x/...") to the codebot packages it
+// may import. The most specific pattern applies; unlisted packages are
+// unconstrained.
 var allowed = map[string][]string{
-	// The frontends drive the core through app alone, and none depends on
-	// another; settings and todos are plain data they also show.
+	// Frontends reach the core only through app and never import each other.
+	// Settings and todos are plain data they also display.
 	"internal/ui/...":        {"internal/app", "internal/session", "internal/interact", "internal/infra/config", "internal/agent/todo"},
 	"internal/ui/tui/...":    {"internal/app", "internal/session", "internal/interact", "internal/infra/config", "internal/agent/todo", "internal/ui/tui/..."},
 	"internal/extension/...": {"internal/extension/...", "internal/agent/...", "internal/workspace/...", "internal/infra/...", "internal/interact", "internal/lib/..."},
 	"internal/agent/...":     {"internal/agent/...", "internal/infra/...", "internal/interact", "internal/lib/..."},
 	"internal/workspace/...": {"internal/workspace/...", "internal/infra/...", "internal/lib/..."},
-	// The session knows the kernel and its log, nothing else.
+	// The session depends only on the kernel and its log.
 	"internal/session/...": {"internal/session/..."},
 	"internal/infra/...":   {"internal/infra/...", "internal/lib/..."},
-	// The contract with the frontends depends on nothing; what implements
-	// or calls it does.
+	// The frontend contract depends on nothing.
 	"internal/interact": {},
-	// Shared helpers know nothing of codebot, so any package may use them.
+	// Helpers know nothing of codebot, so any package may use them.
 	"internal/lib/...": {"internal/lib/..."},
 }
 
-// external lists the non-standard modules a package may import, where that
-// is constrained.
+// external lists the third-party modules a package may import; unlisted
+// packages are unconstrained.
 var external = map[string][]string{
 	"internal/session": {"github.com/voocel/agentcore", "github.com/voocel/litellm"},
-	// What the TUI shows of a conversation renders to plain strings, apart
-	// from the event loop: it is the same live, restored and left on exit.
+	// The transcript renders to plain strings without the event loop, so it
+	// looks the same live, restored and after exit.
 	"internal/ui/tui/transcript": {"github.com/voocel/agentcore", "github.com/voocel/litellm", "charm.land/lipgloss/v2", "github.com/charmbracelet/x/ansi"},
 	"internal/ui/tui/markdown":   {"charm.land/lipgloss/v2", "github.com/charmbracelet/x/ansi", "github.com/yuin/goldmark"},
 	"internal/ui/tui/syntax":     {"github.com/alecthomas/chroma/v2"},
 	"internal/ui/tui/theme":      {"charm.land/lipgloss/v2"},
 }
 
-// TestDependencyRules reads the imports from the sources rather than from go
-// list: the test cache sees the files a test opens, not those a command it
-// runs does, so a cached pass would hide a new violation.
+// TestDependencyRules parses the sources instead of running go list: the test
+// cache tracks files the test opens, not files a subprocess reads, so a
+// cached pass could hide a new violation.
 func TestDependencyRules(t *testing.T) {
 	root := filepath.Join("..", "..")
 	fset := token.NewFileSet()
@@ -113,7 +110,7 @@ func TestDependencyRules(t *testing.T) {
 func check(pkg, imp string) string {
 	if dep, ok := strings.CutPrefix(imp, module); ok {
 		if dep == "internal/app" || isFrontend(dep) {
-			// The core never depends on what is built on it.
+			// The core never imports what is built on top of it.
 			if !strings.HasPrefix(pkg, "cmd/") && !isFrontend(pkg) {
 				return "only cmd and the frontends may use app and the frontends"
 			}
@@ -129,7 +126,6 @@ func check(pkg, imp string) string {
 	return ""
 }
 
-// ruleFor returns the rule of the most specific pattern covering pkg.
 func ruleFor(pkg string) ([]string, bool) {
 	best := ""
 	for pattern := range allowed {
@@ -141,8 +137,6 @@ func ruleFor(pkg string) ([]string, bool) {
 	return rule, ok
 }
 
-// matches reports whether pattern, a package or a package and those under it
-// ("x/..."), covers pkg.
 func matches(pattern, pkg string) bool {
 	if dir, ok := strings.CutSuffix(pattern, "/..."); ok {
 		return pkg == dir || strings.HasPrefix(pkg, dir+"/")

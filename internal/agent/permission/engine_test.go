@@ -26,8 +26,6 @@ func toolReq(name string, args map[string]any) Request {
 	}
 }
 
-// Balanced mode lets a read in the workspace through and, with no one to
-// ask, denies a write.
 func TestBalancedWithoutUI(t *testing.T) {
 	engine := newEngine(t, Config{})
 	for tool, want := range map[string]DecisionKind{"read": DecisionAllow, "write": DecisionDeny} {
@@ -62,9 +60,8 @@ func TestOutsideRootsAllowsOnlyOnce(t *testing.T) {
 	}
 }
 
-// Always remembers the commands a call runs, each of which must be
-// remembered for a later call to go unasked: one command approved does
-// not let another ride along.
+// Each command needs its own approval, so approving one never lets another
+// ride along.
 func TestAlwaysRemembersEachCommand(t *testing.T) {
 	var asked []interact.Approval
 	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
@@ -89,7 +86,7 @@ func TestAlwaysRemembersEachCommand(t *testing.T) {
 	if len(asked) != 2 || asked[1].Remember != "`go test` and `curl` commands in this project" {
 		t.Errorf("asked %+v", asked)
 	}
-	// What cannot be remembered is asked every time.
+	// An opaque command can't be remembered, so it asks every time.
 	run("go test $(cat pkgs)")
 	run("go test $(cat pkgs)")
 	if len(asked) != 4 || asked[3].Remember != "" {
@@ -97,7 +94,6 @@ func TestAlwaysRemembersEachCommand(t *testing.T) {
 	}
 }
 
-// A denial tells the agent what the user said to do instead.
 func TestDenialCarriesTheFeedback(t *testing.T) {
 	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
 		return interact.Verdict{Choice: interact.Deny, Feedback: "use make clean"}, nil
@@ -111,7 +107,6 @@ func TestDenialCarriesTheFeedback(t *testing.T) {
 	}
 }
 
-// An edit offers the accept-edits mode instead of remembering the file.
 func TestEditOffersTheMode(t *testing.T) {
 	var prompt interact.Approval
 	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
@@ -147,8 +142,6 @@ func TestWriteViaSymlinkEscapeDenied(t *testing.T) {
 	}
 }
 
-// A harness-declared internal path is used without asking: a readable one
-// for reads, a writable one for writes and reads both.
 func TestInternalPathsSilentlyAllowed(t *testing.T) {
 	for _, tc := range []struct {
 		tool     string
@@ -221,8 +214,6 @@ func TestInternalPathRespectsDenyRule(t *testing.T) {
 	}
 }
 
-// A WebFetch(host) deny rule keeps web_fetch off the host, however the URL
-// spells it; other hosts are fetched.
 func TestWebFetchHostRules(t *testing.T) {
 	rules, err := ParseRuleSet(nil, []string{"WebFetch(*.evil.com)"})
 	if err != nil {
@@ -243,12 +234,8 @@ func TestWebFetchHostRules(t *testing.T) {
 }
 
 func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
-	// When a path is in BOTH the user's WriteRoots and InternalWritable,
-	// the user-configured root wins: the request runs through the normal
-	// mode-based flow (balanced → ask) instead of the internal silent allow.
-	// User intent takes precedence over harness-declared internal paths so
-	// the harness cannot silently override what the user explicitly opted
-	// into. Lock this in so a future refactor can't quietly invert it.
+	// A path in both WriteRoots and InternalWritable follows the user's roots
+	// (balanced asks), so the harness never overrides what the user set.
 	workspace := t.TempDir()
 	memDir := t.TempDir()
 	var prompted bool
@@ -280,8 +267,6 @@ func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 	}
 }
 
-// A grant allows what the mode would ask about, for the request carrying it,
-// and still yields to deny rules.
 func TestGrantsAllowTheirRequestOnly(t *testing.T) {
 	workspace := t.TempDir()
 	rules, err := ParseRuleSet(nil, []string{"Bash(rm *)"})
@@ -309,8 +294,6 @@ func TestGrantsAllowTheirRequestOnly(t *testing.T) {
 	}
 }
 
-// A write in a protected directory, one whose files decide what codebot
-// runs, is confirmed each time, though the mode lets edits through.
 func TestProtectedWritesAskEachTime(t *testing.T) {
 	workspace := t.TempDir()
 	kit := filepath.Join(workspace, "kit")

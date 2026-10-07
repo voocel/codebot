@@ -12,10 +12,8 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Consent asks the user to decide on what would run as them: a folder's
-// surface, or a plugin's to add, install or update. They agree to the items
-// checked and decline the others: space checks and unchecks the one under
-// the cursor.
+// Consent asks about items that would run as the user, from a folder or a
+// plugin. Checked items are agreed to, the rest declined.
 type Consent struct {
 	key         any
 	title, lead string
@@ -23,20 +21,19 @@ type Consent struct {
 	checked     []bool
 	choices     []Choice
 	esc         func() tea.Cmd
-	at          int // the cursor: on an item, then on a choice
+	at          int // cursor over the items, then the choices
 	head        head
 	queue
 }
 
-// Choice is an option of a Consent: Pick runs with the items checked.
+// Pick receives the checked items.
 type Choice struct {
 	Label string
 	Pick  func(checked app.Surface) tea.Cmd
 }
 
-// NewConsent returns the panel asking, under title, to decide on items,
-// told by lead, those of checked checked at first. key identifies it; esc
-// runs as the user dismisses it.
+// NewConsent starts with checked items checked. key identifies the request;
+// esc runs when the user dismisses it.
 func NewConsent(key any, title, lead string, items, checked app.Surface, choices []Choice, esc func() tea.Cmd) *Consent {
 	p := &Consent{key: key, title: title, lead: lead, items: items, checked: make([]bool, len(items)), choices: choices, esc: esc, at: len(items)}
 	for i, it := range items {
@@ -74,7 +71,6 @@ func (p *Consent) Update(msg tea.Msg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// agreed returns the items checked.
 func (p *Consent) agreed() app.Surface {
 	var out app.Surface
 	for i, it := range p.items {
@@ -85,7 +81,6 @@ func (p *Consent) agreed() app.Surface {
 	return out
 }
 
-// kinds name the kinds of a surface's items.
 var kinds = map[string]string{
 	"hook":   "hook",
 	"mcp":    "MCP server",
@@ -96,7 +91,6 @@ var kinds = map[string]string{
 	"plugin": "plugin",
 }
 
-// KindLabel names the kind of a surface's item.
 func KindLabel(kind string) string { return kinds[kind] }
 
 func (p *Consent) View(width, height int) string {

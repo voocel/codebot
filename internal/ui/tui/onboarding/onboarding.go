@@ -1,6 +1,5 @@
-// Package onboarding is the first-run setup: it asks for a provider, a
-// model and an API key, and saves them with config.ApplySetup before the
-// App boots.
+// Package onboarding is the first-run setup. It asks for a provider, model
+// and API key, and saves them with config.ApplySetup before the App boots.
 package onboarding
 
 import (
@@ -17,7 +16,7 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Result is what the setup saved; Saved is false when the user left it.
+// Saved is false when the user quit without saving.
 type Result struct {
 	Saved    bool
 	Provider string
@@ -25,7 +24,6 @@ type Result struct {
 	Path     string
 }
 
-// Run asks for the setup until the user saves it or leaves.
 func Run() (Result, error) {
 	theme.Detect()
 	final, err := tea.NewProgram(newWizard()).Run()
@@ -44,7 +42,6 @@ const (
 	enterKey
 )
 
-// The fields of a custom provider.
 const (
 	fieldName = iota
 	fieldProtocol
@@ -61,20 +58,20 @@ var providers = []provider{
 	{"deepseek", "DeepSeek"},
 }
 
-// custom is the row after the providers.
+// custom is the row after the listed providers.
 var custom = len(providers)
 
 type wizard struct {
 	width int
 	step  step
-	row   int // the provider picked, custom past the list
-	field int // the custom field in focus
+	row   int // picked provider, or custom
+	field int // focused custom-provider field
 
 	name, url, model, key textinput.Model
 	protocols             []string
 	protocol              int
 
-	modelFor string // the provider the model and key were typed for
+	modelFor string // provider the model and key were typed for
 	err      string
 	done     bool
 	result   Result
@@ -132,8 +129,7 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return w, nil
 }
 
-// press handles the keys of the step; ok is false for keys the focused field
-// takes.
+// press returns ok false for keys the focused field should handle.
 func (w *wizard) press(k string) (cmd tea.Cmd, ok bool) {
 	switch w.step {
 	case pickProvider:
@@ -219,9 +215,7 @@ func (w *wizard) press(k string) (cmd tea.Cmd, ok bool) {
 	}
 }
 
-// pick moves on from the provider picked. The model typed for a provider
-// stays while the provider does; it is never filled in, as defaults go
-// stale.
+// pick never prefills a model, since defaults go stale.
 func (w *wizard) pick() {
 	if w.row == custom {
 		w.goTo(describeCustom)
@@ -233,7 +227,7 @@ func (w *wizard) pick() {
 func (w *wizard) goTo(s step) {
 	w.step, w.err = s, ""
 	if s == enterModel {
-		// What was typed belongs to the provider it was typed for.
+		// Clear the model and key typed for a different provider.
 		if id := w.identity(); id != w.modelFor {
 			w.model.Reset()
 			w.key.Reset()
@@ -243,7 +237,6 @@ func (w *wizard) goTo(s step) {
 	w.focus()
 }
 
-// identity names the provider the model is for.
 func (w *wizard) identity() string {
 	if w.row == custom {
 		return "custom/" + w.protocols[w.protocol] + "/" + token(w.name.Value())
@@ -251,7 +244,6 @@ func (w *wizard) identity() string {
 	return providers[w.row].key
 }
 
-// focused returns the field that takes the keys, nil when none does.
 func (w *wizard) focused() *textinput.Model {
 	switch w.step {
 	case describeCustom:
@@ -318,8 +310,8 @@ func (w *wizard) providerName() string {
 	return providers[w.row].name
 }
 
-// token is s without whitespace: every field takes a single word, and a
-// pasted key often comes with a newline.
+// token strips all whitespace: every field is a single word, and a pasted
+// key often ends with a newline.
 func token(s string) string { return strings.Join(strings.Fields(s), "") }
 
 func (w *wizard) View() tea.View {
@@ -364,7 +356,6 @@ func (w *wizard) View() tea.View {
 	return v
 }
 
-// header names the setup and the steps, the current one lit.
 func (w *wizard) header() string {
 	steps := []string{"Provider", "Model", "API key"}
 	at := map[step]int{pickProvider: 0, describeCustom: 0, enterModel: 1, enterKey: 2}[w.step]
@@ -381,10 +372,9 @@ func (w *wizard) header() string {
 	return theme.Bold.Render("codebot") + theme.SubtleText.Render(" setup   ") + strings.Join(steps, theme.FaintText.Render(" › "))
 }
 
-// labelWidth is the width of the mark and label before a field's value.
 const labelWidth = 12
 
-// body renders the step and the line of the focused field, -1 for none.
+// body also returns the focused field's line, -1 for none.
 func (w *wizard) body() ([]string, int) {
 	switch w.step {
 	case pickProvider:

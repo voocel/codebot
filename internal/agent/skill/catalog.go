@@ -16,15 +16,14 @@ import (
 	"github.com/voocel/codebot/internal/lib/regular"
 )
 
-// Catalog is the skills available, by name. It does not change; reloading
-// makes a new one.
+// Catalog is immutable; reloading builds a new one.
 type Catalog struct {
-	list   []Spec // by name
+	list   []Spec // sorted by name
 	byName map[string]Spec
 }
 
-// NewCatalog collects skills. Of several with one name the first wins: the
-// caller lists them by precedence.
+// NewCatalog keeps the first skill of each name, so callers pass skills in
+// order of precedence.
 func NewCatalog(specs []Spec) *Catalog {
 	c := &Catalog{byName: make(map[string]Spec, len(specs))}
 	for _, spec := range specs {
@@ -38,20 +37,15 @@ func NewCatalog(specs []Spec) *Catalog {
 	return c
 }
 
-// List returns the skills, by name.
 func (c *Catalog) List() []Spec { return slices.Clone(c.list) }
 
-// Get returns the named skill.
 func (c *Catalog) Get(name string) (Spec, bool) {
 	spec, ok := c.byName[normalizeName(name)]
 	return spec, ok
 }
 
-// Active returns the catalog of the skills active in the workspace at cwd:
-// those whose Paths match something there, or that have none. Matching may
-// walk the workspace, so it happens here, once: a conversation keeps the
-// result with the rest of what it tells the model about its workspace, and
-// offers the user and the model the same skills.
+// Active may walk the workspace to match Paths, so a conversation computes it
+// once and offers the same skills to the user and the model.
 func (c *Catalog) Active(cwd string) *Catalog {
 	var specs []Spec
 	for _, spec := range c.list {
@@ -62,9 +56,8 @@ func (c *Catalog) Active(cwd string) *Catalog {
 	return NewCatalog(specs)
 }
 
-// LoadDir loads the skills in dir: each *.md file, and each subdirectory
-// holding a SKILL.md, at any depth, named after the subdirectory. What fails
-// to load is reported, and left out. A dir that does not exist holds no
+// LoadDir loads each *.md file in dir and each subdirectory with a SKILL.md
+// at any depth below it, named after the subdirectory. A missing dir holds no
 // skills.
 func LoadDir(dir string) ([]Spec, []error) {
 	entries, err := os.ReadDir(dir)
@@ -100,8 +93,6 @@ func LoadDir(dir string) ([]Spec, []error) {
 	return specs, errs
 }
 
-// findSkillInDir finds the SKILL.md in dir or, failing that, the first one
-// below it.
 func findSkillInDir(dir, name string) (Spec, bool) {
 	if spec, err := LoadFile(filepath.Join(dir, "SKILL.md"), name); err == nil {
 		return spec, true
@@ -121,8 +112,7 @@ func findSkillInDir(dir, name string) (Spec, bool) {
 	return Spec{}, false
 }
 
-// LoadFile loads the skill file at path, named name unless it names
-// itself.
+// LoadFile uses name unless the frontmatter sets one.
 func LoadFile(path, name string) (Spec, error) {
 	data, err := regular.ReadFile(path)
 	if err != nil {
@@ -150,8 +140,6 @@ type skillFrontmatter struct {
 	DisableModelInvocation bool     `yaml:"disable-model-invocation"`
 }
 
-// parseSkill reads a skill file's frontmatter. The skill is named by its
-// frontmatter, else by name.
 func parseSkill(content, name string) (Spec, error) {
 	raw, body, _ := frontmatter.Split(content)
 	var fm skillFrontmatter
@@ -188,7 +176,7 @@ func parseSkill(content, name string) (Spec, error) {
 	}, nil
 }
 
-// allowedTools reads allowed-tools, a comma-separated string or a list.
+// allowed-tools may be a comma-separated string or a list.
 func allowedTools(v any) []string {
 	var items []string
 	switch raw := v.(type) {

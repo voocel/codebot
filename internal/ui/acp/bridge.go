@@ -13,16 +13,13 @@ import (
 	"github.com/voocel/codebot/internal/session"
 )
 
-// editSnapshot pairs a write/edit target's path with its pre-execution
-// snapshot, so the call can be rendered as a native ACP diff once it completes.
-// Captured at ToolStart (which comes before the tool runs) and consumed at
-// ToolEnd.
+// editSnapshot is captured at ToolStart, before the tool runs, and consumed
+// at ToolEnd to render a native diff.
 type editSnapshot struct {
 	path string
 	old  diffSnapshot
 }
 
-// onEvent translates App events into ACP session/update notifications.
 func (s *Server) onEvent(ev app.Event) {
 	switch ev.Kind {
 	case app.ModeChanged:
@@ -73,11 +70,6 @@ func (s *Server) onAgentEvent(ev agentcore.Event) {
 	}
 }
 
-// snapshotForDiff captures a write/edit target's content before the tool runs,
-// so its ToolEnd can emit it as a native ACP diff. It uses textForDiff
-// (not ReadFile) so a disk copy is never mistaken for the editor buffer: an
-// unreliable snapshot later suppresses the diff rather than rendering a
-// misleading one.
 func (s *Server) snapshotForDiff(call agentcore.ToolCall, cwd string) {
 	if call.Name != "write" && call.Name != "edit" {
 		return
@@ -92,15 +84,8 @@ func (s *Server) snapshotForDiff(call agentcore.ToolCall, cwd string) {
 	s.mu.Unlock()
 }
 
-// diffContent builds the native diff for a completed write/edit by pairing the
-// pre-exec snapshot with the file's current content. Returns ok=false when there
-// is no snapshot or the call failed; buildDiff drops the rest (unreliable
-// snapshot, file gone, no change).
-//
-// The delete here is the only cleanup pendingEdits needs: agentcore emits a
-// ToolEnd for every ToolStart, cancellation included, so every snapshot is
-// reclaimed by its own end event — no turn-level sweep, which would risk
-// dropping a still-in-flight snapshot.
+// diffContent is the only cleanup pendingEdits needs: agentcore emits a
+// ToolEnd for every ToolStart, even on cancellation.
 func (s *Server) diffContent(ev agentcore.ToolEnd) ([]acp.ToolCallContent, bool) {
 	id := acp.ToolCallId(ev.Call.ID)
 	s.mu.Lock()
@@ -114,10 +99,6 @@ func (s *Server) diffContent(ev agentcore.ToolEnd) ([]acp.ToolCallContent, bool)
 	return buildDiff(snap.path, snap.old, cur)
 }
 
-// buildDiff turns a before/after snapshot pair into native diff content, or
-// (nil,false) when a diff would be misleading or empty: either side unreliable,
-// the file gone after the write, or no actual change. A reliable old snapshot
-// that does not exist means a new file (no oldText).
 func buildDiff(path string, old, cur diffSnapshot) ([]acp.ToolCallContent, bool) {
 	if !old.reliable || !cur.reliable || !cur.exists {
 		return nil, false
@@ -131,8 +112,6 @@ func buildDiff(path string, old, cur diffSnapshot) ([]acp.ToolCallContent, bool)
 	return []acp.ToolCallContent{acp.ToolDiffContent(path, cur.text)}, true
 }
 
-// editPath resolves a tool call's file_path argument to an absolute path using
-// the same rule the tools use, or "" when there is no usable path.
 func editPath(args json.RawMessage, cwd string) string {
 	var p struct {
 		FilePath string `json:"file_path"`
@@ -167,8 +146,6 @@ func toolKind(name string) acp.ToolKind {
 	}
 }
 
-// rawJSON forwards a tool call's arguments as the ACP rawInput value, or nil
-// when empty.
 func rawJSON(r json.RawMessage) any {
 	if len(r) == 0 {
 		return nil

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -21,7 +22,7 @@ func TestToolName(t *testing.T) {
 	if got := toolName("acme-tools_db", "query"); got != "mcp__acme-tools_db__query" {
 		t.Errorf("got %s", got)
 	}
-	// Names the vendors refuse, made alike, stay apart.
+	// Names that sanitize to the same string still differ.
 	dotted, dashed := toolName("acme.tools_db", "query"), toolName("acme-tools_db", "query")
 	if dotted == dashed || !strings.HasPrefix(dotted, "mcp__acme-tools_db__query_") {
 		t.Errorf("dotted %s, dashed %s", dotted, dashed)
@@ -92,15 +93,15 @@ func TestClientUsesStatelessSDK(t *testing.T) {
 
 	changed := make(chan struct{}, 1)
 	connectCtx, cancelConnect := context.WithCancel(t.Context())
-	client, err := connect(connectCtx, "test", config.MCPServer{Type: "http", URL: httpServer.URL}, func() {
+	client, err := connect(connectCtx, "test", config.MCPServer{Type: "http", URL: httpServer.URL}, nil, func() {
 		changed <- struct{}{}
 	})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	defer client.Close()
-	// The caller's context bounds connection setup, not the owned client
-	// lifetime. This mirrors runtime reload, whose setup context is short-lived.
+	// The caller's context bounds setup only, not the client's lifetime;
+	// reload uses a short-lived setup context.
 	cancelConnect()
 
 	if got := client.Instructions(); got != "test instructions" {
@@ -132,9 +133,8 @@ func TestClientUsesStatelessSDK(t *testing.T) {
 	}
 }
 
-// A server configured as before stays connected through Configure; one
-// changed reconnects, one gone disconnects, and the failures of before are
-// forgotten.
+// Changed servers reconnect, removed ones disconnect, and earlier failures
+// are cleared.
 func TestManagerConfigureKeepsWhatDidNotChange(t *testing.T) {
 	backend := sdkserver.New(&sdkserver.Options{Impl: sdkmcp.Implementation{Name: "s", Version: "1"}})
 	srv := httptest.NewServer(sdkhttp.NewHandler(backend, nil))
@@ -148,7 +148,7 @@ func TestManagerConfigureKeepsWhatDidNotChange(t *testing.T) {
 		t.Fatal(errs)
 	}
 	kept, before := m.clients["kept"], m.clients["changed"]
-	m.failures["broken"] = "boom"
+	m.failures["broken"] = errors.New("boom")
 	if errs := m.Configure(t.Context(), map[string]config.MCPServer{"kept": cfg, "changed": changed}); len(errs) > 0 {
 		t.Fatal(errs)
 	}
@@ -166,10 +166,9 @@ func TestManagerConfigureKeepsWhatDidNotChange(t *testing.T) {
 	}
 }
 
-// What a server that fails to start says on stderr explains the failure,
-// and stays off the terminal.
+// A failing server's stderr goes into the error, not to the terminal.
 func TestConnectTellsWhatTheServerSaid(t *testing.T) {
-	_, err := connect(t.Context(), "broken", config.MCPServer{Command: "sh", Args: []string{"-c", "echo first >&2; echo 404 Not Found >&2; exit 1"}}, nil)
+	_, err := connect(t.Context(), "broken", config.MCPServer{Command: "sh", Args: []string{"-c", "echo first >&2; echo 404 Not Found >&2; exit 1"}}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "first\n404 Not Found") {
 		t.Fatalf("err = %v", err)
 	}

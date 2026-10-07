@@ -13,18 +13,16 @@ import (
 	"github.com/voocel/litellm"
 )
 
-// Manager manages session files in a directory.
 type Manager struct {
 	dir string
 }
 
-// NewManager creates a Manager for the given sessions directory.
 func NewManager(dir string) *Manager {
 	return &Manager{dir: dir}
 }
 
-// List returns all sessions sorted by updated time (newest first). Files
-// that are not readable sessions of the current version are skipped.
+// List returns sessions newest first, skipping files that are unreadable or
+// from another version.
 func (m *Manager) List() ([]SessionInfo, error) {
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
@@ -51,7 +49,6 @@ func (m *Manager) List() ([]SessionInfo, error) {
 	return sessions, nil
 }
 
-// Open opens an existing session by ID and replays it.
 func (m *Manager) Open(id string) (*Store, State, error) {
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
@@ -66,7 +63,6 @@ func (m *Manager) Open(id string) (*Store, State, error) {
 	return nil, State{}, fmt.Errorf("session %q not found", id)
 }
 
-// Create creates a new session.
 func (m *Manager) Create(cwd string) (*Store, error) {
 	return create(m.dir, cwd)
 }
@@ -118,8 +114,6 @@ func readSessionInfo(path string) (SessionInfo, error) {
 	return info, err
 }
 
-// userText returns the text a user typed in a message entry, truncated for
-// listing; "" for other messages.
 func userText(data json.RawMessage) string {
 	var msg agentcore.Message
 	if json.Unmarshal(data, &msg) != nil || msg.Role != litellm.RoleUser {

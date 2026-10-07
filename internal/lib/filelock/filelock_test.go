@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// TestHelperHolds is the other process: it holds the lock until its stdin
-// closes.
+// TestHelperHolds runs as the other process: it holds the lock until its
+// stdin closes.
 func TestHelperHolds(t *testing.T) {
 	path := os.Getenv("FILELOCK_HELPER")
 	if path == "" {
@@ -27,7 +27,6 @@ func TestHelperHolds(t *testing.T) {
 	unlock()
 }
 
-// A lock another process holds is waited for.
 func TestOtherProcessesWait(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.lock")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHolds$")
@@ -72,11 +71,10 @@ func TestOtherProcessesWait(t *testing.T) {
 	}
 }
 
-// Within a process, each Lock excludes the others.
 func TestGoroutinesTakeTurns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.lock")
 	var wg sync.WaitGroup
-	// The race detector cannot see an flock order the goroutines.
+	// The race detector cannot see the ordering an flock imposes.
 	var held atomic.Int32
 	for range 20 {
 		wg.Go(func() {

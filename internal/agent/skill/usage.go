@@ -13,8 +13,8 @@ import (
 const usageHalfLife = 7 * 24 * time.Hour
 const usageDecayFloor = 0.10
 
-// UsageTracker counts skill invocations in a file, so the listing can favor
-// the skills used most, and lately.
+// UsageTracker persists invocation counts so the listing can favor skills
+// used often and recently.
 type UsageTracker struct {
 	path    string
 	mu      sync.Mutex
@@ -41,7 +41,6 @@ func NewUsageTracker(path string) (*UsageTracker, error) {
 	return t, nil
 }
 
-// Record counts an invocation of the named skill at the time given.
 func (t *UsageTracker) Record(name string, at time.Time) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -52,8 +51,6 @@ func (t *UsageTracker) Record(name string, at time.Time) error {
 	return t.saveLocked()
 }
 
-// Scores rates each used skill at now: its count, halved for every week since
-// its last use, down to a tenth.
 func (t *UsageTracker) Scores(now time.Time) map[string]float64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()

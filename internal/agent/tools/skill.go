@@ -13,15 +13,12 @@ import (
 	"github.com/voocel/codebot/internal/agent/skill"
 )
 
-// ForkExecutor runs a task in a forked subagent context: the subagent
-// tool's Run, so it can be wired directly.
+// ForkExecutor has the subagent tool's Run signature, so it can be wired
+// directly.
 type ForkExecutor func(ctx context.Context, args json.RawMessage) (agentcore.Result, error)
 
-// NewSkillTool returns the skill tool, which lets the model invoke skills by
-// name: it loads the skill, expands its $ARGUMENTS and returns the prompt.
-// Skills with context: fork run in a subagent through fork. catalog returns
-// the skills active in the conversation's workspace; invoked sees every
-// invocation before it runs.
+// NewSkillTool calls invoked with every invocation before it runs. catalog
+// returns the skills active in the conversation's workspace.
 func NewSkillTool(catalog func() *skill.Catalog, sessionID string, fork ForkExecutor, invoked func(*skill.Invocation)) agentcore.Tool {
 	tool := agentcore.NewTool("skill", skillDescription,
 		schema.Object(
@@ -82,8 +79,6 @@ type skillArgs struct {
 	Args  string `json:"args"`
 }
 
-// ForkSkill runs a forked skill through fork, returning the sub-agent's
-// output.
 func ForkSkill(ctx context.Context, inv *skill.Invocation, fork ForkExecutor) (agentcore.Result, error) {
 	params := map[string]string{"agent": inv.Agent, "task": inv.Prompt}
 	if inv.Model != "" {

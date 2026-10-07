@@ -1,7 +1,5 @@
-// Package worktree manages ephemeral git worktrees used as isolated sandboxes:
-// the agent works inside one, and changes are reviewed and merged or discarded
-// on exit. It is a thin, stateless wrapper over `git worktree` — lifecycle and
-// session wiring live in the caller (app.Conversation).
+// Package worktree is a stateless wrapper over `git worktree` for the
+// sandboxes the agent works in. The lifecycle lives in app.Conversation.
 package worktree
 
 import (
@@ -15,25 +13,22 @@ import (
 	"github.com/voocel/codebot/internal/infra/config"
 )
 
-// branchPrefix namespaces every codebot-created branch so List/cleanup can find
-// them and they never collide with the user's own branches.
+// branchPrefix lets List find codebot's branches and keeps them apart from
+// the user's.
 const branchPrefix = "codebot/"
 
-// DefaultIncludes are the gitignored files copied into a fresh worktree so it
-// can actually run: a clean checkout omits everything git ignores, and a
-// missing .env is the most common reason a sandboxed build/test fails.
+// DefaultIncludes are gitignored files copied into a new worktree, which a
+// clean checkout would lack; a missing .env is the usual reason a sandboxed
+// build fails.
 var DefaultIncludes = []string{".env", ".env.local"}
 
-// Info is one entry from `git worktree list`.
 type Info struct {
 	Path   string
-	Branch string // refs/heads/... or "" when detached
+	Branch string // "" when detached
 }
 
 var nonSlugChars = regexp.MustCompile(`[^a-z0-9._-]+`)
 
-// Slug normalizes a user-supplied name into a filesystem- and ref-safe slug.
-// Empty input yields "scratch" so `/worktree` with no name still works.
 func Slug(name string) string {
 	s := nonSlugChars.ReplaceAllString(strings.ToLower(strings.TrimSpace(name)), "-")
 	s = strings.Trim(s, "-._")
@@ -43,16 +38,13 @@ func Slug(name string) string {
 	return s
 }
 
-// Root is the directory the worktrees live in: <repoRoot>/.codebot/worktrees.
-// It lives under .codebot/ (already gitignored), so the checkouts never
-// pollute the user's status.
+// Root is under .codebot/, which is gitignored, so worktrees stay out of the
+// user's git status.
 func Root(repoRoot string) string {
 	return filepath.Join(repoRoot, config.ConfigDir, "worktrees")
 }
 
-// Create adds a worktree at <Root>/<slug> on a new branch codebot/<slug>,
-// based on the repo's current HEAD. It fails if the slug is already in use so
-// the caller can ask for a different name.
+// Create fails if slug is taken, so the caller can ask for another name.
 func Create(repoRoot, slug string) (dir, branch string, err error) {
 	dir = filepath.Join(Root(repoRoot), slug)
 	branch = branchPrefix + slug
@@ -65,17 +57,14 @@ func Create(repoRoot, slug string) (dir, branch string, err error) {
 	if out, runErr := git(repoRoot, "worktree", "add", "-b", branch, dir); runErr != nil {
 		return "", "", fmt.Errorf("git worktree add: %s", out)
 	}
-	// Normalize so the path matches `git worktree list` output, which resolves
-	// symlinks (e.g. macOS /var -> /private/var); the activeWorktree path is
-	// later compared against that output in CleanWorktreeOrphans.
+	// `git worktree list` resolves symlinks (macOS /var is /private/var), and
+	// orphan cleanup compares paths with its output.
 	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
 		dir = resolved
 	}
 	return dir, branch, nil
 }
 
-// HasChanges reports whether the worktree has any uncommitted changes (tracked
-// or untracked).
 func HasChanges(dir string) (bool, error) {
 	out, err := git(dir, "status", "--porcelain")
 	if err != nil {
@@ -84,15 +73,10 @@ func HasChanges(dir string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// Remove deletes the worktree and its branch. With force it discards everything
-// (worktree --force + branch -D) — the caller asked to throw the work away.
-// Without force it is data-safe by construction: `git worktree remove` refuses a
-// dirty checkout (uncommitted or untracked files), and `git branch -d` refuses a
-// branch with commits not reachable from any other ref. So a sandbox the agent
-// committed into keeps its branch even when the working tree is clean. The
-// returned branchKept reports exactly that case (worktree gone, branch retained
-// because it held unmerged commits) so the caller can tell the user where the
-// work survived.
+// Remove without force never loses work: git refuses to remove a dirty
+// checkout or delete a branch with unmerged commits. branchKept reports that
+// the checkout is gone but the branch stayed because the agent committed to
+// it, so the caller can tell the user where the work is.
 func Remove(repoRoot, dir, branch string, force bool) (branchKept bool, err error) {
 	args := []string{"worktree", "remove"}
 	if force {
@@ -102,21 +86,17 @@ func Remove(repoRoot, dir, branch string, force bool) (branchKept bool, err erro
 	if out, e := git(repoRoot, args...); e != nil {
 		return false, fmt.Errorf("git worktree remove: %s", out)
 	}
-	flag := "-d" // safe delete: refuses branches with unmerged commits
+	flag := "-d"
 	if force {
-		flag = "-D" // force delete: caller is discarding
+		flag = "-D"
 	}
 	if _, e := git(repoRoot, "branch", flag, branch); e != nil && !force {
-		// -d refused: the branch carries commits no other ref reaches. The
-		// checkout is gone (it was clean) but the commits live on; keep the
-		// branch and signal the caller to surface it.
 		return true, nil
 	}
 	return false, nil
 }
 
-// List returns every registered worktree under codebot's namespace, used to
-// detect and clean orphans on startup.
+// List returns only codebot's worktrees.
 func List(repoRoot string) ([]Info, error) {
 	out, err := git(repoRoot, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -134,9 +114,7 @@ func List(repoRoot string) ([]Info, error) {
 		switch {
 		case strings.HasPrefix(line, "worktree "):
 			flush()
-			// git prints forward slashes even on Windows; normalize to the
-			// OS-native form so Path compares equal to filepath-built paths
-			// (CleanWorktreeOrphans).
+			// git prints forward slashes even on Windows.
 			cur.Path = filepath.FromSlash(strings.TrimPrefix(line, "worktree "))
 		case strings.HasPrefix(line, "branch "):
 			cur.Branch = strings.TrimPrefix(line, "branch ")
@@ -148,13 +126,9 @@ func List(repoRoot string) ([]Info, error) {
 	return infos, nil
 }
 
-// CopyIncludes copies gitignored files matching patterns from repoRoot into the
-// fresh worktree, so it has the local files (.env, etc.) it needs to actually
-// run — a clean checkout omits everything git ignores. It returns the relative
-// paths it found but could NOT copy (e.g. a permission error), so the caller can
-// warn rather than leave the sandbox silently missing config; err is reserved
-// for the lookup itself failing. A file absent from the source is simply not
-// listed, never a failure.
+// CopyIncludes returns the files it found but could not copy, so the caller
+// can warn; err means the lookup itself failed. Missing files are not
+// failures.
 func CopyIncludes(repoRoot, dir string, patterns []string) (failed []string, err error) {
 	args := append([]string{"ls-files", "--others", "--ignored", "--exclude-standard", "--"}, patterns...)
 	out, lerr := git(repoRoot, args...)
@@ -184,14 +158,11 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0o644)
 }
 
-// IsRepo reports whether dir is inside a git working tree.
 func IsRepo(dir string) bool {
 	out, err := git(dir, "rev-parse", "--is-inside-work-tree")
 	return err == nil && out == "true"
 }
 
-// CurrentBranch returns the branch checked out in dir, "" outside a
-// repository.
 func CurrentBranch(dir string) string {
 	out, err := git(dir, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
@@ -200,7 +171,6 @@ func CurrentBranch(dir string) string {
 	return out
 }
 
-// git runs a git command in dir and returns combined output trimmed.
 func git(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.CombinedOutput()

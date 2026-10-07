@@ -3,10 +3,8 @@ package frontmatter
 
 import "strings"
 
-// Split returns the YAML between a file's leading "---" line and the next
-// "---" line, and the body after it. ok is false, with body the whole
-// content, when the file opens no frontmatter or never closes it. A
-// delimiter line may end in spaces, tabs or CR.
+// Split returns ok false and the whole content as body when the frontmatter
+// is missing or unclosed. A "---" line may end in spaces, tabs or CR.
 func Split(content string) (front, body string, ok bool) {
 	first, rest, _ := strings.Cut(content, "\n")
 	if !delimiter(first) {

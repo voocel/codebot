@@ -22,8 +22,7 @@ import (
 	"github.com/voocel/codebot/internal/interact"
 )
 
-// scriptModel is a provider answering with its replies in order, then
-// "done".
+// scriptModel answers with its replies in order, then "done".
 type scriptModel struct {
 	mu      sync.Mutex
 	replies []litellmtest.Reply
@@ -62,8 +61,6 @@ func (m *scriptModel) factory(spec provider.ModelSpec) (agentcore.Model, error) 
 	return agentcore.Model{Client: client, Request: litellm.Request{Model: spec.Model}}, err
 }
 
-// boot starts the app in trust mode in cwd, with a user configuration whose
-// model answers as model does.
 func boot(t *testing.T, model *scriptModel, cwd string) *app.App {
 	t.Helper()
 	home := t.TempDir()
@@ -84,8 +81,6 @@ func boot(t *testing.T, model *scriptModel, cwd string) *app.App {
 	return a
 }
 
-// A background command finishes after the prompt's run ended; print mode
-// waits for it and for the run its result starts.
 func TestRunPrintWaitsForBackgroundWork(t *testing.T) {
 	args, _ := json.Marshal(map[string]any{"command": "sleep 0.2; echo finished", "run_in_background": true})
 	model := &scriptModel{replies: []litellmtest.Reply{litellmtest.Respond(litellm.ToolUseBlock{ID: "b1", Name: "bash", Arguments: string(args)})}}
@@ -103,8 +98,7 @@ func TestRunPrintWaitsForBackgroundWork(t *testing.T) {
 	}
 }
 
-// A path confirmed every time cannot be approved in print mode, not even in
-// trust mode; the agent is told why.
+// Not even trust mode can approve it.
 func TestRunPrintRefusesWhatNeedsConfirming(t *testing.T) {
 	args, _ := json.Marshal(map[string]any{"file_path": ".bashrc", "content": "echo hi"})
 	model := &scriptModel{replies: []litellmtest.Reply{litellmtest.Respond(litellm.ToolUseBlock{ID: "w1", Name: "write", Arguments: string(args)})}}
@@ -128,8 +122,7 @@ func TestRunPrintRefusesWhatNeedsConfirming(t *testing.T) {
 	}
 }
 
-// A failed run is reported once, by the caller Run returns its error to, not
-// also as it happens.
+// The failure is reported once, by Run's caller, not also as it happens.
 func TestRunPrintLeavesTheFailureToTheCaller(t *testing.T) {
 	rejected := &litellm.Error{Type: litellm.ErrorTypeValidation, Message: "unknown model", Provider: "anthropic", StatusCode: 400}
 	a := boot(t, &scriptModel{replies: []litellmtest.Reply{litellmtest.Fail(rejected)}}, t.TempDir())
@@ -153,8 +146,6 @@ func TestRunPrintLeavesTheFailureToTheCaller(t *testing.T) {
 	}
 }
 
-// -json names each event's type and carries the text of errors, which an
-// error value would lose.
 func TestJSONEvents(t *testing.T) {
 	for _, tt := range []struct {
 		ev   agentcore.Event

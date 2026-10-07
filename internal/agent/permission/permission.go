@@ -1,8 +1,7 @@
-// Package permission decides whether the agent's tool calls and hook
-// commands may run. It classifies each call — its capability, the paths it
-// touches, whether it must be confirmed each time — and weighs it against
-// the rules, the mode, the filesystem roots and the approvals the user gave,
-// asking the user through interact.UI when these leave it open.
+// Package permission decides whether tool calls and hook commands may run.
+// It classifies each call and checks it against the rules, the mode, the
+// filesystem roots and stored approvals, asking the user through
+// interact.UI when none of them decides.
 package permission
 
 import (
@@ -44,29 +43,21 @@ const (
 	DecisionSourceInternal DecisionSource = "internal"
 )
 
-// FilesystemRoots scope filesystem access for tool requests. The two pairs
-// serve different audiences:
+// FilesystemRoots scope filesystem access.
 //
-//   - ReadRoots / WriteRoots: user-configured. Subject to deny rules and
-//     mode-based prompts (e.g. balanced mode asks for any write). Out-of-roots
-//     access is confirmed each time, so a one-shot consent does not grant
-//     persistent access.
+// ReadRoots and WriteRoots come from the user. Access outside them is
+// confirmed each time, so one consent never grants lasting access.
 //
-//   - InternalReadable / InternalWritable: harness-declared. Reserved for
-//     paths the harness itself manages (auto-memory dir, scratch space).
-//     Matches bypass the OutsideRoots prompt and the mode-based ask so the
-//     agent can read/write these locations silently. Deny rules still apply.
-//
-// A path matched by InternalWritable is also treated as readable, so callers
-// that want bidirectional access only need to populate the writable list.
+// InternalReadable and InternalWritable are paths the harness manages, such
+// as the memory dir. Access there skips the outside-roots and mode prompts;
+// deny rules still apply. An InternalWritable path is also readable.
 type FilesystemRoots struct {
 	ReadRoots        []string
 	WriteRoots       []string
 	InternalReadable []string
 	InternalWritable []string
-	// Protected are directories whose files decide what codebot runs, such
-	// as the local plugins the settings declare: each write in them is
-	// confirmed, whatever the mode.
+	// Protected directories hold files that decide what codebot runs, such
+	// as local plugins. Every write there is confirmed, in any mode.
 	Protected []string
 }
 
@@ -86,13 +77,12 @@ type Request struct {
 	Reason    string          `json:"reason,omitempty"`
 	Args      json.RawMessage `json:"args,omitempty"`
 	Metadata  Metadata        `json:"metadata,omitempty"`
-	// Workspace overrides the base for resolving relative operand paths on THIS
-	// request; empty falls back to Config.Cwd. Set it when the cwd
-	// changes per call (e.g. a worktree) so checks/audit match where tools run.
+	// Workspace resolves relative paths for this request; empty means
+	// Config.Cwd. Set it when the tool runs elsewhere, e.g. in a worktree.
 	Workspace string `json:"workspace,omitempty"`
-	// Grants allow this request on top of the stored approvals, e.g. for the
-	// tools an active skill allows. Deny rules, the roots and the paths
-	// confirmed each time still come first.
+	// Grants allow this request on top of stored approvals, e.g. the tools an
+	// active skill allows. Deny rules, roots and confirm-each-time paths
+	// still come first.
 	Grants []Rule `json:"-"`
 }
 
@@ -126,8 +116,7 @@ type AuditEntry struct {
 	Allow      bool          `json:"allow"`
 }
 
-// ParseGrants parses the tools a skill allows. Entries that do not parse
-// grant nothing.
+// ParseGrants skips entries that do not parse.
 func ParseGrants(raw []string) []Rule {
 	var rules []Rule
 	for _, r := range raw {

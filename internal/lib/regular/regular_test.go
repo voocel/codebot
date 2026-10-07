@@ -59,14 +59,13 @@ func TestWithin(t *testing.T) {
 			t.Errorf("read %s through %s", data, name)
 		}
 	}
-	// A directory leading out leads its files out.
+	// A symlinked directory that leads out takes its files out too.
 	if err := os.Symlink(outside, filepath.Join(root, "dir")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Within(root, filepath.Join(root, "dir", "secret")); err == nil {
 		t.Error("a file under a directory leading out stayed within")
 	}
-	// Everything is within the filesystem's root.
 	if _, err := Within("/", secret); err != nil {
 		t.Errorf("within /: %v", err)
 	}

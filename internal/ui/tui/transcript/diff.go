@@ -12,11 +12,8 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// renderDiff renders the diff the edit and write tools report: lines of a
-// sign, a line number and the line ("+ 12 code"), under a count of the lines
-// added and removed. Added and removed lines are tinted to width, a line
-// changed in place has its changed part marked, and code is highlighted by
-// path.
+// renderDiff renders the edit and write tools' diff, whose lines look like
+// "+ 12 code". A line changed in place has its changed part marked.
 func renderDiff(diff, path string, width int) []string {
 	ls := lines(diff)
 	if len(ls) == 0 {
@@ -90,8 +87,7 @@ type diffSide struct {
 	gutter, body, word lipgloss.Style
 }
 
-// line renders an added or removed line, tinted to width and wrapped; mark,
-// when set, is the changed part of the line, in runes [from, to).
+// mark, when set, is the changed part of l, in runes [from, to).
 func (s diffSide) line(l, path string, width int, mark *[2]int) []string {
 	prefix, code := splitDiffLine(l)
 	room := max(width-ansi.StringWidth(prefix), 4)
@@ -110,8 +106,7 @@ func (s diffSide) line(l, path string, width int, mark *[2]int) []string {
 	return out
 }
 
-// paint highlights chunk, which starts offset runes into its line, marking
-// the part of it within mark.
+// paint expects chunk to start offset runes into its line.
 func (s diffSide) paint(chunk, path string, mark *[2]int, offset int) string {
 	if mark == nil {
 		return s.body.Render(syntax.File(chunk, path))
@@ -124,7 +119,6 @@ func (s diffSide) paint(chunk, path string, mark *[2]int, offset int) string {
 		s.body.Render(syntax.File(string(r[to:]), path))
 }
 
-// chunks cuts s into pieces at most width wide.
 func chunks(s string, width int) []string {
 	if s == "" {
 		return []string{""}
@@ -142,8 +136,7 @@ func chunks(s string, width int) []string {
 	return out
 }
 
-// splitDiffLine splits "-  5 code" into its sign and line number, "-  5 ",
-// and the code.
+// splitDiffLine splits "-  5 code" into "-  5 " and "code".
 func splitDiffLine(l string) (prefix, code string) {
 	i := 1
 	for i < len(l) && l[i] == ' ' {
@@ -158,8 +151,8 @@ func splitDiffLine(l string) (prefix, code string) {
 	return l[:i], l[i:]
 }
 
-// changedInPlace returns, for a line changed in place, the runes of each
-// side between the prefix and suffix the two share.
+// changedInPlace returns each side's rune range between the prefix and
+// suffix the two lines share.
 func changedInPlace(removed, added string) (*[2]int, *[2]int) {
 	_, a := splitDiffLine(removed)
 	_, b := splitDiffLine(added)

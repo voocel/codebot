@@ -26,7 +26,7 @@ func compact(a *app.App) Command {
 	return Command{Name: "compact", Description: "Summarize the conversation to free context", Idle: true, Run: func(string) tea.Cmd {
 		conv := a.Current()
 		return func() tea.Msg {
-			// The transcript reports the compaction from its events.
+			// The transcript shows the compaction from its events.
 			if err := conv.Compact(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
 				return transcript.Fail("Compaction failed: " + app.ErrorText(err))
 			}
@@ -41,8 +41,8 @@ func newSession(a *app.App) Command {
 	}}
 }
 
-// Open opens the conversation id, a new one for "", off the TUI's
-// goroutine: opening publishes to it.
+// Open runs off the TUI goroutine because opening publishes events to it.
+// An empty id opens a new conversation.
 func Open(a *app.App, id string) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := a.Open(id); err != nil {
@@ -177,7 +177,6 @@ func contextUsage(a *app.App) Command {
 	}}
 }
 
-// meter draws how full the context window is.
 func meter(used, window, width int) string {
 	if window <= 0 {
 		return ""
@@ -430,7 +429,6 @@ func taskDetail(e task.Entry, width int) []string {
 	return out
 }
 
-// fileTail returns the last n bytes of the file at path.
 func fileTail(path string, n int64) string {
 	f, err := os.Open(path)
 	if err != nil {

@@ -6,37 +6,29 @@ import (
 	"os"
 )
 
-// setup.go — first-run configuration logic. The interactive wizard itself
-// lives in the TUI (internal/ui/tui/onboarding.go); this file owns detection
-// and persistence so the flow stays testable without a terminal.
-
-// SetupChoice is the input collected by the onboarding wizard.
 type SetupChoice struct {
-	Provider string // provider key, e.g. "anthropic", or a custom name
-	Type     string // protocol type for custom providers; empty = derive from name
-	BaseURL  string // optional custom endpoint
+	Provider string // a known provider such as "anthropic", or a custom name
+	Type     string // protocol type for custom providers; "" = derive from name
+	BaseURL  string
 	APIKey   string
-	Model    string // exact model id; required — hardcoded defaults go stale
+	Model    string // required: hardcoded defaults go stale
 }
 
-// SetupOutcome reports what ApplySetup wrote.
 type SetupOutcome struct {
 	Provider string
 	Model    string
-	Path     string // settings.json that was written
+	Path     string
 }
 
-// NeedsSetup reports whether the user has no settings file. Credentials come
-// from it alone, never from a project's, so without it the interactive
-// frontend runs onboarding before booting the runtime.
+// NeedsSetup reports whether the user settings file is missing. Credentials
+// come only from it, never from a project, so onboarding must run first.
 func NeedsSetup() bool {
 	_, err := os.Stat(UserSettingsPath())
 	return err != nil
 }
 
-// ApplySetup persists the choice into ~/.codebot/settings.json. It patches
-// rather than overwrites, so unrelated fields in an existing file survive a
-// re-run (codebot -setup).
+// ApplySetup patches the user settings rather than overwriting them, so a
+// re-run (codebot -setup) keeps unrelated fields.
 func ApplySetup(c SetupChoice) (SetupOutcome, error) {
 	if c.Provider == "" {
 		return SetupOutcome{}, errors.New("provider is required")

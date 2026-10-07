@@ -10,7 +10,6 @@ import (
 
 const askArgs = `{"questions":[{"question":"Which DB?","header":"DB","options":[{"label":"Postgres","description":"relational"},{"label":"Redis","description":"kv"}]}]}`
 
-// fakeUI answers with fixed responses and records what it was shown.
 type fakeUI struct {
 	answers interact.Answers
 	askErr  error
@@ -26,8 +25,8 @@ func (f *fakeUI) Approve(context.Context, interact.Approval) (interact.Verdict, 
 	return interact.Verdict{Choice: interact.Deny}, nil
 }
 
-// What the user answered, or that they cancelled, or that no one can be
-// asked, goes back to the model as text.
+// Answers, cancellation and the absence of a user all reach the model as
+// text.
 func TestAskUserReportsAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		ui   *fakeUI

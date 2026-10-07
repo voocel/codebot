@@ -20,22 +20,19 @@ import (
 	"github.com/voocel/litellm/provider/bedrock"
 )
 
-// ConfigDir is the project-level config directory name.
 const ConfigDir = ".codebot"
 
-// ProviderConfig holds credentials and model configuration for a single provider.
 type ProviderConfig struct {
-	Type       string         `json:"type,omitempty"` // protocol type: a LiteLLM provider, "gateway" for a model gateway; required only when the provider name is not a known litellm provider
+	Type       string         `json:"type,omitempty"` // a litellm provider or "gateway"; required when the name is not a known provider
 	API        string         `json:"api,omitempty"`  // OpenAI protocol endpoint: chat (default) or responses
 	APIKey     string         `json:"api_key,omitempty"`
 	BaseURL    string         `json:"base_url,omitempty"`
-	Models     []string       `json:"models,omitempty"`      // available model list for this provider
+	Models     []string       `json:"models,omitempty"`
 	SmallModel string         `json:"small_model,omitempty"` // lightweight model for sub-agents
 	Extra      *ProviderExtra `json:"extra,omitempty"`
 }
 
-// ProviderExtra holds the provider's connection settings beyond the API key
-// and base URL. They configure the HTTP client, never the request body.
+// ProviderExtra configures the HTTP client, never the request body.
 type ProviderExtra struct {
 	UserAgent string            `json:"user_agent,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
@@ -48,13 +45,10 @@ type ProviderExtra struct {
 	SessionToken    string `json:"session_token,omitempty"`
 }
 
-// HasCredentials reports whether the provider has an API key, or AWS keys
-// for bedrock.
 func (pc ProviderConfig) HasCredentials() bool {
 	return pc.APIKey != "" || pc.Extra != nil && pc.Extra.AccessKeyID != ""
 }
 
-// connection returns the settings for reaching the provider.
 func (pc ProviderConfig) connection() llmprovider.Config {
 	conn := llmprovider.Config{APIKey: pc.APIKey, BaseURL: pc.BaseURL, API: pc.API}
 	x := pc.Extra
@@ -76,7 +70,6 @@ func (pc ProviderConfig) connection() llmprovider.Config {
 	return conn
 }
 
-// hasHeader reports whether headers sets name, compared case-insensitively.
 func hasHeader(headers map[string]string, name string) bool {
 	for key := range headers {
 		if strings.EqualFold(key, name) {
@@ -86,8 +79,8 @@ func hasHeader(headers map[string]string, name string) bool {
 	return false
 }
 
-// ModelSpec resolves how to build model from the provider configured under
-// name; a name missing from providers must be a built-in provider type.
+// ModelSpec accepts a name missing from providers only if it is a built-in
+// provider type.
 func ModelSpec(providers map[string]ProviderConfig, name, model string) (provider.ModelSpec, error) {
 	typ, err := resolveConfiguredProviderType(providers, name)
 	if err != nil {
@@ -96,24 +89,17 @@ func ModelSpec(providers map[string]ProviderConfig, name, model string) (provide
 	return provider.ModelSpec{Provider: name, Type: typ, Model: model, Conn: providers[name].connection()}, nil
 }
 
-// TelemetryConfig configures OpenTelemetry trace export to an OTLP backend
-// (e.g. Langfuse). Telemetry stays off unless Enabled is true.
 type TelemetryConfig struct {
 	Enabled   bool   `json:"enabled,omitempty"`
-	Endpoint  string `json:"endpoint,omitempty"`   // OTLP/HTTP endpoint URL, e.g. https://cloud.langfuse.com/api/public/otel
+	Endpoint  string `json:"endpoint,omitempty"`   // OTLP/HTTP endpoint URL
 	PublicKey string `json:"public_key,omitempty"` // basic-auth username
 	SecretKey string `json:"secret_key,omitempty"` // basic-auth password
 }
 
-// providerType resolves the protocol type for this provider.
-// The protocol type maps to a name registered in litellm's provider registry.
 func (pc ProviderConfig) providerType(name string) (string, error) {
 	return resolveProviderType(name, pc.Type)
 }
 
-// resolveProviderType resolves a provider's protocol type. When explicitType
-// is set it wins (and must be registered); otherwise the provider name itself
-// must be a registered litellm provider.
 func resolveProviderType(name, explicitType string) (string, error) {
 	provType := strings.ToLower(strings.TrimSpace(explicitType))
 	if provType != "" {
@@ -129,7 +115,6 @@ func resolveProviderType(name, explicitType string) (string, error) {
 	return "", fmt.Errorf("configuration error: providers.%s.type is required for custom providers", name)
 }
 
-// resolveConfiguredProviderType resolves the protocol type for a configured provider.
 func resolveConfiguredProviderType(providers map[string]ProviderConfig, name string) (string, error) {
 	if pc, ok := providers[name]; ok {
 		return pc.providerType(name)
@@ -137,56 +122,51 @@ func resolveConfiguredProviderType(providers map[string]ProviderConfig, name str
 	return resolveProviderType(name, "")
 }
 
-// HookEntry describes a single hook.
-// Supported types: "command" (shell), "prompt" (LLM evaluation), "http" (POST).
 type HookEntry struct {
 	Type           string            `json:"type"`                      // "command", "prompt", or "http"
 	Command        string            `json:"command,omitempty"`         // type=command: sh command
 	CommandWindows string            `json:"command_windows,omitempty"` // type=command: PowerShell command run on Windows instead
 	Prompt         string            `json:"prompt,omitempty"`          // type=prompt: LLM prompt ($ARGUMENTS = payload)
 	URL            string            `json:"url,omitempty"`             // type=http: POST endpoint
-	Headers        map[string]string `json:"headers,omitempty"`         // type=http: request headers
+	Headers        map[string]string `json:"headers,omitempty"`         // type=http
 	Matcher        string            `json:"matcher,omitempty"`         // tool name filter: exact (case-insensitive) or /regex/
 	If             string            `json:"if,omitempty"`              // tool arguments JSON filter: /regex/, or the exact JSON
 	Blocking       *bool             `json:"blocking,omitempty"`        // can block execution
 	Timeout        *int              `json:"timeout,omitempty"`         // seconds (default 60)
-	// Env is set by codebot alone, for a command hook's process: a plugin's
-	// hooks get PLUGIN_ROOT and PLUGIN_DATA.
+	// Env is set by codebot, never read from settings: plugin hooks get
+	// PLUGIN_ROOT and PLUGIN_DATA.
 	Env map[string]string `json:"-"`
 }
 
-// HooksConfig maps event names to their hook entries.
+// HooksConfig is keyed by event name.
 type HooksConfig map[string][]HookEntry
 
-// MCPServer describes a single MCP server connection.
-//
-// Stdio example (default):
-//
-//	{"command": "npx", "args": ["-y", "@upstash/context7-mcp"], "env": {"KEY": "${VAR}"}}
-//
-// HTTP example:
-//
-//	{"type": "http", "url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"}}
 type MCPServer struct {
 	Type    string            `json:"type,omitempty"` // "stdio" (default) or "http"
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
-	Cwd     string            `json:"cwd,omitempty"` // a stdio server's working directory
+	Cwd     string            `json:"cwd,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	OAuth   *MCPOAuth         `json:"oauth,omitempty"`
 }
 
-// Check checks that s is one kind of server: a stdio one runs a command and
-// calls no URL; an http one calls a URL and runs nothing.
+// MCPOAuth is a client registered beforehand with the authorization server
+// of an http server, for one that takes no client metadata document.
+type MCPOAuth struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret,omitempty"`
+}
+
 func (s MCPServer) Check() error {
 	switch s.Type {
 	case "", "stdio":
 		if s.Command == "" {
 			return errors.New(`a stdio server needs a command; a remote one, "type": "http"`)
 		}
-		if s.URL != "" || s.Headers != nil {
-			return errors.New("a stdio server takes no url or headers")
+		if s.URL != "" || s.Headers != nil || s.OAuth != nil {
+			return errors.New("a stdio server takes no url, headers or oauth")
 		}
 	case "http":
 		if s.URL == "" {
@@ -195,54 +175,56 @@ func (s MCPServer) Check() error {
 		if s.Command != "" || s.Args != nil || s.Env != nil || s.Cwd != "" {
 			return errors.New("an http server takes no command, args, env or cwd")
 		}
+		if s.OAuth != nil && s.OAuth.ClientID == "" {
+			return errors.New("oauth needs a client_id")
+		}
+		if s.OAuth != nil && hasHeader(s.Headers, "Authorization") {
+			return errors.New("an http server takes oauth or an Authorization header, not both")
+		}
 	default:
 		return fmt.Errorf("unknown type %q", s.Type)
 	}
 	return nil
 }
 
-// Settings holds application-level configuration.
-// Fields use pointer types so unset fields fall back to defaults.
+// Settings uses pointers so that unset fields fall back to defaults.
 type Settings struct {
-	Provider        *string                    `json:"provider,omitempty"`         // provider name (matches key in providers map)
+	Provider        *string                    `json:"provider,omitempty"`         // a key of Providers
 	Model           *string                    `json:"model,omitempty"`            // model name sent to API as-is
 	ReasoningEffort *string                    `json:"reasoning_effort,omitempty"` // "" = provider default; off | low | medium | high | xhigh | max
 	Providers       map[string]*ProviderConfig `json:"providers,omitempty"`
 
 	MaxTurns *int `json:"max_turns,omitempty"`
 
-	// CompactWindow caps the effective context window used for compaction.
-	// Effective = min(model's detected window, CompactWindow). 0 = disabled.
+	// CompactWindow caps the model's context window for compaction; 0 means
+	// no cap.
 	CompactWindow *int `json:"compact_window,omitempty"`
-	// CompactRatio triggers compaction when usage >= effective * ratio.
-	// Range (0, 1). Unset leaves room for the model's reply instead.
+	// CompactRatio, in (0, 1), compacts when usage reaches window * ratio.
+	// Unset reserves room for the model's reply instead.
 	CompactRatio *float64 `json:"compact_ratio,omitempty"`
 
 	SearchProvider *string `json:"search_provider,omitempty"`
 	SearchAPIKey   *string `json:"search_api_key,omitempty"`
 
-	Hooks HooksConfig `json:"hooks,omitempty"` // lifecycle hooks
+	Hooks HooksConfig `json:"hooks,omitempty"`
 
-	// MCPServers are the MCP servers to connect, by name; a project entry
-	// replaces the global one of the same name.
+	// A project entry replaces the user's entry of the same name.
 	MCPServers map[string]MCPServer `json:"mcp_servers,omitempty"`
 
-	// Plugins are the plugins to load, each a git repository
-	// ("host/owner/repo", or an https or ssh URL, "#ref" pinning a tag,
-	// branch or commit) or a local directory, relative to the directory of
-	// the settings file declaring it.
+	// Plugins are git repositories ("host/owner/repo" or an https or ssh URL,
+	// with "#ref" pinning a tag, branch or commit) or local directories
+	// relative to the settings file that declares them.
 	Plugins []string `json:"plugins,omitempty"`
 
 	Permissions *PermissionsConfig `json:"permissions,omitempty"`
 
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"` // OpenTelemetry trace export
+	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
-	// Snapshot toggles workspace file checkpoints backing /undo. Unset means on;
-	// set false to disable (e.g. on a large repo where per-turn scans lag).
+	// Snapshot enables the checkpoints behind /undo; unset means on. Large
+	// repos may turn it off because every turn scans the workspace.
 	Snapshot *bool `json:"snapshot,omitempty"`
 }
 
-// PermissionsConfig holds user-defined permission rules.
 type PermissionsConfig struct {
 	Allow      []string `json:"allow,omitempty"`
 	Deny       []string `json:"deny,omitempty"`
@@ -250,28 +232,25 @@ type PermissionsConfig struct {
 	WriteRoots []string `json:"write_roots,omitempty"`
 }
 
-// Resolved holds settings resolved to concrete values (no pointers).
 type Resolved struct {
-	Provider  string                    // active provider name
-	Model     string                    // model name sent to API as-is
-	Providers map[string]ProviderConfig // per-provider credentials
+	Provider  string
+	Model     string
+	Providers map[string]ProviderConfig
 
-	CompactWindow   int     // user-configured cap on effective window; 0 = disabled
-	CompactRatio    float64 // usage ratio that triggers compaction; 0 = unset
+	CompactWindow   int     // 0 = no cap
+	CompactRatio    float64 // 0 = unset
 	ReasoningEffort string
 	MaxTurns        int
 	SearchProvider  string
 	SearchAPIKey    string
 
-	Permissions PermissionsConfig // user-defined permission rules
+	Permissions PermissionsConfig
 
-	Telemetry TelemetryConfig // OTLP trace export config
+	Telemetry TelemetryConfig
 
-	Snapshot bool // workspace checkpoints for /undo; defaults on
+	Snapshot bool
 }
 
-// FormatModelID combines provider and model into "provider/model".
-// If model already contains "/", it is returned as-is.
 func FormatModelID(provider, model string) string {
 	if provider == "" || strings.Contains(model, "/") {
 		return model
@@ -279,7 +258,6 @@ func FormatModelID(provider, model string) string {
 	return provider + "/" + model
 }
 
-// resolve converts Settings to Resolved using defaults for unset fields.
 func (s Settings) resolve() Resolved {
 	r := Resolved{
 		Provider:       "openai",
@@ -329,8 +307,6 @@ func (s Settings) resolve() Resolved {
 	return r
 }
 
-// validateResolved rejects unsupported values after global/project settings
-// have been merged and defaults applied.
 func validateResolved(r Resolved) error {
 	if !provider.ValidEffort(r.ReasoningEffort) {
 		return fmt.Errorf("configuration error: reasoning_effort=%q is unsupported; use empty string, off, low, medium, high, xhigh, or max", r.ReasoningEffort)
@@ -373,19 +349,16 @@ func validateProviderAPI(name string, pc ProviderConfig) error {
 	return nil
 }
 
-// ProjectSettingsPath returns <root>/.codebot/settings.json.
 func ProjectSettingsPath(root string) string {
 	return filepath.Join(root, ConfigDir, "settings.json")
 }
 
-// UserSettingsPath returns ~/.codebot/settings.json.
 func UserSettingsPath() string {
 	return filepath.Join(UserConfigDir(), "settings.json")
 }
 
-// ProjectRoot returns the root of the project cwd is in: the top of the git
-// repository holding it, else cwd itself. The home directory is no project:
-// its .codebot is the user's, so there ProjectRoot returns "".
+// ProjectRoot returns the top of the git repository holding cwd, else cwd.
+// It returns "" for the home directory, whose .codebot belongs to the user.
 func ProjectRoot(cwd string) string {
 	cwd = filepath.Clean(cwd)
 	root := cwd
@@ -406,39 +379,28 @@ func ProjectRoot(cwd string) string {
 	return root
 }
 
-// SessionsDir returns ~/.codebot/projects/<projectID>/.
-// Sessions are stored globally but scoped by project.
 func SessionsDir(cwd string) string {
 	return filepath.Join(UserConfigDir(), "projects", projectID(cwd))
 }
 
-// SnapshotDir returns ~/.codebot/snapshot/<projectID> — the shadow git
-// repository backing /undo file checkpoints for this project.
 func SnapshotDir(cwd string) string {
 	return filepath.Join(UserConfigDir(), "snapshot", projectID(cwd))
 }
 
-// UndoStatePath returns the per-session sidecar that persists /undo's snapshot
-// stack across restarts: ~/.codebot/projects/<projectID>/<sessionID>/undo-stack.json.
-// It sits under the per-session dir alongside bg/ and tool-outputs/.
 func UndoStatePath(cwd, sessionID string) string {
 	return filepath.Join(SessionsDir(cwd), sessionID, "undo-stack.json")
 }
 
-// ApprovalsPath returns ~/.codebot/approvals/<projectID>.json.
 func ApprovalsPath(cwd string) string {
 	return filepath.Join(UserConfigDir(), "approvals", projectID(cwd)+".json")
 }
 
-// AuditLogPath returns ~/.codebot/audit.log.
 func AuditLogPath() string {
 	return filepath.Join(UserConfigDir(), "audit.log")
 }
 
 var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 
-// projectID returns a stable, human-readable directory name for a project path.
-// Format: non-alphanumeric characters replaced with "-" (e.g. /Users/me/proj → -Users-me-proj).
 func projectID(cwd string) string {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
@@ -447,7 +409,6 @@ func projectID(cwd string) string {
 	return nonAlphaNum.ReplaceAllString(abs, "-")
 }
 
-// UserConfigDir returns ~/.codebot/.
 func UserConfigDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -456,18 +417,15 @@ func UserConfigDir() string {
 	return filepath.Join(home, ConfigDir)
 }
 
-// Layers are the settings as their files hold them: the user's, in
-// ~/.codebot/settings.json, and the project's, in .codebot/settings.json at
-// the project's root. A project is shared and may come from anyone, so it
-// sets only some of the fields, some only once trusted; see ForProject.
+// Layers are the raw user and project settings. A project may come from
+// anyone, so it can set only some fields, and some only once trusted; see
+// ForProject.
 type Layers struct {
-	Root    string // the project's root, "" for none; see ProjectRoot
+	Root    string // "" when there is no project
 	User    Settings
 	Project Settings
 }
 
-// Load reads the user's and the project's settings. It fails when a
-// settings file exists and cannot be parsed.
 func Load(cwd string) (Layers, error) {
 	l := Layers{Root: ProjectRoot(cwd)}
 	var err error
@@ -484,18 +442,16 @@ func Load(cwd string) (Layers, error) {
 	return l, nil
 }
 
-// inProject reads the files of the project at root, which may not lead
-// outside it: its settings are its own, never a file of the user's.
+// inProject refuses paths that resolve outside root, so a project cannot
+// point its settings at one of the user's files.
 func inProject(root string) func(string) ([]byte, error) {
 	return func(path string) ([]byte, error) { return regular.ReadFileIn(root, path) }
 }
 
-// Resolve combines the user's settings and the project's over them: those
-// a project sets as it likes, and of its grants, granted, those the user
-// agreed to (see extension.Load). It applies the defaults and validates the
-// result. The extensions, hooks and MCP servers among them, are left to the
-// extension package. Model is deliberately never defaulted — hardcoded
-// model names go stale; boot validates it is set.
+// Resolve lays the project's settings over the user's. Of the project's
+// grants, only granted (those the user agreed to, see extension.Load)
+// apply. Hooks, MCP servers and plugins are left to the extension package.
+// Model has no default because hardcoded model names go stale.
 func (l Layers) Resolve(cwd string, granted Settings) (Resolved, error) {
 	project, _, _ := ForProject(l.Project)
 	var perms PermissionsConfig
@@ -503,8 +459,7 @@ func (l Layers) Resolve(cwd string, granted Settings) (Resolved, error) {
 		perms.Deny = p.Deny
 	}
 	if g := granted.Permissions; g != nil {
-		// The project's roots are its own: relative to its root, wherever
-		// in it codebot runs.
+		// Project roots are relative to the project root, not cwd.
 		perms.Allow, perms.ReadRoots, perms.WriteRoots = g.Allow, absRoots(l.Root, g.ReadRoots), absRoots(l.Root, g.WriteRoots)
 	}
 	project.Permissions = &perms
@@ -519,13 +474,15 @@ func (l Layers) Resolve(cwd string, granted Settings) (Resolved, error) {
 	return r, nil
 }
 
-// ForProject sorts a project's settings s by what a project may do with
-// them. It sets as it likes those that only shape how codebot works, open,
-// deny rules among them. What lets code run or calls through unasked — its
-// hooks, MCP servers, plugins, allow rules and roots — are grants, each of
-// which takes effect once the user agrees to it. Where calls go and whose
-// credentials they carry are the user's alone: the providers, the search
-// provider and its key, and telemetry are refused, named and dropped.
+// ForProject splits a project's settings by what a project may do:
+//   - open fields only shape how codebot works (deny rules included) and
+//     apply as they are;
+//   - grants run code or let calls through without asking (hooks, MCP
+//     servers, plugins, allow rules, roots) and apply only once the user
+//     agrees;
+//   - fields that decide where calls go and whose credentials they carry
+//     (providers, search provider and key, telemetry) belong to the user
+//     alone, so they are dropped and listed in refused.
 func ForProject(s Settings) (open, grants Settings, refused []string) {
 	for name, set := range map[string]bool{
 		"providers":       s.Providers != nil,
@@ -549,9 +506,9 @@ func ForProject(s Settings) (open, grants Settings, refused []string) {
 	return open, grants, refused
 }
 
-// mergeSettings merges override over base: of the fields Resolved holds,
-// those set in override take precedence, permission rules and roots add up.
-// The others, the extensions, keep base's. Neither changes.
+// mergeSettings lays override over base; permission rules and roots are
+// concatenated. Hooks, MCP servers and plugins keep base's values. Neither
+// argument is modified.
 func mergeSettings(base, override Settings) Settings {
 	if override.Provider != nil {
 		base.Provider = override.Provider
@@ -573,7 +530,6 @@ func mergeSettings(base, override Settings) Settings {
 				continue
 			}
 			existing := new(*base.Providers[k])
-			// Field-level merge: override only non-zero fields.
 			if v.Type != "" {
 				existing.Type = v.Type
 			}
@@ -637,15 +593,12 @@ func mergeSettings(base, override Settings) Settings {
 	return base
 }
 
-// EditUserSettings applies edit to the user's settings, creating the file
-// if need be.
 func EditUserSettings(edit func(*Settings)) error {
 	return editSettings(UserSettingsPath(), regular.ReadFile, edit)
 }
 
-// EditProjectSettings applies edit to the settings of the project at root,
-// creating the file if need be. A file, or its directory, leading outside
-// the project is not the project's to edit.
+// EditProjectSettings refuses a settings file or directory that resolves
+// outside the project.
 func EditProjectSettings(root string, edit func(*Settings)) error {
 	path := ProjectSettingsPath(root)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -657,8 +610,7 @@ func EditProjectSettings(root string, edit func(*Settings)) error {
 	return editSettings(path, inProject(root), edit)
 }
 
-// editSettings applies edit to the settings file at path, read with read.
-// A symlink stays one: the file it leads to is written.
+// editSettings writes through a symlink instead of replacing it.
 func editSettings(path string, read func(string) ([]byte, error), edit func(*Settings)) error {
 	unlock, err := LockFile(path)
 	if err != nil {
@@ -687,16 +639,14 @@ func editSettings(path string, read func(string) ([]byte, error), edit func(*Set
 	return WriteFileAtomic(path, data, perm)
 }
 
-// PatchUserSettings applies the non-nil fields of patch to the user's
-// settings. What the user picks as codebot runs is theirs, never the
-// project's, which is shared.
+// PatchUserSettings writes the user's settings, never the project's: choices
+// made while codebot runs must not land in a shared repository.
 func PatchUserSettings(patch Settings) error {
 	return EditUserSettings(func(s *Settings) { *s = mergeSettings(*s, patch) })
 }
 
-// LockFile takes the lock codebot's processes share to edit the file at
-// path, so that none of them loses another's edit. The locks are kept in
-// the user's config directory, never in a project.
+// LockFile serializes edits to path across codebot processes. Lock files
+// live in the user's config directory, never in a project.
 func LockFile(path string) (unlock func(), err error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -710,8 +660,6 @@ func LockFile(path string) (unlock func(), err error) {
 	return filelock.Lock(filepath.Join(dir, filepath.Base(abs)+"-"+hex.EncodeToString(sum[:6])+".lock"))
 }
 
-// WriteFileAtomic writes data to path whole or not at all: a reader never sees
-// it half written.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
@@ -742,7 +690,6 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// loadFile reads the settings file at path with read; none is no settings.
 func loadFile(path string, read func(string) ([]byte, error)) (Settings, error) {
 	var s Settings
 	data, err := read(path)
@@ -758,16 +705,12 @@ func loadFile(path string, read func(string) ([]byte, error)) (Settings, error) 
 	return s, nil
 }
 
-// normalizePermissionRoots makes the roots absolute, the workspace when none
-// are set; whatever is writable is readable.
 func normalizePermissionRoots(cwd string, perms PermissionsConfig) PermissionsConfig {
 	perms.WriteRoots = normalizeRoots(cwd, perms.WriteRoots)
 	perms.ReadRoots = normalizeRoots(cwd, append(normalizeRoots(cwd, perms.ReadRoots), perms.WriteRoots...))
 	return perms
 }
 
-// normalizeRoots makes roots absolute against cwd, without duplicates; no
-// roots means cwd.
 func normalizeRoots(cwd string, roots []string) []string {
 	var out []string
 	for _, root := range absRoots(cwd, roots) {
@@ -781,7 +724,6 @@ func normalizeRoots(cwd string, roots []string) []string {
 	return out
 }
 
-// absRoots returns roots absolute, those relative taken from base.
 func absRoots(base string, roots []string) []string {
 	var out []string
 	for _, root := range roots {
