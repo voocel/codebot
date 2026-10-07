@@ -12,22 +12,29 @@ import (
 )
 
 // Consents records what the user agreed to run, per project root and per
-// plugin source. It lives in the user's home so no project can grant itself
-// consent, and only an explicit user decision writes it: reading, fetching or
-// loading never does.
+// plugin source (plugin.Source.ID). It lives in the user's home so no project
+// can grant itself consent, and only an explicit user decision writes it:
+// reading, fetching or loading never does.
 type Consents struct {
-	Projects map[string]Consent `json:"projects,omitempty"`
-	Plugins  map[string]Consent `json:"plugins,omitempty"`
+	Projects map[string]Consent       `json:"projects,omitempty"`
+	Plugins  map[string]PluginConsent `json:"plugins,omitempty"`
 }
 
+// Consent is the user's decision on a project, item by item.
 type Consent struct {
 	// Denied means the user distrusts the project and is not asked again.
 	Denied bool `json:"denied,omitempty"`
-	// Commit pins a git plugin to the commit the user agreed to.
-	Commit string `json:"commit,omitempty"`
 	// Declined items are not asked about again.
 	Surface  Surface `json:"surface,omitempty"`
 	Declined Surface `json:"declined,omitempty"`
+}
+
+// PluginConsent is the user's agreement to a plugin as a whole: its author
+// tested it as one, so it runs all of Surface or nothing.
+type PluginConsent struct {
+	// Commit pins a git plugin to the commit the user agreed to.
+	Commit  string  `json:"commit,omitempty"`
+	Surface Surface `json:"surface,omitempty"`
 }
 
 func (c Consent) Standing(surface Surface) Standing {
@@ -43,7 +50,6 @@ func (c Consent) Standing(surface Surface) Standing {
 func (c Consent) Decided(surface, shown, agreed Surface) Consent {
 	declined := shown.Missing(agreed)
 	return Consent{
-		Commit:   c.Commit,
 		Surface:  surface.Intersect(c.Surface).Missing(declined).With(agreed...),
 		Declined: surface.Intersect(c.Declined).Missing(agreed).With(declined...),
 	}
@@ -83,7 +89,7 @@ func EditConsents(edit func(*Consents)) error {
 		c.Projects = map[string]Consent{}
 	}
 	if c.Plugins == nil {
-		c.Plugins = map[string]Consent{}
+		c.Plugins = map[string]PluginConsent{}
 	}
 	edit(&c)
 	data, err := json.MarshalIndent(c, "", "  ")

@@ -12,11 +12,13 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// Consent asks about items that would run as the user, from a folder or a
-// plugin. Checked items are agreed to, the rest declined.
+// Consent asks about items that would run as the user. A folder's are
+// checked one by one, the checked agreed to and the rest declined; a
+// plugin's are listed, to be taken or left as a whole.
 type Consent struct {
 	key         any
 	title, lead string
+	listed      app.Surface
 	items       app.Surface
 	checked     []bool
 	choices     []Choice
@@ -40,6 +42,12 @@ func NewConsent(key any, title, lead string, items, checked app.Surface, choices
 		p.checked[i] = checked.Has(it)
 	}
 	return p
+}
+
+// NewApproval lists items to be taken or left as a whole; the choices
+// receive none.
+func NewApproval(key any, title, lead string, items app.Surface, choices []Choice, esc func() tea.Cmd) *Consent {
+	return &Consent{key: key, title: title, lead: lead, listed: items, choices: choices, esc: esc}
 }
 
 func (p *Consent) Key() any { return p.key }
@@ -95,29 +103,20 @@ func KindLabel(kind string) string { return kinds[kind] }
 
 func (p *Consent) View(width, height int) string {
 	lines := markdown.Wrap(p.lead, theme.Text, width-2)
+	for _, it := range p.listed {
+		lines = append(lines, itemLines(kinds[it.Kind], it.Detail, false, width)...)
+	}
 	for i, it := range p.items {
 		box := "[ ] "
 		if p.checked[i] {
 			box = "[x] "
 		}
-		label := box + kinds[it.Kind]
-		pad := max(16-ansi.StringWidth(label), 1)
 		if i == p.at {
 			p.head.follow(len(lines))
 		}
-		for j, d := range markdown.Wrap(it.Detail, theme.Text, max(width-20, 10)) {
-			switch {
-			case j > 0:
-				d = strings.Repeat(" ", 18) + d
-			case i == p.at:
-				d = theme.Selected.Render("❯ "+label) + strings.Repeat(" ", pad) + d
-			default:
-				d = "  " + theme.MutedText.Render(label) + strings.Repeat(" ", pad) + d
-			}
-			lines = append(lines, d)
-		}
+		lines = append(lines, itemLines(box+kinds[it.Kind], it.Detail, i == p.at, width)...)
 	}
-	if len(p.items) > 0 {
+	if len(p.listed)+len(p.items) > 0 {
 		lines = append(lines, theme.WarmText.Render("They run as you, outside any sandbox."))
 	}
 	var opts []string
@@ -135,4 +134,22 @@ func (p *Consent) View(width, height int) string {
 	}
 	hint := theme.Hint(append(keys, "esc", "decide later")...)
 	return frame(p.queue.title(p.title), body, hint, width, height)
+}
+
+// itemLines shows an item's label, then its detail wrapped beside it.
+func itemLines(label, detail string, selected bool, width int) []string {
+	pad := strings.Repeat(" ", max(16-ansi.StringWidth(label), 1))
+	var out []string
+	for j, d := range markdown.Wrap(detail, theme.Text, max(width-20, 10)) {
+		switch {
+		case j > 0:
+			d = strings.Repeat(" ", 18) + d
+		case selected:
+			d = theme.Selected.Render("❯ "+label) + pad + d
+		default:
+			d = "  " + theme.MutedText.Render(label) + pad + d
+		}
+		out = append(out, d)
+	}
+	return out
 }

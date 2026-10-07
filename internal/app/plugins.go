@@ -25,6 +25,7 @@ const (
 	PluginUntrusted    = extension.PluginUntrusted
 	PluginNotInstalled = extension.PluginNotInstalled
 	PluginNotCached    = extension.PluginNotCached
+	PluginWaiting      = extension.PluginWaiting
 	PluginBroken       = extension.PluginBroken
 )
 
@@ -33,7 +34,8 @@ const (
 func (a *App) Plugins() []Plugin { return a.Extensions().Plugins }
 
 // PluginOffer is a plugin awaiting the user's consent: a new plugin, a
-// declared one with undecided items, or a newer commit of a git plugin.
+// declared one that runs something not agreed to, or a newer commit of a git
+// plugin. It is taken or left as a whole.
 type PluginOffer struct {
 	// Source is the plugin's source as written in the settings of Scope.
 	Source string
@@ -41,7 +43,7 @@ type PluginOffer struct {
 	Commit string
 	*plugin.Plugin
 	// Surface is everything the plugin runs; New is the part the user has
-	// not decided on.
+	// not agreed to.
 	Surface, New Surface
 	// Problems are the parts that failed to load and were left out.
 	Problems []error
@@ -61,7 +63,7 @@ func (a *App) offer(ctx context.Context, src plugin.Source, commit string) (*Plu
 		return nil, err
 	}
 	surface := extension.PluginSurface(p)
-	return &PluginOffer{Commit: got, Plugin: p, Surface: surface, New: consents.Plugins[src.String()].Standing(surface).Ask(), Problems: problems, src: src}, nil
+	return &PluginOffer{Commit: got, Plugin: p, Surface: surface, New: surface.Missing(consents.Plugins[src.ID()].Surface), Problems: problems, src: src}, nil
 }
 
 // OfferPlugin reads the plugin at source: a git repository at its ref, or a
@@ -120,9 +122,9 @@ func (a *App) declare(source string, src plugin.Source, scope extension.Scope) s
 }
 
 // InstallPlugins readies declared plugins. An agreed git plugin missing from
-// the cache is fetched at its commit. A plugin not yet agreed to, or with
-// undecided items, is returned as an offer. The extensions reload if
-// anything was fetched.
+// the cache is fetched at its commit. A plugin not yet agreed to, or running
+// something new, is returned as an offer. The extensions reload if anything
+// was fetched.
 func (a *App) InstallPlugins(ctx context.Context) (offers []*PluginOffer, fetched []string, errs []error) {
 	for _, pl := range a.Plugins() {
 		var o *PluginOffer
@@ -134,7 +136,7 @@ func (a *App) InstallPlugins(ctx context.Context) (offers []*PluginOffer, fetche
 			}
 		case pl.State == PluginNotInstalled:
 			o, err = a.offer(ctx, pl.Src, "")
-		case pl.State == PluginOn && len(pl.Ask()) > 0:
+		case pl.State == PluginWaiting:
 			o, err = a.offer(ctx, pl.Src, pl.Commit)
 		}
 		if err != nil {
@@ -187,7 +189,7 @@ func (a *App) UpdatePlugins(ctx context.Context, ref string) ([]PluginUpdate, er
 			o.Source, o.Scope = pl.Source, pl.Scope
 			u.Commit, u.Offer = o.Commit, o
 		default:
-			u.Commit, u.Err = o.Commit, extension.DecidePlugin(pl.Src, o.Commit, o.Surface, nil, nil)
+			u.Commit, u.Err = o.Commit, extension.AgreeToPlugin(pl.Src, o.Commit, o.Surface)
 			applied = applied || u.Err == nil
 		}
 		out = append(out, u)
@@ -232,12 +234,12 @@ func (a *App) PluginUpdates(ctx context.Context) []string {
 	return names
 }
 
-// AcceptPlugin records the user's decision at the offered commit: of the new
-// items, agreed is accepted and the rest declined. It then declares the
-// plugin in the settings if needed. A plugin the user adds to the project
-// is also trusted as a project item, since they wrote it there.
-func (a *App) AcceptPlugin(ctx context.Context, o *PluginOffer, agreed Surface) (ReloadReport, error) {
-	if err := extension.DecidePlugin(o.src, o.Commit, o.Surface, o.New, agreed); err != nil {
+// AcceptPlugin agrees to everything the plugin runs at the offered commit,
+// then declares the plugin in the settings if needed. A plugin the user adds
+// to the project is also trusted as a project item, since they wrote it
+// there.
+func (a *App) AcceptPlugin(ctx context.Context, o *PluginOffer) (ReloadReport, error) {
+	if err := extension.AgreeToPlugin(o.src, o.Commit, o.Surface); err != nil {
 		return ReloadReport{}, err
 	}
 	if o.declare {

@@ -32,6 +32,7 @@ const (
 	PluginUntrusted    PluginState = "untrusted"     // the user has not agreed to the project declaring it
 	PluginNotInstalled PluginState = "not installed" // a git plugin the user has not agreed to yet
 	PluginNotCached    PluginState = "not cached"    // the agreed commit is no longer cached
+	PluginWaiting      PluginState = "waiting"       // it runs something the user has not agreed to, so none of it runs
 	PluginBroken       PluginState = "broken"
 )
 
@@ -48,9 +49,11 @@ type Plugin struct {
 	State  PluginState
 	// Err is set when State is PluginBroken.
 	Err error
-	// Only the items in Standing.Agreed run.
-	Standing
-	// Plugin is nil unless State is PluginOn or PluginShadowed.
+	// Surface is everything the plugin runs; New is the part the user has
+	// not agreed to, which keeps all of it off.
+	Surface, New Surface
+	// Plugin is nil unless State is PluginOn, PluginShadowed or
+	// PluginWaiting.
 	*plugin.Plugin
 }
 
@@ -101,13 +104,17 @@ func (s *Set) loadPlugins(o Options, declared []string) {
 		default:
 			s.readPlugin(&pl, o)
 		}
-		if pl.State == PluginOn {
+		// A plugin waiting for consent keeps its name, though it runs
+		// nothing: precedence goes by where it is declared.
+		if pl.State == PluginOn || pl.State == PluginWaiting {
 			if w, ok := won[pl.Name]; ok {
 				pl.State = PluginShadowed
 				s.Shadowed = append(s.Shadowed, Shadow{"plugin", pl.Name, pl.Source, w.Source})
 			} else {
 				won[pl.Name] = pl
-				s.contribute(pl)
+				if pl.State == PluginOn {
+					s.contribute(pl)
+				}
 			}
 		}
 		s.Plugins = append(s.Plugins, pl)
@@ -116,10 +123,10 @@ func (s *Set) loadPlugins(o Options, declared []string) {
 
 // readPlugin reads a git plugin only at the agreed commit and only from the
 // cache; loading never fetches. Command-line plugins, and the project's under
-// --trust, get full consent.
+// --trust, need no consent.
 func (s *Set) readPlugin(pl *Plugin, o Options) {
 	src := pl.Src
-	c, ok := o.Consents.Plugins[src.String()]
+	c, ok := o.Consents.Plugins[src.ID()]
 	data := plugin.DataDir(src, dataDir())
 	var problems []error
 	var err error
@@ -142,24 +149,24 @@ func (s *Set) readPlugin(pl *Plugin, o Options) {
 		pl.State, pl.Plugin, pl.Err = PluginBroken, nil, err
 		return
 	}
-	surface := PluginSurface(pl.Plugin)
-	if pl.Scope == Session || pl.Scope == Project && o.TrustAll {
-		c = Consent{Surface: surface}
+	pl.Surface, pl.State = PluginSurface(pl.Plugin), PluginOn
+	if implicit := pl.Scope == Session || pl.Scope == Project && o.TrustAll; !implicit {
+		pl.New = pl.Surface.Missing(c.Surface)
 	}
-	pl.State, pl.Standing = PluginOn, c.Standing(surface)
+	if len(pl.New) > 0 {
+		pl.State = PluginWaiting
+	}
 }
 
 // contribute namespaces the plugin's resources: skills and agents as
 // "<plugin>:<name>", MCP servers as "<plugin>_<server>". Plugin names contain
-// no ":" or "_", so only a server from settings can clash, and it wins. MCP
-// servers and hooks are added only if the user agreed to them.
+// no ":" or "_", so only a server from settings can clash, and it wins.
 func (s *Set) contribute(pl Plugin) {
 	if err := os.MkdirAll(pl.Data, 0o700); err != nil {
 		s.problem(err)
 	}
 	for _, spec := range pl.Skills {
-		name := pl.Name + ":" + spec.Name
-		spec.Name, spec.Source, spec.Privileged = name, "plugin", pl.Agreed.HasAll(skillItems(name, spec))
+		spec.Name, spec.Source, spec.Privileged = pl.Name+":"+spec.Name, "plugin", true
 		s.Skills = append(s.Skills, spec)
 	}
 	for _, def := range pl.Agents {
@@ -167,9 +174,6 @@ func (s *Set) contribute(pl Plugin) {
 		s.Agents = append(s.Agents, def)
 	}
 	for _, name := range slices.Sorted(maps.Keys(pl.MCP)) {
-		if !pl.Agreed.Has(pluginServer(pl.Plugin, name).item()) {
-			continue
-		}
 		srv := MCPServer{Name: pl.Name + "_" + name, Scope: pl.Scope, Plugin: pl.Name, MCPServer: pl.MCP[name]}
 		if i := slices.IndexFunc(s.MCP, func(m MCPServer) bool { return m.Name == srv.Name }); i >= 0 {
 			s.Shadowed = append(s.Shadowed, Shadow{"MCP server", srv.Name, pl.Root, settingsPath(s.MCP[i].Scope, s.Trust.Root)})
@@ -178,9 +182,8 @@ func (s *Set) contribute(pl Plugin) {
 		s.MCP = append(s.MCP, srv)
 	}
 	for _, h := range hooksOf(pl.Scope, pl.Hooks) {
-		if h.Plugin = pl.Name; pl.Agreed.Has(h.item()) {
-			s.Hooks = append(s.Hooks, h)
-		}
+		h.Plugin = pl.Name
+		s.Hooks = append(s.Hooks, h)
 	}
 }
 
@@ -253,12 +256,11 @@ func LatestCommit(ctx context.Context, src plugin.Source) (string, error) {
 	return plugin.Latest(ctx, src, cacheDir())
 }
 
-// DecidePlugin saves the decision and pins commit; see Consent.Decided.
-func DecidePlugin(src plugin.Source, commit string, surface, shown, agreed Surface) error {
+// AgreeToPlugin records the user's agreement to everything the plugin runs,
+// surface, at commit for a git plugin.
+func AgreeToPlugin(src plugin.Source, commit string, surface Surface) error {
 	return EditConsents(func(c *Consents) {
-		d := c.Plugins[src.String()].Decided(surface, shown, agreed)
-		d.Commit = commit
-		c.Plugins[src.String()] = d
+		c.Plugins[src.ID()] = PluginConsent{Commit: commit, Surface: surface}
 	})
 }
 

@@ -80,7 +80,7 @@ func connected(r app.MCPReport) string {
 func PendingPlugins(a *app.App) string {
 	n := 0
 	for _, pl := range a.Plugins() {
-		if pl.State == app.PluginNotInstalled || pl.State == app.PluginNotCached || pl.State == app.PluginOn && len(pl.Ask()) > 0 {
+		if pl.State == app.PluginNotInstalled || pl.State == app.PluginNotCached || pl.State == app.PluginWaiting {
 			n++
 		}
 	}
@@ -147,10 +147,8 @@ func pluginDetail(pl app.Plugin) string {
 
 func pluginState(pl app.Plugin) string {
 	switch pl.State {
-	case app.PluginOn:
-		if ask := pl.Ask(); len(ask) > 0 {
-			return fmt.Sprintf("on · %d waiting for you · /plugins install", len(ask))
-		}
+	case app.PluginWaiting:
+		return fmt.Sprintf("off · runs %d new %s · /plugins install", len(pl.New), plural(len(pl.New), "thing"))
 	case app.PluginShadowed:
 		return "another " + pl.Name + " is on in its stead"
 	case app.PluginUntrusted:
@@ -218,11 +216,8 @@ func pluginRows(pl app.Plugin) [][2]string {
 		rows = append(rows, [2]string{"Runs", ""})
 		for _, it := range pl.Surface {
 			detail := it.Detail
-			switch {
-			case pl.Declined.Has(it):
-				detail += " · declined"
-			case !pl.Agreed.Has(it):
-				detail += " · waiting for you"
+			if pl.New.Has(it) {
+				detail += " · new"
 			}
 			rows = append(rows, [2]string{panel.KindLabel(it.Kind), detail})
 		}
@@ -230,8 +225,8 @@ func pluginRows(pl app.Plugin) [][2]string {
 	return rows
 }
 
-// offerPanel asks about the plugin's undecided items. accept agrees to the
-// checked items and declines the rest.
+// offerPanel lists what the plugin would newly run; accept agrees to all the
+// plugin runs.
 func offerPanel(a *app.App, o *app.PluginOffer, title, accept, done string) tea.Cmd {
 	where := o.Source
 	if o.Commit != "" {
@@ -246,10 +241,10 @@ func offerPanel(a *app.App, o *app.PluginOffer, title, accept, done string) tea.
 		cells = append(cells, fail(p.Error()))
 	}
 	dismiss := func() tea.Cmd { return note("Left " + o.Name + " as it was") }
-	pick := func(agreed app.Surface) tea.Cmd {
-		return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.AcceptPlugin(ctx, o, agreed) }, done)
+	pick := func(app.Surface) tea.Cmd {
+		return reloaded(func(ctx context.Context) (app.ReloadReport, error) { return a.AcceptPlugin(ctx, o) }, done)
 	}
-	cells = append(cells, show(panel.NewConsent(new(int), title+"?", lead, o.New, o.New, []panel.Choice{
+	cells = append(cells, show(panel.NewApproval(new(int), title+"?", lead, o.New, []panel.Choice{
 		{Label: accept, Pick: pick},
 		{Label: "Cancel", Pick: func(app.Surface) tea.Cmd { return dismiss() }},
 	}, dismiss)))

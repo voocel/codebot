@@ -77,7 +77,7 @@ func TestPluginLifecycle(t *testing.T) {
 	if o.Name != "kit" || !slices.Equal(details(o.Surface), []string{mcpDetail("db")}) || !slices.Equal(o.New, o.Surface) {
 		t.Fatalf("offer %+v", o)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
 		t.Fatal(err)
 	}
 	if layers, _ := config.Load(e.cwd); !slices.Equal(layers.User.Plugins, []string{"~/kit"}) {
@@ -101,8 +101,8 @@ func TestPluginLifecycle(t *testing.T) {
 	}
 }
 
-// A local plugin is reread on reload. New items wait for consent while the
-// agreed ones keep running.
+// A local plugin is reread on reload. Once it runs something new, all of it
+// is off until the user agrees to that too.
 func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
 	dir := filepath.Join(os.Getenv("HOME"), "kit")
@@ -112,7 +112,7 @@ func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,20 +120,20 @@ func TestLocalPluginsWaitForWhatTheyAdd(t *testing.T) {
 	if _, err := e.app.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if pl := e.app.Plugins()[0]; pl.State != PluginOn || !slices.Equal(details(pl.Held()), []string{mcpDetail("shell")}) {
+	if pl := e.app.Plugins()[0]; pl.State != PluginWaiting || !slices.Equal(details(pl.New), []string{mcpDetail("shell")}) {
 		t.Fatalf("plugin %+v", pl)
 	}
-	if !slices.Equal(servers(e), []string{"kit_db"}) {
-		t.Fatalf("servers %q", servers(e))
+	if len(servers(e)) > 0 || slices.Contains(skillNames(e), "kit:release") {
+		t.Fatalf("half the plugin runs: servers %q, skills %q", servers(e), skillNames(e))
 	}
 	offers, fetched, errs := e.app.InstallPlugins(ctx)
 	if len(offers) != 1 || len(fetched) > 0 || len(errs) > 0 || !slices.Equal(details(offers[0].New), []string{mcpDetail("shell")}) {
 		t.Fatalf("install: %+v, %q, %v", offers, fetched, errs)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, offers[0], offers[0].New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, offers[0]); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(servers(e), []string{"kit_db", "kit_shell"}) || len(e.app.Plugins()[0].Held()) > 0 {
+	if !slices.Equal(servers(e), []string{"kit_db", "kit_shell"}) || e.app.Plugins()[0].State != PluginOn {
 		t.Errorf("servers %q, plugin %+v", servers(e), e.app.Plugins()[0])
 	}
 	if layers, _ := config.Load(e.cwd); len(layers.User.Plugins) != 1 {
@@ -178,7 +178,7 @@ func TestGitPluginUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginOn || pl.Commit != o.Commit {
@@ -213,7 +213,7 @@ func TestGitPluginUpdates(t *testing.T) {
 	if pl := e.app.Plugins()[0]; pl.Commit != quiet || len(servers(e)) > 0 {
 		t.Fatalf("the update ran something new unasked: %+v", pl)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, updates[0].Offer, updates[0].Offer.New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, updates[0].Offer); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.Commit != updates[0].Commit || !slices.Equal(servers(e), []string{"kit_db"}) {
@@ -221,6 +221,49 @@ func TestGitPluginUpdates(t *testing.T) {
 	}
 	if updates, _ := e.app.UpdatePlugins(ctx, ""); updates[0].Commit != e.app.Plugins()[0].Commit || updates[0].Offer != nil {
 		t.Errorf("up to date, %+v", updates[0])
+	}
+}
+
+// A changed ref leaves the plugin at its agreed commit and is updated to like
+// any other move: asking only about what is new.
+func TestAChangedRefIsAnUpdate(t *testing.T) {
+	repo, commit := remote(t)
+	tag := func(name string) {
+		if out, err := exec.Command("git", "-C", repo, "tag", name).CombinedOutput(); err != nil {
+			t.Fatalf("git tag: %v\n%s", err, out)
+		}
+	}
+	writeKit(t, repo)
+	commit("v1")
+	tag("v1")
+	writeKit(t, repo, "db")
+	commit("v2")
+	tag("v2")
+	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script()})
+	ctx := context.Background()
+	o, err := e.app.OfferPlugin(ctx, "example.test/acme/kit#v1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := config.EditUserSettings(func(s *config.Settings) { s.Plugins = []string{"example.test/acme/kit#v2"} }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.app.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pl := e.app.Plugins()[0]; pl.State != PluginOn || pl.Commit != o.Commit {
+		t.Fatalf("plugin %+v", pl)
+	}
+	if names := e.app.PluginUpdates(ctx); !slices.Equal(names, []string{"kit"}) {
+		t.Fatalf("updates for %q", names)
+	}
+	updates, err := e.app.UpdatePlugins(ctx, "kit")
+	if err != nil || updates[0].Offer == nil || !slices.Equal(details(updates[0].Offer.New), []string{mcpDetail("db")}) {
+		t.Fatalf("updates %+v, %v", updates, err)
 	}
 }
 
@@ -250,7 +293,7 @@ func TestProjectPlugins(t *testing.T) {
 	if pl := e.app.Plugins()[0]; pl.State != PluginNotInstalled {
 		t.Fatalf("offered, the plugin is %s", pl.State)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, offers[0], offers[0].New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, offers[0]); err != nil {
 		t.Fatal(err)
 	}
 	if pl := e.app.Plugins()[0]; pl.State != PluginOn || !slices.Equal(servers(e), []string{"kit_db"}) {
@@ -277,7 +320,7 @@ func TestAgreedPluginsComeBackAtTheirCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
 		t.Fatal(err)
 	}
 	writeKit(t, repo, "db")
@@ -318,7 +361,7 @@ func TestDeclaredPluginsWaitToBeInstalled(t *testing.T) {
 	if len(offers) != 1 || len(errs) > 0 {
 		t.Fatalf("install: %+v, %v", offers, errs)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, offers[0], offers[0].New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, offers[0]); err != nil {
 		t.Fatal(err)
 	}
 	if layers, _ := config.Load(e.cwd); len(layers.User.Plugins) != 1 || e.app.Plugins()[0].State != PluginOn {
@@ -345,7 +388,7 @@ func TestPluginsAddedToTheProject(t *testing.T) {
 	if o.Source != "../tools/kit" {
 		t.Errorf("declared as %q, not from the settings' directory", o.Source)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
 		t.Fatal(err)
 	}
 	c, err := extension.ReadConsents()
@@ -435,7 +478,7 @@ func TestPluginHooksRun(t *testing.T) {
 	if !slices.Contains(details(o.Surface), `kit: UserPromptSubmit: touch "$PLUGIN_DATA/ran"`) {
 		t.Errorf("the offer hides the hook: %q", o.Surface)
 	}
-	if _, err := e.app.AcceptPlugin(ctx, o, o.New); err != nil {
+	if _, err := e.app.AcceptPlugin(ctx, o); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(e.app.Extensions().Agents, func(d subagent.AgentDefinition) bool { return d.Name == "kit:reviewer" }) {

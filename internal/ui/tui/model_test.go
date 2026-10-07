@@ -425,7 +425,7 @@ func TestTrustPanelDeclinesWhatIsUnchecked(t *testing.T) {
 	}
 }
 
-// /plugins add shows what the plugin runs before adding it.
+// /plugins add shows what the plugin runs, to take or leave as a whole.
 func TestAddAPlugin(t *testing.T) {
 	h := boot(t)
 	dir := filepath.Join(os.Getenv("HOME"), "kit")
@@ -444,6 +444,9 @@ func TestAddAPlugin(t *testing.T) {
 	h.write("/plugins add ~/kit")
 	h.press("enter")
 	h.shows("Add kit 0.1.0?", "~/kit brings 1 skill · 1 MCP, and would run:", "MCP server", "kit_db: db-mcp", "1. Add")
+	if strings.Contains(h.screen(), "[x]") {
+		t.Error("a plugin's items are checked one by one")
+	}
 	h.pause()
 	h.press("1")
 	await[reloadedMsg](h)

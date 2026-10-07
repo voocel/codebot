@@ -4,9 +4,11 @@
 // namespaced, and all hooks run.
 //
 // Anything that runs code or skips permission prompts needs the user's
-// consent item by item (see Surface and Consents), because a project or a
-// plugin may come from anyone. Consent belongs to the item, not to whoever
-// declares it. Instructions for the model always load.
+// consent (see Surface and Consents), because a project or a plugin may come
+// from anyone: a project's item by item, since its settings are odds and ends
+// from many hands, and a plugin's as a whole, since its author tested it as
+// one. A project's instructions for the model always load; a plugin not
+// agreed to is off entirely.
 package extension
 
 import (

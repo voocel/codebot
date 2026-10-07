@@ -332,7 +332,7 @@ func TestConsentsEditedAtOnceAllHold(t *testing.T) {
 	for i := range 20 {
 		wg.Go(func() {
 			err := EditConsents(func(c *Consents) {
-				c.Plugins[fmt.Sprintf("https://example.test/kit%d", i)] = Consent{Commit: "c"}
+				c.Plugins[fmt.Sprintf("https://example.test/kit%d", i)] = PluginConsent{Commit: "c"}
 				c.Projects[fmt.Sprintf("/p%d", i)] = Consent{Denied: true}
 			})
 			if err != nil {
@@ -369,29 +369,29 @@ func states(s *Set) []string {
 	return out
 }
 
-// Plugin resources are namespaced, only agreed items run, and a git plugin
-// loads at the agreed commit.
+// Plugin resources are namespaced, a plugin runs only once all of it is
+// agreed to, and a git plugin loads at the agreed commit, whatever its ref.
 func TestPlugins(t *testing.T) {
 	home, _, cwd := project(t)
 	acme := filepath.Join(home, "plugins", "acme")
 	writePlugin(t, acme, "acme")
 	writePlugin(t, filepath.Join(home, "plugins", "other"), "other")
 	writePlugin(t, filepath.Join(home, "plugins", "acme-copy"), "acme")
-	write(t, filepath.Join(home, ".codebot", "settings.json"), `{"plugins": ["../plugins/acme", "~/plugins/other", "~/plugins/acme-copy", "github.com/acme/remote#v1", "github.com/acme/gone", "nope"]}`)
+	write(t, filepath.Join(home, ".codebot", "settings.json"), `{"plugins": ["../plugins/acme", "~/plugins/other", "~/plugins/acme-copy", "github.com/acme/remote#v2", "github.com/acme/gone", "nope"]}`)
 	remote, _ := plugin.ParseSource("github.com/acme/remote#v1", "")
 	gone, _ := plugin.ParseSource("github.com/acme/gone", "")
 	writePlugin(t, plugin.Cached(remote, cacheDir(), "abc123"), "remote")
 	err := EditConsents(func(c *Consents) {
-		c.Plugins[acme] = Consent{Surface: surfaceOf(t, acme)}
-		c.Plugins[remote.String()] = Consent{Commit: "abc123", Surface: surfaceOf(t, plugin.Cached(remote, cacheDir(), "abc123"))}
-		c.Plugins[gone.String()] = Consent{Commit: "def456"}
+		c.Plugins[acme] = PluginConsent{Surface: surfaceOf(t, acme)}
+		c.Plugins[remote.ID()] = PluginConsent{Commit: "abc123", Surface: surfaceOf(t, plugin.Cached(remote, cacheDir(), "abc123"))}
+		c.Plugins[gone.ID()] = PluginConsent{Commit: "def456"}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	s := load(t, cwd, false)
-	want := []string{"../plugins/acme on", "~/plugins/other on", "~/plugins/acme-copy shadowed", "github.com/acme/remote#v1 on", "github.com/acme/gone not cached", "nope broken"}
+	want := []string{"../plugins/acme on", "~/plugins/other waiting", "~/plugins/acme-copy shadowed", "github.com/acme/remote#v2 on", "github.com/acme/gone not cached", "nope broken"}
 	if got := states(s); !slices.Equal(got, want) {
 		t.Errorf("plugins %q, want %q", got, want)
 	}
@@ -415,10 +415,9 @@ func TestPlugins(t *testing.T) {
 		t.Errorf("gone %+v", pl)
 	}
 
-	// Not agreed yet: the skill loads without privileges and the server
-	// does not run.
+	// Not agreed yet: none of it loads.
 	other := s.Plugins[1]
-	if !slices.Equal(told(other.Held()), pluginWants("other")) || find(s.Skills, "other:release").Privileged {
+	if !slices.Equal(told(other.New), pluginWants("other")) || find(s.Skills, "other:release").Name != "" {
 		t.Errorf("other %+v", other)
 	}
 	if _, ok := s.MCPConfig()["other_db"]; ok {
@@ -444,7 +443,7 @@ func TestSessionPlugins(t *testing.T) {
 	if got := states(s); !slices.Equal(got, []string{dev + " on", "~/plugins/acme shadowed"}) {
 		t.Errorf("plugins %q", got)
 	}
-	if s.Plugins[0].Scope != Session || len(s.Plugins[0].Held()) > 0 || s.MCPConfig()["acme_db"].Command == "" {
+	if s.Plugins[0].Scope != Session || len(s.Plugins[0].New) > 0 || s.MCPConfig()["acme_db"].Command == "" {
 		t.Errorf("session plugin %+v", s.Plugins[0])
 	}
 }
@@ -467,22 +466,22 @@ func TestProjectPluginsWaitForTrust(t *testing.T) {
 
 	consents := Consents{Projects: map[string]Consent{root: {Surface: s.Trust.Surface}}}
 	s = loadWith(t, Options{Cwd: cwd, Consents: consents})
-	if got := states(s); !slices.Equal(got, []string{"../tools/kit on", "github.com/acme/remote#v1 not installed"}) {
+	if got := states(s); !slices.Equal(got, []string{"../tools/kit waiting", "github.com/acme/remote#v1 not installed"}) {
 		t.Errorf("plugins %q", got)
 	}
-	if !slices.Equal(told(s.Plugins[0].Held()), pluginWants("kit")) || len(s.MCP) > 0 {
+	if !slices.Equal(told(s.Plugins[0].New), pluginWants("kit")) || len(s.MCP) > 0 || find(s.Skills, "kit:release").Name != "" {
 		t.Errorf("kit runs what the user has yet to agree to: %+v", s.Plugins[0])
 	}
 
-	consents.Plugins = map[string]Consent{kit: {Surface: surfaceOf(t, kit)}}
+	consents.Plugins = map[string]PluginConsent{kit: {Surface: surfaceOf(t, kit)}}
 	s = loadWith(t, Options{Cwd: cwd, Consents: consents})
-	if len(s.Plugins[0].Held()) > 0 || s.MCPConfig()["kit_db"].Command == "" || !find(s.Skills, "kit:release").Privileged {
+	if s.Plugins[0].State != PluginOn || s.MCPConfig()["kit_db"].Command == "" || !find(s.Skills, "kit:release").Privileged {
 		t.Errorf("kit %+v", s.Plugins[0])
 	}
 
 	// With --trust, the project and its plugins run.
 	s = load(t, cwd, true)
-	if s.Plugins[0].State != PluginOn || len(s.Plugins[0].Held()) > 0 || s.MCPConfig()["kit_db"].Command == "" {
+	if s.Plugins[0].State != PluginOn || len(s.Plugins[0].New) > 0 || s.MCPConfig()["kit_db"].Command == "" {
 		t.Errorf("trusted for the run %+v", s.Plugins[0])
 	}
 }
@@ -544,8 +543,8 @@ func TestNothingHidesTheRest(t *testing.T) {
 	}
 }
 
-// Agreed plugin hooks run alongside settings hooks, and plugin agents are
-// namespaced.
+// Plugin hooks run alongside settings hooks once agreed to, and plugin
+// agents are namespaced.
 func TestPluginHooksAndAgents(t *testing.T) {
 	_, root, cwd := project(t)
 	kit := filepath.Join(root, "tools", "kit")
@@ -559,8 +558,8 @@ func TestPluginHooksAndAgents(t *testing.T) {
 
 	consents := Consents{Projects: map[string]Consent{root: {Surface: Surface{NewItem("plugin", "../tools/kit")}}}}
 	held := loadWith(t, Options{Cwd: cwd, Consents: consents})
-	if got := told(held.Plugins[0].Held()); len(held.Hooks) > 0 || !slices.Equal(got, []string{`hook kit: PreToolUse(bash): "$PLUGIN_ROOT"/guard`}) {
-		t.Errorf("hooks %+v, held %q", held.Hooks, got)
+	if got := told(held.Plugins[0].New); len(held.Hooks) > 0 || len(held.Agents) > 0 || !slices.Equal(got, []string{`hook kit: PreToolUse(bash): "$PLUGIN_ROOT"/guard`}) {
+		t.Errorf("hooks %+v, agents %+v, new %q", held.Hooks, held.Agents, got)
 	}
 
 	s := load(t, cwd, true)
@@ -598,9 +597,9 @@ func TestItemsAreExact(t *testing.T) {
 // no longer on the surface are forgotten.
 func TestDecided(t *testing.T) {
 	a, b, c, gone := NewItem("allow", "a"), NewItem("allow", "b"), NewItem("allow", "c"), NewItem("allow", "gone")
-	kept := Consent{Commit: "x", Surface: Surface{a, gone}, Declined: Surface{b}}
+	kept := Consent{Surface: Surface{a, gone}, Declined: Surface{b}}
 	d := kept.Decided(Surface{a, b, c}, Surface{b, c}, Surface{b})
-	if !slices.Equal(d.Surface, Surface{a, b}) || !slices.Equal(d.Declined, Surface{c}) || d.Commit != "x" {
+	if !slices.Equal(d.Surface, Surface{a, b}) || !slices.Equal(d.Declined, Surface{c}) {
 		t.Errorf("decided %+v", d)
 	}
 	if st := d.Standing(Surface{a, b, c, NewItem("allow", "d")}); !slices.Equal(st.Ask(), Surface{NewItem("allow", "d")}) {

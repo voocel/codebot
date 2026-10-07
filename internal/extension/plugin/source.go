@@ -90,7 +90,7 @@ func localDir(raw, base string) (string, bool) {
 	return "", false
 }
 
-// String is the canonical form; consents are keyed by it.
+// String is the canonical form.
 func (s Source) String() string {
 	if s.Dir != "" {
 		return s.Dir
@@ -132,14 +132,19 @@ func Cached(s Source, cache, commit string) string {
 	return filepath.Join(cache, named(path.Base(key), key), commit)
 }
 
-// DataDir ignores the ref, so the data survives updates.
+// ID is the source without its ref. Consents and data are keyed by it, so
+// they survive updates, a changed ref among them.
+func (s Source) ID() string {
+	s.Ref = ""
+	return s.String()
+}
+
 func DataDir(s Source, root string) string {
 	hint := filepath.Base(s.Dir)
 	if s.Dir == "" {
 		hint = path.Base(cmp.Or(s.Path, s.key()))
 	}
-	s.Ref = ""
-	return filepath.Join(root, named(hint, s.String()))
+	return filepath.Join(root, named(hint, s.ID()))
 }
 
 // named joins a readable hint with a digest of id, so no two ids share a
