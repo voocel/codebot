@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -326,13 +327,14 @@ func auditor(path string) func(permission.AuditEntry) {
 }
 
 // checkProviderSetup runs after the first-run wizard, so anything missing
-// is an error.
+// is an error. Whether the provider needs a key it has not got, building
+// the model tells: Ollama needs none.
 func checkProviderSetup(settings config.Resolved) error {
-	if pc, ok := settings.Providers[settings.Provider]; !ok || !pc.HasCredentials() {
-		return fmt.Errorf("configuration error: settings.provider=%q is missing or not configured in settings.json", settings.Provider)
+	if settings.Provider == "" {
+		return errors.New("configuration error: provider is not set in settings.json")
 	}
 	if settings.Model == "" {
-		return fmt.Errorf("configuration error: model is not set in settings.json")
+		return errors.New("configuration error: model is not set in settings.json")
 	}
 	return nil
 }

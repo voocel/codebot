@@ -71,6 +71,7 @@ type Model struct {
 	tip      string
 
 	ticking   bool
+	notice    string // shown as the first toast
 	toast     string
 	toastID   int
 	quitArmed bool
@@ -191,7 +192,13 @@ func (m *Model) commands() []editor.Completion {
 	return out
 }
 
-func (m *Model) Init() tea.Cmd { return m.loadRecent() }
+func (m *Model) Init() tea.Cmd {
+	var notice tea.Cmd
+	if m.notice != "" {
+		notice = m.notify(m.notice)
+	}
+	return tea.Batch(m.loadRecent(), notice)
+}
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, m.update(msg)

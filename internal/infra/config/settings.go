@@ -45,10 +45,6 @@ type ProviderExtra struct {
 	SessionToken    string `json:"session_token,omitempty"`
 }
 
-func (pc ProviderConfig) HasCredentials() bool {
-	return pc.APIKey != "" || pc.Extra != nil && pc.Extra.AccessKeyID != ""
-}
-
 func (pc ProviderConfig) connection() llmprovider.Config {
 	conn := llmprovider.Config{APIKey: pc.APIKey, BaseURL: pc.BaseURL, API: pc.API}
 	x := pc.Extra

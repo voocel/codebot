@@ -40,16 +40,10 @@ func TestConnection(t *testing.T) {
 
 func TestConnectionBedrock(t *testing.T) {
 	pc := ProviderConfig{Extra: &ProviderExtra{Region: "eu-west-1", AccessKeyID: "AKID", SecretAccessKey: "secret"}}
-	if !pc.HasCredentials() {
-		t.Fatal("AWS keys should count as credentials")
-	}
 	conn := pc.connection()
 	creds, err := conn.Credentials.Credentials(context.Background())
 	if err != nil || conn.Region != "eu-west-1" || creds.AccessKeyID != "AKID" || creds.SecretAccessKey != "secret" {
 		t.Fatalf("connection = %+v, credentials = %+v, %v", conn, creds, err)
-	}
-	if (ProviderConfig{}).HasCredentials() {
-		t.Fatal("empty provider has no credentials")
 	}
 }
 

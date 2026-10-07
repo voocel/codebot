@@ -77,10 +77,24 @@ type field struct {
 }
 
 func newField(placeholder string) field {
+	return field{input: NewInput(placeholder)}
+}
+
+// NewInput returns a one-line input without a prompt, styled as the editor
+// is: the text in the body color, and the placeholder subtle, fainter than a
+// label beside it.
+func NewInput(placeholder string) textinput.Model {
+	s := textinput.DefaultStyles(theme.Dark)
+	for _, st := range []*textinput.StyleState{&s.Focused, &s.Blurred} {
+		st.Text = theme.Text
+		st.Placeholder = theme.SubtleText
+	}
+	s.Cursor.Color = theme.Accent
 	in := textinput.New()
+	in.SetStyles(s)
 	in.Prompt = ""
 	in.Placeholder = placeholder
-	return field{input: in}
+	return in
 }
 
 func (f *field) open(value string) tea.Cmd {

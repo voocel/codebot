@@ -2,30 +2,20 @@ package tui
 
 import (
 	"cmp"
-	"image/color"
 	"math/rand/v2"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/ui/tui/brand"
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
 
 const tagline = "A long-running coding agent that lives in your terminal."
-
-// Full blocks are painted as background color, since terminals leave no
-// gaps between rows in a background.
-var bot = [4]string{
-	"  ▀▄    ▄▀  ",
-	" ▄████████▄ ",
-	" ██  ██  ██ ",
-	" ▀████████▀ ",
-}
 
 var tips = []string{
 	"Drag across text to copy it",
@@ -46,7 +36,6 @@ const (
 	maxRecent = 3
 	maxPath   = 40 // columns
 	cardWidth = 72
-	cardPad   = 2  // columns between the border and the content
 	botGap    = 4  // columns between the bot and the text beside it
 	minBeside = 20 // below this many columns for the text, the bot is hidden
 )
@@ -80,18 +69,17 @@ func (m *Model) setRecent(sessions []app.SessionInfo) {
 func (m *Model) welcome(width, height int) []string {
 	m.recentAt = nil
 	w := min(width, cardWidth)
-	inner := w - 2 - 2*cardPad
+	inner := brand.Inner(w)
 	if inner < 1 {
 		return nil
 	}
 	head := m.head(inner)
 	var motto []string
 	for _, l := range strings.Split(ansi.Wordwrap(tagline, inner, ""), "\n") {
-		motto = append(motto, centre([]string{theme.MutedText.Render(l)}, inner)...)
+		motto = append(motto, brand.Center([]string{theme.MutedText.Render(l)}, inner)...)
 	}
 	recent, ids := m.recentRows(inner)
 	tip := m.tipLines(inner)
-	ink := lipgloss.Blend1D(w, sink(theme.Accent), sink(theme.Info), sink(theme.Agent))
 
 	// From the fullest layout to the most compact.
 	for _, c := range []struct{ recent, tip, roomy bool }{
@@ -100,30 +88,30 @@ func (m *Model) welcome(width, height int) []string {
 		{false, false, true},
 		{false, false, false},
 	} {
-		k := newCard(ink)
+		k := brand.NewCard(w)
 		if c.roomy {
-			k.add("")
+			k.Add("")
 		}
-		k.add(head...)
+		k.Add(head...)
 		if c.roomy {
-			k.add("")
+			k.Add("")
 		}
-		k.add(motto...)
+		k.Add(motto...)
 		if c.roomy {
-			k.add("")
+			k.Add("")
 		}
 		at := map[int]string{}
 		if c.recent && len(recent) > 0 {
-			k.section("Recent", "click to resume")
+			k.Section(theme.MutedText.Bold(true).Render("Recent"), "click to resume")
 			for i, row := range recent {
-				at[len(k.lines)] = ids[i]
-				k.add(row)
+				at[k.Lines()] = ids[i]
+				k.Add(row)
 			}
 		}
-		lines := k.close()
+		lines := k.Close()
 		if c.tip {
 			// Align with the card's content.
-			margin := strings.Repeat(" ", 1+cardPad)
+			margin := strings.Repeat(" ", 1+brand.Pad)
 			lines = append(lines, "")
 			for _, l := range tip {
 				lines = append(lines, margin+l)
@@ -137,13 +125,13 @@ func (m *Model) welcome(width, height int) []string {
 		for row, id := range at {
 			m.recentAt[top+row] = id
 		}
-		return append(make([]string, top), centre(lines, width)...)
+		return append(make([]string, top), brand.Center(lines, width)...)
 	}
 	return nil
 }
 
 func (m *Model) head(width int) []string {
-	beside := width - ansi.StringWidth(bot[0]) - botGap
+	beside := width - brand.BotWidth - botGap
 	if beside < minBeside {
 		beside = width
 	}
@@ -162,105 +150,9 @@ func (m *Model) head(width int) []string {
 		lines[i] = ansi.Truncate(l, beside, "…")
 	}
 	if beside < width {
-		face := drawBot()
-		gap := strings.Repeat(" ", botGap)
-		// The text sits beside the head, below the antennae.
-		lines = append([]string{face[0]}, lines...)
-		for i := 1; i < len(face); i++ {
-			lines[i] = face[i] + gap + lines[i]
-		}
+		lines = brand.Beside(lines, botGap)
 	}
-	return centre(lines, width)
-}
-
-func drawBot() []string {
-	w := ansi.StringWidth(bot[0])
-	ramp := lipgloss.Blend1D(w+2*len(bot), theme.Accent, theme.Info)
-	out := make([]string, len(bot))
-	for y, row := range bot {
-		var b strings.Builder
-		for x, r := range []rune(row) {
-			c := ramp[x+2*y] // a row is about two columns tall
-			switch r {
-			case ' ':
-				b.WriteByte(' ')
-			case '█':
-				b.WriteString(lipgloss.NewStyle().Background(c).Render(" "))
-			default:
-				b.WriteString(lipgloss.NewStyle().Foreground(c).Render(string(r)))
-			}
-		}
-		out[y] = b.String()
-	}
-	return out
-}
-
-func centre(lines []string, width int) []string {
-	w := 0
-	for _, l := range lines {
-		w = max(w, ansi.StringWidth(l))
-	}
-	pad := strings.Repeat(" ", max(width-w, 0)/2)
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		out[i] = ansi.Truncate(pad+l, width, "…")
-	}
-	return out
-}
-
-// card is a rounded box whose border takes one color of ink per column.
-type card struct {
-	ink   []color.Color
-	lines []string
-}
-
-func newCard(ink []color.Color) *card {
-	k := &card{ink: ink}
-	k.lines = []string{k.edge("╭", "╮", "", "")}
-	return k
-}
-
-func (k *card) add(lines ...string) {
-	w := len(k.ink)
-	pad := strings.Repeat(" ", cardPad)
-	for _, l := range lines {
-		fill := strings.Repeat(" ", max(w-2-2*cardPad-ansi.StringWidth(l), 0))
-		k.lines = append(k.lines, k.stroke("│", 0)+pad+l+fill+pad+k.stroke("│", w-1))
-	}
-}
-
-func (k *card) section(title, note string) {
-	k.lines = append(k.lines, k.edge("├", "┤", title, note))
-}
-
-func (k *card) close() []string {
-	return append(k.lines, k.edge("╰", "╯", "", ""))
-}
-
-func (k *card) edge(l, r, title, note string) string {
-	w := len(k.ink)
-	if title == "" || w-2 < ansi.StringWidth(title)+4 {
-		return k.stroke(l+strings.Repeat("─", w-2)+r, 0)
-	}
-	head := k.stroke(l+"─ ", 0) + theme.MutedText.Bold(true).Render(title)
-	x := 3 + ansi.StringWidth(title)
-	if fill := w - x - ansi.StringWidth(note) - 5; note != "" && fill >= 2 {
-		return head + k.stroke(" "+strings.Repeat("─", fill)+" ", x) +
-			theme.SubtleText.Render(note) + k.stroke(" ─"+r, w-3)
-	}
-	return head + k.stroke(" "+strings.Repeat("─", w-x-2)+r, x)
-}
-
-func (k *card) stroke(s string, x int) string {
-	var b strings.Builder
-	for i, r := range []rune(s) {
-		b.WriteString(lipgloss.NewStyle().Foreground(k.ink[x+i]).Render(string(r)))
-	}
-	return b.String()
-}
-
-func sink(c color.Color) color.Color {
-	return lipgloss.Blend1D(3, c, theme.Faint)[1]
+	return brand.Center(lines, width)
 }
 
 func (m *Model) versionLabel() string {

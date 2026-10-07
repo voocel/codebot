@@ -229,15 +229,16 @@ func use(id, tool string, args any) litellmtest.Reply {
 }
 
 func TestWelcome(t *testing.T) {
+	const antennae = "▀▄    ▄▀"
 	h := boot(t)
-	h.shows(strings.TrimSpace(bot[0]), "codebot  test", tagline, "claude-sonnet-4-5  ·  effort auto", "balanced")
+	h.shows(antennae, "codebot  test", tagline, "claude-sonnet-4-5  ·  effort auto", "balanced")
 	if h.m.View().Cursor == nil {
 		t.Fatal("the editor has no cursor")
 	}
 
 	// When narrow, the bot is hidden to make room for the text.
 	h.feed(tea.WindowSizeMsg{Width: 30, Height: 20})
-	if s := h.screen(); strings.Contains(s, strings.TrimSpace(bot[0])) || !strings.Contains(s, "codebot  test") {
+	if s := h.screen(); strings.Contains(s, antennae) || !strings.Contains(s, "codebot  test") {
 		t.Errorf("at 30 columns:\n%s", s)
 	}
 }

@@ -85,6 +85,7 @@ func main() {
 
 	// Onboarding runs before Boot: the wizard writes ~/.codebot/settings.json
 	// for Boot to read.
+	var notice string
 	if interactive {
 		if *setupFlag || config.NeedsSetup() {
 			result, err := onboarding.Run()
@@ -95,6 +96,7 @@ func main() {
 				fmt.Println("Setup cancelled — run codebot again anytime.")
 				return
 			}
+			notice = result.Provider + " is set up · " + result.Model
 		}
 	} else if *setupFlag {
 		fmt.Fprintln(os.Stderr, "-setup requires an interactive terminal")
@@ -110,12 +112,13 @@ func main() {
 		fail(err, "error")
 	}
 	opts := app.Options{Cwd: cwd, Mode: mode, Resume: resume, Trust: *trustFlag, PluginDirs: pluginDirs}
-	if err := run(opts, printMode, *acpFlag, *jsonFlag); err != nil {
+	if err := run(opts, printMode, *acpFlag, *jsonFlag, notice); err != nil {
 		fail(err, "error")
 	}
 }
 
-func run(opts app.Options, printMode, acpMode, jsonMode bool) error {
+// notice is for the TUI to show.
+func run(opts app.Options, printMode, acpMode, jsonMode bool, notice string) error {
 	switch {
 	case acpMode:
 		srv := acp.NewServer(version)
@@ -135,7 +138,7 @@ func run(opts app.Options, printMode, acpMode, jsonMode bool) error {
 		opts.UI, opts.Interactive, opts.CacheTTL = screen, true, "1h"
 		a := boot(opts)
 		defer a.Close()
-		return tui.Run(a, screen, version)
+		return tui.Run(a, screen, version, notice)
 	}
 }
 

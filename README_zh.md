@@ -96,7 +96,7 @@ cd codebot && go build -o codebot ./cmd/codebot
 codebot
 ```
 
-首次运行会进入配置向导：选择 provider、填写模型 id、粘贴 API Key，全部保存到 `~/.codebot/settings.json`（配置的唯一来源），之后可随时用 `codebot -setup` 重新配置。更多配置项参考 [settings.example.jsonc](settings.example.jsonc)。
+首次运行会进入配置向导：选择 provider，粘贴 API Key（常用环境变量里已有的会自动填入，如 `ANTHROPIC_API_KEY`），再从这个 key 能用的模型里选一个——列出模型的同时就校验了 key。Ollama 不需要 key，其他端点填名称、协议和 Base URL。全部保存到 `~/.codebot/settings.json`（配置的唯一来源），之后可随时用 `codebot -setup` 重新配置。更多配置项参考 [settings.example.jsonc](settings.example.jsonc)。
 
 OpenRouter 也可以作为一等 provider 使用，在 `settings.json` 中这样配置：
 

@@ -61,11 +61,12 @@ func (u *UI) Ask(ctx context.Context, qs []interact.Question) (interact.Answers,
 }
 
 // Run prints the conversation to the terminal on exit. ui must be the UI a
-// was booted with.
-func Run(a *app.App, ui *UI, version string) error {
+// was booted with; notice, if any, shows briefly once the screen is up.
+func Run(a *app.App, ui *UI, version, notice string) error {
 	defer logTo(filepath.Join(config.UserConfigDir(), "codebot.log"))()
 	theme.Detect()
 	m := newModel(a, version)
+	m.notice = notice
 	p := tea.NewProgram(m)
 	ui.program.Store(p)
 

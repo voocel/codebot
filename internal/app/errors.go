@@ -13,7 +13,7 @@ var hints = map[litellm.ErrorType]string{
 	litellm.ErrorTypeContextOverflow: "context window full; run /compact or start a new session",
 	litellm.ErrorTypeQuota:           "quota exhausted",
 	litellm.ErrorTypeRateLimit:       "rate limited; retry shortly",
-	litellm.ErrorTypeAuth:            "API key invalid or expired",
+	litellm.ErrorTypeAuth:            "API key invalid or expired; codebot -setup changes it",
 	litellm.ErrorTypeOverloaded:      "provider overloaded; retry shortly",
 }
 

@@ -27,7 +27,7 @@ func TestErrorText(t *testing.T) {
 		{"the provider's words, without its code", rejected, said},
 		{"what wraps it stays", fmt.Errorf("agentcore: compact: %w", rejected), "agentcore: compact: " + said},
 		{"a failure the user can act on", &litellm.Error{Type: litellm.ErrorTypeAuth, Code: "authentication_error", Message: "invalid key", Provider: "deepseek", StatusCode: 401},
-			"deepseek: API key invalid or expired"},
+			"deepseek: API key invalid or expired; codebot -setup changes it"},
 		{"a code alone is kept", &litellm.Error{Type: litellm.ErrorTypeProvider, Code: "server_error", Provider: "deepseek", StatusCode: 500},
 			"deepseek: server_error (HTTP 500)"},
 		{"max turns", fmt.Errorf("%w (50)", agentcore.ErrMaxTurns), "max turns reached; start a new session or raise max_turns"},

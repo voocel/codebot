@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
 func press(p Panel, keys ...string) (done bool) {
@@ -252,5 +253,23 @@ func TestAskKeepsTheOptionsInView(t *testing.T) {
 	fits(t, view, 80, 10)
 	if v := ansi.Strip(view); !strings.Contains(v, "Yes") || !strings.Contains(v, "No") {
 		t.Errorf("the options do not show:\n%s", v)
+	}
+}
+
+// The placeholder follows the theme: a fixed gray reads as text on a light
+// background.
+func TestInputPlaceholderIsSubtle(t *testing.T) {
+	t.Cleanup(func() { theme.Init(true) })
+	ink := func(s string) string { return strings.TrimSuffix(s, "x"+ansi.ResetStyle) }
+	for _, dark := range []bool{true, false} {
+		theme.Init(dark)
+		in := NewInput("hint")
+		subtle := ink(theme.SubtleText.Render("x"))
+		if v := in.View(); !strings.Contains(v, subtle) {
+			t.Errorf("dark %v: placeholder %q, want it in %q", dark, v, subtle)
+		}
+		if subtle == ink(theme.Text.Render("x")) {
+			t.Errorf("dark %v: the placeholder has the text's color", dark)
+		}
 	}
 }

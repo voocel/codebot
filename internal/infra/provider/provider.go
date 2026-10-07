@@ -2,6 +2,7 @@ package provider
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -16,6 +17,34 @@ import (
 // calls, so codebot can run where keys must not live, such as a sandbox.
 func IsSupportedType(name string) bool {
 	return slices.Contains(llmprovider.Names(), name)
+}
+
+// Check reports a connection the provider can't be built from, such as one
+// without the key or base URL it needs, without making a request.
+func Check(typ string, conn llmprovider.Config) error {
+	_, err := llmprovider.New(typ, conn)
+	return err
+}
+
+// ListModels lists the models the connection reaches, newest first where
+// the vendor dates them. Listing checks the key: a rejected one fails with
+// litellm.ErrorTypeAuth.
+func ListModels(ctx context.Context, typ string, conn llmprovider.Config) ([]litellm.ModelInfo, error) {
+	p, err := llmprovider.New(typ, conn)
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := p.(litellm.ModelLister)
+	if !ok {
+		return nil, fmt.Errorf("%s does not list its models", typ)
+	}
+	models, err := lister.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Undated models sort last, in the vendor's order.
+	slices.SortStableFunc(models, func(a, b litellm.ModelInfo) int { return b.Created.Compare(a.Created) })
+	return models, nil
 }
 
 type ModelSpec struct {
