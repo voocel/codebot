@@ -208,6 +208,8 @@ func (e *Engine) ask(ctx context.Context, info toolInfo) (*Decision, error) {
 		ToolID:       info.toolID,
 		Tool:         info.tool,
 		Summary:      info.summary,
+		Intent:       info.intent,
+		Dir:          info.dir,
 		Reason:       info.reason,
 		OutsideRoots: info.outsideRoots,
 		Confirm:      info.askEachTime(),
@@ -281,6 +283,8 @@ type toolInfo struct {
 	tool       string
 	capability Capability
 	summary    string
+	intent     string
+	dir        string
 	// keys are stored on Allow Always; the call is allowed again only when
 	// all of them are stored. remember describes them to the user.
 	keys         []string
@@ -342,6 +346,7 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 		tool:       req.ToolName,
 		capability: c.capability,
 		summary:    strings.TrimSpace(req.Summary),
+		intent:     strings.TrimSpace(c.intent),
 		reason:     strings.TrimSpace(req.Reason),
 		workspace:  workspace,
 	}
@@ -405,7 +410,10 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 			info.reason = "shell execution requires approval"
 		}
 		if wd := strings.TrimSpace(c.workdir); wd != "" {
-			_, deny := checkedPath(workspace, roots.WriteRoots, wd, "writable")
+			dir, deny := checkedPath(workspace, roots.WriteRoots, wd, "writable")
+			if dir != filepath.Clean(workspace) {
+				info.dir = dir
+			}
 			if deny != "" {
 				info.outsideRoots = true
 				info.reason = fmt.Sprintf("workdir outside writable roots: %s", wd)

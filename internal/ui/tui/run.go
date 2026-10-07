@@ -23,14 +23,15 @@ import (
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
-// UI is the interact.UI the App boots with; Run binds it to the program.
+// UI is the interact.UI the App boots with; Run binds it to the program's
+// queue, so a request arrives behind the events that led to it.
 type UI struct {
-	program atomic.Pointer[tea.Program]
+	q atomic.Pointer[queue]
 }
 
 var _ interact.UI = (*UI)(nil)
 
-func (u *UI) send(msg tea.Msg) { u.program.Load().Send(msg) }
+func (u *UI) send(msg tea.Msg) { u.q.Load().push(msg) }
 
 func (u *UI) Approve(ctx context.Context, req interact.Approval) (interact.Verdict, error) {
 	reply := make(chan interact.Verdict, 1)
@@ -38,6 +39,7 @@ func (u *UI) Approve(ctx context.Context, req interact.Approval) (interact.Verdi
 	// withdrawMsg.
 	answer := (chan<- interact.Verdict)(reply)
 	u.send(approveMsg{req, answer})
+	defer u.send(approvedMsg{req.ToolID})
 	select {
 	case v := <-reply:
 		return v, nil
@@ -68,12 +70,12 @@ func Run(a *app.App, ui *UI, version, notice string) error {
 	m := newModel(a, version)
 	m.notice = notice
 	p := tea.NewProgram(m)
-	ui.program.Store(p)
 
 	// The App publishes some events on the caller's goroutine, which may be
 	// the program's; queue them so publishing never waits for Update.
 	q := newQueue(p)
 	defer q.close()
+	ui.q.Store(q)
 	unsubscribe := a.Subscribe(func(ev app.Event) {
 		if msg := message(ev); msg != nil {
 			q.push(msg)

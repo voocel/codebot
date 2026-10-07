@@ -12,6 +12,7 @@ type classification struct {
 	path       string
 	command    string
 	workdir    string
+	intent     string // what the call says it does
 	url        string
 	// confirm is why the user must confirm this call each time. The mode and
 	// stored approvals don't apply, and an allow covers only this call. Deny
@@ -44,7 +45,7 @@ func classifyTool(req Request) classification {
 		if isReadonlyBash(cmd) {
 			capability = CapabilityRead
 		}
-		return classification{capability: capability, command: cmd, workdir: stringField(req.Args, "workdir")}
+		return classification{capability: capability, command: cmd, workdir: stringField(req.Args, "workdir"), intent: stringField(req.Args, "description")}
 	case "web_fetch":
 		return classification{capability: CapabilityRead, url: stringField(req.Args, "url")}
 	case "web_search":

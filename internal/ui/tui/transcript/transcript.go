@@ -75,10 +75,12 @@ func (t *Transcript) Apply(ev agentcore.Event) {
 			t.message(e.Message)
 		}
 	case agentcore.ToolStart:
-		if c := t.calls[e.Call.ID]; c != nil {
+		c := t.calls[e.Call.ID]
+		if c == nil && !t.hidden[e.Call.ID] {
+			c = t.call(e.Call)
+		}
+		if c != nil {
 			c.Preview, c.Started = e.Call.Preview, t.now()
-		} else if !t.hidden[e.Call.ID] {
-			t.call(e.Call, t.now())
 		}
 	case agentcore.ToolUpdate:
 		if c := t.calls[e.Call.ID]; c != nil {
@@ -148,19 +150,47 @@ func (t *Transcript) message(m agentcore.Message) {
 			t.drop(c)
 		}
 		for _, call := range m.ToolCalls() {
-			t.call(agentcore.ToolCall{ID: call.ID, Name: call.Name, Args: []byte(call.Arguments)}, m.Time)
+			t.call(agentcore.ToolCall{ID: call.ID, Name: call.Name, Args: []byte(call.Arguments)})
 		}
 	}
 }
 
-func (t *Transcript) call(call agentcore.ToolCall, at time.Time) {
+// call adds a call that is yet to start; it returns nil for a hidden one.
+func (t *Transcript) call(call agentcore.ToolCall) *Tool {
 	if app.HiddenToolCall(call.Name, call.Args) {
 		t.hidden[call.ID] = true
-		return
+		return nil
 	}
-	c := newTool(call.ID, call.Name, call.Args, call.Preview, at)
+	c := newTool(call.ID, call.Name, call.Args, call.Preview)
 	t.calls[call.ID] = c
 	t.Append(c)
+	return c
+}
+
+// Wait marks the call id, here or in a subagent's run, as waiting for the
+// user's approval or done waiting; it starts to run when done.
+func (t *Transcript) Wait(id string, waiting bool) { t.wait(id, waiting) }
+
+func (t *Transcript) wait(id string, waiting bool) (found bool) {
+	if c := t.calls[id]; c != nil {
+		if c.Waiting != waiting {
+			c.Waiting = waiting
+			if !waiting {
+				c.Started = t.now()
+			}
+			c.bump()
+		}
+		return true
+	}
+	for _, c := range t.calls {
+		for _, a := range c.agents {
+			if a.Transcript.wait(id, waiting) {
+				c.bump() // the call shows its subagent's run
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (t *Transcript) end(id, result string, failed bool) {

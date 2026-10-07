@@ -104,7 +104,7 @@ func (t *Text) View(width, height int) string {
 	case len(t.Tabs) > 0:
 		lines = t.Tabs[t.active].Body(width - 2)
 	}
-	room := max(height-2-len(body), 1)
+	room := max(height-chrome-len(body), 1)
 	t.offset = min(t.offset, max(len(lines)-room, 0))
 	end := min(t.offset+room, len(lines))
 	body = append(body, lines[t.offset:end]...)

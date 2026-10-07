@@ -121,6 +121,31 @@ func TestEditOffersTheMode(t *testing.T) {
 	}
 }
 
+// A command's approval says what the command says it does, and where it
+// runs when it names a directory.
+func TestACommandsApprovalCarriesItsIntentAndDir(t *testing.T) {
+	var prompt interact.Approval
+	cwd := t.TempDir()
+	engine := newEngine(t, Config{Cwd: cwd, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+		prompt = p
+		return interact.Verdict{Choice: interact.AllowOnce}, nil
+	})})
+	for workdir, want := range map[string]string{
+		"sub":                            filepath.Join(cwd, "sub"),
+		"":                               "",
+		".":                              "", // the workspace goes without saying
+		cwd + string(filepath.Separator): "",
+	} {
+		req := toolReq("bash", map[string]any{"command": "touch x", "description": "Create x", "workdir": workdir})
+		if _, err := engine.Decide(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		if prompt.Summary != "touch x" || prompt.Intent != "Create x" || prompt.Dir != want {
+			t.Errorf("workdir %q: prompt = %+v", workdir, prompt)
+		}
+	}
+}
+
 func TestWriteViaSymlinkEscapeDenied(t *testing.T) {
 	workspace := t.TempDir()
 	outsideDir := filepath.Join(t.TempDir(), "outside")

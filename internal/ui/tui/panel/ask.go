@@ -231,7 +231,7 @@ func (a *Ask) View(width, height int) string {
 		opts = append(opts, markdown.Render(q.Options[s.cursor].Preview, width-4)...)
 	}
 	// A long question is cut so the options stay visible.
-	body, cut := a.head.fit(append(body, markdown.Wrap(q.Question, theme.Bold, width-2)...), opts, height-2)
+	body, cut := a.head.fit(append(body, markdown.Wrap(q.Question, theme.Bold, width-2)...), opts, height-chrome)
 
 	hint := []string{"↑↓", "select", "enter", "choose"}
 	switch {

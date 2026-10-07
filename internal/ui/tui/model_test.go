@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -498,6 +499,39 @@ func TestPermissionPanel(t *testing.T) {
 	h.press("2")
 	if c := answered(t, reply).Choice; c != interact.AllowOnce || h.app.Mode() != interact.ModeAcceptEdits {
 		t.Errorf("answered %v in mode %v", c, h.app.Mode())
+	}
+}
+
+// A run waiting for an approval leaves the asking to its panel, with no
+// status and no esc to stop it, which the panel takes; its call waits
+// rather than runs.
+func TestAWaitForApproval(t *testing.T) {
+	h := boot(t)
+	h.feed(runStartedMsg{})
+	h.feed(agentMsg{agentcore.ToolStart{Call: agentcore.ToolCall{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"git diff"}`)}}})
+	reply := make(chan interact.Verdict, 1)
+	h.feed(approveMsg{interact.Approval{ToolID: "c1", Tool: "bash", Summary: "git diff"}, reply})
+	h.shows("Bash(git diff) · waiting for approval", "esc deny")
+	s := h.screen()
+	if strings.Contains(s, "esc to stop") || strings.Contains(s, "Running…") || strings.Contains(s, "Waiting") {
+		t.Errorf("the status runs on:\n%s", s)
+	}
+	lines := strings.Split(s, "\n")
+	if i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "Allow Bash?") }); i < 1 || strings.TrimSpace(lines[i-1]) != "" {
+		t.Errorf("no blank line sets the panel off from the chat:\n%s", s)
+	}
+
+	h.pause()
+	h.press("1")
+	answered(t, reply)
+	h.feed(approvedMsg{"c1"})
+	h.shows("Running…", "esc to stop")
+	if s = h.screen(); strings.Contains(s, "waiting") {
+		t.Errorf("the call still waits:\n%s", s)
+	}
+	lines = strings.Split(s, "\n")
+	if i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "Running…") }); i < 1 || strings.TrimSpace(lines[i-1]) != "" || !strings.HasPrefix(lines[i+1], "───") {
+		t.Errorf("the status is not between a blank line and the editor:\n%s", s)
 	}
 }
 

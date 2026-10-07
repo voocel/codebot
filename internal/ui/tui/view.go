@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/ui/tui/panel"
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
@@ -28,16 +29,18 @@ func (m *Model) View() tea.View {
 	}
 	now := time.Now()
 
+	// A blank line sets the chat off from what is below it; the rule atop
+	// the editor or panel sets that off from the status.
 	var bottom []string
 	editorAt := -1
 	switch p := m.top(); {
 	case p != nil:
-		bottom = m.statusLines(now, nil)
+		bottom = append([]string{""}, m.statusLines(now, nil, p)...)
 		bottom = append(bottom, strings.Split(p.View(m.width, max(m.height*2/3, 8)), "\n")...)
 	case m.page != nil:
 		bottom = []string{m.pageFooter()}
 	default:
-		bottom = m.statusLines(now, m.pending)
+		bottom = append([]string{""}, m.statusLines(now, m.pending, nil)...)
 		editorAt = len(bottom)
 		bottom = append(bottom, strings.Split(m.editor.View(m.width), "\n")...)
 		if menu := m.editor.Menu(m.width - 1); menu != nil {
@@ -63,15 +66,15 @@ func (m *Model) View() tea.View {
 	return v
 }
 
-func (m *Model) statusLines(now time.Time, pending []pending) []string {
-	lines := m.run.lines(m.width, now, pending)
+// statusLines offers esc only when no panel takes it, and tells a run that
+// waits for the user's answer from one at work.
+func (m *Model) statusLines(now time.Time, pending []pending, top panel.Panel) []string {
+	_, waiting := top.(panel.Request)
+	lines := m.run.lines(m.width, now, pending, waiting, top == nil)
 	if m.shell != nil {
-		lines = append([]string{shellLine(m.shell, m.width, now, !m.run.active)}, lines...)
+		lines = append([]string{shellLine(m.shell, m.width, now, top == nil && !m.run.active)}, lines...)
 	}
-	if len(lines) == 0 {
-		return nil
-	}
-	return append([]string{""}, lines...)
+	return lines
 }
 
 func (m *Model) mainView(height int, now time.Time) []string {

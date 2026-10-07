@@ -27,7 +27,14 @@ type Approval struct {
 	ToolID  string
 	Tool    string
 	Summary string
-	Reason  string
+	// Intent is the call's own account of what it does, such as a command's
+	// description. It is the model's word, so frontends show it beside what
+	// the call does, never instead of it.
+	Intent string
+	// Dir is the absolute directory a command runs in when the call names
+	// one other than the workspace.
+	Dir    string
+	Reason string
 	// Warning describes what a destructive command would do; frontends show
 	// it prominently.
 	Warning      string

@@ -39,6 +39,12 @@ func TestIsReadonlyBash(t *testing.T) {
 		{"echo redirect", "echo hi > out.txt", false},
 		{"cat redirect append", "cat file >> log.txt", false},
 		{"cat input redirect", "cat < input.txt", false},
+		{"clobber", "echo hi >| out.txt", false},
+		{"both to a file", "ls &> out.txt", false},
+		{"stderr dropped", "git diff a.go 2>/dev/null | head -200", true},
+		{"stderr merged", "git status 2>&1", true},
+		{"output dropped", "ls > /dev/null 2>&1", true},
+		{"compound with stderr dropped", `cat a.go | sed -n '1,9p'; echo "=== b ==="; git diff b.go 2>/dev/null | head -200`, true},
 
 		{"mixed compound", "ls && rm -rf /tmp/x", false},
 		{"mixed pipe", "cat file | tee out.txt", false},
@@ -103,26 +109,24 @@ func TestCommandKeys(t *testing.T) {
 	}
 }
 
-func TestHasUnquotedRedirect(t *testing.T) {
+func TestHasUnquotedInput(t *testing.T) {
 	tests := []struct {
 		cmd  string
 		want bool
 	}{
 		{"ls", false},
-		{"ls -la /tmp", false},
-		{"echo > file", true},
-		{"echo >> file", true},
+		{"echo > file", false}, // opaque judges output
 		{"cat < file", true},
-		{`echo "a > b"`, false}, // quoted >
-		{`echo 'a > b'`, false}, // quoted >
-		{`echo "x" > file`, true},
-		{"echo \\> file", false}, // escaped >
+		{"cat <~/.ssh/id_rsa", true},
+		{`echo "a < b"`, false},  // quoted <
+		{`echo 'a < b'`, false},  // quoted <
+		{"echo \\< file", false}, // escaped <
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.cmd, func(t *testing.T) {
-			if got := hasUnquotedRedirect(tc.cmd); got != tc.want {
-				t.Fatalf("hasUnquotedRedirect(%q) = %v, want %v", tc.cmd, got, tc.want)
+			if got := hasUnquotedInput(tc.cmd); got != tc.want {
+				t.Fatalf("hasUnquotedInput(%q) = %v, want %v", tc.cmd, got, tc.want)
 			}
 		})
 	}

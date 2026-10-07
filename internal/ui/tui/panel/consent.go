@@ -123,7 +123,7 @@ func (p *Consent) View(width, height int) string {
 	for i, c := range p.choices {
 		opts = append(opts, row(strconv.Itoa(i+1)+". "+c.Label, p.at == len(p.items)+i))
 	}
-	body, cut := p.head.fit(lines, opts, height-2)
+	body, cut := p.head.fit(lines, opts, height-chrome)
 	keys := []string{"↑↓", "select"}
 	if len(p.items) > 0 {
 		keys = append(keys, "space", "check")

@@ -127,6 +127,7 @@ type (
 		qs    []interact.Question
 		reply chan<- interact.Answers
 	}
+	approvedMsg  struct{ tool string } // a call's wait ended, answered or withdrawn
 	withdrawMsg  struct{ key any }
 	submittedMsg struct {
 		id  int
@@ -282,8 +283,12 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case approveMsg:
+		m.t.Wait(msg.req.ToolID, true)
 		p := panel.NewPermission(msg.req, msg.reply, func() { m.app.SetMode(interact.ModeAcceptEdits) })
 		return tea.Batch(m.push(p), m.alert("Allow "+transcript.Title(msg.req.Tool)+"?"))
+	case approvedMsg:
+		m.t.Wait(msg.tool, false)
+		return nil
 	case askMsg:
 		return tea.Batch(m.push(panel.NewAsk(msg.qs, msg.reply)), m.alert("A question for you"))
 	case withdrawMsg:

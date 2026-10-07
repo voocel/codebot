@@ -7,16 +7,16 @@ import (
 )
 
 // isReadonlyBash reports whether balanced mode may run cmd without asking.
-// It is deliberately conservative and does not parse shell: any redirect
-// disqualifies cmd, and every segment must be a known read-only command. A
-// false negative costs one prompt; a false positive skips the user entirely,
-// so when in doubt it returns false.
+// It is deliberately conservative and does not parse shell: a redirect from
+// or to a file disqualifies cmd, and every segment must be a known read-only
+// command. A false negative costs one prompt; a false positive skips the
+// user entirely, so when in doubt it returns false.
 func isReadonlyBash(cmd string) bool {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
 		return false
 	}
-	if hasUnquotedRedirect(cmd) || opaque(cmd) {
+	if hasUnquotedInput(cmd) || opaque(cmd) {
 		return false
 	}
 	for _, seg := range splitBashSegments(cmd) {
@@ -136,9 +136,10 @@ func isReadonlySegment(seg string) bool {
 	return true
 }
 
-// hasUnquotedRedirect does not tell 2>&1 from > file; an extra prompt for
-// the rare 2>&1 is fine.
-func hasUnquotedRedirect(cmd string) bool {
+// hasUnquotedInput reports a < outside quotes: input from a file may read a
+// credential the path scan misses, as <~/.ssh/id_rsa does. Output redirects
+// are opaque's to judge, which lets 2>&1 and 2>/dev/null through.
+func hasUnquotedInput(cmd string) bool {
 	inSingle, inDouble, escaped := false, false, false
 	for i := 0; i < len(cmd); i++ {
 		ch := cmd[i]
@@ -161,7 +162,7 @@ func hasUnquotedRedirect(cmd string) bool {
 		if inSingle || inDouble {
 			continue
 		}
-		if ch == '>' || ch == '<' {
+		if ch == '<' {
 			return true
 		}
 	}

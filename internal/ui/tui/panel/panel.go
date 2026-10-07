@@ -122,7 +122,13 @@ func (f *field) view(width int) string {
 
 // head is the text above a request's options. What doesn't fit is cut, and
 // pgup/pgdown scroll it.
-type head struct{ top, room int }
+type head struct {
+	top, room    int
+	shown, total int // the lines from the first that have been on screen, and all
+}
+
+// unread reports lines of the last fit never shown yet.
+func (h *head) unread() bool { return h.shown < h.total }
 
 func (h *head) key(k string) bool {
 	switch k {
@@ -149,34 +155,33 @@ func (h *head) follow(line int) {
 // reports whether lines were cut.
 func (h *head) fit(lines, tail []string, height int) (body []string, cut bool) {
 	h.room = max(height-len(tail)-1, 1)
-	gap := ""
-	if len(lines) > h.room {
-		h.top = min(h.top, len(lines)-h.room)
-		gap = theme.SubtleText.Render(fmt.Sprintf("lines %d–%d of %d", h.top+1, h.top+h.room, len(lines)))
+	gap, total := "", len(lines)
+	if total > h.room {
+		h.top = min(h.top, total-h.room)
+		gap = theme.SubtleText.Render(fmt.Sprintf("lines %d–%d of %d", h.top+1, h.top+h.room, total))
 		lines, cut = lines[h.top:h.top+h.room], true
 	}
+	h.total, h.shown = total, max(h.shown, min(h.top+h.room, total))
 	body = append(slices.Clone(lines), gap)
 	return append(body, tail...), cut
 }
+
+// chrome is the lines frame adds to a body: the title rule, and the hint
+// with a rule above it, so the two rules close the panel as the editor's do.
+const chrome = 3
 
 // frame cuts the body to fit height.
 func frame(title string, body []string, hint string, width, height int) string {
 	head := theme.FaintText.Render("── ") + theme.Selected.Render(title) + " "
 	head += theme.FaintText.Render(strings.Repeat("─", max(width-ansi.StringWidth(head), 0)))
 	lines := []string{ansi.Truncate(head, width, "")}
-	room := height - 1
-	if hint != "" {
-		room--
-	}
-	if len(body) > room {
+	if room := height - chrome; len(body) > room {
 		body = body[:max(room, 0)]
 	}
 	for _, l := range body {
 		lines = append(lines, ansi.Truncate(" "+l, width, "…"))
 	}
-	if hint != "" {
-		lines = append(lines, ansi.Truncate(" "+hint, width, "…"))
-	}
+	lines = append(lines, theme.FaintText.Render(strings.Repeat("─", width)), ansi.Truncate(" "+hint, width, "…"))
 	return strings.Join(lines, "\n")
 }
 

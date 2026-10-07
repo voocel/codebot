@@ -165,6 +165,60 @@ func TestSubagentProgress(t *testing.T) {
 	}
 }
 
+// A call waiting for approval neither spins nor counts the wait; it counts
+// from when it runs, and shows no empty output before any.
+// A call made after another that runs alone waits its turn: it shows from
+// the reply on, without a spinner or a time until it starts.
+func TestACallWaitsItsTurn(t *testing.T) {
+	tr := New()
+	start := time.Now()
+	tr.now = func() time.Time { return start }
+	tr.Apply(agentcore.MessageEnd{Message: assistant("", call("c1", "bash", `{"command":"make"}`), call("c2", "bash", `{"command":"git log"}`))})
+	tr.Apply(agentcore.ToolStart{Call: agentcore.ToolCall{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"make"}`)}})
+	got := plain(render(tr, Params{Width: 60, Now: start.Add(28 * time.Second)}))
+	if !strings.Contains(got, "Bash(make) · 28s") || !strings.Contains(got, "○ Bash(git log)\n") {
+		t.Fatalf("queued:\n%s", got)
+	}
+
+	tr.now = func() time.Time { return start.Add(28 * time.Second) }
+	tr.Apply(agentcore.ToolStart{Call: agentcore.ToolCall{ID: "c2", Name: "bash", Args: json.RawMessage(`{"command":"git log"}`)}})
+	got = plain(render(tr, Params{Width: 60, Now: start.Add(31 * time.Second)}))
+	if strings.Contains(got, "○") || !strings.Contains(got, "Bash(git log) · 3s") {
+		t.Fatalf("started:\n%s", got)
+	}
+}
+
+func TestAToolWaitsForApproval(t *testing.T) {
+	tr := New()
+	start := time.Now()
+	tr.now = func() time.Time { return start }
+	tr.Apply(agentcore.ToolStart{Call: agentcore.ToolCall{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"git diff"}`)}})
+	tr.Wait("c1", true)
+	got := plain(render(tr, Params{Width: 60, Now: start.Add(26 * time.Minute)}))
+	if !strings.Contains(got, "○ Bash(git diff) · waiting for approval") || strings.Contains(got, "26m") || strings.Contains(got, "⎿") {
+		t.Fatalf("waiting:\n%s", got)
+	}
+
+	tr.now = func() time.Time { return start.Add(26 * time.Minute) }
+	tr.Wait("c1", false)
+	got = plain(render(tr, Params{Width: 60, Now: start.Add(26*time.Minute + 5*time.Second)}))
+	if !strings.Contains(got, "Bash(git diff) · 5s") || strings.Contains(got, "waiting") {
+		t.Fatalf("running:\n%s", got)
+	}
+
+	// A subagent's call waits inside the call that runs it, which redraws.
+	tr.Apply(agentcore.ToolStart{Call: agentcore.ToolCall{ID: "c2", Name: "subagent", Args: json.RawMessage(`{"agent":"explore","task":"look"}`)}})
+	spawn := subagent.Spawn{Agent: "explore", ID: "explore#1"}
+	start2 := agentcore.ToolStart{Call: agentcore.ToolCall{ID: "s1", Name: "bash", Args: json.RawMessage(`{"command":"make"}`)}}
+	tr.Apply(agentcore.ToolUpdate{Call: agentcore.ToolCall{ID: "c2"}, Progress: subagent.Progress{Spawn: spawn, Event: start2}})
+	parent := tr.Cells()[1].(*Tool)
+	before := parent.Version()
+	tr.Wait("s1", true)
+	if !parent.Agents()[0].Transcript.Cells()[0].(*Tool).Waiting || parent.Version() == before {
+		t.Error("the subagent's call does not wait, or its parent does not redraw")
+	}
+}
+
 func TestHomePath(t *testing.T) {
 	for p, want := range map[string]string{
 		home:                          "~",

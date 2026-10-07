@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -8,7 +9,6 @@ import (
 
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
-	"github.com/voocel/codebot/internal/ui/tui/syntax"
 	"github.com/voocel/codebot/internal/ui/tui/theme"
 	"github.com/voocel/codebot/internal/ui/tui/transcript"
 )
@@ -21,6 +21,8 @@ type Permission struct {
 	head  head
 	queue
 	instead field // feedback for the deny-with-instructions option
+	// A long command shows its first lines until pgdn shows all of it.
+	full, folded bool
 }
 
 type option struct {
@@ -58,6 +60,10 @@ func (p *Permission) Update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return cmd, false
 	}
+	if k == "pgdown" && p.folded {
+		p.full, p.folded = true, false
+		return nil, false
+	}
 	if k == "" || p.head.key(k) {
 		return nil, false
 	}
@@ -70,6 +76,10 @@ func (p *Permission) Update(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, false
 	case i == len(p.opts)-1:
 		return p.instead.open(""), false
+	case p.folded || p.head.unread():
+		// Allowing waits until the whole call has been shown: what runs
+		// may hide in what is left out.
+		return nil, false
 	}
 	if o := p.opts[i]; o.first != nil {
 		o.first()
@@ -102,11 +112,13 @@ func (p *Permission) View(width, height int) string {
 	if p.instead.on {
 		opts[len(opts)-1] = p.instead.view(width)
 	}
-	body, cut := p.head.fit(lines, opts, height-2)
+	body, cut := p.head.fit(lines, opts, height-chrome)
 	var hint string
 	switch {
 	case p.instead.on:
 		hint = theme.Hint("enter", "deny and send", "esc", "back")
+	case p.folded || p.head.unread():
+		hint = theme.Hint("pgdn", "read the rest to allow", "esc", "deny")
 	case cut:
 		hint = theme.Hint("↑↓", "select", "enter", "confirm", "pgup/pgdn", "scroll", "esc", "deny")
 	default:
@@ -119,14 +131,64 @@ func (p *Permission) summary(width int) []string {
 	s := strings.TrimSpace(p.req.Summary)
 	switch p.req.Tool {
 	case "bash":
+		return p.command(s, width)
 	case "read", "write", "edit":
 		return markdown.Wrap(transcript.ShortPath(s), theme.Text, width)
 	default:
 		return markdown.Wrap(s, theme.Text, width)
 	}
+}
+
+// commandLines is how many lines of a long command show until pgdn shows
+// the rest. One line more shows whole: the note would take its place.
+const commandLines = 3
+
+// command shows what the call says it does, then the command as it is, and
+// where it runs when that is not the workspace.
+func (p *Permission) command(s string, width int) []string {
 	var out []string
-	for _, l := range strings.Split(syntax.Lang(s, "bash"), "\n") {
-		out = append(out, strings.Split(ansi.Wrap(l, width, ""), "\n")...)
+	if p.req.Intent != "" {
+		out = markdown.Wrap(p.req.Intent, theme.Text, width)
+	}
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		lines = append(lines, wrapAtSpaces(l, width)...)
+	}
+	shown := lines
+	if p.folded = !p.full && len(lines) > commandLines+1; p.folded {
+		shown = lines[:commandLines]
+	}
+	for _, l := range shown {
+		out = append(out, theme.MutedText.Render(l))
+	}
+	if p.folded {
+		out = append(out, theme.SubtleText.Render(fmt.Sprintf("… +%d lines", len(lines)-len(shown))))
+	}
+	if p.req.Dir != "" {
+		out = append(out, theme.SubtleText.Render("in "+transcript.ShortPath(p.req.Dir)))
 	}
 	return out
+}
+
+// wrapAtSpaces wraps s only at spaces, so a flag such as -200 stays whole,
+// where ansi.Wrap would break it after the hyphen. A word wider than width
+// is cut.
+func wrapAtSpaces(s string, width int) []string {
+	var lines []string
+	line := ""
+	for i, w := range strings.Split(s, " ") {
+		switch {
+		case i == 0:
+			line = w
+		case ansi.StringWidth(line)+1+ansi.StringWidth(w) > width:
+			lines, line = append(lines, line), w
+		default:
+			line += " " + w
+		}
+		if ansi.StringWidth(line) > width {
+			cut := strings.Split(ansi.Hardwrap(line, width, true), "\n")
+			lines, line = append(lines, cut[:len(cut)-1]...), cut[len(cut)-1]
+		}
+	}
+	return append(lines, line)
 }

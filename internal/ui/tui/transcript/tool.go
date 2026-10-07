@@ -32,7 +32,8 @@ type Tool struct {
 	Preview string // what the tool's Check previewed, such as an edit's diff
 	State   ToolState
 	Result  string
-	Started time.Time
+	Started time.Time // when it began to run, after any approval; zero while it waits its turn
+	Waiting bool      // it waits for the user's approval
 
 	args    args
 	output  []string // progress lines of a running tool
@@ -50,8 +51,8 @@ type Agent struct {
 	Done       bool
 }
 
-func newTool(id, name string, raw json.RawMessage, preview string, started time.Time) *Tool {
-	t := &Tool{ID: id, Name: name, Args: raw, Preview: preview, Started: started}
+func newTool(id, name string, raw json.RawMessage, preview string) *Tool {
+	t := &Tool{ID: id, Name: name, Args: raw, Preview: preview}
 	_ = json.Unmarshal(raw, &t.args)
 	return t
 }
@@ -127,10 +128,12 @@ func (t *Tool) Render(p Params) []string {
 		head += theme.MutedText.Render("(" + arg + ")")
 	}
 	var suffix string
-	if t.State == Running {
-		if d := p.Now.Sub(t.Started); d >= 2*time.Second {
-			suffix = theme.SubtleText.Render(" · " + Duration(d))
-		}
+	switch d := p.Now.Sub(t.Started); {
+	case t.State != Running, t.Started.IsZero():
+	case t.Waiting:
+		suffix = theme.SubtleText.Render(" · waiting for approval")
+	case d >= 2*time.Second:
+		suffix = theme.SubtleText.Render(" · " + Duration(d))
 	}
 	lines := []string{fit(head, p.Width-ansi.StringWidth(suffix)) + suffix}
 
@@ -148,12 +151,16 @@ func (t *Tool) Render(p Params) []string {
 }
 
 func (t *Tool) icon(now time.Time) string {
-	switch t.State {
-	case Running:
+	switch {
+	case t.State == Running && t.Waiting:
+		return theme.WarmText.Render(waiting)
+	case t.State == Running && t.Started.IsZero():
+		return theme.SubtleText.Render(waiting)
+	case t.State == Running:
 		return theme.WarmText.Render(Spinner(now))
-	case Failed:
+	case t.State == Failed:
 		return theme.ErrorText.Render(bullet)
-	case Interrupted:
+	case t.State == Interrupted:
 		return theme.SubtleText.Render(bullet)
 	default:
 		return theme.OKText.Render(bullet)

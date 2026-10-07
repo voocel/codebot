@@ -164,7 +164,7 @@ func (l *List) View(width, height int) string {
 		}
 		body = append(body, q)
 	}
-	room := max(height-2-len(body), 1)
+	room := max(height-chrome-len(body), 1)
 	from, to := window(len(rows), selectedRow, l.top, room)
 	l.top = from
 	body = append(body, rows[from:to]...)

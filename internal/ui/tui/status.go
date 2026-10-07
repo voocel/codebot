@@ -136,9 +136,13 @@ func (r *run) summary(now time.Time) string {
 	return "✻ " + strings.Join(parts, " · ")
 }
 
-func (r *run) lines(width int, now time.Time, pending []pending) []string {
+// lines leaves out a run that waits for the user's answer, which its panel
+// asks for, and offers esc to stop a run only when stoppable.
+func (r *run) lines(width int, now time.Time, pending []pending, waiting, stoppable bool) []string {
 	var out []string
-	if r.active || r.compacting() {
+	switch {
+	case r.active && waiting:
+	case r.active || r.compacting():
 		// A compaction may run inside a run or on its own.
 		label, since := "Running…", r.started
 		switch {
@@ -152,7 +156,9 @@ func (r *run) lines(width int, now time.Time, pending []pending) []string {
 			if in, out := int(r.shown[0]), int(r.shown[1]); in+out > 0 {
 				line += theme.SubtleText.Render(" · ↑" + transcript.Tokens(in) + " ↓" + transcript.Tokens(out))
 			}
-			line += theme.FaintText.Render(" · esc to stop")
+			if stoppable {
+				line += theme.FaintText.Render(" · esc to stop")
+			}
 		}
 		out = append(out, line)
 	}

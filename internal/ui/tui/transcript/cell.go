@@ -54,6 +54,7 @@ func (still) Live() bool { return false }
 
 const (
 	bullet    = "●"
+	waiting   = "○" // a call yet to run
 	connector = "⎿"
 )
 
