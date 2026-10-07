@@ -145,7 +145,7 @@ func writeProject(t *testing.T, home, root string) {
 var projectWants = []string{
 	"allow Bash(make *)",
 	"hook PreToolUse(bash): ./guard.sh",
-	`mcp db: npx db-mcp --root "a b" env K=${DOCS_TOKEN}`,
+	`mcp db: npx db-mcp --root "a b" env K=${DOCS_TOKEN} · runs the latest db-mcp each time`,
 	"skill deploy runs `make status`",
 	"write ../shared",
 }
@@ -550,10 +550,9 @@ func TestPluginHooksAndAgents(t *testing.T) {
 	kit := filepath.Join(root, "tools", "kit")
 	write(t, filepath.Join(kit, "plugin.json"), `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "kit",
 		"extensions": {"io.github.voocel.codebot": {
-			"hooks": {"PreToolUse": [{"type": "command", "command": "\"$PLUGIN_ROOT\"/guard", "matcher": "bash"}]},
-			"agents": "./agents"
+			"hooks": {"PreToolUse": [{"type": "command", "command": "\"$PLUGIN_ROOT\"/guard", "matcher": "bash"}]}
 		}}}`)
-	write(t, filepath.Join(kit, "agents", "reviewer.md"), "---\ndescription: Reviews\n---\nReview.\n")
+	write(t, filepath.Join(kit, plugin.Namespace, "agents", "reviewer.md"), "---\ndescription: Reviews\n---\nReview.\n")
 	write(t, filepath.Join(root, ".codebot", "settings.json"), `{"plugins": ["../tools/kit"], "hooks": {"Stop": [{"type": "command", "command": "x"}]}}`)
 
 	consents := Consents{Projects: map[string]Consent{root: {Surface: Surface{NewItem("plugin", "../tools/kit")}}}}
@@ -571,6 +570,36 @@ func TestPluginHooksAndAgents(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(s.Problems), `unknown event "Stop"`) {
 		t.Errorf("a hook that never fires went unreported: %v", s.Problems)
+	}
+}
+
+// A package runner without an exact version runs whatever is newest, which
+// the consent to its command line does not pin; the detail says so.
+func TestFloatingPackagesAreShown(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		args    []string
+		want    string
+	}{
+		{"npx", []string{"-y", "db-mcp"}, "db-mcp"},
+		{"npx", []string{"db-mcp@latest"}, "db-mcp"},
+		{"npx", []string{"db-mcp@1"}, "db-mcp"},
+		{"npx", []string{"db-mcp@1.2.3", "--port", "1"}, ""},
+		{"npx", []string{"-y", "@acme/db-mcp"}, "@acme/db-mcp"},
+		{"npx", []string{"@acme/db-mcp@2.0.0-rc.1"}, ""},
+		{"npx.cmd", []string{"db-mcp"}, "db-mcp"},
+		{"/usr/local/bin/npx", []string{"db-mcp"}, "db-mcp"},
+		{"bunx", []string{"db-mcp"}, "db-mcp"},
+		{"uvx", []string{"mcp-server-git"}, "mcp-server-git"},
+		{"uvx", []string{"mcp-server-git@latest"}, "mcp-server-git"},
+		{"uvx", []string{"mcp-server-git@0.6.2"}, ""},
+		{"uvx", []string{"--from", "mcp-server-git==0.6.2", "mcp-server-git"}, ""},
+		{"db-mcp", []string{"serve"}, ""},
+		{"npx", nil, ""},
+	} {
+		if got := floating(tc.command, tc.args); got != tc.want {
+			t.Errorf("%s %q: %q, want %q", tc.command, tc.args, got, tc.want)
+		}
 	}
 }
 

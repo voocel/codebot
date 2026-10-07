@@ -1,5 +1,6 @@
 // Package plugin reads plugins in the Agent Plugins 1.0 format and fetches
-// them from git. A plugin directory holds plugin.json, skills/ and mcp.json.
+// them from git. A plugin directory holds plugin.json, skills/ and mcp.json,
+// and codebot's own Namespace directory.
 // See https://github.com/agentplugins/agent-plugins-spec.
 package plugin
 
@@ -29,14 +30,16 @@ const (
 	mcpSchema    = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 )
 
-// Namespace is codebot's key under "extensions" in plugin.json. It holds what
-// the format leaves to clients: hooks, in the settings format, and the agents
-// directory.
+// Namespace is codebot's client extension namespace, for what the format
+// leaves to clients. Its entry under "extensions" in plugin.json holds hooks,
+// in the settings format; its directory, which the format puts at the top
+// level under its name, holds agents/.
 //
 //	"extensions": {"io.github.voocel.codebot": {
-//		"hooks": {"PreToolUse": [{"type": "command", "command": "\"$PLUGIN_ROOT\"/bin/guard", "matcher": "bash"}]},
-//		"agents": "./agents"
+//		"hooks": {"PreToolUse": [{"type": "command", "command": "\"$PLUGIN_ROOT\"/bin/guard", "matcher": "bash"}]}
 //	}}
+//
+//	io.github.voocel.codebot/agents/reviewer.md
 const Namespace = "io.github.voocel.codebot"
 
 type Manifest struct {
@@ -87,6 +90,7 @@ func Read(dir, data string) (p *Plugin, problems []error, err error) {
 	problems = append(problems, p.readSkills()...)
 	problems = append(problems, p.readMCP()...)
 	problems = append(problems, p.readExtension()...)
+	problems = append(problems, p.readAgents()...)
 	return p, problems, nil
 }
 
@@ -210,15 +214,14 @@ func within(dir, path string) bool {
 	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
-// readExtension drops the whole namespace if it breaks the format, but only
-// the broken entry for a bad hook or agent.
+// readExtension drops codebot's whole entry if it breaks the format, but
+// only the broken hook otherwise.
 func (p *Plugin) readExtension() (problems []error) {
 	if p.ext == nil {
 		return nil
 	}
 	var ext struct {
-		Hooks  map[string][]json.RawMessage `json:"hooks"`
-		Agents string                       `json:"agents"`
+		Hooks map[string][]json.RawMessage `json:"hooks"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(p.ext))
 	dec.DisallowUnknownFields()
@@ -237,9 +240,6 @@ func (p *Plugin) readExtension() (problems []error) {
 			}
 			p.Hooks[event] = append(p.Hooks[event], he)
 		}
-	}
-	if ext.Agents != "" {
-		problems = append(problems, p.readAgents(ext.Agents)...)
 	}
 	return problems
 }
@@ -269,12 +269,12 @@ func (p *Plugin) hook(event string, raw json.RawMessage) (config.HookEntry, erro
 	return he, nil
 }
 
-func (p *Plugin) readAgents(dir string) (problems []error) {
-	rel, ok := strings.CutPrefix(dir, "./")
-	if !ok {
-		return []error{fmt.Errorf("plugin.json: agents %q does not start ./", dir)}
+func (p *Plugin) readAgents() (problems []error) {
+	dir := filepath.Join(p.Root, Namespace, "agents")
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	real, err := p.inside(filepath.Join(p.Root, filepath.FromSlash(rel)))
+	real, err := p.inside(dir)
 	if err != nil {
 		return []error{err}
 	}

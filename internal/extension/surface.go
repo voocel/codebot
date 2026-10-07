@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -226,7 +228,44 @@ func (srv MCPServer) Detail() string {
 	if srv.Cwd != "" {
 		detail += " in " + srv.Cwd
 	}
+	if pkg := floating(srv.Command, srv.Args); pkg != "" {
+		detail += " · runs the latest " + pkg + " each time"
+	}
 	return detail
+}
+
+// reExactVersion matches an exact npm version; any other, such as "1", "^1.2"
+// or "latest", resolves to the newest release that fits.
+var reExactVersion = regexp.MustCompile(`^\d+\.\d+\.\d+([-+][0-9A-Za-z.+-]+)?$`)
+
+// floating returns the package that a package runner fetches at its newest
+// release whenever it starts, as no version pins it, or "". Consent to such
+// a command line does not pin what runs.
+func floating(command string, args []string) string {
+	i := slices.IndexFunc(args, func(a string) bool { return !strings.HasPrefix(a, "-") })
+	if i < 0 {
+		return ""
+	}
+	pkg := args[i]
+	switch strings.TrimSuffix(filepath.Base(command), filepath.Ext(command)) {
+	case "npx", "bunx":
+		scope := ""
+		if rest, ok := strings.CutPrefix(pkg, "@"); ok {
+			scope, pkg = "@", rest
+		}
+		name, version, _ := strings.Cut(pkg, "@")
+		if reExactVersion.MatchString(version) {
+			return ""
+		}
+		return scope + name
+	case "uvx":
+		name, version, _ := strings.Cut(pkg, "@")
+		if strings.Contains(name, "==") || version != "" && version != "latest" {
+			return ""
+		}
+		return name
+	}
+	return ""
 }
 
 func pairs(label string, m map[string]string) string {

@@ -119,7 +119,9 @@ func (p *Plugin) mcpServer(s server) (config.MCPServer, error) {
 		srv.Args = append(srv.Args, expand(a))
 	}
 	for k, v := range s.Env {
-		if k == "PLUGIN_ROOT" || k == "PLUGIN_DATA" {
+		// Windows ignores case in environment names, so no case may set
+		// them.
+		if strings.EqualFold(k, "PLUGIN_ROOT") || strings.EqualFold(k, "PLUGIN_DATA") {
 			return config.MCPServer{}, fmt.Errorf("env may not set %s", k)
 		}
 		srv.Env[k] = expand(v)

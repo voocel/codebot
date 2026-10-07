@@ -104,6 +104,7 @@ func TestMCPViolations(t *testing.T) {
 		`{"type": "stdio", "command": "${PLUGIN_ROOT}/bin/db"}`,
 		`{"type": "stdio", "command": "./../escape"}`,
 		`{"type": "stdio", "command": "npx", "env": {"PLUGIN_ROOT": "/x"}}`,
+		`{"type": "stdio", "command": "npx", "env": {"plugin_data": "/x"}}`,
 		`{"type": "stdio", "command": "npx", "cwd": "/tmp"}`,
 		`{"type": "stdio", "command": "npx", "cwd": "${PLUGIN_DATA}/../x"}`,
 		`{"type": "stdio", "command": "npx", "url": "https://x"}`,
@@ -323,8 +324,8 @@ func TestReadCachedStaysInTheRepository(t *testing.T) {
 	}
 }
 
-// Codebot's namespace adds hooks and agents; other clients' namespaces are
-// ignored.
+// Codebot's namespace adds hooks from its entry and agents from its
+// directory; other clients' namespaces are ignored.
 func TestCodebotNamespace(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "plugin.json"), manifest+`, "extensions": {
@@ -337,15 +338,16 @@ func TestCodebotNamespace(t *testing.T) {
 				],
 				"Stop": [{"type": "command", "command": "true"}],
 				"SessionStart": [{"type": "command", "command": "true", "env": {"PLUGIN_ROOT": "/x"}}]
-			},
-			"agents": "./agents"
+			}
 		}
 	}}`)
-	write(t, filepath.Join(dir, "agents", "reviewer.md"), "---\ndescription: Reviews\n---\nReview the change.\n")
-	write(t, filepath.Join(dir, "agents", "notes.txt"), "not an agent")
+	agents := filepath.Join(dir, Namespace, "agents")
+	write(t, filepath.Join(agents, "reviewer.md"), "---\ndescription: Reviews\n---\nReview the change.\n")
+	write(t, filepath.Join(agents, "notes.txt"), "not an agent")
+	write(t, filepath.Join(dir, "agents", "elsewhere.md"), "---\ndescription: x\n---\nx\n")
 	outside := filepath.Join(t.TempDir(), "secret.md")
 	write(t, outside, "---\ndescription: x\n---\nx\n")
-	if err := os.Symlink(outside, filepath.Join(dir, "agents", "away.md")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(agents, "away.md")); err != nil {
 		t.Fatal(err)
 	}
 	p, problems, err := Read(dir, "/data/acme-tools")
@@ -363,8 +365,10 @@ func TestCodebotNamespace(t *testing.T) {
 		t.Errorf("agents %+v", p.Agents)
 	}
 
-	write(t, filepath.Join(dir, "plugin.json"), manifest+`, "extensions": {"io.github.voocel.codebot": {"hook": {}}}}`)
-	if p, problems, err = Read(dir, "/data"); err != nil || len(problems) != 1 || p.Hooks != nil {
+	// The directory stands without the entry, and a broken entry leaves it
+	// standing.
+	write(t, filepath.Join(dir, "plugin.json"), manifest+`, "extensions": {"io.github.voocel.codebot": {"agents": "./agents"}}}`)
+	if p, problems, err = Read(dir, "/data"); err != nil || len(problems) != 2 || p.Hooks != nil || len(p.Agents) != 1 {
 		t.Errorf("a namespace out of format: %+v, %v, %v", p, problems, err)
 	}
 }

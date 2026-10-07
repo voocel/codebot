@@ -458,16 +458,16 @@ func TestPluginHooksRun(t *testing.T) {
 	writeKit(t, dir)
 	manifest := `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "kit",
 		"extensions": {"io.github.voocel.codebot": {
-			"hooks": {"UserPromptSubmit": [{"type": "command", "command": "touch \"$PLUGIN_DATA/ran\""}]},
-			"agents": "./agents"
+			"hooks": {"UserPromptSubmit": [{"type": "command", "command": "touch \"$PLUGIN_DATA/ran\""}]}
 		}}}`
 	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "agents"), 0o755); err != nil {
+	agents := filepath.Join(dir, "io.github.voocel.codebot", "agents")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "agents", "reviewer.md"), []byte("---\ndescription: Reviews\n---\nReview.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agents, "reviewer.md"), []byte("---\ndescription: Reviews\n---\nReview.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()

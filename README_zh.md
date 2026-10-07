@@ -176,17 +176,16 @@ OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`
 
 **HTTP 上的 MCP 服务器。** 没有配置 `Authorization` 头的 HTTP 服务器按 MCP 规范用 OAuth 登录：服务器要求授权时 codebot 会提示，`/mcp login <server>` 打开浏览器完成登录。codebot 用自己的 [client metadata document](site/oauth/client.json) 向该服务器的授权服务器表明身份。不接受这种文档的授权服务器（比如 GitHub 的）需要你在那里注册一个 OAuth 应用，回调 URL 填 `http://127.0.0.1/callback`，再把它的 client ID 和 secret 配成该服务器的 `oauth`，secret 可以写成 `${VAR}` 从环境变量读取（见 `settings.example.jsonc`）。token 保存在只有你能读的 `~/.codebot/mcp-oauth.json` 里并自动刷新；模型每次读写这个文件都要你确认。`/mcp logout <server>` 删除 token。配置了自己的 `Authorization` 头的服务器照旧使用这个头。
 
-**插件。** 插件按 [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) 格式把 skills 和 MCP 服务器打包在一起：一个目录，`plugin.json` 给出插件名，skills 放在 `skills/<name>/SKILL.md`，MCP 服务器写在 `mcp.json`。它的 skill 叫 `/<plugin>:<skill>`，MCP 服务器叫 `<plugin>_<server>`。这个格式不含 hooks 和子 agent，codebot 从 `plugin.json` 里自己的命名空间读取：
+**插件。** 插件按 [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) 格式把 skills 和 MCP 服务器打包在一起：一个目录，`plugin.json` 给出插件名，skills 放在 `skills/<name>/SKILL.md`，MCP 服务器写在 `mcp.json`。它的 skill 叫 `/<plugin>:<skill>`，MCP 服务器叫 `<plugin>_<server>`。这个格式不含 hooks 和子 agent，codebot 从自己的命名空间 `io.github.voocel.codebot` 读取：子 agent 放在它的目录 `io.github.voocel.codebot/agents/`，hooks 写在 `plugin.json` 里它的条目下：
 
 ```json
 "extensions": { "io.github.voocel.codebot": {
   "hooks": { "PreToolUse": [{ "matcher": "bash", "type": "command", "command": "\"$PLUGIN_ROOT\"/guard",
-    "command_windows": "& \"$env:PLUGIN_ROOT\\guard.exe\"; exit $LASTEXITCODE" }] },
-  "agents": "./agents"
+    "command_windows": "& \"$env:PLUGIN_ROOT\\guard.exe\"; exit $LASTEXITCODE" }] }
 } }
 ```
 
-`hooks` 的写法和设置里的 hooks 相同，运行时环境变量里有 `PLUGIN_ROOT` 和 `PLUGIN_DATA`，PowerShell 里写作 `$env:PLUGIN_ROOT`。`agents` 指向一个子 agent 目录，格式和 `.codebot/agents/` 相同，名字是 `<plugin>:<agent>`。
+`hooks` 的写法和设置里的 hooks 相同，运行时环境变量里有 `PLUGIN_ROOT` 和 `PLUGIN_DATA`，PowerShell 里写作 `$env:PLUGIN_ROOT`。子 agent 的格式和 `.codebot/agents/` 相同，名字是 `<plugin>:<agent>`。
 
 设置里的 `plugins` 列出插件来源：git 仓库（`github.com/acme/tools`、https 或 ssh 地址，可加 `//目录` 指定仓库里的插件目录，加 `#ref` 指定分支、tag 或 commit，比如 `github.com/acme/plugins//tools#main`），或者一个目录，相对于声明它的设置文件。`--plugin-dir <目录>` 可重复使用，只为这一次运行加载插件，它的全部内容直接生效，适合开发插件时用。
 
@@ -195,7 +194,7 @@ OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`
 - `/plugins update [name]` 按 ref 重新拉取 git 插件，你在设置里改了 ref 也用它。没有新增可执行内容的更新直接生效；有新增的，在你同意新增部分之前留在旧 commit。TUI 启动时会向生效中 git 插件的远端查询 ref 指向的提交（不拉取内容），告诉你哪些有更新。
 - `/plugins remove <name> [--project]` 从你的设置或项目的设置里移除插件；你对它的同意和它的数据都保留，因为别的项目可能还声明着它。`/plugins` 列出所有插件，回车查看它带来和要运行的东西。
 
-插件要运行的东西，是它的 hooks、MCP 服务器，以及它的 skills 声明的命令、预授权工具和模型；skills 和子 agent 本身只是给模型的指令。插件是作者当作一个整体测试的，所以你整体同意，按不带 ref 的来源记在 `~/.codebot/consent.json`：git 插件同意的是某个 commit，本地插件同意的是它现在的内容。没有你的同意，什么都不会拉取或生效：你还没同意过的 git 插件显示为未安装；运行了你没同意过的东西的插件（比如你改过的本地插件）整个不生效，直到你同意。不想要的插件就移除它。git 插件拉取到 `~/.codebot/plugins/cache/`，只有你更新时才会变；两周没有会话读过的 commit 会被删除，需要时再按那个 commit 重新拉取。插件运行的东西把数据放在 `~/.codebot/plugins/data/` 下按来源区分的目录里（`${PLUGIN_DATA}`，`/plugins` 里能看到），更新不会动它，codebot 也从不删除它。项目的插件要先等你信任项目声明它，再像你自己的插件一样，等你同意它要运行的东西。往本地插件目录里写文件，每次都要确认。两个插件同名时，`--plugin-dir` 给的优先，其次是项目的；设置里的 MCP 服务器和插件的同名时，设置里的优先。
+插件要运行的东西，是它的 hooks、MCP 服务器，以及它的 skills 声明的命令、预授权工具和模型；skills 和子 agent 本身只是给模型的指令。插件是作者当作一个整体测试的，所以你整体同意，按不带 ref 的来源记在 `~/.codebot/consent.json`：git 插件同意的是某个 commit，本地插件同意的是它现在的内容。`npx -y some-mcp` 这类没写确切版本的包运行器，每次都运行最新版，同意锁不住它，面板会注明。没有你的同意，什么都不会拉取或生效：你还没同意过的 git 插件显示为未安装；运行了你没同意过的东西的插件（比如你改过的本地插件）整个不生效，直到你同意。不想要的插件就移除它。git 插件拉取到 `~/.codebot/plugins/cache/`，只有你更新时才会变；两周没有会话读过的 commit 会被删除，需要时再按那个 commit 重新拉取。插件运行的东西把数据放在 `~/.codebot/plugins/data/` 下按来源区分的目录里（`${PLUGIN_DATA}`，`/plugins` 里能看到），更新不会动它，codebot 也从不删除它。项目的插件要先等你信任项目声明它，再像你自己的插件一样，等你同意它要运行的东西。往本地插件目录里写文件，每次都要确认。两个插件同名时，`--plugin-dir` 给的优先，其次是项目的；设置里的 MCP 服务器和插件的同名时，设置里的优先。
 
 **工作区信任。** 仓库可能来自任何人，所以其中会执行代码、或者能免确认放行调用的东西，要等你信任后才生效：它的每个 hook、MCP 服务器、插件、allow 规则、读写目录，以及它的 skills 声明的命令、预授权工具和模型。它的 skills 和子 agent 本身照常加载，那只是给模型的指令；命令还没被信任的 skill，加载时不带这些命令。信任是逐项的：面板默认勾选每一项，不想运行的取消勾选即可。拒绝的保持关闭，不会再问；信任之后目录新增的内容，要等你决定才生效，其余照常运行；同一个会话里只问一次。`/trust` 列出全部内容并修改这些决定，决定保存在 `~/.codebot/consent.json`，不会写进仓库；在那里选“不信任这个目录”后全部不生效，也不会再问。项目的 MCP 服务器拿不到你环境里的 `${VAR}`；项目的设置、skills、子 agent 和 `AGENTS.md` 只在项目内读取，项目以上目录的 `AGENTS.md` 只在它自己的目录内读取，指向外面的链接会被排除。面板上显示的就是实际运行的：终端会执行的字符、或可能被看成别的文本的内容，会加引号转义显示。项目的 skill 在加载时读取一次，所以执行的就是你信任过的内容；改了要 `/reload` 才生效，`/reload` 也会重启 MCP 服务器。print 模式和 ACP 没有人可问：还没信任的内容不生效，并在 stderr 说明哪些没生效；加 `--trust` 只在这一次运行里信任这个目录和它声明的插件。
 
