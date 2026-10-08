@@ -21,7 +21,8 @@ type Permission struct {
 	head  head
 	queue
 	instead field // feedback for the deny-with-instructions option
-	// A long command shows its first lines until pgdn shows all of it.
+	// A long command shows its first lines until enter or pgdn shows all
+	// of it.
 	full, folded bool
 }
 
@@ -60,8 +61,8 @@ func (p *Permission) Update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return cmd, false
 	}
-	if k == "pgdown" && p.folded {
-		p.full, p.folded = true, false
+	if k == "pgdown" {
+		p.more()
 		return nil, false
 	}
 	if k == "" || p.head.key(k) {
@@ -76,15 +77,28 @@ func (p *Permission) Update(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, false
 	case i == len(p.opts)-1:
 		return p.instead.open(""), false
-	case p.folded || p.head.unread():
-		// Allowing waits until the whole call has been shown: what runs
-		// may hide in what is left out.
+	case p.unshown():
+		// Allowing waits until the whole call has been shown, as what runs
+		// may hide in what is left out; till then the answer shows more.
+		p.more()
 		return nil, false
 	}
 	if o := p.opts[i]; o.first != nil {
 		o.first()
 	}
 	return p.answer(interact.Verdict{Choice: p.opts[i].choice})
+}
+
+// unshown reports that part of the call has yet to be shown.
+func (p *Permission) unshown() bool { return p.folded || p.head.unread() }
+
+// more shows more of the call: all of a folded command, then a page more.
+func (p *Permission) more() {
+	if p.folded {
+		p.full, p.folded = true, false
+		return
+	}
+	p.head.key("pgdown")
 }
 
 func (p *Permission) answer(v interact.Verdict) (tea.Cmd, bool) {
@@ -112,15 +126,13 @@ func (p *Permission) View(width, height int) string {
 	if p.instead.on {
 		opts[len(opts)-1] = p.instead.view(width)
 	}
-	body, cut := p.head.fit(lines, opts, height-chrome)
+	body, _ := p.head.fit(lines, opts, height-chrome)
 	var hint string
 	switch {
 	case p.instead.on:
 		hint = theme.Hint("enter", "deny and send", "esc", "back")
-	case p.folded || p.head.unread():
-		hint = theme.Hint("pgdn", "read the rest to allow", "esc", "deny")
-	case cut:
-		hint = theme.Hint("↑↓", "select", "enter", "confirm", "pgup/pgdn", "scroll", "esc", "deny")
+	case p.unshown() && p.menu.cursor < len(p.opts)-1:
+		hint = theme.Hint("↑↓", "select", "enter", "show the rest", "esc", "deny")
 	default:
 		hint = theme.Hint("↑↓", "select", "enter", "confirm", "esc", "deny")
 	}
@@ -139,9 +151,9 @@ func (p *Permission) summary(width int) []string {
 	}
 }
 
-// commandLines is how many lines of a long command show until pgdn shows
-// the rest. One line more shows whole: the note would take its place.
-const commandLines = 3
+// commandLines is how many lines of a long command show until enter or pgdn
+// shows the rest. One line more shows whole: the note would take its place.
+const commandLines = 5
 
 // command shows what the call says it does, then the command as it is, and
 // where it runs when that is not the workspace.
