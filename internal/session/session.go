@@ -57,6 +57,10 @@ type RunSpec struct {
 	// inputs, and appended to a compacted history, since compaction drops
 	// the earlier copies.
 	Context func(history []agentcore.Message) []agentcore.Message
+	// Checkpoint returns the workspace and its tree as a run begins, or ""
+	// for the tree when the workspace isn't checkpointed. It runs on the
+	// run's goroutine.
+	Checkpoint func() (dir, tree string)
 }
 
 type Status struct {
@@ -92,7 +96,8 @@ type Session struct {
 	compacting  context.CancelFunc // non-nil while a manual compaction runs
 	compactWait *compactRequest    // a Compact waiting for the canceled run to end
 	pending     []Input            // inputs waiting for the live run to end
-	waiters     []chan<- func()    // Waits to release at the next Idle
+	checkpoints []storage.Checkpoint
+	waiters     []chan<- func() // Waits to release at the next Idle
 	aborted     bool
 	closing     bool
 	finished    bool
@@ -111,13 +116,14 @@ type compactRequest struct {
 // Open logs the model selection if spec changes it.
 func Open(store *storage.Store, state storage.State, spec RunSpec) (*Session, error) {
 	s := &Session{
-		store:    store,
-		id:       store.Header().SessionID,
-		agent:    agentcore.NewAgent(spec.agentConfig(), state.Messages),
-		ops:      mailbox{wake: make(chan struct{}, 1)},
-		done:     make(chan struct{}),
-		spec:     spec,
-		recorded: state.Model,
+		store:       store,
+		id:          store.Header().SessionID,
+		agent:       agentcore.NewAgent(spec.agentConfig(), state.Messages),
+		ops:         mailbox{wake: make(chan struct{}, 1)},
+		done:        make(chan struct{}),
+		spec:        spec,
+		recorded:    state.Model,
+		checkpoints: state.Checkpoints,
 	}
 	if err := s.record(); err != nil {
 		return nil, err
@@ -186,6 +192,72 @@ func (s *Session) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// Checkpoints returns those of the runs the history holds, oldest first,
+// with that history.
+func (s *Session) Checkpoints() ([]storage.Checkpoint, []agentcore.Message) {
+	var cps []storage.Checkpoint
+	var history []agentcore.Message
+	s.do(func() { cps, history = slices.Clone(s.checkpoints), s.agent.Messages() })
+	return cps, history
+}
+
+// ErrBusy refuses an Edit while the agent works.
+var ErrBusy = errors.New("session: the agent is working")
+
+// Edit runs fn between runs: no run starts while fn works, so fn may also
+// change the workspace the history speaks of. fn changes the history
+// through e; what it did before failing stays.
+func (s *Session) Edit(fn func(e Editor) error) error {
+	err := ErrClosed
+	s.do(func() {
+		switch {
+		case s.closing:
+		case s.run != nil || s.compacting != nil:
+			err = ErrBusy
+		default:
+			err = fn(Editor{s})
+		}
+	})
+	return err
+}
+
+// Editor changes the history inside Edit.
+type Editor struct{ s *Session }
+
+// Holds reports whether the history still holds cp's run, which a
+// compaction or an earlier rewind drops.
+func (e Editor) Holds(cp storage.Checkpoint) bool { return slices.Contains(e.s.checkpoints, cp) }
+
+// Rewind cuts the history back to before cp's run, which it must hold.
+func (e Editor) Rewind(cp storage.Checkpoint) error {
+	s := e.s
+	if !e.Holds(cp) {
+		return errors.New("session: the history no longer holds that run")
+	}
+	if err := s.store.AppendRewind(cp.At); err != nil {
+		return err
+	}
+	if err := s.agent.SetMessages(s.agent.Messages()[:cp.At]); err != nil {
+		return err
+	}
+	s.checkpoints = slices.DeleteFunc(s.checkpoints, func(c storage.Checkpoint) bool { return c.At >= cp.At })
+	s.refreshStatus()
+	return nil
+}
+
+// Append adds m to the history, such as a note for the next run to read.
+func (e Editor) Append(m agentcore.Message) error {
+	s := e.s
+	if err := s.store.Append(m); err != nil {
+		return err
+	}
+	if err := s.agent.SetMessages(append(s.agent.Messages(), m)); err != nil {
+		return err
+	}
+	s.refreshStatus()
+	return nil
 }
 
 // History includes what a live run has recorded so far.
@@ -404,6 +476,7 @@ func (s *Session) startPending() {
 }
 
 func (s *Session) start(prompts []agentcore.Message) {
+	at := len(s.agent.Messages())
 	prompts = append(s.spec.Context(s.agent.Messages()), prompts...)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.run = &run{cancel: cancel}
@@ -413,10 +486,26 @@ func (s *Session) start(prompts []agentcore.Message) {
 	go func() {
 		defer cancel()
 		ctx, end := spec.WrapRun(ctx)
+		s.checkpoint(spec, at)
 		err := s.agent.Prompt(ctx, prompts...)
 		end(err)
 		s.ops.push(s.runEnded)
 	}()
+}
+
+// checkpoint records where the run begins: in the history, and, when the
+// workspace is checkpointed, in the workspace. It runs on the run's goroutine,
+// as checkpointing a large workspace takes a while.
+func (s *Session) checkpoint(spec RunSpec, at int) {
+	c := storage.Checkpoint{At: at}
+	if spec.Checkpoint != nil {
+		c.Dir, c.Tree = spec.Checkpoint()
+	}
+	if err := s.store.AppendCheckpoint(c); err != nil {
+		s.emit(Event{Kind: Error, Err: err})
+		return
+	}
+	s.ops.push(func() { s.checkpoints = append(s.checkpoints, c) })
 }
 
 func (s *Session) runEnded() {
@@ -447,6 +536,8 @@ func (s *Session) observe(ev agentcore.Event) error {
 			if err := s.store.AppendCompaction(e.Compaction); err != nil {
 				return err
 			}
+			// The runs they began are gone from the history.
+			s.ops.push(func() { s.checkpoints = nil })
 			s.updateStatus(func(st *Status) {
 				st.Usage.Add(e.Compaction.Usage)
 				st.Context = s.estimate(e.Compaction.Messages)

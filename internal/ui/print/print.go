@@ -71,7 +71,7 @@ func Run(a *app.App, args []string, jsonMode bool) error {
 		fmt.Fprintf(os.Stderr, "mcp: %s\n", e)
 	}
 	for _, name := range report.Login {
-		fmt.Fprintf(os.Stderr, "mcp: %s needs a login: run /mcp login %s in codebot\n", name, name)
+		fmt.Fprintf(os.Stderr, "mcp: %s needs a login: log in with /mcp in codebot\n", name)
 	}
 
 	p := &printer{json: jsonMode, hidden: make(map[string]bool)}

@@ -240,6 +240,7 @@ type ServerStatus struct {
 	Name      string
 	ToolCount int
 	Error     string // non-empty if connection failed
+	OAuth     bool   // the server logs in with OAuth
 	Login     bool   // the server wants an OAuth login
 	ListError string // non-empty if connected but ListTools failed
 }
@@ -253,8 +254,10 @@ func (m *Manager) Status(ctx context.Context) []ServerStatus {
 		clients = append(clients, c)
 	}
 	failures := make([]Failure, 0, len(m.failures))
+	oauth := make(map[string]bool, len(m.failures))
 	for name, err := range m.failures {
 		failures = append(failures, m.failure(name, err))
+		oauth[name] = usesOAuth(m.servers[name])
 	}
 	m.mu.Unlock()
 
@@ -262,27 +265,28 @@ func (m *Manager) Status(ctx context.Context) []ServerStatus {
 		name  string
 		count int
 		err   error
+		oauth bool
 		login bool
 	}
 	ch := make(chan result, len(clients))
 	for _, c := range clients {
 		go func(c *Client) {
 			tools, err := c.ListTools(ctx)
-			ch <- result{name: c.Name(), count: len(tools), err: err, login: c.oauth && needsLogin(err)}
+			ch <- result{name: c.Name(), count: len(tools), err: err, oauth: c.oauth, login: c.oauth && needsLogin(err)}
 		}(c)
 	}
 
 	out := make([]ServerStatus, 0, len(clients)+len(failures))
 	for range clients {
 		r := <-ch
-		s := ServerStatus{Name: r.name, ToolCount: r.count, Login: r.login}
+		s := ServerStatus{Name: r.name, ToolCount: r.count, OAuth: r.oauth, Login: r.login}
 		if r.err != nil {
 			s.ListError = r.err.Error()
 		}
 		out = append(out, s)
 	}
 	for _, f := range failures {
-		out = append(out, ServerStatus{Name: f.Server, Error: f.Err.Error(), Login: f.Login})
+		out = append(out, ServerStatus{Name: f.Server, Error: f.Err.Error(), OAuth: oauth[f.Server], Login: f.Login})
 	}
 	return out
 }

@@ -151,7 +151,7 @@ func (m *Model) footer() string {
 		right = append(right, theme.SubtleText.Render("⎇ "+m.branch))
 	}
 	if n := len(m.conv.Agents().ActiveAgents()); n > 0 {
-		right = append(right, lipgloss.NewStyle().Foreground(theme.Agent).Render(fmt.Sprintf("%d %s · /agents", n, plural(n, "agent"))))
+		right = append(right, lipgloss.NewStyle().Foreground(theme.Agent).Render(fmt.Sprintf("%d %s · /tasks", n, plural(n, "agent"))))
 	}
 	switch t := m.app.Trust(); {
 	case t.Denied || len(t.Agreed) == 0 && len(t.Ask()) > 0:

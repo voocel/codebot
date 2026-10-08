@@ -32,7 +32,7 @@ func newTool(c *Client, t *protocol.Tool) agentcore.Tool {
 			result, err := c.CallTool(ctx, t.Name, argsMap)
 			if err != nil {
 				if c.oauth && needsLogin(err) {
-					return agentcore.Result{}, fmt.Errorf("%s needs the user to log in again: they can run /mcp login %s (%w)", c.Name(), c.Name(), err)
+					return agentcore.Result{}, fmt.Errorf("%s needs the user to log in again, which they do with /mcp (%w)", c.Name(), err)
 				}
 				return agentcore.Result{}, err
 			}

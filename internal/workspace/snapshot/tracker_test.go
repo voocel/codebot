@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -23,17 +24,16 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-func newTestTracker(t *testing.T, gitDir, workTree, statePath string) *Tracker {
+func newTestTracker(t *testing.T, gitDir, workTree string) *Tracker {
 	t.Helper()
-	tr := New(gitDir, workTree, statePath)
+	tr := New(gitDir, workTree)
 	t.Cleanup(tr.Close)
 	return tr
 }
 
 func newTempTracker(t *testing.T, workTree string) *Tracker {
 	t.Helper()
-	dir := t.TempDir()
-	return newTestTracker(t, filepath.Join(dir, "shadow"), workTree, filepath.Join(dir, "undo.json"))
+	return newTestTracker(t, filepath.Join(t.TempDir(), "shadow"), workTree)
 }
 
 func readFile(t *testing.T, dir, name string) string {
@@ -45,44 +45,41 @@ func readFile(t *testing.T, dir, name string) string {
 	return string(b)
 }
 
-func TestTrackAndUndo(t *testing.T) {
+func checkpoint(t *testing.T, tr *Tracker) string {
+	t.Helper()
+	_, tree, err := tr.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tree
+}
+
+func TestCheckpointAndRestore(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
 	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "v1")
-	if _, err := tr.Track(); err != nil { // snapshot 1: a=v1
-		t.Fatal(err)
-	}
-
+	first := checkpoint(t, tr)
 	writeFile(t, work, "a.txt", "v2")
 	writeFile(t, work, "b.txt", "new")
-	if changed, err := tr.Track(); err != nil || !changed { // snapshot 2: a=v2, b=new
-		t.Fatalf("track after edits: changed=%v err=%v", changed, err)
-	}
-	if changed, _ := tr.Track(); changed {
-		t.Fatal("track with no edits should be skipped")
+	second := checkpoint(t, tr)
+	if again := checkpoint(t, tr); again != second {
+		t.Fatalf("an unchanged workspace checkpoints as %s, then %s", second, again)
 	}
 
-	// Current turn edits a again; undo should restore snapshot 2.
 	writeFile(t, work, "a.txt", "v3")
-	changed, ok, err := tr.Undo()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if len(changed) == 0 {
-		t.Fatal("expected changed files")
+	changed, err := tr.Restore(work, second)
+	if err != nil || !slices.Equal(changed, []string{"a.txt"}) {
+		t.Fatalf("restore: changed=%v err=%v", changed, err)
 	}
 	if got := readFile(t, work, "a.txt"); got != "v2" {
 		t.Fatalf("a.txt = %q, want v2", got)
 	}
 
-	// Undo again: restore snapshot 1 (a=v1) and delete the later-created b.txt.
-	if _, ok, err = tr.Undo(); err != nil || !ok {
-		t.Fatalf("second undo: ok=%v err=%v", ok, err)
+	// Further back, and a file created since goes.
+	if _, err := tr.Restore(work, first); err != nil {
+		t.Fatal(err)
 	}
 	if got := readFile(t, work, "a.txt"); got != "v1" {
 		t.Fatalf("a.txt = %q, want v1", got)
@@ -91,8 +88,12 @@ func TestTrackAndUndo(t *testing.T) {
 		t.Fatalf("b.txt should be removed, stat err = %v", err)
 	}
 
-	if _, ok, _ := tr.Undo(); ok {
-		t.Fatal("expected ok=false on empty stack")
+	// And forward again: a checkpoint is no stack.
+	if _, err := tr.Restore(work, second); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, work, "b.txt"); got != "new" {
+		t.Fatalf("b.txt = %q, want new", got)
 	}
 }
 
@@ -108,11 +109,7 @@ func TestLargeFileGlobNameExcluded(t *testing.T) {
 	}
 	writeFile(t, work, "i.bin", "keep me")
 
-	if _, err := tr.Track(); err != nil {
-		t.Fatal(err)
-	}
-	hash := tr.stack[len(tr.stack)-1]
-	out, err := tr.git.run("ls-tree", "-r", "--name-only", hash)
+	out, err := tr.git.run("ls-tree", "-r", "--name-only", checkpoint(t, tr))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,14 +131,11 @@ func TestNestedFile(t *testing.T) {
 	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "pkg/x.go", "package pkg\n")
-	if _, err := tr.Track(); err != nil {
-		t.Fatal(err)
-	}
-
+	tree := checkpoint(t, tr)
 	writeFile(t, work, "pkg/x.go", "package pkg // edited\n")
-	changed, ok, err := tr.Undo()
-	if err != nil || !ok {
-		t.Fatalf("undo: ok=%v err=%v", ok, err)
+	changed, err := tr.Restore(work, tree)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(changed) != 1 || changed[0] != "pkg/x.go" {
 		t.Fatalf("changed = %v, want [pkg/x.go]", changed)
@@ -151,185 +145,87 @@ func TestNestedFile(t *testing.T) {
 	}
 }
 
-func TestPersistAndReload(t *testing.T) {
-	requireGit(t)
-	work := t.TempDir()
-	shadow := filepath.Join(t.TempDir(), "shadow")
-	state := filepath.Join(t.TempDir(), "undo-stack.json")
-
-	tr := newTestTracker(t, shadow, work, state)
-	writeFile(t, work, "a.txt", "v1")
-	if _, err := tr.Track(); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, work, "a.txt", "v2")
-	if _, err := tr.Track(); err != nil {
-		t.Fatal(err)
-	}
-	tr.Close()
-
-	tr2 := newTestTracker(t, shadow, work, state)
-	writeFile(t, work, "a.txt", "v3")
-	if _, ok, err := tr2.Undo(); err != nil || !ok {
-		t.Fatalf("undo after reload: ok=%v err=%v", ok, err)
-	}
-	if got := readFile(t, work, "a.txt"); got != "v2" {
-		t.Fatalf("a.txt = %q, want v2 (restored from reloaded stack)", got)
-	}
-}
-
+// A checkpoint belongs to its workspace's shadow repo.
 func TestRebindIsolation(t *testing.T) {
 	requireGit(t)
 	workA, workB := t.TempDir(), t.TempDir()
 	shadowA, shadowB := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
-	stateA := filepath.Join(t.TempDir(), "a.json")
-	stateB := filepath.Join(t.TempDir(), "b.json")
 
-	tr := newTestTracker(t, shadowA, workA, stateA)
-	for _, v := range []string{"A1", "A2"} {
-		writeFile(t, workA, "f.txt", v)
-		if _, err := tr.Track(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeFile(t, workA, "f.txt", "A3")
-	if _, ok, err := tr.Undo(); err != nil || !ok { // back to A2; redo holds A3
-		t.Fatalf("undo: ok=%v err=%v", ok, err)
-	}
+	tr := newTestTracker(t, shadowA, workA)
+	writeFile(t, workA, "f.txt", "A1")
+	tree := checkpoint(t, tr)
+	writeFile(t, workA, "f.txt", "A2")
 
-	tr.Rebind(shadowB, workB, stateB)
-	if _, ok, _ := tr.Redo(); ok {
-		t.Fatal("Rebind must clear the redo stack")
+	tr.Rebind(shadowB, workB)
+	if _, err := tr.Restore(workA, tree); err == nil || !strings.Contains(err.Error(), "not here") {
+		t.Fatalf("restoring another workspace's checkpoint: err = %v", err)
 	}
-	if _, ok, _ := tr.Undo(); ok {
-		t.Fatal("after Rebind to a fresh workspace, undo should report nothing")
+	if dir, _, err := tr.Checkpoint(); err != nil || dir != workB {
+		t.Fatalf("checkpointed %s, %v, want %s", dir, err, workB)
 	}
 
-	tr.Rebind(shadowA, workA, stateA)
-	if _, ok, err := tr.Undo(); err != nil || !ok {
-		t.Fatalf("undo after rebind back: ok=%v err=%v", ok, err)
+	tr.Rebind(shadowA, workA)
+	if _, err := tr.Restore(workA, tree); err != nil {
+		t.Fatal(err)
 	}
 	if got := readFile(t, workA, "f.txt"); got != "A1" {
 		t.Fatalf("f.txt = %q, want A1", got)
 	}
 }
 
-func TestUndoExpiredSnapshot(t *testing.T) {
+func TestRestoreExpired(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
 	tr := newTempTracker(t, work)
 	writeFile(t, work, "a.txt", "v1")
-	if _, err := tr.Track(); err != nil { // real snapshot + inits shadow repo
-		t.Fatal(err)
-	}
-	// As if gc pruned it.
-	tr.stack = append(tr.stack, "0000000000000000000000000000000000000000")
-
-	if _, ok, err := tr.Undo(); !ok || !errors.Is(err, ErrSnapshotExpired) {
-		t.Fatalf("expired snapshot: ok=%v err=%v, want ok=true + ErrSnapshotExpired", ok, err)
-	}
-	if _, ok, _ := tr.Redo(); ok {
-		t.Fatal("an expired undo must not populate the redo stack")
-	}
+	checkpoint(t, tr)
 	writeFile(t, work, "a.txt", "v2")
-	if _, ok, err := tr.Undo(); !ok || err != nil {
-		t.Fatalf("second undo: ok=%v err=%v", ok, err)
+
+	// As if gc pruned it.
+	const pruned = "0000000000000000000000000000000000000000"
+	if _, err := tr.Restore(work, pruned); !errors.Is(err, ErrExpired) {
+		t.Fatalf("err = %v, want ErrExpired", err)
 	}
-	if got := readFile(t, work, "a.txt"); got != "v1" {
-		t.Fatalf("a.txt = %q, want v1", got)
+	if _, err := tr.Changed(work, pruned); !errors.Is(err, ErrExpired) {
+		t.Fatalf("err = %v, want ErrExpired", err)
+	}
+	if got := readFile(t, work, "a.txt"); got != "v2" {
+		t.Fatalf("a.txt = %q, want it untouched", got)
 	}
 }
 
-func TestGCKeepsRecentSnapshot(t *testing.T) {
+func TestGCKeepsRecentCheckpoint(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
 	tr := newTempTracker(t, work)
 	writeFile(t, work, "a.txt", "v1")
-	if _, err := tr.Track(); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, work, "a.txt", "v2")
-	if _, err := tr.Track(); err != nil {
-		t.Fatal(err)
-	}
+	tree := checkpoint(t, tr)
 	tr.backgroundGC() // synchronous gc; recent objects must survive
 
-	writeFile(t, work, "a.txt", "v3")
-	if _, ok, err := tr.Undo(); err != nil || !ok {
-		t.Fatalf("undo after gc: ok=%v err=%v", ok, err)
-	}
-	if got := readFile(t, work, "a.txt"); got != "v2" {
-		t.Fatalf("a.txt = %q, want v2 (gc must not prune in-window snapshot)", got)
-	}
-}
-
-func TestUndoRedo(t *testing.T) {
-	requireGit(t)
-	work := t.TempDir()
-	tr := newTempTracker(t, work)
-
-	writeFile(t, work, "a.txt", "v1")
-	if _, err := tr.Track(); err != nil { // snapshot: a=v1
-		t.Fatal(err)
-	}
 	writeFile(t, work, "a.txt", "v2")
-
-	if _, ok, err := tr.Undo(); err != nil || !ok {
-		t.Fatalf("undo: ok=%v err=%v", ok, err)
-	}
-	if got := readFile(t, work, "a.txt"); got != "v1" {
-		t.Fatalf("after undo a.txt = %q, want v1", got)
-	}
-
-	changed, ok, err := tr.Redo()
-	if err != nil || !ok {
-		t.Fatalf("redo: ok=%v err=%v", ok, err)
-	}
-	if len(changed) == 0 {
-		t.Fatal("redo should report changed files")
-	}
-	if got := readFile(t, work, "a.txt"); got != "v2" {
-		t.Fatalf("after redo a.txt = %q, want v2 (pre-undo state)", got)
-	}
-
-	// Redo pushed the v1 snapshot back onto the undo stack.
-	if _, ok, err := tr.Undo(); err != nil || !ok {
-		t.Fatalf("undo after redo: ok=%v err=%v", ok, err)
-	}
-	if got := readFile(t, work, "a.txt"); got != "v1" {
-		t.Fatalf("after second undo a.txt = %q, want v1", got)
-	}
-
-	// A new edit invalidates the redo stack, which holds v2.
-	writeFile(t, work, "a.txt", "v3")
-	if _, err := tr.Track(); err != nil {
+	if _, err := tr.Restore(work, tree); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := tr.Redo(); ok {
-		t.Fatal("a new Track must clear the redo stack")
+	if got := readFile(t, work, "a.txt"); got != "v1" {
+		t.Fatalf("a.txt = %q, want v1 (gc must not prune an in-window checkpoint)", got)
 	}
 }
 
-func TestDiffTopIncludesUntracked(t *testing.T) {
+func TestChangedIncludesUntracked(t *testing.T) {
 	requireGit(t)
 	work := t.TempDir()
 	tr := newTempTracker(t, work)
 
 	writeFile(t, work, "a.txt", "1\n")
-	if _, err := tr.Track(); err != nil { // snapshot before changes
-		t.Fatal(err)
-	}
+	tree := checkpoint(t, tr)
 	writeFile(t, work, "a.txt", "1\n2\n")    // modify
 	writeFile(t, work, "new.txt", "hello\n") // create (untracked)
 
-	out, err := tr.DiffTop()
+	changed, err := tr.Changed(work, tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "new.txt") {
-		t.Fatalf("DiffTop must include the newly created file; got:\n%s", out)
-	}
-	if !strings.Contains(out, "a.txt") {
-		t.Fatalf("DiffTop must include the modified file; got:\n%s", out)
+	if !slices.Equal(changed, []string{"a.txt", "new.txt"}) {
+		t.Fatalf("changed = %v, want the modified and the new file", changed)
 	}
 }

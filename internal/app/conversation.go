@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -82,7 +83,7 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 	c.tasks = task.NewRuntime(filepath.Join(c.dir, "tasks"), c.background)
 	c.limiter = tools.NewOutputLimiter(filepath.Join(c.dir, tools.ToolOutputsSubdir))
 	if a.settings.Snapshot && worktree.IsRepo(a.cwd) {
-		c.snapshots = snapshot.New(config.SnapshotDir(a.cwd), a.cwd, config.UndoStatePath(a.cwd, id))
+		c.snapshots = snapshot.New(config.SnapshotDir(a.cwd), a.cwd)
 	}
 	c.hooks = hooks.New(id, c.hookModel)
 	c.hooks.Set(a.Extensions().HooksConfig())
@@ -360,26 +361,72 @@ func (c *Conversation) skillGrants() []permission.Rule {
 
 var errNoSnapshots = errors.New("file checkpoints are off: they need a git repository and the snapshot setting")
 
-// Undo reverts the most recent run that changed files. ok is false when
-// there is nothing to undo.
-func (c *Conversation) Undo() (changed []string, ok bool, err error) {
-	if c.snapshots == nil {
-		return nil, false, errNoSnapshots
-	}
-	return c.snapshots.Undo()
+// Checkpoint is a point the conversation can go back to: before a run the
+// user started.
+type Checkpoint struct {
+	Prompt string // what the user asked
+	Time   time.Time
+	cp     storage.Checkpoint
 }
 
-func (c *Conversation) Redo() (changed []string, ok bool, err error) {
-	if c.snapshots == nil {
-		return nil, false, errNoSnapshots
+// Checkpoints returns the points the conversation can go back to, oldest
+// first.
+func (c *Conversation) Checkpoints() []Checkpoint {
+	cps, history := c.session.Checkpoints()
+	var out []Checkpoint
+	for i, cp := range cps {
+		end := len(history)
+		if i+1 < len(cps) {
+			end = cps[i+1].At
+		}
+		// A run a finished background task started has no prompt.
+		for _, m := range history[cp.At:end] {
+			if text, ok := UserText(m); ok && m.Role == litellm.RoleUser {
+				out = append(out, Checkpoint{Prompt: text, Time: m.Time, cp: cp})
+				break
+			}
+		}
 	}
-	return c.snapshots.Redo()
+	return out
 }
 
-// Diff previews what Undo would revert.
-func (c *Conversation) Diff() (string, error) {
-	if c.snapshots == nil {
-		return "", errNoSnapshots
+// Changed lists the files going back to cp would put back. It fails when
+// they can't go back: checkpoints are off, the conversation has moved to
+// another workspace since, or the checkpoint expired.
+func (c *Conversation) Changed(cp Checkpoint) ([]string, error) {
+	if c.snapshots == nil || cp.cp.Tree == "" {
+		return nil, errNoSnapshots
 	}
-	return c.snapshots.DiffTop()
+	return c.snapshots.Changed(cp.cp.Dir, cp.cp.Tree)
+}
+
+// Rewind goes back to before cp's run: the files, the conversation, or both,
+// all between runs, and nothing when any of it can't. It reports the files it
+// put back. Files put back under a conversation that stays are pointed out to
+// the agent, which would otherwise go on from its changes.
+func (c *Conversation) Rewind(cp Checkpoint, files, conversation bool) ([]string, error) {
+	var changed []string
+	err := c.session.Edit(func(e session.Editor) error {
+		if conversation && !e.Holds(cp.cp) {
+			return errors.New("the conversation no longer holds that request")
+		}
+		if files {
+			if c.snapshots == nil || cp.cp.Tree == "" {
+				return errNoSnapshots
+			}
+			// Restore changes nothing when it fails.
+			var err error
+			if changed, err = c.snapshots.Restore(cp.cp.Dir, cp.cp.Tree); err != nil {
+				return err
+			}
+		}
+		switch {
+		case conversation:
+			return e.Rewind(cp.cp)
+		case len(changed) > 0:
+			return e.Append(reminderMessage(fmt.Sprintf("The user put the files back as they were before the request %q: what was changed since is undone (%s). Read them again before relying on them.", cp.Prompt, strings.Join(changed, ", "))))
+		}
+		return nil
+	})
+	return changed, err
 }

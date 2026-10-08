@@ -60,12 +60,13 @@ func (c *Conversation) specLocked() session.RunSpec {
 		OnStop: c.stop,
 	}
 	return session.RunSpec{
-		Provider: c.model.provider,
-		Model:    c.model.name,
-		Effort:   c.model.effort,
-		Window:   c.model.window,
-		Config:   cfg,
-		WrapRun:  c.wrapRun,
+		Provider:   c.model.provider,
+		Model:      c.model.name,
+		Effort:     c.model.effort,
+		Window:     c.model.window,
+		Config:     cfg,
+		WrapRun:    c.wrapRun,
+		Checkpoint: c.checkpoint,
 		Context: func(history []agentcore.Message) []agentcore.Message {
 			// Use the date the run starts.
 			return contextMessages(append([]prompt.Part{prompt.Environment(cwd, time.Now())}, parts...), history)
@@ -78,15 +79,25 @@ func (c *Conversation) wrapRun(ctx context.Context) (context.Context, func(error
 	// calls.
 	ctx = agentcoretools.WithCwd(ctx, c.Cwd)
 	ctx, span := c.app.tracer.StartRun(ctx, "agent run")
-	if c.snapshots != nil {
-		_, _ = c.snapshots.Track() // best effort: a failed checkpoint must not block the run
-	}
 	return ctx, func(err error) {
 		span.End(err)
 		c.mu.Lock()
 		c.grants = nil
 		c.mu.Unlock()
 	}
+}
+
+// checkpoint is best effort: a failed checkpoint must not block the run, and
+// leaves it one only the conversation can go back to.
+func (c *Conversation) checkpoint() (dir, tree string) {
+	if c.snapshots == nil {
+		return "", ""
+	}
+	dir, tree, err := c.snapshots.Checkpoint()
+	if err != nil {
+		return "", ""
+	}
+	return dir, tree
 }
 
 // stop sends the agent back to fix a failing PostStopValidation.

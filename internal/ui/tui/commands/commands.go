@@ -36,7 +36,8 @@ type Command struct {
 
 type Copy struct{ Text string }
 
-type OpenAgent struct{ Name string }
+// OpenAgent opens the page of a background agent's run.
+type OpenAgent struct{ Run, Title string }
 
 // Registry holds the built-in commands and one per user-invocable skill.
 type Registry struct {
@@ -51,22 +52,18 @@ func New(a *app.App, version string) *Registry {
 		model(a),
 		compact(a),
 		status(a, version),
-		contextUsage(a),
 		newSession(a),
 		resume(a),
 		tasks(a),
-		agents(a),
 		btw(a),
-		settings(a),
 		mcp(a),
 		plugins(a),
+		permissions(a),
 		trust(a),
 		copyReply(a),
 		reload(a),
 		memory(a),
-		undo(a),
-		redo(a),
-		diff(a),
+		rewind(a),
 		worktree(a),
 		{Name: "exit", Aliases: []string{"quit", "q"}, Description: "Quit", Run: func(string) tea.Cmd { return tea.Quit }},
 	}

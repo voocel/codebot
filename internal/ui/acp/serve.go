@@ -32,7 +32,7 @@ func (s *Server) Serve(a *app.App) error {
 			fmt.Fprintf(os.Stderr, "mcp: %s\n", e)
 		}
 		for _, name := range report.Login {
-			fmt.Fprintf(os.Stderr, "mcp: %s needs a login: run /mcp login %s in codebot\n", name, name)
+			fmt.Fprintf(os.Stderr, "mcp: %s needs a login: log in with /mcp in codebot\n", name)
 		}
 	}()
 	conn := acp.NewAgentSideConnection(s, os.Stdout, os.Stdin)

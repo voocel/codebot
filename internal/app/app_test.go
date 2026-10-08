@@ -794,22 +794,128 @@ func TestWorktreeSkillsFollowTheWorkspace(t *testing.T) {
 	}
 }
 
-func TestUndoRevertsTheLastRun(t *testing.T) {
-	model := script(use("w1", "write", map[string]string{"file_path": "a.txt", "content": "x"}), text("ok"))
-	e := boot(t, setup{git: true, mode: interact.ModeTrust, settings: map[string]any{"snapshot": true}}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+// "Don't ask again" is remembered for the project until forgotten.
+func TestForgetARememberedApproval(t *testing.T) {
+	model := script(
+		use("b1", "bash", map[string]string{"command": "touch made.txt"}), text("made"),
+		use("b2", "bash", map[string]string{"command": "touch again.txt"}), text("made again"),
+	)
+	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	e.ui.choice = interact.AllowAlways
+	e.submit("make it")
 
-	e.submit("write it")
-	if _, err := os.Stat(filepath.Join(e.cwd, "a.txt")); err != nil {
+	approvals := e.app.Approvals()
+	if len(approvals) != 1 || approvals[0].Name != "touch" || !approvals[0].Command || approvals[0].Example != "touch made.txt" {
+		t.Fatalf("approvals = %+v", approvals)
+	}
+	if err := e.app.Forget(approvals[0].Key); err != nil {
 		t.Fatal(err)
 	}
-	changed, ok, err := e.app.Current().Undo()
-	if err != nil || !ok {
-		t.Fatalf("undo: ok=%v err=%v", ok, err)
+	if got := e.app.Approvals(); len(got) != 0 {
+		t.Fatalf("approvals after forgetting = %+v", got)
 	}
-	if !slices.Contains(changed, "a.txt") {
-		t.Fatalf("changed = %q", changed)
+	e.ui.choice = interact.AllowOnce
+	e.submit("make another")
+	if got := e.ui.asked(); !slices.Equal(got, []string{"bash", "bash"}) {
+		t.Fatalf("asked %v: the forgotten approval still holds", got)
+	}
+}
+
+// Going back to before a run puts back the files and cuts the conversation
+// back, as if the run never was.
+func TestRewindGoesBackToBeforeARun(t *testing.T) {
+	model := script(
+		use("w1", "write", map[string]string{"file_path": "a.txt", "content": "x"}), text("wrote a"),
+		use("w2", "write", map[string]string{"file_path": "b.txt", "content": "y"}), text("wrote b"),
+	)
+	e := boot(t, setup{git: true, mode: interact.ModeTrust, settings: map[string]any{"snapshot": true}}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	e.submit("write a")
+	e.submit("write b")
+
+	c := e.app.Current()
+	cps := c.Checkpoints()
+	if len(cps) != 2 || cps[0].Prompt != "write a" || cps[1].Prompt != "write b" {
+		t.Fatalf("checkpoints = %+v", cps)
+	}
+	if changed, err := c.Changed(cps[1]); err != nil || !slices.Equal(changed, []string{"b.txt"}) {
+		t.Fatalf("changed = %q, %v", changed, err)
+	}
+	changed, err := c.Rewind(cps[1], true, true)
+	if err != nil || !slices.Equal(changed, []string{"b.txt"}) {
+		t.Fatalf("rewind: changed = %q, %v", changed, err)
+	}
+	if _, err := os.Stat(filepath.Join(e.cwd, "b.txt")); !os.IsNotExist(err) {
+		t.Fatalf("b.txt survived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(e.cwd, "a.txt")); err != nil {
+		t.Fatalf("a.txt went too: %v", err)
+	}
+	if got := strings.Join(texts(c.History()), " "); got != "user:write a call:write tool:w1 assistant:wrote a" {
+		t.Fatalf("history = %s", got)
+	}
+	if got := c.Checkpoints(); len(got) != 1 {
+		t.Fatalf("checkpoints = %+v", got)
+	}
+}
+
+// A request the conversation no longer holds, as after a compaction, can't
+// be gone back to, and its files stay as they are.
+func TestRewindToAGoneRequestChangesNothing(t *testing.T) {
+	model := script(use("w1", "write", map[string]string{"file_path": "a.txt", "content": "x"}), text("wrote a"), text("summary"))
+	e := boot(t, setup{git: true, mode: interact.ModeTrust, settings: map[string]any{"snapshot": true}}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	e.submit("write a")
+	c := e.app.Current()
+	cp := c.Checkpoints()[0]
+	if err := c.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Rewind(cp, true, true); err == nil {
+		t.Fatal("went back to a request the conversation no longer holds")
+	}
+	if _, err := os.Stat(filepath.Join(e.cwd, "a.txt")); err != nil {
+		t.Fatalf("the files went back anyway: %v", err)
+	}
+}
+
+// Files put back under a conversation that stays are pointed out to the
+// agent, which would otherwise go on from its changes.
+func TestRewindingTheFilesAloneTellsTheAgent(t *testing.T) {
+	model := script(use("w1", "write", map[string]string{"file_path": "a.txt", "content": "x"}), text("wrote a"))
+	e := boot(t, setup{git: true, mode: interact.ModeTrust, settings: map[string]any{"snapshot": true}}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	e.submit("write a")
+
+	c := e.app.Current()
+	if _, err := c.Rewind(c.Checkpoints()[0], true, false); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(e.cwd, "a.txt")); !os.IsNotExist(err) {
-		t.Fatalf("file survived undo: %v", err)
+		t.Fatalf("a.txt survived: %v", err)
+	}
+	e.submit("go on")
+	var note string
+	for _, m := range model.last().msgs {
+		if strings.Contains(m.Text(), "put the files back") {
+			note = m.Text()
+		}
+	}
+	if !strings.Contains(note, `"write a"`) || !strings.Contains(note, "a.txt") {
+		t.Fatalf("the next run was not told; it got %q", texts(model.last().msgs))
+	}
+}
+
+// Without checkpoints of the files only the conversation goes back.
+func TestRewindWithoutFileCheckpoints(t *testing.T) {
+	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script(text("hi"))})
+	e.submit("hello")
+	c := e.app.Current()
+	cp := c.Checkpoints()[0]
+	if _, err := c.Changed(cp); err == nil {
+		t.Fatal("files can go back without checkpoints")
+	}
+	if _, err := c.Rewind(cp, true, true); err == nil {
+		t.Fatal("rewound the files without checkpoints")
+	}
+	if _, err := c.Rewind(cp, false, true); err != nil || len(c.History()) != 0 {
+		t.Fatalf("rewind: %v, history %q", err, texts(c.History()))
 	}
 }

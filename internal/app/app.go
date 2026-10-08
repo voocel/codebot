@@ -240,6 +240,16 @@ func (a *App) rememberModel(prov, name, effort string) error {
 
 func (a *App) Mode() interact.Mode { return a.permissions.Mode() }
 
+// Approval is a kind of call the user asked not to be asked about again in
+// this project.
+type Approval = permission.Remembered
+
+// Approvals returns the project's remembered approvals, newest first.
+func (a *App) Approvals() []Approval { return a.permissions.Remembered() }
+
+// Forget drops a remembered approval: its calls are asked about again.
+func (a *App) Forget(key string) error { return a.permissions.Forget(key) }
+
 func (a *App) SetMode(m interact.Mode) {
 	a.modeMu.Lock()
 	defer a.modeMu.Unlock()

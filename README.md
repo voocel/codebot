@@ -38,6 +38,7 @@ This split matters. The agent loop stays small and reusable, while long-running 
 - Append-only JSONL persistence — crash-safe, human-readable
 - Resume (`-c` last, `-r` pick)
 - Model and reasoning effort restored per session
+- `/rewind` goes back to before an earlier request: its file changes, the conversation, or both (file checkpoints need a git repository)
 - Sessions saved by versions before the session-format change (format 3) can't be resumed and are left out of `-r`; delete them from `~/.codebot/projects/*/` if you no longer need them
 
 **Security**
@@ -54,7 +55,7 @@ This split matters. The agent loop stays small and reusable, while long-running 
 - Image paste (Ctrl+V) with selection (↑) and deletion (Delete)
 - Todo list shown above the input
 - Non-interactive print mode for pipes and scripts (`-p`)
-- Slash commands: `/model`, `/compact`, `/resume`, `/copy`, ...; every skill is also a `/` command
+- Slash commands: `/model`, `/rewind`, `/status`, `/tasks`, `/permissions`, `/memory`, `/init`, ... (`/help` lists them); every skill is also a `/` command
 
 **Extensibility**
 - Skills (Agent Skills `SKILL.md`), sub-agents, MCP servers and hooks, from you and from the project
@@ -174,7 +175,7 @@ A provider of `type: "gateway"` is a [LiteLLM gateway](https://github.com/voocel
 
 A skill is a directory holding a `SKILL.md`, or a single `.md` file. Of two of one name, the project's wins over yours, and yours over a built-in one; `/status` lists what each replaced. Hooks replace none: yours and the project's all run. A hook with an unknown event, type or field is reported and left out. A command hook runs in `sh`; on Windows, its `command_windows`, if it has one, runs in PowerShell instead, and its `command` alone needs an `sh` on `PATH`, such as Git for Windows brings, or the hook is reported as it loads. PowerShell turns an exit code other than 0 or 1 into 1, so a Windows command that blocks by exiting 2 ends with `exit $LASTEXITCODE`, or prints `{"block": true}`.
 
-**MCP servers over HTTP.** An HTTP server you gave no `Authorization` header signs in with OAuth, as the MCP specification lays out: when it asks for authorization, codebot says so, and `/mcp login <server>` opens the browser to sign in. codebot introduces itself to the server's authorization server with its [client metadata document](site/oauth/client.json). An authorization server that takes none, such as GitHub's, wants an OAuth app you register with it, its callback URL `http://127.0.0.1/callback`, and the app's client ID and secret as the server's `oauth`, the secret taken from your environment if you write it as `${VAR}` (see `settings.example.jsonc`). codebot keeps the tokens in `~/.codebot/mcp-oauth.json`, readable by you alone, and refreshes them; the model is asked every time before it reads or writes that file. `/mcp logout <server>` forgets the token. A server with an `Authorization` header of yours uses that header instead.
+**MCP servers over HTTP.** An HTTP server you gave no `Authorization` header signs in with OAuth, as the MCP specification lays out: when it asks for authorization, codebot says so, and picking the server in `/mcp` opens the browser to sign in. codebot introduces itself to the server's authorization server with its [client metadata document](site/oauth/client.json). An authorization server that takes none, such as GitHub's, wants an OAuth app you register with it, its callback URL `http://127.0.0.1/callback`, and the app's client ID and secret as the server's `oauth`, the secret taken from your environment if you write it as `${VAR}` (see `settings.example.jsonc`). codebot keeps the tokens in `~/.codebot/mcp-oauth.json`, readable by you alone, and refreshes them; the model is asked every time before it reads or writes that file. `x` on the server in `/mcp` forgets the token. A server with an `Authorization` header of yours uses that header instead.
 
 **Plugins.** A plugin bundles skills and MCP servers in the [Agent Plugins 1.0](https://github.com/agentplugins/agent-plugins-spec) format: a directory with a `plugin.json` naming it, skills in `skills/<name>/SKILL.md` and MCP servers in `mcp.json`. Its skills become `/<plugin>:<skill>`, its MCP servers `<plugin>_<server>`. Hooks and sub-agents are beyond that format, so codebot reads them from its own namespace, `io.github.voocel.codebot`: sub-agents from its directory, `io.github.voocel.codebot/agents/`, and hooks from its entry in `plugin.json`:
 

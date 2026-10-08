@@ -24,6 +24,8 @@ var tips = []string{
 	"Start a line with ! to run a shell command",
 	"shift+tab switches how much codebot asks before acting",
 	"/btw asks a side question that stays out of the conversation",
+	"/rewind goes back to before a request, its file changes too",
+	"/init writes AGENTS.md, what every request here starts from",
 	"ctrl+v pastes an image from the clipboard",
 	"@ mentions a file · tab completes its path",
 	"ctrl+r searches what you sent before",

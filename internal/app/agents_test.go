@@ -113,28 +113,6 @@ func TestEventHub_HistoryRingTruncatesOldest(t *testing.T) {
 	}
 }
 
-func TestEventHub_KnownAgentsIncludesStopped(t *testing.T) {
-	h := NewAgentHub()
-	h.Publish("alice", agentcore.MessageStart{})
-	h.Publish("bob", agentcore.MessageStart{})
-	h.MarkStopped("alice")
-
-	known := h.KnownAgents()
-	if len(known) != 2 {
-		t.Fatalf("KnownAgents = %+v, want 2 entries", known)
-	}
-	gotActive := map[string]bool{}
-	for _, info := range known {
-		gotActive[info.Name] = info.Active
-	}
-	if gotActive["alice"] {
-		t.Errorf("alice reported active after MarkStopped")
-	}
-	if !gotActive["bob"] {
-		t.Errorf("bob should still be active")
-	}
-}
-
 func drainEvents(t *testing.T, ch <-chan agentcore.Event, n int, timeout time.Duration) []agentcore.Event {
 	t.Helper()
 	out := make([]agentcore.Event, 0, n)

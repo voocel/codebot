@@ -40,3 +40,31 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatalf("expected persisted entries, got %#v", reloaded)
 	}
 }
+
+// List puts the newest first; Remove lasts past a reload.
+func TestStoreListAndRemove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "approvals.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	for key, at := range map[string]time.Time{"exec:make": old, "exec:touch": time.Now()} {
+		if err := store.Add(StoreEntry{Key: key, AddedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := store.List(); len(got) != 2 || got[0].Key != "exec:touch" {
+		t.Fatalf("list = %+v", got)
+	}
+	if err := store.Remove("exec:touch"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.List(); len(got) != 1 || got[0].Key != "exec:make" {
+		t.Fatalf("after remove and reload: %+v", got)
+	}
+}

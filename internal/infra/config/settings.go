@@ -216,7 +216,7 @@ type Settings struct {
 
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 
-	// Snapshot enables the checkpoints behind /undo; unset means on. Large
+	// Snapshot enables the checkpoints behind /rewind; unset means on. Large
 	// repos may turn it off because every turn scans the workspace.
 	Snapshot *bool `json:"snapshot,omitempty"`
 }
@@ -381,10 +381,6 @@ func SessionsDir(cwd string) string {
 
 func SnapshotDir(cwd string) string {
 	return filepath.Join(UserConfigDir(), "snapshot", projectID(cwd))
-}
-
-func UndoStatePath(cwd, sessionID string) string {
-	return filepath.Join(SessionsDir(cwd), sessionID, "undo-stack.json")
 }
 
 func ApprovalsPath(cwd string) string {

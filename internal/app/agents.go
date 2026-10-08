@@ -19,11 +19,6 @@ type AgentHub struct {
 	history map[string]*eventRing
 }
 
-type AgentInfo struct {
-	Name   string
-	Active bool
-}
-
 const subBufferSize = 64
 
 // historyCapacity is roughly 50–100 turns of 5–10 events each.
@@ -104,17 +99,6 @@ func (h *AgentHub) ActiveAgents() []string {
 		if isActive {
 			out = append(out, name)
 		}
-	}
-	return out
-}
-
-// KnownAgents includes finished agents.
-func (h *AgentHub) KnownAgents() []AgentInfo {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	out := make([]AgentInfo, 0, len(h.history))
-	for name := range h.history {
-		out = append(out, AgentInfo{Name: name, Active: h.active[name]})
 	}
 	return out
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -122,9 +123,28 @@ func (s *State) apply(e entry, h *Header) error {
 			return err
 		}
 		s.Usage.Add(c.Usage)
-		s.Messages = c.Messages
+		s.Messages, s.Checkpoints = c.Messages, nil
 	case entryModel:
 		return json.Unmarshal(e.Data, &s.Model)
+	case entryCheckpoint:
+		var c Checkpoint
+		if err := json.Unmarshal(e.Data, &c); err != nil {
+			return err
+		}
+		if c.At < 0 || c.At > len(s.Messages) {
+			return fmt.Errorf("checkpoint at %d of %d messages", c.At, len(s.Messages))
+		}
+		s.Checkpoints = append(s.Checkpoints, c)
+	case entryRewind:
+		var r rewind
+		if err := json.Unmarshal(e.Data, &r); err != nil {
+			return err
+		}
+		if r.Keep < 0 || r.Keep > len(s.Messages) {
+			return fmt.Errorf("rewind to %d of %d messages", r.Keep, len(s.Messages))
+		}
+		s.Messages = s.Messages[:r.Keep]
+		s.Checkpoints = slices.DeleteFunc(s.Checkpoints, func(c Checkpoint) bool { return c.At >= r.Keep })
 	default:
 		return fmt.Errorf("unknown entry kind %q", e.Kind)
 	}
@@ -138,6 +158,10 @@ func (s *Store) Append(m agentcore.Message) error {
 func (s *Store) AppendCompaction(c *agentcore.Compaction) error {
 	return s.append(entryCompaction, compaction{Messages: c.Messages, Usage: c.Usage})
 }
+
+func (s *Store) AppendCheckpoint(c Checkpoint) error { return s.append(entryCheckpoint, c) }
+
+func (s *Store) AppendRewind(keep int) error { return s.append(entryRewind, rewind{Keep: keep}) }
 
 func (s *Store) AppendModel(m Model) error {
 	return s.append(entryModel, m)

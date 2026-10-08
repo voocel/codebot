@@ -317,6 +317,61 @@ func TestConversation(t *testing.T) {
 	t.Log("\n" + h.screen())
 }
 
+// /rewind goes back to before a request: the conversation reloads without it
+// and the request returns to the editor.
+func TestRewindToAnEarlierRequest(t *testing.T) {
+	h := boot(t, litellmtest.Text("One."), litellmtest.Text("Two."))
+	for _, prompt := range []string{"first", "second"} {
+		h.write(prompt)
+		h.press("enter")
+		h.settle()
+	}
+	h.write("/rewind")
+	h.press("enter")
+	h.settleNotes()
+	h.shows("Rewind", "second", "first")
+
+	h.press("enter") // the latest comes first
+	h.settleNotes()
+	h.shows("Go back to before “second”", "Conversation", "the files can't go back")
+	h.press("enter")
+	h.settleNotes()
+	h.shows("Went back to before “second”.", "One.", "❯ second")
+	if s := h.screen(); strings.Contains(s, "Two.") || h.m.editor.Empty() {
+		t.Errorf("the conversation kept the request, or the editor did not get it back:\n%s", s)
+	}
+	if got := len(h.m.conv.Checkpoints()); got != 1 {
+		t.Errorf("%d checkpoints left", got)
+	}
+}
+
+// /permissions lists the rules of the settings, which are edited there.
+func TestPermissionsListTheRules(t *testing.T) {
+	h := bootIn(t, map[string]any{"permissions": map[string]any{"deny": []string{"Bash(rm:*)"}}})
+	h.write("/permissions")
+	h.press("enter")
+	h.settleNotes()
+	h.shows("Permissions · balanced mode", "Denied by the settings", "Bash(rm:*)")
+	h.press("x")
+	h.settleNotes()
+	h.shows("edited in the settings file", "Bash(rm:*)")
+}
+
+// A background agent's page follows its own run, so two runs of one agent
+// stay apart, and is titled with the task.
+func TestOpenAnAgentsRun(t *testing.T) {
+	h := boot(t)
+	hub := h.app.Current().Agents()
+	for run, text := range map[string]string{"explore#1": "first run", "explore#2": "second run"} {
+		hub.Publish(run, agentcore.MessageEnd{Message: agentcore.Message{Role: litellm.RoleAssistant, Blocks: []litellm.Block{litellm.Text(text)}}})
+	}
+	h.feed(commands.OpenAgent{Run: "explore#2", Title: "Find the parser"})
+	h.shows("Find the parser", "second run")
+	if strings.Contains(h.screen(), "first run") {
+		t.Errorf("the page shows another run:\n%s", h.screen())
+	}
+}
+
 func TestStopRestoresQueuedInput(t *testing.T) {
 	h := boot(t, litellmtest.Reply{Blocks: []litellm.Block{litellm.Text("Looking")}, Stall: true})
 	h.write("first")

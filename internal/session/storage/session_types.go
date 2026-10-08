@@ -14,6 +14,8 @@ const (
 	entryMessage    entryKind = "message"    // appends a message to the history
 	entryCompaction entryKind = "compaction" // replaces the whole history
 	entryModel      entryKind = "model"      // records the model the session runs on
+	entryCheckpoint entryKind = "checkpoint" // records the workspace as a run began
+	entryRewind     entryKind = "rewind"     // cuts the history back
 )
 
 type entry struct {
@@ -36,6 +38,20 @@ type Model struct {
 	Effort   string `json:"effort,omitempty"`
 }
 
+// Checkpoint is the workspace as a run began, with At messages of history
+// before it.
+type Checkpoint struct {
+	At int `json:"at"`
+	// The workspace and its tree in the workspace's shadow repo, when the
+	// workspace is checkpointed.
+	Dir  string `json:"dir,omitempty"`
+	Tree string `json:"tree,omitempty"`
+}
+
+type rewind struct {
+	Keep int `json:"keep"` // messages of history kept
+}
+
 type compaction struct {
 	Messages []agentcore.Message `json:"messages"`
 	Usage    *agentcore.Usage    `json:"usage,omitempty"`
@@ -47,6 +63,8 @@ type State struct {
 	// Usage includes responses that a compaction later replaced, and the
 	// compactions themselves.
 	Usage agentcore.Usage
+	// Checkpoints are those of the runs Messages still holds, oldest first.
+	Checkpoints []Checkpoint
 }
 
 type SessionInfo struct {

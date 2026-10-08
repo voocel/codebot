@@ -151,7 +151,7 @@ type MCPReport struct {
 	Connected int
 	Tools     int
 	Errors    []string
-	Login     []string // servers that want an OAuth login: /mcp login
+	Login     []string // servers that want an OAuth login, given in /mcp
 }
 
 // connectMCP also disconnects servers no longer configured; restart

@@ -110,7 +110,7 @@ func (c *Conversation) ExitWorktree(discard bool) (WorktreeExit, error) {
 func (c *Conversation) moveLocked(dir string) {
 	c.cwd = dir
 	if c.snapshots != nil {
-		c.snapshots.Rebind(config.SnapshotDir(dir), dir, config.UndoStatePath(dir, c.id))
+		c.snapshots.Rebind(config.SnapshotDir(dir), dir)
 	}
 	c.skills, c.workspace = c.app.workspace(dir)
 	// Tools see the new cwd at once through the run's context; the model is

@@ -71,6 +71,28 @@ func (s *Store) Add(entry StoreEntry) error {
 	return s.saveLocked()
 }
 
+// List returns the entries, newest first.
+func (s *Store) List() []StoreEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows := make([]StoreEntry, 0, len(s.entries))
+	for _, row := range s.entries {
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].AddedAt.After(rows[j].AddedAt) })
+	return rows
+}
+
+func (s *Store) Remove(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.entries[key]; !ok {
+		return nil
+	}
+	delete(s.entries, key)
+	return s.saveLocked()
+}
+
 func (s *Store) saveLocked() error {
 	if strings.TrimSpace(s.path) == "" {
 		return nil

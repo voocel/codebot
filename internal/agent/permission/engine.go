@@ -253,6 +253,28 @@ func (e *Engine) resolve(info toolInfo, v interact.Verdict) *Decision {
 	return d
 }
 
+// Remembered is a kind of call the user asked not to be asked about again.
+type Remembered struct {
+	Key     string
+	Command bool   // a shell command, rather than a tool
+	Name    string // the command, as "go test", or the tool
+	Example string // the call it was given on
+	Added   time.Time
+}
+
+// Remembered returns the remembered approvals, newest first.
+func (e *Engine) Remembered() []Remembered {
+	var out []Remembered
+	for _, s := range e.store.List() {
+		kind, name, _ := strings.Cut(s.Key, ":")
+		out = append(out, Remembered{Key: s.Key, Command: kind == "exec", Name: name, Example: s.Summary, Added: s.AddedAt})
+	}
+	return out
+}
+
+// Forget drops a remembered approval, so its calls are asked about again.
+func (e *Engine) Forget(key string) error { return e.store.Remove(key) }
+
 func (e *Engine) remembered(info toolInfo) bool {
 	for _, key := range info.keys {
 		if !e.store.Has(key) {

@@ -71,7 +71,7 @@ func connected(r app.MCPReport) string {
 	}
 	s := fmt.Sprintf(" · %d MCP tools (%d servers connected, %d failed)", r.Tools, r.Connected, len(r.Errors))
 	for _, name := range r.Login {
-		s += " · " + name + " needs login: /mcp login " + name
+		s += " · " + name + " needs login: /mcp"
 	}
 	return s
 }

@@ -688,6 +688,89 @@ func TestCloseCancelsTheRunAndDropsLaterInput(t *testing.T) {
 	h.checkReplay()
 }
 
+// Each run records where it began, with the workspace's tree; a rewind cuts
+// the history back to one, drops the later ones, and survives a resume.
+func TestRewindCutsBackToACheckpoint(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	m := storage.NewManager(dir)
+	store, err := m.Create("/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := spec(script(say("a1"), say("a2")))
+	trees := 0
+	sp.Checkpoint = func() (string, string) { trees++; return "/work", fmt.Sprint("t", trees) }
+	h := startOn(t, store, storage.State{}, sp)
+	h.post(User, "u1")
+	h.waitIdle(1)
+	h.post(User, "u2")
+	h.waitIdle(2)
+
+	cps, history := h.s.Checkpoints()
+	want := []storage.Checkpoint{{At: 0, Dir: "/work", Tree: "t1"}, {At: 2, Dir: "/work", Tree: "t2"}}
+	if !slices.Equal(cps, want) || len(history) != 4 {
+		t.Fatalf("checkpoints = %+v with %d messages, want %+v with 4", cps, len(history), want)
+	}
+	note := agentcore.UserText("n")
+	if err := h.s.Edit(func(e Editor) error {
+		if err := e.Rewind(cps[1]); err != nil {
+			return err
+		}
+		return e.Append(note)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.history(); got != "user:u1 assistant:a1 user:n" {
+		t.Fatalf("history = %s", got)
+	}
+	if got, _ := h.s.Checkpoints(); !slices.Equal(got, want[:1]) {
+		t.Fatalf("checkpoints = %+v", got)
+	}
+	// The run it cut away is gone, and with it its checkpoint.
+	if err := h.s.Edit(func(e Editor) error { return e.Rewind(cps[1]) }); err == nil {
+		t.Fatal("rewound to a checkpoint the history no longer holds")
+	}
+	h.checkReplay()
+	h.s.Close()
+
+	store, state, err := m.Open(store.Header().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(state.Checkpoints, want[:1]) || len(state.Messages) != 3 {
+		t.Fatalf("resumed %d messages and checkpoints %+v", len(state.Messages), state.Checkpoints)
+	}
+	store.Close()
+}
+
+// Edit waits for no run: it refuses one and leaves fn unrun. A compaction
+// drops the checkpoints of the runs it summarizes, so none can be rewound to.
+func TestEditRefusesARunAndCompactionDropsCheckpoints(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	h := start(t, spec(script(say("a1"), hang(started))))
+	h.post(User, "u1")
+	h.waitIdle(1)
+	h.post(User, "u2")
+	<-started
+	ran := false
+	if err := h.s.Edit(func(Editor) error { ran = true; return nil }); !errors.Is(err, ErrBusy) || ran {
+		t.Fatalf("edit during a run: err %v, ran %v", err, ran)
+	}
+	cps, _ := h.s.Checkpoints()
+	if err := h.s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.s.Checkpoints(); len(got) != 0 {
+		t.Fatalf("checkpoints after compaction = %+v", got)
+	}
+	if err := h.s.Edit(func(e Editor) error { return e.Rewind(cps[0]) }); err == nil {
+		t.Fatal("rewound into a compacted history")
+	}
+	h.checkReplay()
+}
+
 func TestResumeContinuesTheLog(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -745,7 +828,13 @@ func TestHistoryMatchesTheLog(t *testing.T) {
 					next := sp
 					next.Model = fmt.Sprintf("m%d", i)
 					h.s.Configure(next)
-				case 8, 9:
+				case 8:
+					if cps, _ := h.s.Checkpoints(); len(cps) > 0 {
+						cp := cps[rng.IntN(len(cps))]
+						// Refused while the agent works, or once the run is gone.
+						_ = h.s.Edit(func(e Editor) error { return e.Rewind(cp) })
+					}
+				case 9:
 					time.Sleep(time.Duration(rng.IntN(3)) * time.Millisecond)
 				}
 			}

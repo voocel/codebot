@@ -1,11 +1,10 @@
-// Package snapshot checkpoints the workspace for /undo in a shadow git repo
-// outside the project, with the workspace as its work tree. Snapshots are
-// whole-workspace trees, so they capture changes from any source (tools,
-// bash, manual edits) and never touch the user's own .git.
+// Package snapshot checkpoints the workspace for /rewind in a shadow git
+// repo outside the project, with the workspace as its work tree.
+// Checkpoints are whole-workspace trees, so they capture changes from any
+// source (tools, bash, manual edits) and never touch the user's own .git.
 package snapshot
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,40 +14,34 @@ import (
 	"sync"
 )
 
-// ErrSnapshotExpired means gc pruned the snapshot. The expired entry is
-// already dropped from the stack.
-var ErrSnapshotExpired = errors.New("the checkpoint has expired (checkpoints are reclaimed after 7 days) and can no longer be restored")
+// ErrExpired means gc pruned the checkpoint.
+var ErrExpired = errors.New("the checkpoint has expired (checkpoints are reclaimed after 7 days) and can no longer be restored")
 
 var ErrTrackerClosed = errors.New("snapshot tracker closed")
 
 // maxFileSize keeps large untracked files, such as build output that escaped
-// .gitignore, out of snapshots.
+// .gitignore, out of checkpoints.
 const maxFileSize = 2 * 1024 * 1024
 
-// gcPruneWindow bounds the shadow repo's growth. Re-adding an identical
-// object doesn't refresh its mtime, so older undo points are collected even if
-// still on the stack; Undo reports them as ErrSnapshotExpired.
+// gcPruneWindow bounds the shadow repo's growth. No ref holds a checkpoint,
+// and re-adding an identical object doesn't refresh its mtime, so gc
+// collects checkpoints older than this however recently they were taken
+// again.
 const gcPruneWindow = "7.days"
 
-// Tracker records one snapshot per turn: Track runs at each turn boundary and
-// Undo reverts the most recent turn's file changes.
+// Tracker checkpoints a workspace and restores it to a checkpoint; the
+// conversation keeps the checkpoints.
 type Tracker struct {
 	git         gitRunner
 	mu          sync.Mutex
-	stack       []string // pre-turn tree hashes, persisted to statePath
-	redoStack   []string // pre-undo tree hashes, in memory only
-	statePath   string
 	initialized bool
 	gcOnce      sync.Once
 	gcDone      chan struct{}
 	closed      bool
 }
 
-// New loads the undo stack from statePath, so it survives a restart.
-func New(gitDir, workTree, statePath string) *Tracker {
-	t := &Tracker{git: gitRunner{gitDir: gitDir, workTree: workTree}, statePath: statePath}
-	t.load()
-	return t
+func New(gitDir, workTree string) *Tracker {
+	return &Tracker{git: gitRunner{gitDir: gitDir, workTree: workTree}}
 }
 
 // Close waits for the background gc, so cleanup and shutdown don't race it.
@@ -62,58 +55,12 @@ func (t *Tracker) Close() {
 	}
 }
 
-// load treats a missing or corrupt file as an empty stack. Caller holds t.mu,
-// except New.
-func (t *Tracker) load() {
-	t.stack = nil
-	data, err := os.ReadFile(t.statePath)
-	if err != nil {
-		return
-	}
-	var stack []string
-	if json.Unmarshal(data, &stack) == nil {
-		t.stack = stack
-	}
-}
-
-// persist ignores errors: a lost undo stack must never break a turn. The
-// fixed tmp name is safe because a session has a single writer. Caller holds
-// t.mu.
-func (t *Tracker) persist() {
-	data, err := json.Marshal(t.stack)
-	if err != nil {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(t.statePath), 0o755); err != nil {
-		return
-	}
-	tmp := t.statePath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, t.statePath)
-}
-
-// Track returns false when the workspace is unchanged since the last
-// snapshot. Callers ignore its error so a snapshot failure never blocks a
-// turn.
-func (t *Tracker) Track() (bool, error) {
+// Checkpoint records the workspace as it is and returns it with its tree.
+func (t *Tracker) Checkpoint() (dir, tree string, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	hash, err := t.currentTree()
-	if err != nil {
-		return false, err
-	}
-	if hash == "" {
-		return false, nil
-	}
-	if n := len(t.stack); n > 0 && t.stack[n-1] == hash {
-		return false, nil
-	}
-	t.stack = append(t.stack, hash)
-	t.redoStack = nil
-	t.persist()
-	return true, nil
+	tree, err = t.currentTree()
+	return t.git.workTree, tree, err
 }
 
 // currentTree requires t.mu.
@@ -131,88 +78,56 @@ func (t *Tracker) currentTree() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// Undo returns ok=false when there is nothing to undo.
-func (t *Tracker) Undo() (changed []string, ok bool, err error) {
+// Changed lists the files of dir that differ from tree: those Restore would
+// put back.
+func (t *Tracker) Changed(dir, tree string) ([]string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.stack) == 0 {
-		return nil, false, nil
-	}
-	hash := t.stack[len(t.stack)-1]
-	// gc may have pruned the snapshot. Check before changing anything; the
-	// workspace stays as is, so the redo stack does too.
-	if _, probeErr := t.git.run("cat-file", "-e", hash+"^{tree}"); probeErr != nil {
-		t.stack = t.stack[:len(t.stack)-1]
-		t.persist()
-		return nil, true, ErrSnapshotExpired
-	}
-	redoHash, err := t.currentTree()
-	if err != nil {
-		return nil, true, err
-	}
-	changed, err = t.revertTo(hash)
-	if err != nil {
-		return nil, true, err // stacks untouched, so undo can be retried
-	}
-	t.stack = t.stack[:len(t.stack)-1]
-	t.redoStack = append(t.redoStack, redoHash)
-	t.persist()
-	return changed, true, nil
-}
-
-// Redo returns ok=false when there is nothing to redo. Redo snapshots live
-// only in memory, so they are too recent for gc to prune.
-func (t *Tracker) Redo() (changed []string, ok bool, err error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if len(t.redoStack) == 0 {
-		return nil, false, nil
-	}
-	hash := t.redoStack[len(t.redoStack)-1]
-	undoHash, err := t.currentTree()
-	if err != nil {
-		return nil, true, err
-	}
-	changed, err = t.revertTo(hash)
-	if err != nil {
-		return nil, true, err // stacks untouched, so redo can be retried
-	}
-	t.redoStack = t.redoStack[:len(t.redoStack)-1]
-	t.stack = append(t.stack, undoHash)
-	t.persist()
-	return changed, true, nil
-}
-
-// DiffTop returns a numstat diff of what /undo would roll back.
-func (t *Tracker) DiffTop() (string, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if len(t.stack) == 0 {
-		return "", nil
-	}
-	if err := t.ensureInit(); err != nil {
-		return "", err
+	if err := t.reach(dir, tree); err != nil {
+		return nil, err
 	}
 	if err := t.add(); err != nil {
-		return "", err
+		return nil, err
 	}
-	hash := t.stack[len(t.stack)-1]
-	// Renames would print "old => new" as the path and break the caller's
-	// parsing; without them a rename shows as a delete and an add.
-	return t.git.run("diff", "--cached", "--numstat", "--no-renames", hash)
+	// Without renames, a renamed file shows as its two paths, each of which
+	// Restore puts back.
+	return t.git.runZ("diff", "--cached", "--name-only", "--no-renames", "-z", tree)
+}
+
+// Restore returns dir to tree and reports the files it changed.
+func (t *Tracker) Restore(dir, tree string) ([]string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// Check before changing anything.
+	if err := t.reach(dir, tree); err != nil {
+		return nil, err
+	}
+	return t.revertTo(tree)
+}
+
+// reach checks that tree is of dir, the workspace now, and still in its
+// shadow repo. Caller holds t.mu.
+func (t *Tracker) reach(dir, tree string) error {
+	if dir != t.git.workTree {
+		return fmt.Errorf("the files were checkpointed in %s, not here", dir)
+	}
+	if err := t.ensureInit(); err != nil {
+		return err
+	}
+	if _, err := t.git.run("cat-file", "-e", tree+"^{tree}"); err != nil {
+		return ErrExpired
+	}
+	return nil
 }
 
 // Rebind switches to another workspace when the conversation enters or leaves
 // a worktree. gc runs once per process, so a worktree's shadow repo is
 // normally not collected; it is removed with the worktree.
-func (t *Tracker) Rebind(gitDir, workTree, statePath string) {
+func (t *Tracker) Rebind(gitDir, workTree string) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.git = gitRunner{gitDir: gitDir, workTree: workTree}
 	t.initialized = false
-	t.statePath = statePath
-	t.redoStack = nil
-	t.load()
-	t.mu.Unlock()
 }
 
 func (t *Tracker) ensureInit() error {
@@ -245,7 +160,7 @@ func (t *Tracker) ensureInit() error {
 	return nil
 }
 
-// backgroundGC holds t.mu: a concurrent prune could collect the hash Undo
+// backgroundGC holds t.mu: a concurrent prune could collect the tree Restore
 // just checked, and revertTo would then delete files.
 func (t *Tracker) backgroundGC() {
 	t.mu.Lock()
@@ -302,7 +217,7 @@ func gitignorePattern(rel string) string {
 	return b.String()
 }
 
-// revertTo deletes files that are not in the snapshot.
+// revertTo deletes files that are not in the checkpoint. Caller holds t.mu.
 func (t *Tracker) revertTo(hash string) ([]string, error) {
 	if _, err := t.git.run("add", "--all"); err != nil {
 		return nil, err
@@ -317,8 +232,8 @@ func (t *Tracker) revertTo(hash string) ([]string, error) {
 			done = append(done, rel)
 			continue
 		}
-		// Delete only files missing from the snapshot. If the snapshot has
-		// it, checkout failed for another reason; keep the file.
+		// Delete only files missing from the checkpoint. If it has the file,
+		// checkout failed for another reason; keep the file.
 		if out, lsErr := t.git.run("ls-tree", hash, "--", rel); lsErr == nil && strings.TrimSpace(out) != "" {
 			continue
 		}

@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -58,13 +59,18 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	summary := agentcore.SummaryMessage("checkpoint")
 	steps := []func() error{
 		func() error { return s.AppendModel(Model{Provider: "p", Model: "m1"}) },
+		func() error { return s.AppendCheckpoint(Checkpoint{At: 0, Dir: "/w", Tree: "t0"}) }, // the compaction drops it
 		func() error { return s.Append(agentcore.UserText("u1")) },
 		func() error { return s.Append(answer) },
 		func() error {
 			return s.AppendCompaction(&agentcore.Compaction{Messages: []agentcore.Message{summary, answer}, Usage: &agentcore.Usage{Usage: litellm.Usage{InputTokens: 5}}})
 		},
+		func() error { return s.AppendCheckpoint(Checkpoint{At: 2, Dir: "/w", Tree: "t2"}) },
 		func() error { return s.Append(agentcore.UserText("u2")) },
 		func() error { return s.Append(answer) },
+		func() error { return s.AppendCheckpoint(Checkpoint{At: 4, Dir: "/w", Tree: "t4"}) }, // the rewind drops it
+		func() error { return s.Append(agentcore.UserText("u3")) },
+		func() error { return s.AppendRewind(4) },
 		func() error { return s.AppendModel(Model{Provider: "p", Model: "m2", Effort: "high"}) },
 	}
 	for _, step := range steps {
@@ -85,6 +91,9 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	}
 	if got, ok := state.Messages[3].Blocks[0].(litellm.ReasoningBlock); !ok || got.Text != thinking.Text || got.State == nil || string(got.State.Data) != `{"signature":"s"}` {
 		t.Fatal("thinking must be stored verbatim so a resumed request matches the live one")
+	}
+	if want := []Checkpoint{{At: 2, Dir: "/w", Tree: "t2"}}; !slices.Equal(state.Checkpoints, want) {
+		t.Fatalf("checkpoints = %+v, want %+v", state.Checkpoints, want)
 	}
 	if state.Model != (Model{Provider: "p", Model: "m2", Effort: "high"}) {
 		t.Fatalf("model = %+v", state.Model)
@@ -180,10 +189,12 @@ func TestOpenTerminatesValidFinalLine(t *testing.T) {
 func TestOpenRejectsCorruption(t *testing.T) {
 	t.Parallel()
 	for name, line := range map[string]string{
-		"malformed line": "not-json\n",
-		"unknown kind":   `{"kind":"llm_call","data":{}}` + "\n",
-		"second header":  `{"kind":"header","data":{}}` + "\n",
-		"empty message":  `{"kind":"message","data":{}}` + "\n",
+		"malformed line":          "not-json\n",
+		"unknown kind":            `{"kind":"llm_call","data":{}}` + "\n",
+		"second header":           `{"kind":"header","data":{}}` + "\n",
+		"empty message":           `{"kind":"message","data":{}}` + "\n",
+		"rewind past the end":     `{"kind":"rewind","data":{"keep":1}}` + "\n",
+		"checkpoint past the end": `{"kind":"checkpoint","data":{"at":1}}` + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newStore(t)

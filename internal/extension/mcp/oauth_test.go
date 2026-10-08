@@ -113,7 +113,7 @@ func TestLoginToAnOAuthServer(t *testing.T) {
 	if len(failures) != 1 || !failures[0].Login {
 		t.Fatalf("before login: %+v", failures)
 	}
-	if st := m.Status(t.Context()); len(st) != 1 || !st[0].Login {
+	if st := m.Status(t.Context()); len(st) != 1 || !st[0].Login || !st[0].OAuth {
 		t.Fatalf("status before login: %+v", st)
 	}
 
@@ -141,7 +141,7 @@ func TestLoginToAnOAuthServer(t *testing.T) {
 
 	// A connected server whose token the server stops taking.
 	revoke()
-	if st := m.Status(t.Context()); len(st) != 1 || !st[0].Login {
+	if st := m.Status(t.Context()); len(st) != 1 || !st[0].Login || !st[0].OAuth {
 		t.Fatalf("status after revocation: %+v", st)
 	}
 
@@ -165,6 +165,11 @@ func TestOnlyOAuthServersLogIn(t *testing.T) {
 	for _, f := range failures {
 		if f.Login {
 			t.Errorf("%s wants a login", f.Server)
+		}
+	}
+	for _, st := range m.Status(t.Context()) {
+		if st.OAuth || st.Login {
+			t.Errorf("%s logs in: %+v", st.Name, st)
 		}
 	}
 	for _, name := range []string{"static", "local", "missing"} {

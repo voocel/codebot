@@ -262,7 +262,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 			m.t.Append(transcript.Fail("MCP: " + e))
 		}
 		for _, name := range msg.report.Login {
-			m.t.Append(transcript.Note("MCP: " + name + " needs you to log in · /mcp login " + name))
+			m.t.Append(transcript.Note("MCP: " + name + " needs you to log in · /mcp"))
 		}
 		if p := commands.PendingPlugins(m.app); p != "" {
 			m.t.Append(transcript.Note(p))
@@ -345,9 +345,16 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	case panel.Panel:
 		return m.push(msg)
 	case commands.OpenAgent:
-		return m.openAgent(msg.Name)
+		return m.openAgent(msg.Run, msg.Title)
 	case commands.Copy:
 		return m.copy(msg.Text)
+	case commands.Rewound:
+		if msg.Conversation {
+			m.open(m.conv)
+			m.editor.Insert(msg.Prompt)
+		}
+		m.t.Append(transcript.Note(msg.Note))
+		return nil
 	case editor.Error:
 		m.t.Append(transcript.Fail(msg.Err.Error()))
 		return nil
@@ -728,8 +735,8 @@ func (m *Model) tick() tea.Cmd {
 	return tea.Tick(time.Second/30, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-func (m *Model) openAgent(name string) tea.Cmd {
-	history, events, stop := m.conv.Agents().Subscribe(name)
+func (m *Model) openAgent(run, title string) tea.Cmd {
+	history, events, stop := m.conv.Agents().Subscribe(run)
 	t := transcript.New()
 	for _, ev := range history {
 		t.Apply(ev)
@@ -737,9 +744,9 @@ func (m *Model) openAgent(name string) tea.Cmd {
 	hub := m.conv.Agents()
 	m.closePage()
 	m.page = &page{
-		title:  name,
+		title:  title,
 		view:   newChatView(t.Cells, emptyPage),
-		live:   func() bool { return hub.IsActive(name) },
+		live:   func() bool { return hub.IsActive(run) },
 		t:      t,
 		events: events,
 		stop:   stop,

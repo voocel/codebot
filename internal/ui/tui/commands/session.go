@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/voocel/litellm"
 
 	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/ui/tui/markdown"
 	"github.com/voocel/codebot/internal/ui/tui/panel"
 	"github.com/voocel/codebot/internal/ui/tui/theme"
@@ -98,83 +100,78 @@ func copyReply(a *app.App) Command {
 	}}
 }
 
-func undo(a *app.App) Command {
-	return Command{Name: "undo", Description: "Revert the files the last turn changed", Idle: true, Run: func(string) tea.Cmd {
-		changed, ok, err := a.Current().Undo()
-		return reverted("Reverted", changed, ok, err, "Nothing to undo.")
+func rewind(a *app.App) Command {
+	return Command{Name: "rewind", Description: "Go back to before an earlier request: its files, the conversation, or both", Idle: true, Run: func(string) tea.Cmd {
+		conv := a.Current()
+		cps := conv.Checkpoints()
+		if len(cps) == 0 {
+			return note("Nothing to go back to yet.")
+		}
+		var items []panel.Item
+		for _, cp := range slices.Backward(cps) {
+			items = append(items, panel.Item{Title: app.Printable(firstLine(cp.Prompt)), Detail: transcript.Ago(time.Since(cp.Time)), Value: cp})
+		}
+		return show(&panel.List{Title: "Rewind", Items: items, Filter: true, Select: func(it panel.Item) tea.Cmd {
+			cp := it.Value.(app.Checkpoint)
+			// Off the TUI goroutine: comparing the files runs git.
+			return func() tea.Msg { return rewindChoices(conv, cp) }
+		}})
 	}}
 }
 
-func redo(a *app.App) Command {
-	return Command{Name: "redo", Description: "Re-apply what /undo reverted", Idle: true, Run: func(string) tea.Cmd {
-		changed, ok, err := a.Current().Redo()
-		return reverted("Restored", changed, ok, err, "Nothing to redo.")
-	}}
+// Rewound reports a rewind; the conversation's going back reloads it, and
+// the request goes back to the editor.
+type Rewound struct {
+	Prompt       string
+	Conversation bool
+	Note         string
 }
 
-func reverted(verb string, changed []string, ok bool, err error, none string) tea.Cmd {
+// rewindChoices offers to put back the files as well as the conversation
+// only when files changed since and can go back.
+func rewindChoices(conv *app.Conversation, cp app.Checkpoint) tea.Msg {
+	type choice struct{ files, conversation bool }
+	before := "before “" + app.Printable(firstLine(cp.Prompt)) + "”"
+	changed, err := conv.Changed(cp)
+	n := fmt.Sprintf("%d %s", len(changed), plural(len(changed), "file"))
+	items := []panel.Item{
+		{Title: "Files and conversation", Detail: n, Value: choice{true, true}},
+		{Title: "Conversation only", Detail: "the files stay as they are", Value: choice{false, true}},
+		{Title: "Files only", Detail: n + "; the agent is told", Value: choice{true, false}},
+	}
 	switch {
 	case err != nil:
-		return fail(err.Error())
-	case !ok:
-		return note(none)
+		items = []panel.Item{{Title: "Conversation only", Detail: "the files can't go back: " + err.Error(), Value: choice{false, true}}}
 	case len(changed) == 0:
-		return note("The turn changed no files.")
+		items = []panel.Item{{Title: "Conversation only", Detail: "no file changed since", Value: choice{false, true}}}
 	}
-	return output(fmt.Sprintf("%s %d %s:\n  %s", verb, len(changed), plural(len(changed), "file"), strings.Join(changed, "\n  ")))
-}
-
-func diff(a *app.App) Command {
-	return Command{Name: "diff", Description: "Show the files /undo would revert", Idle: true, Run: func(string) tea.Cmd {
-		numstat, err := a.Current().Diff()
-		if err != nil {
-			return fail(err.Error())
-		}
-		var rows []string
-		var adds, dels int
-		for line := range strings.SplitSeq(strings.TrimSpace(numstat), "\n") {
-			f := strings.SplitN(line, "\t", 3)
-			if len(f) != 3 {
-				continue
+	return &panel.List{Title: "Go back to " + before, Items: items, Select: func(it panel.Item) tea.Cmd {
+		c := it.Value.(choice)
+		return func() tea.Msg {
+			changed, err := conv.Rewind(cp, c.files, c.conversation)
+			if err != nil {
+				return transcript.Fail("Could not go back: " + err.Error())
 			}
-			if f[0] == "-" {
-				rows = append(rows, theme.SubtleText.Render("binary  ")+theme.PathText.Render(f[2]))
-				continue
+			files := fmt.Sprintf("%d %s", len(changed), plural(len(changed), "file"))
+			r := Rewound{Prompt: cp.Prompt, Conversation: c.conversation}
+			switch {
+			case !c.conversation && len(changed) == 0:
+				r.Note = "The files were already as they were " + before + "."
+			case !c.conversation:
+				r.Note = "Put back " + files + " as they were " + before + "; the agent is told."
+			case c.files:
+				r.Note = "Went back to " + before + ", with " + files + "."
+			default:
+				r.Note = "Went back to " + before + "."
 			}
-			add, _ := strconv.Atoi(f[0])
-			del, _ := strconv.Atoi(f[1])
-			adds, dels = adds+add, dels+del
-			rows = append(rows, theme.OKText.Render(fmt.Sprintf("+%-4d", add))+theme.ErrorText.Render(fmt.Sprintf("-%-4d", del))+theme.PathText.Render(f[2]))
+			return r
 		}
-		if len(rows) == 0 {
-			return note("No changes to undo.")
-		}
-		head := theme.MutedText.Render(fmt.Sprintf("%d %s · +%d -%d · /undo reverts them", len(rows), plural(len(rows), "file"), adds, dels))
-		return show(&panel.Text{Title: "Last turn's changes", Tabs: []panel.Tab{{Body: panel.Lines(append([]string{head, ""}, rows...)...)}}})
 	}}
 }
 
-func contextUsage(a *app.App) Command {
-	return Command{Name: "context", Description: "Show how much context the conversation uses", Run: func(string) tea.Cmd {
-		conv := a.Current()
-		st := conv.Status()
-		var messages, summaries int
-		for _, m := range conv.History() {
-			messages++
-			if m.Kind == agentcore.KindSummary {
-				summaries++
-			}
-		}
-		rows := [][2]string{
-			{"Used", contextLine(st.Context, st.Window)},
-			{"Window", transcript.Tokens(st.Window)},
-			{"Messages", strconv.Itoa(messages)},
-			{"Summaries", strconv.Itoa(summaries)},
-		}
-		return show(&panel.Text{Title: "Context", Tabs: []panel.Tab{{Body: func(w int) []string {
-			return append([]string{meter(st.Context, st.Window, min(w, 40)), ""}, info(rows, w)...)
-		}}}})
-	}}
+func firstLine(s string) string {
+	s, _, _ = strings.Cut(strings.TrimSpace(s), "\n")
+	return s
 }
 
 func meter(used, window, width int) string {
@@ -200,8 +197,10 @@ func contextLine(used, window int) string {
 	return fmt.Sprintf("%s / %s (%.0f%%)", transcript.Tokens(used), transcript.Tokens(window), float64(used)*100/float64(window))
 }
 
+// status is the one place to see what is in effect: the conversation, what
+// it has used, the extensions and the settings.
 func status(a *app.App, version string) Command {
-	return Command{Name: "status", Description: "Show the session, usage and runtime", Run: func(string) tea.Cmd {
+	return Command{Name: "status", Description: "Show the conversation, usage, extensions and settings", Run: func(string) tea.Cmd {
 		conv := a.Current()
 		st := conv.Status()
 		var sess app.SessionInfo
@@ -213,17 +212,31 @@ func status(a *app.App, version string) Command {
 			}
 		}
 		branch := conv.GitBranch()
-		messages := len(conv.History())
+		history := conv.History()
+		summaries := 0
+		for _, m := range history {
+			if m.Kind == agentcore.KindSummary {
+				summaries++
+			}
+		}
 		load := func() []panel.Tab {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			servers := a.MCPStatus(ctx)
 
+			effort := st.Effort
+			if effort == "" {
+				effort = "provider default"
+			}
+			used := contextLine(st.Context, st.Window)
+			if summaries > 0 {
+				used += fmt.Sprintf(" · compacted %d %s", summaries, plural(summaries, "time"))
+			}
 			overview := [][2]string{
-				{"Version", version},
 				{"Model", st.Provider + " · " + st.Model},
+				{"Reasoning", effort},
 				{"Mode", string(st.Mode)},
-				{"Context", contextLine(st.Context, st.Window)},
+				{"Context", used},
 				{"Cost", cost(st.Usage)},
 				{"Directory", transcript.HomePath(st.Cwd)},
 			}
@@ -233,15 +246,14 @@ func status(a *app.App, version string) Command {
 			if branch != "" {
 				overview = append(overview, [2]string{"Branch", branch})
 			}
-
-			session := [][2]string{{"ID", st.SessionID}, {"Messages", strconv.Itoa(messages)}}
+			overview = append(overview, [2]string{"Session", ""}, [2]string{"ID", st.SessionID}, [2]string{"Messages", strconv.Itoa(len(history))})
 			if sess.Path != "" {
-				session = append(session,
+				overview = append(overview,
 					[2]string{"Started", sess.Created.Format("2006-01-02 15:04") + " (" + transcript.Ago(time.Since(sess.Created)) + ")"},
 					[2]string{"File", transcript.ShortPath(sess.Path)})
 			}
 			if st.Tasks > 0 {
-				session = append(session, [2]string{"Background", fmt.Sprintf("%d running", st.Tasks)})
+				overview = append(overview, [2]string{"Background", fmt.Sprintf("%d running · /tasks", st.Tasks)})
 			}
 
 			u := st.Usage
@@ -256,19 +268,62 @@ func status(a *app.App, version string) Command {
 				usage = append(usage, [2]string{"Last run", ""}, [2]string{"Turns", strconv.Itoa(r.Turns)}, [2]string{"Tool calls", strconv.Itoa(r.ToolCalls)}, [2]string{"Ended", string(r.Reason)})
 			}
 
-			effort := st.Effort
-			if effort == "" {
-				effort = "provider default"
-			}
-			runtime := [][2]string{{"Reasoning", effort}, {"Sub-agent model", st.SmallModel}}
-
 			tab := func(name string, rows [][2]string) panel.Tab {
 				return panel.Tab{Name: name, Body: func(w int) []string { return info(rows, w) }}
 			}
-			return []panel.Tab{tab("overview", overview), tab("session", session), tab("usage", usage), tab("runtime", runtime), tab("extensions", extensionRows(a, servers))}
+			return []panel.Tab{
+				{Name: "overview", Body: func(w int) []string {
+					return append([]string{meter(st.Context, st.Window, min(w, 40)), ""}, info(overview, w)...)
+				}},
+				tab("usage", usage),
+				tab("extensions", extensionRows(a, servers)),
+				tab("settings", settingRows(a, st, version)),
+			}
 		}
 		return show(&panel.Text{Title: "Status", Load: load})
 	}}
+}
+
+func settingRows(a *app.App, st app.Status, version string) [][2]string {
+	s := a.Settings()
+	pc := s.Providers[st.Provider]
+	base := pc.BaseURL
+	if base == "" {
+		base = "default"
+	}
+	rows := [][2]string{
+		{"Version", version},
+		{"User file", transcript.ShortPath(config.UserSettingsPath())},
+	}
+	if root := a.Trust().Root; root != "" {
+		rows = append(rows, [2]string{"Project file", transcript.ShortPath(config.ProjectSettingsPath(root))})
+	}
+	rows = append(rows,
+		[2]string{st.Provider, ""}, [2]string{"API key", maskKey(pc.APIKey)}, [2]string{"Base URL", base},
+		[2]string{"Runtime", ""}, [2]string{"Max turns", fmt.Sprint(s.MaxTurns)}, [2]string{"Sub-agent model", st.SmallModel})
+	if s.CompactRatio > 0 {
+		rows = append(rows, [2]string{"Compact at", fmt.Sprintf("%.0f%%", s.CompactRatio*100)})
+	}
+	rows = append(rows, [2]string{"Providers", ""})
+	for _, name := range slices.Sorted(maps.Keys(s.Providers)) {
+		p := s.Providers[name]
+		desc := fmt.Sprintf("%d %s", len(p.Models), plural(len(p.Models), "model"))
+		if p.BaseURL != "" {
+			desc += " · " + p.BaseURL
+		}
+		if name == st.Provider {
+			name += " ✓"
+		}
+		rows = append(rows, [2]string{name, desc})
+	}
+	return rows
+}
+
+func maskKey(key string) string {
+	if len(key) <= 8 {
+		return "••••"
+	}
+	return key[:4] + "…" + key[len(key)-4:]
 }
 
 func cost(u agentcore.Usage) string {
@@ -324,28 +379,8 @@ func btw(a *app.App) Command {
 	}}
 }
 
-func agents(a *app.App) Command {
-	return Command{Name: "agents", Description: "Watch the background sub-agents", Run: func(string) tea.Cmd {
-		known := a.Current().Agents().KnownAgents()
-		if len(known) == 0 {
-			return note("No background sub-agents have run.")
-		}
-		var items []panel.Item
-		for _, k := range known {
-			state := "done"
-			if k.Active {
-				state = "running"
-			}
-			items = append(items, panel.Item{Title: k.Name, Detail: state, Value: k.Name})
-		}
-		return show(&panel.List{Title: "Agents", Items: items, Select: func(it panel.Item) tea.Cmd {
-			return emit(OpenAgent{Name: it.Value.(string)})
-		}})
-	}}
-}
-
 func tasks(a *app.App) Command {
-	return Command{Name: "tasks", Description: "Manage background shells and agents", Run: func(string) tea.Cmd {
+	return Command{Name: "tasks", Description: "Watch and stop the background shells and agents", Run: func(string) tea.Cmd {
 		rt := a.Current().Tasks()
 		items := func() []panel.Item {
 			var out []panel.Item
@@ -370,13 +405,17 @@ func tasks(a *app.App) Command {
 			Title:  "Tasks",
 			Items:  first,
 			Reload: items,
-			Hint:   theme.Hint("↑↓", "select", "enter", "details", "x", "stop", "esc", "close"),
+			Hint:   theme.Hint("↑↓", "select", "enter", "open", "x", "stop", "esc", "close"),
+			// An agent opens on its run, live; a shell on its output.
 			Select: func(it panel.Item) tea.Cmd {
 				e, ok := rt.Get(it.Value.(string))
-				if !ok {
+				switch {
+				case !ok:
 					return nil
+				case e.Type == task.TypeSubAgent:
+					return emit(OpenAgent{Run: e.Run, Title: it.Title})
 				}
-				return show(&panel.Text{Title: it.Title, Tabs: []panel.Tab{{Body: func(w int) []string { return taskDetail(e, w) }}}})
+				return show(&panel.Text{Title: it.Title, Tabs: []panel.Tab{{Body: func(w int) []string { return shellDetail(e, w) }}}})
 			},
 			Keys: func(k string, it *panel.Item) (tea.Cmd, bool, bool) {
 				if k != "x" || it == nil {
@@ -406,23 +445,14 @@ func taskState(e task.Entry) string {
 	return string(e.Status) + " · " + d
 }
 
-func taskDetail(e task.Entry, width int) []string {
-	rows := [][2]string{{"Status", taskState(e)}}
-	if e.Command != "" {
-		rows = append(rows, [2]string{"Command", e.Command})
-	}
-	if e.Agent != "" {
-		rows = append(rows, [2]string{"Agent", e.Agent}, [2]string{"Usage", fmt.Sprintf("%d tools · ↑%s ↓%s", e.ToolCount, transcript.Tokens(e.TokensIn), transcript.Tokens(e.TokensOut))})
-	}
+// shellDetail shows a background shell; an agent opens on its run instead.
+func shellDetail(e task.Entry, width int) []string {
+	rows := [][2]string{{"Status", taskState(e)}, {"Command", e.Command}}
 	if e.Error != "" {
 		rows = append(rows, [2]string{"Error", e.Error})
 	}
 	out := info(rows, width)
-	text := e.Result
-	if e.Type == task.TypeShell && e.OutputFile != "" {
-		text = fileTail(e.OutputFile, 16<<10)
-	}
-	if text = strings.TrimSpace(text); text != "" {
+	if text := strings.TrimSpace(fileTail(e.OutputFile, 16<<10)); text != "" {
 		out = append(out, "")
 		out = append(out, markdown.Wrap(text, theme.MutedText, width)...)
 	}
