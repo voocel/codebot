@@ -210,12 +210,11 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 
 	e := &env{t: t, cwd: cwd, ui: &fakeUI{choice: interact.AllowOnce}, models: models, idle: make(chan struct{}, 64)}
 	a, err := Boot(Options{
-		Cwd:         cwd,
-		Mode:        s.mode,
-		UI:          e.ui,
-		Interactive: true,
-		CacheTTL:    s.cacheTTL,
-		PluginDirs:  s.plugins,
+		Cwd:        cwd,
+		Mode:       s.mode,
+		Frontend:   Frontend{UI: e.ui, Interactive: true},
+		CacheTTL:   s.cacheTTL,
+		PluginDirs: s.plugins,
 		NewModel: func(spec provider.ModelSpec) (agentcore.Model, error) {
 			var p litellm.Provider = script()
 			if m, ok := models[spec.Model]; ok {
@@ -238,7 +237,22 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 		}
 	})
 	e.app = a
+	if _, err := a.Open(""); err != nil {
+		t.Fatal(err)
+	}
 	return e
+}
+
+// reopen closes the current conversation and resumes its session.
+func (e *env) reopen() *Conversation {
+	e.t.Helper()
+	c := e.app.Current()
+	c.Close()
+	resumed, err := e.app.Open(c.ID())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return resumed
 }
 
 func writeJSON(t *testing.T, path string, v any) {
@@ -373,10 +387,7 @@ func TestResumeTellsWhatChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, err := e.app.Open(e.app.Current().ID())
-	if err != nil {
-		t.Fatal(err)
-	}
+	resumed := e.reopen()
 	e.submit("again")
 
 	if got, want := told(resumed.History()), []string{"environment", "skills", "memory", "tools", "project"}; !slices.Equal(got, want) {
@@ -613,10 +624,7 @@ func TestSetModelAppliesToTheNextRun(t *testing.T) {
 	}
 
 	// The session records the model it ran on; resuming picks it up.
-	resumed, err := e.app.Open(c.ID())
-	if err != nil {
-		t.Fatal(err)
-	}
+	resumed := e.reopen()
 	if st := resumed.Status(); st.Model != "claude-opus-4-5" {
 		t.Fatalf("resumed model = %q", st.Model)
 	}
@@ -917,5 +925,108 @@ func TestRewindWithoutFileCheckpoints(t *testing.T) {
 	}
 	if _, err := c.Rewind(cp, false, true); err != nil || len(c.History()) != 0 {
 		t.Fatalf("rewind: %v, history %q", err, texts(c.History()))
+	}
+}
+
+// Prompt invokes a skill the user can invoke, "/name args", and submits
+// anything else as it is; a skill that forks answers without a run.
+func TestPromptInvokesSkillCommands(t *testing.T) {
+	e := boot(t, setup{}, nil)
+	skills := filepath.Join(os.Getenv("HOME"), ".codebot", "skills")
+	writeSkill(t, skills, "hidden", "---\ndescription: the model's alone\nuser-invocable: false\n---\nDo it.\n")
+	writeSkill(t, skills, "asker", "---\ndescription: asks a sub-agent\ncontext: fork\n---\nFind it.\n")
+	if _, err := e.app.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c := e.app.Current()
+	prompt := func(blocks ...litellm.Block) (string, agentcore.Message) {
+		t.Helper()
+		answer, err := c.Prompt(context.Background(), blocks)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if answer == "" {
+			select {
+			case <-e.idle:
+			case <-time.After(timeout):
+				t.Fatal("conversation did not go idle")
+			}
+		}
+		history := c.History()
+		return answer, history[len(history)-2] // the input, then "done"
+	}
+
+	if _, in := prompt(litellm.Text("/init  the tests ")); in.Kind != kindSkill || in.Blocks[0].(litellm.TextBlock).Text != "/init the tests" {
+		t.Errorf("/init went in as %q %q, want the skill", in.Kind, in.Text())
+	}
+	for _, typed := range []string{"/hidden now", "/usr/bin is gone"} {
+		if _, in := prompt(litellm.Text(typed)); in.Kind != "" || in.Text() != typed {
+			t.Errorf("%q went in as %q %q, want the text as it is", typed, in.Kind, in.Text())
+		}
+	}
+	if _, in := prompt(litellm.Text("/init"), litellm.ImageBlock{Data: []byte("png"), MIME: "image/png"}); in.Kind != "" {
+		t.Errorf("/init with an image went in as %q, want the input as it is", in.Kind)
+	}
+
+	before := len(c.History())
+	if answer, err := c.Prompt(context.Background(), []litellm.Block{litellm.Text("/asker where")}); err != nil || answer != "done" {
+		t.Errorf("/asker answered %q, %v; want the sub-agent's answer", answer, err)
+	}
+	if len(c.History()) != before {
+		t.Error("a skill that forks added to the conversation")
+	}
+}
+
+// Conversations open side by side, each in its own mode; a session opens
+// once, and only in the project or another checkout of it.
+func TestConversationsSideBySide(t *testing.T) {
+	e := boot(t, setup{git: true}, nil)
+	a, err := e.app.Start("", e.cwd, Frontend{UI: e.ui})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := e.app.Start("", e.cwd, Frontend{UI: e.ui})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.SetMode(interact.ModeTrust)
+	if b.Mode() != interact.ModeBalanced || e.app.Current().Mode() != interact.ModeBalanced {
+		t.Fatalf("modes %v %v, want only the first one switched", b.Mode(), e.app.Current().Mode())
+	}
+	if _, err := e.app.Start(b.ID(), e.cwd, Frontend{}); err == nil {
+		t.Fatal("an open session opened again")
+	}
+	if _, err := e.app.Start("", t.TempDir(), Frontend{}); err == nil {
+		t.Fatal("a conversation opened outside the project")
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	if out, err := exec.Command("git", "-C", e.cwd, "worktree", "add", "-q", "-b", "wt", wt).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	c, err := e.app.Start("", wt, Frontend{})
+	if err != nil || c.Cwd() != wt {
+		t.Fatalf("a linked worktree's conversation: %v", err)
+	}
+	c.Close()
+	if c, err := e.app.Open(c.ID()); err != nil || c.Cwd() != wt {
+		t.Fatalf("the worktree's session opened again in %s: %v", c.Cwd(), err)
+	}
+
+	b.Close()
+	if _, err := e.app.Start(b.ID(), e.cwd, Frontend{}); err != nil {
+		t.Fatalf("a closed session did not open again: %v", err)
+	}
+}
+
+// A frontend's MCP servers join the settings' own, which win a name both
+// use.
+func TestFrontendMCPServers(t *testing.T) {
+	e := boot(t, setup{settings: map[string]any{"mcp_servers": map[string]any{"docs": map[string]any{"command": "ours"}}}}, nil)
+	e.app.mu.Lock()
+	e.app.offeredMCP = map[string]config.MCPServer{"docs": {Command: "theirs"}, "extra": {Command: "extra"}}
+	e.app.mu.Unlock()
+	got := e.app.mcpServers()
+	if len(got) != 2 || got["docs"].Command != "ours" || got["extra"].Command != "extra" {
+		t.Fatalf("servers %v", got)
 	}
 }

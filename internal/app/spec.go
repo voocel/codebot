@@ -10,8 +10,10 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm/retry"
 
+	"github.com/voocel/codebot/internal/agent/permission"
 	"github.com/voocel/codebot/internal/agent/prompt"
 	"github.com/voocel/codebot/internal/infra/provider"
+	"github.com/voocel/codebot/internal/infra/telemetry"
 	"github.com/voocel/codebot/internal/session"
 )
 
@@ -26,7 +28,11 @@ func (c *Conversation) configureLocked() { c.session.Configure(c.specLocked()) }
 // will see.
 func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 	a := c.app
-	out := []agentcore.ToolMiddleware{c.hooks.PreToolUse(), a.permissions.Middleware(c.skillGrants, a.toolPermission)}
+	scope := permission.Scope{Mode: c.Mode, UI: c.frontend.UI, Grants: c.skillGrants, Meta: a.toolPermission}
+	if !a.within(c.home) {
+		scope.Roots = []string{c.home}
+	}
+	out := []agentcore.ToolMiddleware{c.hooks.PreToolUse(), a.permissions.Middleware(scope)}
 	if mw := a.tracer.ToolMiddleware(); mw != nil {
 		out = append(out, mw)
 	}
@@ -74,11 +80,15 @@ func (c *Conversation) specLocked() session.RunSpec {
 	}
 }
 
+// runContext is ctx for the conversation's work: tools read its cwd live,
+// so a worktree entered mid-run applies to later calls, and spans are its
+// session's.
+func (c *Conversation) runContext(ctx context.Context) context.Context {
+	return telemetry.WithSession(agentcoretools.WithCwd(ctx, c.Cwd), c.id)
+}
+
 func (c *Conversation) wrapRun(ctx context.Context) (context.Context, func(error)) {
-	// Read the cwd live so a worktree entered mid-run applies to later tool
-	// calls.
-	ctx = agentcoretools.WithCwd(ctx, c.Cwd)
-	ctx, span := c.app.tracer.StartRun(ctx, "agent run")
+	ctx, span := c.app.tracer.StartRun(c.runContext(ctx), "agent run")
 	return ctx, func(err error) {
 		span.End(err)
 		c.mu.Lock()

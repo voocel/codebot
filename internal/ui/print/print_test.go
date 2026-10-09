@@ -73,11 +73,14 @@ func boot(t *testing.T, model *scriptModel, cwd string) *app.App {
 	if err := os.WriteFile(filepath.Join(home, ".codebot", "settings.json"), []byte(settings), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	a, err := app.Boot(app.Options{Cwd: cwd, Mode: interact.ModeTrust, UI: UI{}, NewModel: model.factory})
+	a, err := app.Boot(app.Options{Cwd: cwd, Mode: interact.ModeTrust, Frontend: app.Frontend{UI: UI{}}, NewModel: model.factory})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(a.Close)
+	if _, err := a.Open(""); err != nil {
+		t.Fatal(err)
+	}
 	return a
 }
 
@@ -143,6 +146,48 @@ func TestRunPrintLeavesTheFailureToTheCaller(t *testing.T) {
 	}
 	if strings.Contains(string(written), "unknown model") {
 		t.Fatalf("the failure was also written as it happened:\n%s", written)
+	}
+}
+
+// A skill that forks answers on stdout, though no run of the conversation
+// gives the answer.
+func TestRunPrintAnswersWithASkillThatForks(t *testing.T) {
+	model := &scriptModel{replies: []litellmtest.Reply{litellmtest.Text("found it"), litellmtest.Text("found it")}}
+	a := boot(t, model, t.TempDir())
+	dir := filepath.Join(os.Getenv("HOME"), ".codebot", "skills", "asker")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\ndescription: asks a sub-agent\ncontext: fork\n---\nFind it.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		json bool
+		want string
+	}{
+		{false, "found it\n"},
+		{true, `{"text":"found it","type":"skill_answer"}` + "\n"},
+	} {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout := os.Stdout
+		os.Stdout = w
+		err = Run(a, []string{"/asker", "where"}, tt.json)
+		os.Stdout = stdout
+		w.Close()
+		written, _ := io.ReadAll(r)
+		if err != nil || string(written) != tt.want {
+			t.Errorf("json %v: Run wrote %q, %v; want %q", tt.json, written, err, tt.want)
+		}
+	}
+	if n := len(a.Current().History()); n != 0 {
+		t.Errorf("the conversation holds %d messages, want none", n)
 	}
 }
 

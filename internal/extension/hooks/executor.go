@@ -28,7 +28,7 @@ type outcome struct {
 }
 
 type executor interface {
-	execute(ctx context.Context, payload []byte, env []string) outcome
+	execute(ctx context.Context, dir string, payload []byte, env []string) outcome
 }
 
 type commandExec struct {
@@ -56,8 +56,9 @@ func commandFor(he config.HookEntry, goos string) (*commandExec, error) {
 	return sh, nil
 }
 
-func (c *commandExec) execute(ctx context.Context, payload []byte, env []string) outcome {
+func (c *commandExec) execute(ctx context.Context, dir string, payload []byte, env []string) outcome {
 	cmd := detached.Command(ctx, c.shell[0], slices.Concat(c.shell[1:], []string{c.command})...)
+	cmd.Dir = dir
 	cmd.Env = append(cmd.Environ(), env...)
 	cmd.Stdin = bytes.NewReader(payload)
 
@@ -86,7 +87,7 @@ type promptExec struct {
 	model  func() agentcore.Model
 }
 
-func (p *promptExec) execute(ctx context.Context, payload []byte, _ []string) outcome {
+func (p *promptExec) execute(ctx context.Context, _ string, payload []byte, _ []string) outcome {
 	prompt := strings.ReplaceAll(p.prompt, "$ARGUMENTS", string(payload))
 	m := p.model()
 	req := m.Request
@@ -107,7 +108,7 @@ type httpExec struct {
 	headers map[string]string
 }
 
-func (h *httpExec) execute(ctx context.Context, payload []byte, _ []string) outcome {
+func (h *httpExec) execute(ctx context.Context, _ string, payload []byte, _ []string) outcome {
 	if err := checkSSRF(h.url); err != nil {
 		return outcome{exitCode: 1, err: fmt.Errorf("http hook: %w", err)}
 	}

@@ -55,18 +55,19 @@ func (c *Conversation) EnterWorktree(name string) (string, error) {
 	if c.worktree != nil {
 		return "", fmt.Errorf("already in worktree %q — /worktree exit first", c.worktree.slug)
 	}
-	root := c.app.cwd
-	if !worktree.IsRepo(root) {
+	if !worktree.IsRepo(c.home) {
 		return "", fmt.Errorf("worktree requires a git repository")
 	}
+	// The sandbox lives with the project's and starts from the checkout the
+	// conversation opened in.
 	slug := worktree.Slug(name)
-	dir, branch, err := worktree.Create(root, slug)
+	dir, branch, err := worktree.Create(c.app.cwd, c.home, slug)
 	if err != nil {
 		return "", err
 	}
 	// A fresh checkout lacks untracked local files such as .env. Report the
 	// ones that fail to copy so the sandbox doesn't fail mysteriously later.
-	if failed, err := worktree.CopyIncludes(root, dir, worktree.DefaultIncludes); err != nil {
+	if failed, err := worktree.CopyIncludes(c.home, dir, worktree.DefaultIncludes); err != nil {
 		log.Printf("worktree %q: copy local files: %v", slug, err)
 	} else if len(failed) > 0 {
 		log.Printf("worktree %q: could not copy local files: %s", slug, strings.Join(failed, ", "))
@@ -103,7 +104,7 @@ func (c *Conversation) ExitWorktree(discard bool) (WorktreeExit, error) {
 		res.Kept = true
 	}
 	c.worktree = nil
-	c.moveLocked(c.app.cwd)
+	c.moveLocked(c.home)
 	return res, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,26 +19,21 @@ import (
 )
 
 type Config struct {
-	Cwd   string
-	Mode  interact.Mode
-	Rules *RuleSet
-	Roots FilesystemRoots
-	// Without a UI, anything that needs asking is denied.
-	UI      interact.UI
+	Cwd     string
+	Rules   *RuleSet
+	Roots   FilesystemRoots
 	OnAudit func(AuditEntry)
 }
 
-// Engine holds process-wide state: mode, rules, roots and stored approvals.
-// What one conversation allows on top comes with each request; see
-// Middleware.
+// Engine holds the project's state: rules, roots and stored approvals. What
+// one conversation brings, its mode, who to ask and what it allows on top,
+// comes with each request; see Middleware.
 type Engine struct {
 	workspace string
 	store     *Store
-	ui        interact.UI
 	onAudit   func(AuditEntry)
 
 	mu    sync.RWMutex
-	mode  interact.Mode
 	rules *RuleSet
 	roots FilesystemRoots
 }
@@ -52,27 +48,41 @@ func NewEngine(cfg Config) (*Engine, error) {
 		rules:     cfg.Rules,
 		roots:     normalizeFilesystemRoots(cfg.Cwd, cfg.Roots),
 		store:     store,
-		ui:        cfg.UI,
 		onAudit:   cfg.OnAudit,
-		mode:      cfg.Mode,
 	}, nil
 }
 
-// Middleware gates one conversation's tool calls. grants is called for each
-// call and returns extra allowances, such as the tools of skills invoked in
-// the run. meta returns the Metadata of self-classifying tools such as MCP
-// tools.
-func (e *Engine) Middleware(grants func() []Rule, meta func(tool string) Metadata) agentcore.ToolMiddleware {
+// Scope is what one conversation brings to its tool calls; each is read
+// for each call.
+type Scope struct {
+	Mode func() interact.Mode
+	// UI is asked what the mode and approvals leave open; nil denies it.
+	UI interact.UI
+	// Roots are read and written like the workspace, such as the other
+	// checkout of the project the conversation runs in.
+	Roots []string
+	// Grants returns extra allowances, such as the tools of skills invoked
+	// in the run.
+	Grants func() []Rule
+	// Meta returns the Metadata of self-classifying tools such as MCP tools.
+	Meta func(tool string) Metadata
+}
+
+// Middleware gates one conversation's tool calls.
+func (e *Engine) Middleware(s Scope) agentcore.ToolMiddleware {
 	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
 		decision, err := e.Decide(ctx, Request{
 			ToolID:    call.ID,
 			ToolName:  call.Name,
 			ToolLabel: call.Tool.Label,
 			Args:      call.Args,
-			Metadata:  meta(call.Name),
+			Metadata:  s.Meta(call.Name),
 			// The tool's cwd moves when a worktree is entered mid-run.
 			Workspace: agentcoretools.CwdFromContext(ctx),
-			Grants:    grants(),
+			Mode:      s.Mode(),
+			UI:        s.UI,
+			Roots:     s.Roots,
+			Grants:    s.Grants(),
 		})
 		if err != nil {
 			return agentcore.Result{}, err
@@ -95,6 +105,10 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 	e.mu.RLock()
 	rules, roots := e.rules, e.roots
 	e.mu.RUnlock()
+	if len(req.Roots) > 0 {
+		roots.ReadRoots = slices.Concat(roots.ReadRoots, req.Roots)
+		roots.WriteRoots = slices.Concat(roots.WriteRoots, req.Roots)
+	}
 	info := inspectRequest(firstNonEmpty(req.Workspace, e.workspace), roots, req)
 	if info.hardDeny != "" {
 		decision := denyDecision(DecisionSourceRoots, info, info.hardDeny)
@@ -112,7 +126,7 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 	// Outside-roots and confirm-each-time calls ask regardless of the mode
 	// and stored approvals.
 	if info.askEachTime() {
-		return e.ask(ctx, info)
+		return e.ask(ctx, req.UI, info)
 	}
 
 	// Skips the mode prompt that would otherwise interrupt every memory
@@ -143,7 +157,7 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 		return decision, nil
 	}
 
-	switch e.Mode() {
+	switch req.Mode {
 	case interact.ModeTrust:
 		decision := allowDecision(DecisionSourceMode, info, "trust mode allows tool execution")
 		e.audit(info, decision)
@@ -155,7 +169,7 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 			e.audit(info, decision)
 			return decision, nil
 		default:
-			return e.ask(ctx, info)
+			return e.ask(ctx, req.UI, info)
 		}
 	case interact.ModeStrict:
 		switch info.capability {
@@ -164,7 +178,7 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 			e.audit(info, decision)
 			return decision, nil
 		case CapabilityWrite:
-			return e.ask(ctx, info.orReason("strict mode requires approval for writes"))
+			return e.ask(ctx, req.UI, info.orReason("strict mode requires approval for writes"))
 		default:
 			decision := denyDecision(DecisionSourceMode, info, "strict mode denies this capability")
 			e.audit(info, decision)
@@ -177,25 +191,13 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 			e.audit(info, decision)
 			return decision, nil
 		default:
-			return e.ask(ctx, info.orReason("approval required for side effects"))
+			return e.ask(ctx, req.UI, info.orReason("approval required for side effects"))
 		}
 	}
 }
 
-func (e *Engine) SetMode(mode interact.Mode) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.mode = mode
-}
-
-func (e *Engine) Mode() interact.Mode {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.mode
-}
-
-func (e *Engine) ask(ctx context.Context, info toolInfo) (*Decision, error) {
-	if e.ui == nil {
+func (e *Engine) ask(ctx context.Context, ui interact.UI, info toolInfo) (*Decision, error) {
+	if ui == nil {
 		msg := info.reason
 		if msg == "" {
 			msg = "approval required but no one can be asked"
@@ -221,7 +223,7 @@ func (e *Engine) ask(ctx context.Context, info toolInfo) (*Decision, error) {
 	if info.tool == "bash" {
 		approval.Warning = destructiveCommandWarning(info.summary)
 	}
-	verdict, err := e.ui.Approve(ctx, approval)
+	verdict, err := ui.Approve(ctx, approval)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +292,7 @@ func (e *Engine) audit(info toolInfo, decision *Decision) {
 	}
 	e.onAudit(AuditEntry{
 		Time:       time.Now(),
-		Mode:       e.Mode(),
+		Mode:       info.mode,
 		Tool:       info.tool,
 		Capability: info.capability,
 		Summary:    info.summary,
@@ -301,6 +303,7 @@ func (e *Engine) audit(info toolInfo, decision *Decision) {
 }
 
 type toolInfo struct {
+	mode       interact.Mode
 	toolID     string
 	tool       string
 	capability Capability
@@ -364,6 +367,7 @@ func allowDecision(source DecisionSource, info toolInfo, reason string) *Decisio
 func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolInfo {
 	c := classify(workspace, req)
 	info := toolInfo{
+		mode:       req.Mode,
 		toolID:     req.ToolID,
 		tool:       req.ToolName,
 		capability: c.capability,

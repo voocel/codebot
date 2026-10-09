@@ -55,7 +55,8 @@ This split matters. The agent loop stays small and reusable, while long-running 
 - Image paste (Ctrl+V) with selection (↑) and deletion (Delete)
 - Todo list shown above the input
 - Non-interactive print mode for pipes and scripts (`-p`)
-- Slash commands: `/model`, `/rewind`, `/status`, `/tasks`, `/permissions`, `/memory`, `/init`, ... (`/help` lists them); every skill is also a `/` command
+- Editor integration over ACP (`-acp`, e.g. in Zed): sessions side by side, each in its own mode, in the project or a linked git worktree; thread history; model, reasoning and mode pickers; `@` file mentions and images; the editor's MCP servers; native diffs and the todo list as the plan
+- Slash commands: `/model`, `/rewind`, `/status`, `/tasks`, `/permissions`, `/memory`, `/init`, ... (`/help` lists them); every skill is also a `/` command, in print mode and ACP too, where the editor lists them
 
 **Extensibility**
 - Skills (Agent Skills `SKILL.md`), sub-agents, MCP servers and hooks, from you and from the project
@@ -123,11 +124,17 @@ codebot
 # Pipe mode
 echo "explain main.go" | codebot -p
 
+# A skill in pipe mode
+codebot -p "/review the auth module"
+
 # Continue last session
 codebot -c
 
 # Strict security
 codebot --mode strict
+
+# Serve an editor over ACP
+codebot -acp
 ```
 
 ## Design Principles

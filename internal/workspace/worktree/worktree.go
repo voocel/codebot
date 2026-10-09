@@ -44,8 +44,10 @@ func Root(repoRoot string) string {
 	return filepath.Join(repoRoot, config.ConfigDir, "worktrees")
 }
 
-// Create fails if slug is taken, so the caller can ask for another name.
-func Create(repoRoot, slug string) (dir, branch string, err error) {
+// Create puts a worktree under Root(repoRoot), branched from the HEAD of
+// from, a checkout of the repository. It fails if slug is taken, so the
+// caller can ask for another name.
+func Create(repoRoot, from, slug string) (dir, branch string, err error) {
 	dir = filepath.Join(Root(repoRoot), slug)
 	branch = branchPrefix + slug
 	if _, statErr := os.Stat(dir); statErr == nil {
@@ -54,7 +56,7 @@ func Create(repoRoot, slug string) (dir, branch string, err error) {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return "", "", err
 	}
-	if out, runErr := git(repoRoot, "worktree", "add", "-b", branch, dir); runErr != nil {
+	if out, runErr := git(from, "worktree", "add", "-b", branch, dir); runErr != nil {
 		return "", "", fmt.Errorf("git worktree add: %s", out)
 	}
 	// `git worktree list` resolves symlinks (macOS /var is /private/var), and
@@ -161,6 +163,31 @@ func copyFile(src, dst string) error {
 func IsRepo(dir string) bool {
 	out, err := git(dir, "rev-parse", "--is-inside-work-tree")
 	return err == nil && out == "true"
+}
+
+// SamePlace reports whether b is where a is in another checkout of a's
+// repository, such as a project's directory in a linked worktree.
+func SamePlace(a, b string) bool {
+	place := func(dir string) string {
+		out, err := git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir", "--is-inside-git-dir", "--show-prefix")
+		if err != nil {
+			return ""
+		}
+		lines := strings.Split(out, "\n")
+		if len(lines) < 2 || lines[1] != "false" {
+			return ""
+		}
+		common, prefix := lines[0], ""
+		if len(lines) > 2 {
+			prefix = lines[2]
+		}
+		if real, err := filepath.EvalSymlinks(common); err == nil {
+			common = real
+		}
+		return common + "\x00" + prefix
+	}
+	pa := place(a)
+	return pa != "" && pa == place(b)
 }
 
 func CurrentBranch(dir string) string {

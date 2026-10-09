@@ -115,26 +115,27 @@ func main() {
 	if err != nil {
 		fail(err, "error")
 	}
-	opts := app.Options{Cwd: cwd, Mode: mode, Resume: resume, Trust: *trustFlag, PluginDirs: pluginDirs}
-	if err := run(opts, printMode, *acpFlag, *jsonFlag, notice); err != nil {
+	opts := app.Options{Cwd: cwd, Mode: mode, Trust: *trustFlag, PluginDirs: pluginDirs}
+	if err := run(opts, resume, printMode, *acpFlag, *jsonFlag, notice); err != nil {
 		fail(err, "error")
 	}
 }
 
-// notice is for the TUI to show.
-func run(opts app.Options, printMode, acpMode, jsonMode bool, notice string) error {
+// resume is the session the TUI and print mode open, "" for a new one; an
+// ACP client opens its own. notice is for the TUI to show.
+func run(opts app.Options, resume string, printMode, acpMode, jsonMode bool, notice string) error {
 	switch {
 	case acpMode:
-		srv := acp.NewServer(version)
-		opts.UI, opts.FS, opts.CacheTTL = srv, srv.FS(), "1h"
+		opts.CacheTTL = "1h"
 		a := boot(opts)
 		defer a.Close()
 		warn(a)
-		return srv.Serve(a)
+		return acp.NewServer(version).Serve(a)
 	case printMode:
 		opts.UI = print.UI{}
 		a := boot(opts)
 		defer a.Close()
+		open(a, resume)
 		warn(a)
 		return print.Run(a, flag.Args(), jsonMode)
 	default:
@@ -142,6 +143,7 @@ func run(opts app.Options, printMode, acpMode, jsonMode bool, notice string) err
 		opts.UI, opts.Interactive, opts.CacheTTL = screen, true, "1h"
 		a := boot(opts)
 		defer a.Close()
+		open(a, resume)
 		return tui.Run(a, screen, version, notice)
 	}
 }
@@ -152,6 +154,13 @@ func boot(opts app.Options) *app.App {
 		fail(err, "boot error")
 	}
 	return a
+}
+
+func open(a *app.App, id string) {
+	if _, err := a.Open(id); err != nil {
+		a.Close()
+		fail(err, "boot error")
+	}
 }
 
 type dirs []string

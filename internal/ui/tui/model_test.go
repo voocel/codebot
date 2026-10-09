@@ -71,10 +71,9 @@ func bootIn(t *testing.T, project map[string]any, replies ...litellmtest.Reply) 
 
 	fake := litellmtest.New(replies...)
 	a, err := app.Boot(app.Options{
-		Cwd:         cwd,
-		Mode:        interact.ModeBalanced,
-		UI:          &UI{},
-		Interactive: true,
+		Cwd:      cwd,
+		Mode:     interact.ModeBalanced,
+		Frontend: app.Frontend{UI: &UI{}, Interactive: true},
 		NewModel: func(spec provider.ModelSpec) (agentcore.Model, error) {
 			client, err := litellm.New(fake)
 			if err != nil {
@@ -87,6 +86,9 @@ func bootIn(t *testing.T, project map[string]any, replies ...litellmtest.Reply) 
 		t.Fatal(err)
 	}
 	t.Cleanup(a.Close)
+	if _, err := a.Open(""); err != nil {
+		t.Fatal(err)
+	}
 
 	h := &harness{t: t, app: a, m: newModel(a, "test"), msgs: make(chan tea.Msg, 256)}
 	unsubscribe := a.Subscribe(func(ev app.Event) {
@@ -552,8 +554,8 @@ func TestPermissionPanel(t *testing.T) {
 	h.shows("Allow Edit?", "allow all edits")
 	h.pause()
 	h.press("2")
-	if c := answered(t, reply).Choice; c != interact.AllowOnce || h.app.Mode() != interact.ModeAcceptEdits {
-		t.Errorf("answered %v in mode %v", c, h.app.Mode())
+	if c := answered(t, reply).Choice; c != interact.AllowOnce || h.app.Current().Mode() != interact.ModeAcceptEdits {
+		t.Errorf("answered %v in mode %v", c, h.app.Current().Mode())
 	}
 }
 

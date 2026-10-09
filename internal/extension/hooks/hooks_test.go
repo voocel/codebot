@@ -154,7 +154,7 @@ func TestPromptHookUsesTheCurrentModel(t *testing.T) {
 }
 
 func newRunner(cfg config.HooksConfig, model func() agentcore.Model) *Runner {
-	r := New("test", model)
+	r := New("test", model, func() string { return "" })
 	r.Set(cfg)
 	return r
 }
@@ -193,12 +193,27 @@ func TestCheck(t *testing.T) {
 }
 
 func TestHookEnv(t *testing.T) {
-	r := New("sess", nil)
+	r := New("sess", nil, func() string { return "" })
 	r.Set(config.HooksConfig{"PreToolUse": {
 		{Type: "command", Command: `test "$PLUGIN_ROOT" = /plug || exit 2`, Blocking: new(true), Env: map[string]string{"PLUGIN_ROOT": "/plug"}},
 	}})
 	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
 		t.Errorf("the hook went without its environment: %v", err)
+	}
+}
+
+// A command runs where the conversation is, as dir says at the time.
+func TestHookRunsInTheConversationsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	r := New("sess", nil, func() string { return dir })
+	r.Set(config.HooksConfig{"PreToolUse": {
+		{Type: "command", Command: `test -f here || exit 2`, Blocking: new(true)},
+	}})
+	if err := os.WriteFile(filepath.Join(dir, "here"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.preToolUse(context.Background(), "bash", json.RawMessage(`{}`)); err != nil {
+		t.Errorf("the hook ran elsewhere: %v", err)
 	}
 }
 

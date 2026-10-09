@@ -8,10 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
-	"os"
 	"path/filepath"
-	"sync"
 
 	acp "github.com/coder/acp-go-sdk"
 	agentcoretools "github.com/voocel/agentcore/tools"
@@ -23,61 +20,24 @@ type acpFileConn interface {
 	WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error)
 }
 
-// EditorFS routes text file reads and writes to the editor, so the agent sees
-// unsaved buffers and its writes land in them. Everything else, including
-// files the editor can't serve as text, uses the local filesystem.
-//
-// It is built before Boot, while the connection only exists once Serve
-// starts; until bound it behaves like the local filesystem.
+// EditorFS routes one session's text file reads and writes to the editor,
+// so the agent sees unsaved buffers and its writes land in them. Everything
+// else, including files the editor can't serve as text, uses the local
+// filesystem, as does all of it when the editor offers no file access.
 type EditorFS struct {
 	agentcoretools.OSFS
 
-	logf func(format string, args ...any) // nil = silent
-
-	mu       sync.RWMutex
 	conn     acpFileConn
-	sid      acp.SessionId
+	sid      acp.SessionId // set once the session has its ID, before any use
 	canRead  bool
 	canWrite bool
+	logf     func(format string, args ...any) // nil = silent
 }
 
 var _ agentcoretools.FS = (*EditorFS)(nil)
 
-// NewEditorFS logs to stderr because stdout is the protocol channel.
-func NewEditorFS() *EditorFS {
-	return &EditorFS{logf: log.New(os.Stderr, "", log.LstdFlags).Printf}
-}
-
-func (w *EditorFS) bindConn(c *acp.AgentSideConnection) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.conn = c
-}
-
-func (w *EditorFS) setSession(sid acp.SessionId) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.sid = sid
-}
-
-func (w *EditorFS) setCaps(canRead, canWrite bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.canRead = canRead
-	w.canWrite = canWrite
-}
-
-func (w *EditorFS) readReady() (acpFileConn, acp.SessionId, bool) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.conn, w.sid, w.canRead && w.conn != nil && w.sid != ""
-}
-
-func (w *EditorFS) writeReady() (acpFileConn, acp.SessionId, bool) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.conn, w.sid, w.canWrite && w.conn != nil && w.sid != ""
-}
+func (w *EditorFS) reads() bool  { return w.canRead && w.conn != nil }
+func (w *EditorFS) writes() bool { return w.canWrite && w.conn != nil }
 
 // Stat sets Version to a hash of the editor buffer, so the read-before-write
 // check sees unsaved edits that don't change the disk mtime, and a buffer with
@@ -121,11 +81,10 @@ func (w *EditorFS) ReadFile(ctx context.Context, path string) ([]byte, error) {
 // WriteFile does not retry a failed editor write on disk: the editor owns the
 // file, and writing behind its back would desync the buffer from the file.
 func (w *EditorFS) WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error {
-	conn, sid, ok := w.writeReady()
-	if !ok {
+	if !w.writes() {
 		return w.OSFS.WriteFile(ctx, path, data, perm)
 	}
-	if _, err := conn.WriteTextFile(ctx, acp.WriteTextFileRequest{SessionId: sid, Path: path, Content: string(data)}); err != nil {
+	if _, err := w.conn.WriteTextFile(ctx, acp.WriteTextFileRequest{SessionId: w.sid, Path: path, Content: string(data)}); err != nil {
 		return fmt.Errorf("acp: write_text_file %s: %w", path, err)
 	}
 	return nil
@@ -137,11 +96,10 @@ func (w *EditorFS) WriteFile(ctx context.Context, path string, data []byte, perm
 // Zed return content for every text file, so in practice an error means a
 // binary or missing file.
 func (w *EditorFS) tryReadText(ctx context.Context, path string) ([]byte, bool) {
-	conn, sid, ok := w.readReady()
-	if !ok {
+	if !w.reads() {
 		return nil, false
 	}
-	resp, err := conn.ReadTextFile(ctx, acp.ReadTextFileRequest{SessionId: sid, Path: path})
+	resp, err := w.conn.ReadTextFile(ctx, acp.ReadTextFileRequest{SessionId: w.sid, Path: path})
 	if err != nil {
 		// Logged because the agent may now read stale disk bytes instead of
 		// the live buffer.
@@ -151,40 +109,6 @@ func (w *EditorFS) tryReadText(ctx context.Context, path string) ([]byte, bool) 
 		return nil, false
 	}
 	return []byte(resp.Content), true
-}
-
-// diffSnapshot with reliable=false must not be rendered: a wrong diff is
-// worse than none.
-type diffSnapshot struct {
-	text     string
-	exists   bool
-	reliable bool
-}
-
-// textForDiff, unlike ReadFile, never passes a disk copy off as the editor
-// buffer: if the editor errors on a file that exists on disk, the snapshot is
-// unreliable. A file missing from both is a reliable new file.
-func (w *EditorFS) textForDiff(ctx context.Context, path string) diffSnapshot {
-	conn, sid, hasCap := w.readReady()
-	if !hasCap {
-		data, err := w.OSFS.ReadFile(ctx, path)
-		switch {
-		case err == nil:
-			return diffSnapshot{text: string(data), exists: true, reliable: true}
-		case os.IsNotExist(err):
-			return diffSnapshot{reliable: true}
-		default:
-			return diffSnapshot{}
-		}
-	}
-	if resp, err := conn.ReadTextFile(ctx, acp.ReadTextFileRequest{SessionId: sid, Path: path}); err == nil {
-		return diffSnapshot{text: resp.Content, exists: true, reliable: true}
-	}
-	// The editor errored: only a file missing on disk is safely new.
-	if _, err := w.OSFS.Stat(ctx, path); os.IsNotExist(err) {
-		return diffSnapshot{reliable: true}
-	}
-	return diffSnapshot{}
 }
 
 func hashContent(b []byte) string {

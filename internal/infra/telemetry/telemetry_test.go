@@ -50,10 +50,26 @@ func TestSetupEnabledReturnsHook(t *testing.T) {
 	if hook == nil || tracer == nil || shutdown == nil {
 		t.Fatalf("enabled telemetry must return a hook, a tracer and a shutdown: %v, %v, nil shutdown %v", hook, tracer, shutdown == nil)
 	}
-	tracer.SetSession("sess-42")
 	// No spans were produced, so shutdown flushes nothing and must not hang or
 	// error despite the endpoint being unreachable.
 	if err := shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown err: %v", err)
+	}
+}
+
+// Each span is the session's its context is for, so conversations open side
+// by side keep their spans apart.
+func TestSpansTakeTheSessionFromTheirContext(t *testing.T) {
+	if got := sessionAttributes(context.Background()); got != nil {
+		t.Fatalf("a context for no session gave %v", got)
+	}
+	for _, id := range []string{"a1", "b2"} {
+		got := map[string]string{}
+		for _, kv := range sessionAttributes(WithSession(context.Background(), id)) {
+			got[string(kv.Key)] = kv.Value.AsString()
+		}
+		if got["session.id"] != id {
+			t.Errorf("the context for %s gave %v", id, got)
+		}
 	}
 }

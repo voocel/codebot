@@ -27,7 +27,7 @@ func toolReq(name string, args map[string]any) Request {
 }
 
 func TestBalancedWithoutUI(t *testing.T) {
-	engine := newEngine(t, Config{})
+	engine := newEngine(t, engineCfg{})
 	for tool, want := range map[string]DecisionKind{"read": DecisionAllow, "write": DecisionDeny} {
 		decision, err := engine.Decide(context.Background(), toolReq(tool, map[string]any{"path": "a.txt"}))
 		if err != nil {
@@ -43,7 +43,7 @@ func TestOutsideRootsAllowsOnlyOnce(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	var prompt interact.Approval
-	engine := newEngine(t, Config{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+	engine := newEngine(t, engineCfg{Cwd: workspace, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
 		prompt = p
 		return interact.Verdict{Choice: interact.AllowAlways}, nil
 	})})
@@ -64,7 +64,7 @@ func TestOutsideRootsAllowsOnlyOnce(t *testing.T) {
 // ride along.
 func TestAlwaysRemembersEachCommand(t *testing.T) {
 	var asked []interact.Approval
-	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+	engine := newEngine(t, engineCfg{Cwd: t.TempDir(), UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
 		asked = append(asked, p)
 		return interact.Verdict{Choice: interact.AllowAlways}, nil
 	})})
@@ -95,7 +95,7 @@ func TestAlwaysRemembersEachCommand(t *testing.T) {
 }
 
 func TestDenialCarriesTheFeedback(t *testing.T) {
-	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
+	engine := newEngine(t, engineCfg{Cwd: t.TempDir(), UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
 		return interact.Verdict{Choice: interact.Deny, Feedback: "use make clean"}, nil
 	})})
 	d, err := engine.Decide(context.Background(), toolReq("bash", map[string]any{"command": "rm -rf build"}))
@@ -109,7 +109,7 @@ func TestDenialCarriesTheFeedback(t *testing.T) {
 
 func TestEditOffersTheMode(t *testing.T) {
 	var prompt interact.Approval
-	engine := newEngine(t, Config{Cwd: t.TempDir(), UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+	engine := newEngine(t, engineCfg{Cwd: t.TempDir(), UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
 		prompt = p
 		return interact.Verdict{Choice: interact.AllowOnce}, nil
 	})})
@@ -126,7 +126,7 @@ func TestEditOffersTheMode(t *testing.T) {
 func TestACommandsApprovalCarriesItsIntentAndDir(t *testing.T) {
 	var prompt interact.Approval
 	cwd := t.TempDir()
-	engine := newEngine(t, Config{Cwd: cwd, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+	engine := newEngine(t, engineCfg{Cwd: cwd, UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
 		prompt = p
 		return interact.Verdict{Choice: interact.AllowOnce}, nil
 	})})
@@ -157,7 +157,7 @@ func TestWriteViaSymlinkEscapeDenied(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	engine := newEngine(t, Config{Cwd: workspace})
+	engine := newEngine(t, engineCfg{Cwd: workspace})
 	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": "link/escape.txt"}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
@@ -181,7 +181,7 @@ func TestInternalPathsSilentlyAllowed(t *testing.T) {
 		if tc.writable {
 			roots = FilesystemRoots{InternalWritable: []string{memDir}}
 		}
-		engine := newEngine(t, Config{Cwd: t.TempDir(), Roots: roots, UI: mustNotAsk(t)})
+		engine := newEngine(t, engineCfg{Cwd: t.TempDir(), Roots: roots, UI: mustNotAsk(t)})
 		decision, err := engine.Decide(context.Background(), toolReq(tc.tool, map[string]any{"path": filepath.Join(memDir, "MEMORY.md")}))
 		if err != nil {
 			t.Fatalf("Decide: %v", err)
@@ -195,7 +195,7 @@ func TestInternalPathsSilentlyAllowed(t *testing.T) {
 func TestInternalReadOnlyHardDeniesWrite(t *testing.T) {
 	workspace := t.TempDir()
 	memDir := t.TempDir()
-	engine := newEngine(t, Config{
+	engine := newEngine(t, engineCfg{
 		Cwd:   workspace,
 		Roots: FilesystemRoots{InternalReadable: []string{memDir}},
 	})
@@ -221,7 +221,7 @@ func TestInternalPathRespectsDenyRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRuleSet: %v", err)
 	}
-	engine := newEngine(t, Config{
+	engine := newEngine(t, engineCfg{
 		Cwd:   workspace,
 		Rules: rules,
 		Roots: FilesystemRoots{InternalReadable: []string{memDir}},
@@ -244,7 +244,7 @@ func TestWebFetchHostRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := newEngine(t, Config{Rules: rules})
+	engine := newEngine(t, engineCfg{Rules: rules})
 	for url, allowed := range map[string]bool{
 		"https://docs.example.com/x":  true,
 		"https://evil.com/x":          false,
@@ -264,7 +264,7 @@ func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 	workspace := t.TempDir()
 	memDir := t.TempDir()
 	var prompted bool
-	engine := newEngine(t, Config{
+	engine := newEngine(t, engineCfg{
 		Cwd: workspace,
 		Roots: FilesystemRoots{
 			WriteRoots:       []string{memDir},
@@ -298,7 +298,7 @@ func TestGrantsAllowTheirRequestOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := newEngine(t, Config{Cwd: workspace, Rules: rules})
+	engine := newEngine(t, engineCfg{Cwd: workspace, Rules: rules})
 	grant, err := ParseRule("Bash")
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +323,7 @@ func TestProtectedWritesAskEachTime(t *testing.T) {
 	workspace := t.TempDir()
 	kit := filepath.Join(workspace, "kit")
 	var asked []string
-	engine := newEngine(t, Config{
+	engine := newEngine(t, engineCfg{
 		Cwd:   workspace,
 		Mode:  interact.ModeAcceptEdits,
 		Roots: FilesystemRoots{Protected: []string{kit}},
@@ -339,5 +339,29 @@ func TestProtectedWritesAskEachTime(t *testing.T) {
 	}
 	if len(asked) != 1 || !strings.Contains(asked[0], "mcp.json") {
 		t.Errorf("asked about %q, want the plugin's file alone", asked)
+	}
+}
+
+// A conversation's own roots, such as the linked worktree it runs in, are
+// read and written like the workspace; they open nothing else.
+func TestRequestRoots(t *testing.T) {
+	checkout, elsewhere := t.TempDir(), t.TempDir()
+	var asked []string
+	engine := newEngine(t, engineCfg{
+		Mode: interact.ModeAcceptEdits,
+		UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+			asked = append(asked, p.Summary)
+			return interact.Verdict{Choice: interact.AllowOnce}, nil
+		}),
+	})
+	for _, path := range []string{filepath.Join(checkout, "a.go"), filepath.Join(elsewhere, "b.go")} {
+		req := toolReq("write", map[string]any{"path": path})
+		req.Roots = []string{checkout}
+		if _, err := engine.Decide(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(asked) != 1 || !strings.Contains(asked[0], "b.go") {
+		t.Errorf("asked about %q, want the file outside both alone", asked)
 	}
 }

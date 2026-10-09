@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -39,7 +40,7 @@ func gitIn(t *testing.T, dir string, args ...string) {
 // those commits on cleanup.
 func TestRemoveKeepsCommittedWork(t *testing.T) {
 	repo := initRepo(t)
-	dir, branch, err := Create(repo, "feat")
+	dir, branch, err := Create(repo, repo, "feat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestSlug(t *testing.T) {
 func TestCreateChangesRemove(t *testing.T) {
 	repo := initRepo(t)
 
-	dir, branch, err := Create(repo, "feat")
+	dir, branch, err := Create(repo, repo, "feat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestCreateChangesRemove(t *testing.T) {
 	if branch != "codebot/feat" {
 		t.Errorf("branch = %q, want codebot/feat", branch)
 	}
-	if _, _, err := Create(repo, "feat"); err == nil {
+	if _, _, err := Create(repo, repo, "feat"); err == nil {
 		t.Error("duplicate Create should fail")
 	}
 
@@ -141,7 +142,7 @@ func TestCopyIncludes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dir, _, err := Create(repo, "feat")
+	dir, _, err := Create(repo, repo, "feat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -158,5 +159,61 @@ func TestCopyIncludes(t *testing.T) {
 	}
 	if string(got) != "SECRET=1\n" {
 		t.Errorf(".env content = %q, want SECRET=1", got)
+	}
+}
+
+// Another checkout's place of a directory counts; the rest of the repository,
+// its git directory and other repositories do not.
+func TestSamePlace(t *testing.T) {
+	repo := initRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, "pkg", "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "pkg", "a", "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", ".")
+	gitIn(t, repo, "commit", "-m", "pkg")
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitIn(t, repo, "worktree", "add", "-b", "wt", wt)
+
+	project := filepath.Join(repo, "pkg", "a")
+	for dir, want := range map[string]bool{
+		filepath.Join(wt, "pkg", "a"): true,
+		wt:                            false,
+		repo:                          false,
+		filepath.Join(repo, ".git"):   false,
+		initRepo(t):                   false,
+	} {
+		if got := SamePlace(project, dir); got != want {
+			t.Errorf("SamePlace(project, %s) = %v, want %v", dir, got, want)
+		}
+	}
+	if !SamePlace(repo, wt) {
+		t.Error("a repository's root and its linked worktree's are not the same place")
+	}
+}
+
+// A sandbox starts from the checkout it is made from.
+func TestCreateFromAnotherCheckout(t *testing.T) {
+	repo := initRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitIn(t, repo, "worktree", "add", "-b", "wt", wt)
+	if err := os.WriteFile(filepath.Join(wt, "feature.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, wt, "add", ".")
+	gitIn(t, wt, "commit", "-m", "feature")
+
+	dir, _, err := Create(repo, wt, "box")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "feature.txt")); err != nil {
+		t.Errorf("the sandbox lacks the checkout's commit: %v", err)
+	}
+	root, _ := filepath.EvalSymlinks(Root(repo)) // dir has its links resolved
+	if rel, err := filepath.Rel(root, dir); err != nil || strings.HasPrefix(rel, "..") {
+		t.Errorf("the sandbox %s is not with the project's", dir)
 	}
 }

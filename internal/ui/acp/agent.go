@@ -2,46 +2,57 @@ package acp
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 	agentcore "github.com/voocel/agentcore"
-	"github.com/voocel/litellm"
 
 	"github.com/voocel/codebot/internal/app"
+	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/interact"
 )
 
-// Server serves only the conversation opened at boot; session/load and
-// multiple sessions are not supported.
+// Server serves the sessions a client opens, each a conversation of the App.
 type Server struct {
 	version string
 	app     *app.App
-	fs      *EditorFS
 
-	// Atomic because Serve sets it after the connection has started reading.
-	conn atomic.Pointer[acp.AgentSideConnection]
+	conn *acp.AgentSideConnection
 
-	mu           sync.Mutex
-	pendingEdits map[acp.ToolCallId]editSnapshot // pre-exec file snapshots for native diffs
+	mu       sync.Mutex
+	fs       acp.FileSystemCapabilities // the client's
+	sessions map[acp.SessionId]*session
 }
 
-var _ acp.Agent = (*Server)(nil)
-
-func (s *Server) sessionID() acp.SessionId { return acp.SessionId(s.app.Current().ID()) }
+var (
+	_ acp.Agent       = (*Server)(nil)
+	_ acp.AgentLoader = (*Server)(nil)
+)
 
 func (s *Server) Initialize(_ context.Context, req acp.InitializeRequest) (acp.InitializeResponse, error) {
-	s.fs.setCaps(req.ClientCapabilities.Fs.ReadTextFile, req.ClientCapabilities.Fs.WriteTextFile)
+	s.mu.Lock()
+	s.fs = req.ClientCapabilities.Fs
+	s.mu.Unlock()
 	return acp.InitializeResponse{
-		ProtocolVersion:   acp.ProtocolVersionNumber,
-		AgentCapabilities: acp.AgentCapabilities{LoadSession: false},
-		AuthMethods:       []acp.AuthMethod{}, // credentials come from settings.json
-		AgentInfo:         &acp.Implementation{Name: "codebot", Version: s.version},
+		ProtocolVersion: acp.ProtocolVersionNumber,
+		AgentCapabilities: acp.AgentCapabilities{
+			LoadSession:        true,
+			PromptCapabilities: acp.PromptCapabilities{Image: true, EmbeddedContext: true},
+			McpCapabilities:    acp.McpCapabilities{Http: true},
+			SessionCapabilities: acp.SessionCapabilities{
+				List:   &acp.SessionListCapabilities{},
+				Resume: &acp.SessionResumeCapabilities{},
+				Close:  &acp.SessionCloseCapabilities{},
+			},
+		},
+		AuthMethods: []acp.AuthMethod{}, // credentials come from settings.json
+		AgentInfo:   &acp.Implementation{Name: "codebot", Title: acp.Ptr("codebot"), Version: s.version},
 	}, nil
 }
 
@@ -50,70 +61,150 @@ func (s *Server) Authenticate(context.Context, acp.AuthenticateRequest) (acp.Aut
 }
 
 func (s *Server) NewSession(_ context.Context, req acp.NewSessionRequest) (acp.NewSessionResponse, error) {
-	if err := sameDir(req.Cwd, s.app.Cwd()); err != nil {
+	sess, err := s.open("", req.Cwd, req.McpServers)
+	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
-	// MCP servers come from codebot's settings; req.McpServers is ignored.
-	return acp.NewSessionResponse{SessionId: s.sessionID(), Modes: s.sessionModes()}, nil
+	return acp.NewSessionResponse{SessionId: sess.id, Modes: sess.modes(), ConfigOptions: sess.configOptions()}, nil
 }
 
-var modeDescriptions = map[interact.Mode]string{
-	interact.ModeStrict:      "Ask before edits; block commands",
-	interact.ModeBalanced:    "Ask before edits and commands",
-	interact.ModeAcceptEdits: "Edit freely; ask before commands",
-	interact.ModeTrust:       "Run everything without asking",
-}
-
-func (s *Server) sessionModes() *acp.SessionModeState {
-	modes := make([]acp.SessionMode, 0, len(interact.Modes))
-	for _, m := range interact.Modes {
-		modes = append(modes, acp.SessionMode{
-			Id:          acp.SessionModeId(m),
-			Name:        string(m),
-			Description: acp.Ptr(modeDescriptions[m]),
-		})
+// LoadSession answers once the conversation so far has been sent.
+func (s *Server) LoadSession(_ context.Context, req acp.LoadSessionRequest) (acp.LoadSessionResponse, error) {
+	sess, err := s.resume(req.SessionId, req.Cwd, req.McpServers)
+	if err != nil {
+		return acp.LoadSessionResponse{}, err
 	}
-	return &acp.SessionModeState{AvailableModes: modes, CurrentModeId: acp.SessionModeId(s.app.Mode())}
+	sess.replay()
+	return acp.LoadSessionResponse{Modes: sess.modes(), ConfigOptions: sess.configOptions()}, nil
 }
 
-// Prompt answers only after every update of the turn has been sent.
+func (s *Server) ResumeSession(_ context.Context, req acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
+	sess, err := s.resume(req.SessionId, req.Cwd, req.McpServers)
+	if err != nil {
+		return acp.ResumeSessionResponse{}, err
+	}
+	return acp.ResumeSessionResponse{Modes: sess.modes(), ConfigOptions: sess.configOptions()}, nil
+}
+
+// resume returns session id, opening it unless the client has it open.
+func (s *Server) resume(id acp.SessionId, cwd string, servers []acp.McpServer) (*session, error) {
+	if sess, err := s.session(id); err == nil {
+		return sess, nil
+	}
+	return s.open(string(id), cwd, servers)
+}
+
+// open opens session id, or a new session when id is "".
+func (s *Server) open(id, cwd string, servers []acp.McpServer) (*session, error) {
+	if !filepath.IsAbs(cwd) {
+		return nil, fmt.Errorf("acp: the session's cwd %q is not an absolute path", cwd)
+	}
+	s.useMCP(servers)
+	s.mu.Lock()
+	caps := s.fs
+	s.mu.Unlock()
+	sess := &session{srv: s}
+	sess.fs = &EditorFS{conn: s.conn, canRead: caps.ReadTextFile, canWrite: caps.WriteTextFile, logf: log.New(os.Stderr, "", log.LstdFlags).Printf}
+	conv, err := s.app.Start(id, cwd, app.Frontend{UI: sess, FS: sess.fs})
+	if err != nil {
+		return nil, err
+	}
+	// Set before the session is listed, so before anything asks or reads a
+	// file through it.
+	sess.id, sess.conv = acp.SessionId(conv.ID()), conv
+	sess.fs.sid = sess.id
+	s.mu.Lock()
+	s.sessions[sess.id] = sess
+	s.mu.Unlock()
+	return sess, nil
+}
+
+// useMCP connects the client's MCP servers beside codebot's own.
+func (s *Server) useMCP(servers []acp.McpServer) {
+	out := make(map[string]config.MCPServer, len(servers))
+	for _, srv := range servers {
+		switch {
+		case srv.Stdio != nil:
+			env := make(map[string]string, len(srv.Stdio.Env))
+			for _, v := range srv.Stdio.Env {
+				env[v.Name] = v.Value
+			}
+			out[srv.Stdio.Name] = config.MCPServer{Command: srv.Stdio.Command, Args: srv.Stdio.Args, Env: env}
+		case srv.Http != nil:
+			headers := make(map[string]string, len(srv.Http.Headers))
+			for _, h := range srv.Http.Headers {
+				headers[h.Name] = h.Value
+			}
+			out[srv.Http.Name] = config.MCPServer{Type: "http", URL: srv.Http.Url, Headers: headers}
+		default:
+			fmt.Fprintln(os.Stderr, "acp: an MCP server over a transport codebot does not offer is left out")
+		}
+	}
+	if len(out) > 0 {
+		s.app.UseMCPServers(out)
+	}
+}
+
+// opened sends what follows the response that opened session id.
+func (s *Server) opened(id acp.SessionId) {
+	if sess, err := s.session(id); err == nil {
+		sess.sendCommands()
+	}
+}
+
+func (s *Server) session(id acp.SessionId) (*session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[id]; ok {
+		return sess, nil
+	}
+	return nil, fmt.Errorf("acp: no session %s is open", id)
+}
+
+func (s *Server) ListSessions(_ context.Context, req acp.ListSessionsRequest) (acp.ListSessionsResponse, error) {
+	if req.Cursor != nil {
+		return acp.ListSessionsResponse{}, errors.New("acp: codebot lists every session at once, so it gave no cursor")
+	}
+	infos, err := s.app.Sessions()
+	if err != nil {
+		return acp.ListSessionsResponse{}, err
+	}
+	out := []acp.SessionInfo{}
+	for _, info := range infos {
+		if info.MessageCount == 0 || (req.Cwd != nil && !sameDir(*req.Cwd, info.Cwd)) {
+			continue
+		}
+		si := acp.SessionInfo{SessionId: acp.SessionId(info.ID), Cwd: info.Cwd, UpdatedAt: acp.Ptr(info.Updated.UTC().Format(time.RFC3339))}
+		if info.FirstMessage != "" {
+			si.Title = acp.Ptr(info.FirstMessage)
+		}
+		out = append(out, si)
+	}
+	return acp.ListSessionsResponse{Sessions: out}, nil
+}
+
+func (s *Server) CloseSession(_ context.Context, req acp.CloseSessionRequest) (acp.CloseSessionResponse, error) {
+	s.mu.Lock()
+	sess, ok := s.sessions[req.SessionId]
+	delete(s.sessions, req.SessionId)
+	s.mu.Unlock()
+	if !ok {
+		return acp.CloseSessionResponse{}, fmt.Errorf("acp: no session %s is open", req.SessionId)
+	}
+	sess.close()
+	return acp.CloseSessionResponse{}, nil
+}
+
 func (s *Server) Prompt(ctx context.Context, req acp.PromptRequest) (acp.PromptResponse, error) {
+	sess, err := s.session(req.SessionId)
+	if err != nil {
+		return acp.PromptResponse{}, err
+	}
 	blocks, err := promptBlocks(req.Prompt)
 	if err != nil {
 		return acp.PromptResponse{}, err
 	}
-	conv := s.app.Current()
-	if err := conv.Submit(ctx, blocks); err != nil {
-		return acp.PromptResponse{}, err
-	}
-	if err := conv.Wait(ctx); err != nil {
-		if ctx.Err() != nil {
-			conv.Cancel()
-			return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
-		}
-		return acp.PromptResponse{}, err
-	}
-	return turnResult(conv.Status().LastRun)
-}
-
-func promptBlocks(blocks []acp.ContentBlock) ([]litellm.Block, error) {
-	out := make([]litellm.Block, 0, len(blocks))
-	for _, b := range blocks {
-		switch {
-		case b.Text != nil:
-			out = append(out, litellm.Text(b.Text.Text))
-		case b.Image != nil:
-			data, err := base64.StdEncoding.DecodeString(b.Image.Data)
-			if err != nil {
-				return nil, fmt.Errorf("acp: image: %w", err)
-			}
-			out = append(out, litellm.ImageBlock{Data: data, MIME: b.Image.MimeType})
-		}
-	}
-	if len(out) == 0 {
-		return nil, errors.New("acp: prompt has no supported content blocks")
-	}
-	return out, nil
+	return sess.prompt(ctx, blocks)
 }
 
 // turnResult reports a failed run as a JSON-RPC error because ACP has no
@@ -134,59 +225,57 @@ func turnResult(run *agentcore.RunEnd) (acp.PromptResponse, error) {
 	}
 }
 
-func (s *Server) Cancel(context.Context, acp.CancelNotification) error {
-	s.app.Current().Cancel()
+// Cancel stops the run; the SDK has cancelled the prompt's context, which
+// stops a skill that forks.
+func (s *Server) Cancel(_ context.Context, req acp.CancelNotification) error {
+	sess, err := s.session(req.SessionId)
+	if err != nil {
+		return err
+	}
+	sess.conv.Cancel()
 	return nil
 }
 
 func (s *Server) SetSessionMode(_ context.Context, req acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
+	sess, err := s.session(req.SessionId)
+	if err != nil {
+		return acp.SetSessionModeResponse{}, err
+	}
 	mode, err := interact.ParseMode(string(req.ModeId))
 	if err != nil {
 		return acp.SetSessionModeResponse{}, fmt.Errorf("acp: %w", err)
 	}
-	s.app.SetMode(mode)
+	sess.conv.SetMode(mode)
 	return acp.SetSessionModeResponse{}, nil
+}
+
+func (s *Server) SetSessionConfigOption(_ context.Context, req acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
+	if req.ValueId == nil {
+		return acp.SetSessionConfigOptionResponse{}, errors.New("acp: codebot's options are selects")
+	}
+	sess, err := s.session(req.ValueId.SessionId)
+	if err != nil {
+		return acp.SetSessionConfigOptionResponse{}, err
+	}
+	if err := sess.setOption(req.ValueId.ConfigId, req.ValueId.Value); err != nil {
+		return acp.SetSessionConfigOptionResponse{}, err
+	}
+	return acp.SetSessionConfigOptionResponse{ConfigOptions: sess.configOptions()}, nil
 }
 
 // The methods below are not advertised, so conforming clients don't call
 // them.
 
 func (s *Server) Logout(context.Context, acp.LogoutRequest) (acp.LogoutResponse, error) {
-	return acp.LogoutResponse{}, acp.NewMethodNotFound("logout")
+	return acp.LogoutResponse{}, acp.NewMethodNotFound(acp.AgentMethodLogout)
 }
 
-func (s *Server) CloseSession(context.Context, acp.CloseSessionRequest) (acp.CloseSessionResponse, error) {
-	return acp.CloseSessionResponse{}, acp.NewMethodNotFound("session/close")
-}
-
-func (s *Server) ListSessions(context.Context, acp.ListSessionsRequest) (acp.ListSessionsResponse, error) {
-	return acp.ListSessionsResponse{}, acp.NewMethodNotFound("session/list")
-}
-
-func (s *Server) ResumeSession(context.Context, acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
-	return acp.ResumeSessionResponse{}, acp.NewMethodNotFound("session/resume")
-}
-
-func (s *Server) SetSessionConfigOption(context.Context, acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
-	return acp.SetSessionConfigOptionResponse{}, acp.NewMethodNotFound("session/set_config_option")
-}
-
-func sameDir(reqDir, rtDir string) error {
-	a, err1 := canonDir(reqDir)
-	b, err2 := canonDir(rtDir)
-	if err1 != nil || err2 != nil || a != b {
-		return fmt.Errorf("acp: session cwd %q does not match codebot working directory %q", reqDir, rtDir)
+func sameDir(a, b string) bool {
+	real := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return filepath.Clean(p)
 	}
-	return nil
-}
-
-func canonDir(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
-	}
-	return filepath.Clean(abs), nil
+	return real(a) == real(b)
 }

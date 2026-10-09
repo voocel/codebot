@@ -79,8 +79,12 @@ func Run(a *app.App, args []string, jsonMode bool) error {
 	defer unsubscribe()
 
 	conv := a.Current()
-	if err := conv.Submit(context.Background(), []litellm.Block{litellm.Text(prompt)}); err != nil {
+	answer, err := conv.Prompt(context.Background(), []litellm.Block{litellm.Text(prompt)})
+	if err != nil {
 		return fmt.Errorf("print mode: %w", err)
+	}
+	if answer != "" {
+		p.answer(answer)
 	}
 	// A task's result starts another run, which may start more tasks. Stop
 	// once the tasks are done and their results started no run.
@@ -117,6 +121,17 @@ func (p *printer) failure() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.err
+}
+
+// answer writes the answer of a skill that forks, which no run of the
+// conversation gives.
+func (p *printer) answer(text string) {
+	if p.json {
+		data, _ := json.Marshal(map[string]any{"type": "skill_answer", "text": text})
+		fmt.Fprintln(os.Stdout, string(data))
+		return
+	}
+	fmt.Fprintln(os.Stdout, strings.TrimSuffix(text, "\n"))
 }
 
 func (p *printer) onEvent(ev app.Event) {

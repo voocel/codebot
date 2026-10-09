@@ -80,10 +80,13 @@ type Request struct {
 	// Workspace resolves relative paths for this request; empty means
 	// Config.Cwd. Set it when the tool runs elsewhere, e.g. in a worktree.
 	Workspace string `json:"workspace,omitempty"`
-	// Grants allow this request on top of stored approvals, e.g. the tools an
-	// active skill allows. Deny rules, roots and confirm-each-time paths
-	// still come first.
-	Grants []Rule `json:"-"`
+	// The conversation's: see Scope. Grants allow this request on top of
+	// stored approvals; deny rules, roots and confirm-each-time paths still
+	// come first.
+	Mode   interact.Mode `json:"-"`
+	UI     interact.UI   `json:"-"`
+	Roots  []string      `json:"-"`
+	Grants []Rule        `json:"-"`
 }
 
 type Decision struct {

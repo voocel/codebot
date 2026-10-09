@@ -145,7 +145,7 @@ type (
 )
 
 func newModel(a *app.App, version string) *Model {
-	m := &Model{app: a, version: version, cmds: commands.New(a, version), mode: a.Mode(), tip: randomTip()}
+	m := &Model{app: a, version: version, cmds: commands.New(a, version), mode: a.Current().Mode(), tip: randomTip()}
 	m.editor = editor.New(m.commands, func() string { return m.conv.Cwd() })
 	m.editor.SetHistory(editor.NewHistory(filepath.Join(config.UserConfigDir(), "history.jsonl"), a.Cwd()))
 	m.open(a.Current())
@@ -284,7 +284,8 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 
 	case approveMsg:
 		m.t.Wait(msg.req.ToolID, true)
-		p := panel.NewPermission(msg.req, msg.reply, func() { m.app.SetMode(interact.ModeAcceptEdits) })
+		conv := m.conv
+		p := panel.NewPermission(msg.req, msg.reply, func() { conv.SetMode(interact.ModeAcceptEdits) })
 		return tea.Batch(m.push(p), m.alert("Allow "+transcript.Title(msg.req.Tool)+"?"))
 	case approvedMsg:
 		m.t.Wait(msg.tool, false)
@@ -474,7 +475,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case "shift+tab":
 		i := slices.Index(interact.Modes, m.mode)
-		m.app.SetMode(interact.Modes[(i+1)%len(interact.Modes)])
+		m.conv.SetMode(interact.Modes[(i+1)%len(interact.Modes)])
 		return nil
 	case "home", "end":
 		if m.editor.Empty() {

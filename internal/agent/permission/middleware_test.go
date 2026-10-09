@@ -22,17 +22,39 @@ func (approveFunc) Ask(context.Context, []interact.Question) (interact.Answers, 
 	return interact.Answers{}, interact.ErrUnsupported
 }
 
-func newEngine(t *testing.T, cfg Config) *Engine {
+// engineCfg is an Engine's Config with what one conversation brings.
+type engineCfg struct {
+	Cwd     string
+	Rules   *RuleSet
+	Roots   FilesystemRoots
+	OnAudit func(AuditEntry)
+	Mode    interact.Mode
+	UI      interact.UI
+}
+
+// testEngine decides as the conversation of its engineCfg.
+type testEngine struct {
+	*Engine
+	mode interact.Mode
+	ui   interact.UI
+}
+
+func (e testEngine) Decide(ctx context.Context, req Request) (*Decision, error) {
+	req.Mode, req.UI = e.mode, e.ui
+	return e.Engine.Decide(ctx, req)
+}
+
+func newEngine(t *testing.T, cfg engineCfg) testEngine {
 	t.Helper()
 	if cfg.Cwd == "" {
 		cfg.Cwd = t.TempDir()
 	}
 	t.Setenv("HOME", t.TempDir()) // approvals are stored under the home
-	e, err := NewEngine(cfg)
+	e, err := NewEngine(Config{Cwd: cfg.Cwd, Rules: cfg.Rules, Roots: cfg.Roots, OnAudit: cfg.OnAudit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return e
+	return testEngine{e, cfg.Mode, cfg.UI}
 }
 
 func noGrants() []Rule { return nil }
@@ -40,8 +62,8 @@ func noGrants() []Rule { return nil }
 func noMeta(string) Metadata { return Metadata{} }
 
 // gate returns a function reporting whether e lets a call run.
-func gate(e *Engine, grants func() []Rule, meta func(string) Metadata) func(ctx context.Context, name, args string) (bool, error) {
-	mw := e.Middleware(grants, meta)
+func gate(e testEngine, grants func() []Rule, meta func(string) Metadata) func(ctx context.Context, name, args string) (bool, error) {
+	mw := e.Middleware(Scope{Mode: func() interact.Mode { return e.mode }, UI: e.ui, Grants: grants, Meta: meta})
 	return func(ctx context.Context, name, args string) (bool, error) {
 		ran := false
 		tool := agentcore.Tool{Name: name}
@@ -57,7 +79,7 @@ func gate(e *Engine, grants func() []Rule, meta func(string) Metadata) func(ctx 
 func TestMiddlewareResolvesPathsWhereTheToolRuns(t *testing.T) {
 	main, wt := t.TempDir(), t.TempDir()
 	var summaries []string
-	e := newEngine(t, Config{
+	e := newEngine(t, engineCfg{
 		Cwd:     main,
 		Mode:    interact.ModeTrust,
 		Roots:   FilesystemRoots{ReadRoots: []string{main, wt}, WriteRoots: []string{main, wt}},
@@ -76,7 +98,7 @@ func TestMiddlewareResolvesPathsWhereTheToolRuns(t *testing.T) {
 }
 
 func TestMiddlewareGrantsComeFromTheConversation(t *testing.T) {
-	e := newEngine(t, Config{Mode: interact.ModeBalanced})
+	e := newEngine(t, engineCfg{Mode: interact.ModeBalanced})
 	var grants []Rule
 	decide := gate(e, func() []Rule { return grants }, noMeta)
 	run := func() bool {
@@ -107,7 +129,7 @@ func TestDangerousPathsAreConfirmedEachTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	var asked []interact.Approval
-	e := newEngine(t, Config{
+	e := newEngine(t, engineCfg{
 		Mode:  interact.ModeTrust,
 		Rules: rules,
 		UI: approveFunc(func(_ context.Context, a interact.Approval) (interact.Verdict, error) {
@@ -134,16 +156,16 @@ func TestDecideAskUserHonorsDenyRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ran, err := gate(newEngine(t, Config{Rules: rules}), noGrants, noMeta)(context.Background(), "ask_user", `{"questions":[]}`); err != nil || ran {
+	if ran, err := gate(newEngine(t, engineCfg{Rules: rules}), noGrants, noMeta)(context.Background(), "ask_user", `{"questions":[]}`); err != nil || ran {
 		t.Fatalf("ran %v, %v", ran, err)
 	}
-	if ran, err := gate(newEngine(t, Config{Mode: interact.ModeBalanced}), noGrants, noMeta)(context.Background(), "ask_user", `{"questions":[]}`); err != nil || !ran {
+	if ran, err := gate(newEngine(t, engineCfg{Mode: interact.ModeBalanced}), noGrants, noMeta)(context.Background(), "ask_user", `{"questions":[]}`); err != nil || !ran {
 		t.Fatalf("ask_user is internal: ran %v, %v", ran, err)
 	}
 }
 
 func TestMiddlewareUsesToolMetadata(t *testing.T) {
-	e := newEngine(t, Config{Mode: interact.ModeBalanced})
+	e := newEngine(t, engineCfg{Mode: interact.ModeBalanced})
 	for capability, want := range map[Capability]bool{
 		CapabilityRead:  true,
 		CapabilityWrite: false, // asked, and nobody answers
@@ -162,7 +184,7 @@ func TestMiddlewareUsesToolMetadata(t *testing.T) {
 
 func TestMiddlewareApprovalCarriesTheCallAndTheWarning(t *testing.T) {
 	var got interact.Approval
-	e := newEngine(t, Config{
+	e := newEngine(t, engineCfg{
 		Mode: interact.ModeBalanced,
 		UI: approveFunc(func(_ context.Context, a interact.Approval) (interact.Verdict, error) {
 			got = a

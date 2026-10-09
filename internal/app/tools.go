@@ -17,7 +17,7 @@ import (
 // buildTools leaves out MCP tools, which specLocked adds. Callers hold c.mu.
 func (c *Conversation) buildTools() []agentcore.Tool {
 	a := c.app
-	ws := agentcoretools.Workspace{Dir: c.cwd, FS: a.opts.FS, Files: c.files, Tasks: c.tasks}
+	ws := agentcoretools.Workspace{Dir: c.cwd, FS: c.frontend.FS, Files: c.files, Tasks: c.tasks}
 
 	// Sub-agents get every tool up to here, re-pooled per agent.
 	out := append(ws.Tools(),
@@ -25,8 +25,8 @@ func (c *Conversation) buildTools() []agentcore.Tool {
 		tools.NewWebSearch(a.settings.SearchProvider, a.settings.SearchAPIKey),
 		tools.NewTodoWrite(),
 	)
-	if a.opts.Interactive {
-		out = append(out, tools.NewAskUser(a.opts.UI))
+	if c.frontend.Interactive {
+		out = append(out, tools.NewAskUser(c.frontend.UI))
 	}
 
 	c.subagents = c.buildSubagents(out, ws)

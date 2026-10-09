@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -139,7 +141,7 @@ func (a *App) reload() error {
 	}
 	a.permissions.Configure(rules, filesystemRoots(a.cwd, settings, ext.Set))
 	a.ext.Store(ext)
-	if c := a.Current(); c != nil {
+	for _, c := range a.open() {
 		c.Reload()
 	}
 	a.events.publish(Event{Kind: Reloaded})
@@ -162,7 +164,7 @@ func (a *App) connectMCP(ctx context.Context, restart bool) MCPReport {
 	if restart {
 		a.mcp.Configure(ctx, nil)
 	}
-	servers := a.Extensions().MCPConfig()
+	servers := a.mcpServers()
 	failures := a.mcp.Configure(ctx, servers)
 	report := MCPReport{Servers: len(servers), Connected: len(servers) - len(failures), Tools: a.refreshMCP()}
 	for _, f := range failures {
@@ -174,6 +176,45 @@ func (a *App) connectMCP(ctx context.Context, restart bool) MCPReport {
 	}
 	slices.Sort(report.Login)
 	return report
+}
+
+// UseMCPServers adds the MCP servers a frontend is set up with, such as an
+// ACP client's, to the settings' own, which win a name both use. It returns
+// at once: the tools join as the servers connect, and failures are logged.
+func (a *App) UseMCPServers(servers map[string]config.MCPServer) {
+	a.mu.Lock()
+	changed := false
+	for name, s := range servers {
+		if !reflect.DeepEqual(a.offeredMCP[name], s) {
+			a.offeredMCP[name], changed = s, true
+		}
+	}
+	a.mu.Unlock()
+	if !changed {
+		return
+	}
+	go func() {
+		report := a.connectMCP(context.Background(), false)
+		for _, e := range report.Errors {
+			log.Printf("mcp: %s", e)
+		}
+		for _, name := range report.Login {
+			log.Printf("mcp: %s needs a login: log in with /mcp in codebot", name)
+		}
+	}()
+}
+
+// mcpServers are the settings' servers and those of UseMCPServers.
+func (a *App) mcpServers() map[string]config.MCPServer {
+	servers := a.Extensions().MCPConfig()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for name, s := range a.offeredMCP {
+		if _, ok := servers[name]; !ok {
+			servers[name] = s
+		}
+	}
+	return servers
 }
 
 // MCPLogin is an OAuth login waiting for the user to authorize in a browser.
@@ -220,7 +261,7 @@ func (a *App) refreshMCP() int {
 	defer cancel()
 	tools, perms := a.mcp.Tools(ctx)
 	a.offered.Store(&mcpOffer{tools: tools, permissions: perms, instructions: strings.Join(a.mcp.Instructions(), "\n\n")})
-	if c := a.Current(); c != nil {
+	for _, c := range a.open() {
 		c.mcpChanged()
 	}
 	a.events.publish(Event{Kind: MCPChanged})

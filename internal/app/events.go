@@ -15,7 +15,7 @@ const (
 	SessionEvent Kind = iota
 	// Opened means Conversation is now the current one.
 	Opened
-	// ModeChanged carries the new permission mode in Mode.
+	// ModeChanged carries Conversation's new permission mode in Mode.
 	ModeChanged
 	MCPChanged
 	// Reloaded means the extensions, including project trust, reloaded.

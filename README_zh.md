@@ -55,7 +55,8 @@
 - 图片粘贴（Ctrl+V），支持选择（↑）和删除（Delete）
 - Todo 清单固定在输入区上方
 - 非交互管道模式（`-p`）
-- 斜杠命令：`/model`、`/rewind`、`/status`、`/tasks`、`/permissions`、`/memory`、`/init` 等（`/help` 列出全部）；每个 skill 也是一个 `/` 命令
+- 通过 ACP 接入编辑器（`-acp`，如 Zed）：多个会话并行，各自有自己的权限模式，可以在项目里，也可以在 linked git worktree 里；线程历史；模型、推理强度和模式选择；`@` 引用文件和图片；编辑器配置的 MCP 服务器；原生 diff，todo 清单显示为计划
+- 斜杠命令：`/model`、`/rewind`、`/status`、`/tasks`、`/permissions`、`/memory`、`/init` 等（`/help` 列出全部）；每个 skill 也是一个 `/` 命令，print 模式和 ACP 里同样可用，ACP 下编辑器会列出它们
 
 **扩展**
 - Skills（Agent Skills 的 `SKILL.md`）、子 agent、MCP 服务器、hooks，来自你自己，也可以来自项目
@@ -123,11 +124,17 @@ codebot
 # 管道模式
 echo "explain main.go" | codebot -p
 
+# 管道模式里用 skill
+codebot -p "/review the auth module"
+
 # 继续上次会话
 codebot -c
 
 # 严格安全策略
 codebot --mode strict
+
+# 通过 ACP 为编辑器服务
+codebot -acp
 ```
 
 ## 设计原则

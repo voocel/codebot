@@ -82,13 +82,15 @@ type entry struct {
 type Runner struct {
 	sessionID string
 	model     func() agentcore.Model
+	dir       func() string
 	hooks     atomic.Pointer[map[EventType][]entry]
 }
 
-// New has no hooks until Set. Prompt hooks call model each time they run, so
-// they follow model switches.
-func New(sessionID string, model func() agentcore.Model) *Runner {
-	r := &Runner{sessionID: sessionID, model: model}
+// New has no hooks until Set. Prompt hooks call model each time they run,
+// and commands run in dir, so they follow model switches and the
+// conversation into a worktree.
+func New(sessionID string, model func() agentcore.Model, dir func() string) *Runner {
+	r := &Runner{sessionID: sessionID, model: model, dir: dir}
 	r.Set(nil)
 	return r
 }
@@ -326,5 +328,5 @@ func (r *Runner) execEntry(ctx context.Context, e entry, payload Payload) outcom
 		"HOOK_SESSION_ID=" + r.sessionID,
 	}, e.env...)
 
-	return e.exec.execute(ctx, data, env)
+	return e.exec.execute(ctx, r.dir(), data, env)
 }

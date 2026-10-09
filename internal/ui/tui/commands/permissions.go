@@ -40,11 +40,11 @@ func permissions(a *app.App) Command {
 		}
 		first := items()
 		if len(first) == 0 {
-			return note("Nothing runs without asking beyond the " + string(a.Mode()) + " mode: no approval is remembered and the settings hold no rules.")
+			return note("Nothing runs without asking beyond the " + string(a.Current().Mode()) + " mode: no approval is remembered and the settings hold no rules.")
 		}
 		var l *panel.List
 		l = &panel.List{
-			Title: "Permissions · " + string(a.Mode()) + " mode",
+			Title: "Permissions · " + string(a.Current().Mode()) + " mode",
 			Items: first,
 			Hint:  theme.Hint("↑↓", "select", "x", "forget", "esc", "close"),
 			Keys: func(k string, it *panel.Item) (tea.Cmd, bool, bool) {

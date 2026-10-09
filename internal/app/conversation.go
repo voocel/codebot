@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/voocel/codebot/internal/agent/tools"
 	"github.com/voocel/codebot/internal/extension/hooks"
 	"github.com/voocel/codebot/internal/infra/config"
+	"github.com/voocel/codebot/internal/infra/telemetry"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
 	"github.com/voocel/codebot/internal/session/storage"
@@ -27,12 +29,14 @@ import (
 	"github.com/voocel/codebot/internal/workspace/worktree"
 )
 
-// Conversation holds everything that lives as long as one session. Opening
-// another session replaces the whole Conversation; nothing is reset.
+// Conversation holds everything that lives as long as one session; another
+// session is another Conversation, so nothing is ever reset.
 type Conversation struct {
 	app        *App
 	id         string
 	dir        string
+	frontend   Frontend
+	home       string // the checkout it opened in, which it returns to from a worktree
 	session    *session.Session
 	tasks      *task.Runtime
 	agents     *AgentHub
@@ -41,11 +45,13 @@ type Conversation struct {
 	files      *agentcoretools.FileReadState
 	limiter    *tools.OutputLimiter
 	validation *hooks.Validation
+	modeMu     sync.Mutex // orders mode changes with their events
 
 	system []litellm.Block // see context.go
 
 	// mu guards the fields below. Never take the App's lock while holding it.
 	mu        sync.Mutex
+	mode      interact.Mode
 	cwd       string
 	worktree  *worktreeState
 	model     modelChoice
@@ -59,7 +65,7 @@ type Conversation struct {
 	grants []permission.Rule
 }
 
-func openConversation(a *App, store *storage.Store, state storage.State) (*Conversation, error) {
+func openConversation(a *App, store *storage.Store, state storage.State, cwd string, f Frontend, mode interact.Mode) (*Conversation, error) {
 	id := store.Header().SessionID
 	recorded := state.Model
 	if recorded.Model == "" {
@@ -71,25 +77,28 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 	}
 
 	c := &Conversation{
-		app:    a,
-		id:     id,
-		dir:    filepath.Join(config.SessionsDir(a.cwd), id),
-		agents: NewAgentHub(),
-		files:  agentcoretools.NewFileReadState(),
-		system: a.systemPrompt(),
-		cwd:    a.cwd,
-		model:  model,
+		app:      a,
+		id:       id,
+		dir:      filepath.Join(config.SessionsDir(a.cwd), id),
+		frontend: f,
+		home:     cwd,
+		agents:   NewAgentHub(),
+		files:    agentcoretools.NewFileReadState(),
+		system:   a.systemPrompt(),
+		mode:     mode,
+		cwd:      cwd,
+		model:    model,
 	}
 	c.tasks = task.NewRuntime(filepath.Join(c.dir, "tasks"), c.background)
 	c.limiter = tools.NewOutputLimiter(filepath.Join(c.dir, tools.ToolOutputsSubdir))
-	if a.settings.Snapshot && worktree.IsRepo(a.cwd) {
-		c.snapshots = snapshot.New(config.SnapshotDir(a.cwd), a.cwd)
+	if a.settings.Snapshot && worktree.IsRepo(cwd) {
+		c.snapshots = snapshot.New(config.SnapshotDir(cwd), cwd)
 	}
-	c.hooks = hooks.New(id, c.hookModel)
+	c.hooks = hooks.New(id, c.hookModel, c.Cwd)
 	c.hooks.Set(a.Extensions().HooksConfig())
 	c.validation = hooks.NewValidation(c.hooks)
 	config.EnsureMemoryDir(a.cwd)
-	c.skills, c.workspace = a.workspace(a.cwd)
+	c.skills, c.workspace = a.workspace(cwd)
 	c.tools = c.buildTools()
 	c.mcpTools = a.offered.Load().tools
 
@@ -100,18 +109,33 @@ func openConversation(a *App, store *storage.Store, state storage.State) (*Conve
 	return c, nil
 }
 
-// start runs once the conversation is current and the previous one has
-// closed. It re-reads the MCP offer in case a refresh went to the previous
-// conversation.
+// start runs once the conversation is open, and with Open once the one it
+// replaces has closed. It re-reads the MCP offer in case a refresh came
+// before the conversation was open.
 func (c *Conversation) start() {
 	c.mcpChanged()
-	c.app.tracer.SetSession(c.id)
 	c.hooks.RunSessionStart()
 	c.session.Subscribe(func(ev session.Event) {
 		if ev.Kind == session.Idle {
 			c.hooks.RunNotification("agent response complete")
 		}
 	})
+}
+
+// Close ends the conversation; its session stays to resume.
+func (c *Conversation) Close() {
+	a := c.app
+	a.mu.Lock()
+	unsubscribe, open := a.conversations[c]
+	delete(a.conversations, c)
+	if a.current == c {
+		a.current = nil
+	}
+	a.mu.Unlock()
+	if open {
+		unsubscribe()
+		c.close()
+	}
 }
 
 func (c *Conversation) close() {
@@ -149,6 +173,35 @@ func (c *Conversation) Submit(ctx context.Context, blocks []litellm.Block) error
 	}
 	c.post(msgs)
 	return nil
+}
+
+// Prompt is Submit for frontends without commands of their own: input that
+// names a skill the user can invoke, "/name args", invokes it, and the answer
+// of a skill that forks is returned.
+func (c *Conversation) Prompt(ctx context.Context, blocks []litellm.Block) (string, error) {
+	if name, args, ok := c.skillCommand(blocks); ok {
+		return c.InvokeSkill(ctx, name, args)
+	}
+	return "", c.Submit(ctx, blocks)
+}
+
+// skillCommand reads text alone: a skill takes no images.
+func (c *Conversation) skillCommand(blocks []litellm.Block) (name, args string, ok bool) {
+	var text strings.Builder
+	for _, b := range blocks {
+		t, isText := b.(litellm.TextBlock)
+		if !isText {
+			return "", "", false
+		}
+		text.WriteString(t.Text)
+	}
+	line, ok := strings.CutPrefix(strings.TrimSpace(text.String()), "/")
+	if !ok {
+		return "", "", false
+	}
+	name, args, _ = strings.Cut(line, " ")
+	ok = slices.ContainsFunc(c.SkillCommands(), func(s Skill) bool { return s.Name == name })
+	return name, strings.TrimSpace(args), ok
 }
 
 func (c *Conversation) promptSubmit(ctx context.Context, blocks []litellm.Block) ([]agentcore.Message, error) {
@@ -193,19 +246,21 @@ func (c *Conversation) Wait(ctx context.Context) error { return c.session.Wait(c
 
 func (c *Conversation) Cancel() { c.session.Cancel() }
 
-func (c *Conversation) Compact(ctx context.Context) error { return c.session.Compact(ctx) }
+func (c *Conversation) Compact(ctx context.Context) error {
+	return c.session.Compact(telemetry.WithSession(ctx, c.id))
+}
 
 // Query answers a side question without adding to the history. It keeps the
 // conversation's reasoning settings, because a request with different ones
 // misses the prompt cache.
 func (c *Conversation) Query(ctx context.Context, question string) (string, error) {
-	return c.session.Query(ctx, question, 0)
+	return c.session.Query(telemetry.WithSession(ctx, c.id), question, 0)
 }
 
 // Suggest predicts the user's next input, or "" when nothing fits. Like
 // Query, it keeps the conversation's reasoning settings.
 func (c *Conversation) Suggest(ctx context.Context) (string, error) {
-	text, err := c.session.Query(ctx, prompt.Suggestion, suggestionMaxTokens)
+	text, err := c.session.Query(telemetry.WithSession(ctx, c.id), prompt.Suggestion, suggestionMaxTokens)
 	if err != nil {
 		return "", err
 	}
@@ -237,7 +292,7 @@ func (c *Conversation) Status() Status {
 	c.mu.Unlock()
 	return Status{
 		Status:     c.session.Status(),
-		Mode:       c.app.Mode(),
+		Mode:       c.Mode(),
 		Cwd:        c.Cwd(),
 		Worktree:   c.Worktree(),
 		Tasks:      c.tasks.Active(),
@@ -246,10 +301,41 @@ func (c *Conversation) Status() Status {
 	}
 }
 
+// Model returns the provider, model and reasoning effort of the next run.
+func (c *Conversation) Model() (prov, name, effort string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.model.provider, c.model.name, c.model.effort
+}
+
+func (c *Conversation) Mode() interact.Mode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mode
+}
+
+// SetMode sets the permission mode of the conversation's tool calls.
+func (c *Conversation) SetMode(m interact.Mode) {
+	c.modeMu.Lock()
+	defer c.modeMu.Unlock()
+	c.mu.Lock()
+	changed := c.mode != m
+	c.mode = m
+	c.mu.Unlock()
+	if changed {
+		c.app.events.publish(Event{Kind: ModeChanged, Conversation: c, Mode: m})
+	}
+}
+
 // GitBranch returns "" outside a repository.
 func (c *Conversation) GitBranch() string { return worktree.CurrentBranch(c.Cwd()) }
 
 func (c *Conversation) Skills() []Skill { return c.activeSkills().List() }
+
+// SkillCommands returns the skills the user can invoke as "/name args".
+func (c *Conversation) SkillCommands() []Skill {
+	return slices.DeleteFunc(c.Skills(), func(s Skill) bool { return s.DisableUserInvocation })
+}
 
 func (c *Conversation) activeSkills() *skill.Catalog {
 	c.mu.Lock()
@@ -321,7 +407,7 @@ func (c *Conversation) InvokeSkill(ctx context.Context, name, args string) (stri
 	}
 	if inv.Fork {
 		c.skillInvoked(inv)
-		res, err := tools.ForkSkill(ctx, inv, c.forkSkill)
+		res, err := tools.ForkSkill(c.runContext(ctx), inv, c.forkSkill)
 		if err != nil {
 			return "", err
 		}

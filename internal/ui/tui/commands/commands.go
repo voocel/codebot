@@ -72,8 +72,8 @@ func New(a *app.App, version string) *Registry {
 
 func (r *Registry) all() []Command {
 	cmds := slices.Clone(r.builtins)
-	for _, sk := range r.app.Current().Skills() {
-		if sk.DisableUserInvocation || r.builtin(sk.Name) {
+	for _, sk := range r.app.Current().SkillCommands() {
+		if r.builtin(sk.Name) {
 			continue
 		}
 		cmds = append(cmds, Command{

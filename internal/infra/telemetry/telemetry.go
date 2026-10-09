@@ -1,14 +1,13 @@
 // Package telemetry exports traces over OTLP/HTTP (e.g. to Langfuse):
 // generation spans through a litellm observer, run and tool spans through
-// Tracer. Every span carries the current session id. When disabled, all of
-// it is a no-op.
+// Tracer. Every span carries the id of the session its context is for (see
+// WithSession). When disabled, all of it is a no-op.
 package telemetry
 
 import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/codebot/internal/infra/config"
@@ -25,8 +24,14 @@ import (
 
 // A nil Tracer does nothing; Setup returns nil when telemetry is disabled.
 type Tracer struct {
-	tracer    trace.Tracer
-	sessionID atomic.Pointer[string]
+	tracer trace.Tracer
+}
+
+type sessionKey struct{}
+
+// WithSession marks the spans started in ctx as the session's.
+func WithSession(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionKey{}, id)
 }
 
 type Run struct {
@@ -38,7 +43,7 @@ func (t *Tracer) StartRun(ctx context.Context, name string) (context.Context, *R
 		return ctx, nil
 	}
 	ctx, span := t.tracer.Start(ctx, name)
-	span.SetAttributes(t.sessionAttributes()...)
+	span.SetAttributes(sessionAttributes(ctx)...)
 	return ctx, &Run{span: span}
 }
 
@@ -59,7 +64,7 @@ func (t *Tracer) ToolMiddleware() agentcore.ToolMiddleware {
 	}
 	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolFunc) (agentcore.Result, error) {
 		ctx, span := t.tracer.Start(ctx, "tool "+call.Name)
-		span.SetAttributes(append(t.sessionAttributes(),
+		span.SetAttributes(append(sessionAttributes(ctx),
 			attribute.String("tool.name", call.Name),
 			attribute.String("tool.call.id", call.ID),
 		)...)
@@ -76,19 +81,12 @@ func (t *Tracer) ToolMiddleware() agentcore.ToolMiddleware {
 	}
 }
 
-func (t *Tracer) SetSession(id string) {
-	if t == nil {
-		return
-	}
-	t.sessionID.Store(&id)
-}
-
-func (t *Tracer) sessionAttributes() []attribute.KeyValue {
-	id := t.sessionID.Load()
-	if id == nil {
+func sessionAttributes(ctx context.Context) []attribute.KeyValue {
+	id, ok := ctx.Value(sessionKey{}).(string)
+	if !ok {
 		return nil
 	}
-	return sessionSpanAttributes(*id)
+	return sessionSpanAttributes(id)
 }
 
 // Setup returns (nil, nil, noop, nil) when telemetry is disabled. The
@@ -126,14 +124,8 @@ func Setup(ctx context.Context, cfg config.TelemetryConfig) (litellm.Observer, *
 	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
 	otel.SetTracerProvider(tp)
 
-	// The resolver reads the session id on every call, so each generation,
-	// run and tool span carries the id of the session open at the time.
 	tracer := &Tracer{tracer: tp.Tracer("codebot")}
-	resolver := func(context.Context) []attribute.KeyValue {
-		return tracer.sessionAttributes()
-	}
-
-	observer := litellmotel.New(tp.Tracer("litellm"), litellmotel.WithSpanAttributes(resolver))
+	observer := litellmotel.New(tp.Tracer("litellm"), litellmotel.WithSpanAttributes(sessionAttributes))
 	return observer, tracer, tp.Shutdown, nil
 }
 
