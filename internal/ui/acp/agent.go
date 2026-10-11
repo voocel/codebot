@@ -105,7 +105,7 @@ func (s *Server) open(id, cwd string, servers []acp.McpServer) (*session, error)
 	s.mu.Unlock()
 	sess := &session{srv: s}
 	sess.fs = &EditorFS{conn: s.conn, canRead: caps.ReadTextFile, canWrite: caps.WriteTextFile, logf: log.New(os.Stderr, "", log.LstdFlags).Printf}
-	conv, err := s.app.Start(id, cwd, app.Frontend{UI: sess, FS: sess.fs})
+	conv, err := s.app.Start(id, cwd, app.Frontend{Name: "acp", UI: sess, FS: sess.fs})
 	if err != nil {
 		return nil, err
 	}

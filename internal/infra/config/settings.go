@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -85,11 +86,13 @@ func ModelSpec(providers map[string]ProviderConfig, name, model string) (provide
 	return provider.ModelSpec{Provider: name, Type: typ, Model: model, Conn: providers[name].connection()}, nil
 }
 
-type TelemetryConfig struct {
-	Enabled   bool   `json:"enabled,omitempty"`
-	Endpoint  string `json:"endpoint,omitempty"`   // OTLP/HTTP endpoint URL
-	PublicKey string `json:"public_key,omitempty"` // basic-auth username
-	SecretKey string `json:"secret_key,omitempty"` // basic-auth password
+// LangfuseConfig names the Langfuse project codebot traces its work to; its
+// keys turn the tracing on. Unset fields fall back to LANGFUSE_PUBLIC_KEY,
+// LANGFUSE_SECRET_KEY and LANGFUSE_BASE_URL.
+type LangfuseConfig struct {
+	PublicKey string `json:"public_key,omitempty"`
+	SecretKey string `json:"secret_key,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"` // "" = Langfuse Cloud EU
 }
 
 func (pc ProviderConfig) providerType(name string) (string, error) {
@@ -214,7 +217,7 @@ type Settings struct {
 
 	Permissions *PermissionsConfig `json:"permissions,omitempty"`
 
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
+	Langfuse *LangfuseConfig `json:"langfuse,omitempty"`
 
 	// Snapshot enables the checkpoints behind /rewind; unset means on. Large
 	// repos may turn it off because every turn scans the workspace.
@@ -242,7 +245,7 @@ type Resolved struct {
 
 	Permissions PermissionsConfig
 
-	Telemetry TelemetryConfig
+	Langfuse LangfuseConfig
 
 	Snapshot bool
 }
@@ -294,8 +297,8 @@ func (s Settings) resolve() Resolved {
 	if s.Permissions != nil {
 		r.Permissions = *s.Permissions
 	}
-	if s.Telemetry != nil {
-		r.Telemetry = *s.Telemetry
+	if s.Langfuse != nil {
+		r.Langfuse = *s.Langfuse
 	}
 	if s.Snapshot != nil {
 		r.Snapshot = *s.Snapshot
@@ -462,6 +465,11 @@ func (l Layers) Resolve(cwd string, granted Settings) (Resolved, error) {
 	if r.SearchAPIKey == "" {
 		r.SearchAPIKey = os.Getenv(strings.ToUpper(r.SearchProvider) + "_API_KEY")
 	}
+	// The variables a Langfuse project hands out.
+	lf := &r.Langfuse
+	lf.PublicKey = cmp.Or(lf.PublicKey, os.Getenv("LANGFUSE_PUBLIC_KEY"))
+	lf.SecretKey = cmp.Or(lf.SecretKey, os.Getenv("LANGFUSE_SECRET_KEY"))
+	lf.BaseURL = cmp.Or(lf.BaseURL, os.Getenv("LANGFUSE_BASE_URL"))
 	r.Permissions = normalizePermissionRoots(cwd, r.Permissions)
 	return r, nil
 }
@@ -473,14 +481,14 @@ func (l Layers) Resolve(cwd string, granted Settings) (Resolved, error) {
 //     servers, plugins, allow rules, roots) and apply only once the user
 //     agrees;
 //   - fields that decide where calls go and whose credentials they carry
-//     (providers, search provider and key, telemetry) belong to the user
+//     (providers, search provider and key, langfuse) belong to the user
 //     alone, so they are dropped and listed in refused.
 func ForProject(s Settings) (open, grants Settings, refused []string) {
 	for name, set := range map[string]bool{
 		"providers":       s.Providers != nil,
 		"search_provider": s.SearchProvider != nil,
 		"search_api_key":  s.SearchAPIKey != nil,
-		"telemetry":       s.Telemetry != nil,
+		"langfuse":        s.Langfuse != nil,
 	} {
 		if set {
 			refused = append(refused, name)
@@ -488,7 +496,7 @@ func ForProject(s Settings) (open, grants Settings, refused []string) {
 	}
 	slices.Sort(refused)
 	open = s
-	open.Providers, open.SearchProvider, open.SearchAPIKey, open.Telemetry = nil, nil, nil, nil
+	open.Providers, open.SearchProvider, open.SearchAPIKey, open.Langfuse = nil, nil, nil, nil
 	open.Hooks, open.MCPServers, open.Plugins, open.Permissions = nil, nil, nil, nil
 	grants = Settings{Hooks: s.Hooks, MCPServers: s.MCPServers, Plugins: s.Plugins}
 	if p := s.Permissions; p != nil {
@@ -576,8 +584,8 @@ func mergeSettings(base, override Settings) Settings {
 			WriteRoots: slices.Concat(p.WriteRoots, o.WriteRoots),
 		}
 	}
-	if override.Telemetry != nil {
-		base.Telemetry = override.Telemetry
+	if override.Langfuse != nil {
+		base.Langfuse = override.Langfuse
 	}
 	if override.Snapshot != nil {
 		base.Snapshot = override.Snapshot

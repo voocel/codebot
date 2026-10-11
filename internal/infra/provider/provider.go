@@ -9,6 +9,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/catalog"
 	llmprovider "github.com/voocel/litellm/provider"
 )
 
@@ -61,8 +62,10 @@ type ModelSpec struct {
 const fallbackMaxTokens = 32000
 
 // NewModelFactory names each provider as configured, so replay state goes
-// back only to the endpoint that issued it.
-func NewModelFactory(models *Models, clientOpts ...litellm.ClientOption) func(ModelSpec) (agentcore.Model, error) {
+// back only to the endpoint that issued it. observe, if set, gives each
+// model an observer of its calls, given the model's pricing, nil when
+// unknown; a nil observer observes nothing.
+func NewModelFactory(models *Models, observe func(*catalog.Pricing) litellm.Observer) func(ModelSpec) (agentcore.Model, error) {
 	return func(spec ModelSpec) (agentcore.Model, error) {
 		conn := spec.Conn
 		conn.Name = spec.Provider
@@ -70,11 +73,15 @@ func NewModelFactory(models *Models, clientOpts ...litellm.ClientOption) func(Mo
 		if err != nil {
 			return agentcore.Model{}, fmt.Errorf("create model %s/%s: %w", spec.Provider, spec.Model, err)
 		}
-		client, err := litellm.New(p, clientOpts...)
+		facts, _ := models.Lookup(spec)
+		var opts []litellm.ClientOption
+		if observe != nil {
+			opts = append(opts, litellm.WithObservers(observe(facts.Pricing)))
+		}
+		client, err := litellm.New(p, opts...)
 		if err != nil {
 			return agentcore.Model{}, fmt.Errorf("create model %s/%s: %w", spec.Provider, spec.Model, err)
 		}
-		facts, _ := models.Lookup(spec)
 		model := agentcore.Model{Client: client, Request: litellm.Request{Model: spec.Model}, Pricing: facts.Pricing}
 		if caps, _ := client.Capabilities(); caps.MaxTokensRequired {
 			model.Request.MaxTokens = new(cmp.Or(facts.MaxOutputTokens, fallbackMaxTokens))

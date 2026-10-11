@@ -20,7 +20,6 @@ import (
 
 	"github.com/voocel/agentcore"
 	agentcoretools "github.com/voocel/agentcore/tools"
-	"github.com/voocel/litellm"
 
 	"github.com/voocel/codebot/internal/agent/permission"
 	"github.com/voocel/codebot/internal/agent/skill"
@@ -55,11 +54,15 @@ type Options struct {
 	// PluginDirs are local plugins under development, loaded for this
 	// process only with everything they run allowed.
 	PluginDirs []string
+	// Version is codebot's, the release its traces are of.
+	Version string
 }
 
 // Frontend is what a conversation asks the user and reads files through.
 type Frontend struct {
-	UI interact.UI
+	// Name tags the conversation's traces: tui, print or acp.
+	Name string
+	UI   interact.UI
 	// FS backs read, write and edit; nil means the local filesystem.
 	FS agentcoretools.FS
 	// Interactive enables ask_user; headless frontends have no one to ask.
@@ -129,15 +132,11 @@ func Boot(opts Options) (*App, error) {
 	a.offered.Store(&mcpOffer{})
 	if a.newModel == nil {
 		a.models.Refresh(config.UserConfigDir())
-		observer, tracer, shutdown, err := telemetry.Setup(context.Background(), settings.Telemetry)
+		tracer, shutdown, err := telemetry.Setup(settings.Langfuse, a.opts.Version)
 		if err != nil {
 			return nil, err
 		}
-		var clientOpts []litellm.ClientOption
-		if observer != nil {
-			clientOpts = append(clientOpts, litellm.WithObservers(observer))
-		}
-		a.newModel = provider.NewModelFactory(a.models, clientOpts...)
+		a.newModel = provider.NewModelFactory(a.models, tracer.Observer)
 		a.tracer, a.shutdown = tracer, shutdown
 	}
 	if a.usage, err = skill.NewUsageTracker(filepath.Join(config.UserConfigDir(), "skill-usage.json")); err != nil {

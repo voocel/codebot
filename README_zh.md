@@ -58,6 +58,9 @@
 - 通过 ACP 接入编辑器（`-acp`，如 Zed）：多个会话并行，各自有自己的权限模式，可以在项目里，也可以在 linked git worktree 里；线程历史；模型、推理强度和模式选择；`@` 引用文件和图片；编辑器配置的 MCP 服务器；原生 diff，todo 清单显示为计划
 - 斜杠命令：`/model`、`/rewind`、`/status`、`/tasks`、`/permissions`、`/memory`、`/init` 等（`/help` 列出全部）；每个 skill 也是一个 `/` 命令，print 模式和 ACP 里同样可用，ACP 下编辑器会列出它们
 
+**可观测**
+- Langfuse 追踪：每一轮是一条 trace，包含模型看到和说的内容、工具调用及其审批和结果、子 agent，按会话归组，带每次调用的成本；压缩、`/btw` 和输入建议各自是单独的 trace
+
 **扩展**
 - Skills（Agent Skills 的 `SKILL.md`）、子 agent、MCP 服务器、hooks，来自你自己，也可以来自项目
 - [Agent Plugins](https://github.com/agentplugins/agent-plugins-spec) 格式的插件，把 skills、MCP 服务器、hooks 和子 agent 打包在一起，来自 git 或本地目录；插件要你整体同意后才生效，git 插件固定在你同意过的 commit
@@ -156,7 +159,7 @@ Codebot 采用分层的 Coding Agent 架构：
 
 ## 配置
 
-配置文件：`~/.codebot/settings.json`（你自己的）和项目根目录（所在 git 仓库的顶层）下的 `.codebot/settings.json`。项目的字段优先于你的，但有几项项目不能设置：`providers`、`search_provider`、`search_api_key` 和 `telemetry` 只认你自己的，所以仓库永远没法把你的 key 或对话发到别处。`/model` 的选择保存在你自己的文件里。
+配置文件：`~/.codebot/settings.json`（你自己的）和项目根目录（所在 git 仓库的顶层）下的 `.codebot/settings.json`。项目的字段优先于你的，但有几项项目不能设置：`providers`、`search_provider`、`search_api_key` 和 `langfuse` 只认你自己的，所以仓库永远没法把你的 key 或对话发到别处。`/model` 的选择保存在你自己的文件里。
 
 所有字段可选，参考 [settings.example.jsonc](settings.example.jsonc) 了解完整配置项及说明。
 
@@ -165,6 +168,8 @@ Provider 条目支持 `extra`，用于配置连接参数，作为 HTTP/客户端
 `type` 为 `anthropic` 的 provider 通过工具搜索按需加载工具，这需要 Claude 4.5 或更新的模型；更早的 Claude 模型，以及通过 Anthropic 兼容端点接入的其他厂商模型，可能会拒绝这类请求。
 
 在 Amazon Bedrock 上用 Claude 时，请走 Bedrock 的 Messages API，而不是 Converse：`type: "anthropic"`，`base_url: "https://bedrock-mantle.<region>.api.aws/anthropic"`，`api_key` 填 Bedrock API key，模型 ID 形如 `anthropic.claude-opus-5-5`。它使用 Anthropic 的请求格式，所以和直连 Anthropic 一样，工具通过工具搜索按需加载。Converse 不能延迟加载工具：对话中途加入的工具（比如晚连上的 MCP 服务器提供的）会改动请求，提示缓存会重新开始；对把思考内容绑定在请求前缀上的 Claude 模型（Fable 5.1、Opus 5.5、Sonnet 5.5），请求还可能被拒绝。
+
+`langfuse` 把追踪发到一个 Langfuse 项目：填它的 `public_key` 和 `secret_key`；用 Langfuse Cloud US 或自建实例时再填 `base_url`；也可以直接用 Langfuse 项目给出的 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` 和 `LANGFUSE_BASE_URL` 环境变量。输入输出会完整记录，其中形式可识别的凭证（API key、token、私钥）会被删除，所以请选你放心交给它代码的项目。每次调用的成本按 codebot 自己的价格计算，Langfuse 没有价格的模型也能看到成本。
 
 上下文窗口、输出上限和价格来自 LiteLLM 的模型列表：codebot 内置一份快照，每天刷新到 `~/.codebot/litellm-models.json`。
 

@@ -50,8 +50,10 @@ type RunSpec struct {
 	// Config.Compactor must be set. The Agent fills in Emit, Steering and
 	// FollowUp.
 	Config agentcore.Config
-	// WrapRun returns the run's context and a callback for the run's error.
-	WrapRun func(ctx context.Context) (context.Context, func(err error))
+	// WrapRun returns the context of a run on inputs, the user's and
+	// background inputs it answers, and a callback for its end, given the
+	// history after it and the run's error.
+	WrapRun func(ctx context.Context, inputs []agentcore.Message) (context.Context, func(history []agentcore.Message, err error))
 	// Context returns messages describing the current environment that the
 	// history does not already carry. They are prepended to each run's
 	// inputs, and appended to a compacted history, since compaction drops
@@ -475,9 +477,9 @@ func (s *Session) startPending() {
 	s.start(prompts)
 }
 
-func (s *Session) start(prompts []agentcore.Message) {
+func (s *Session) start(inputs []agentcore.Message) {
 	at := len(s.agent.Messages())
-	prompts = append(s.spec.Context(s.agent.Messages()), prompts...)
+	prompts := append(s.spec.Context(s.agent.Messages()), inputs...)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.run = &run{cancel: cancel}
 	s.refreshStatus()
@@ -485,10 +487,10 @@ func (s *Session) start(prompts []agentcore.Message) {
 	spec := s.spec
 	go func() {
 		defer cancel()
-		ctx, end := spec.WrapRun(ctx)
+		ctx, end := spec.WrapRun(ctx, inputs)
 		s.checkpoint(spec, at)
 		err := s.agent.Prompt(ctx, prompts...)
-		end(err)
+		end(s.agent.Messages(), err)
 		s.ops.push(s.runEnded)
 	}()
 }

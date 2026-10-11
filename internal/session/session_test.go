@@ -201,7 +201,9 @@ func spec(p litellm.Provider, tools ...agentcore.Tool) RunSpec {
 			Tools:     tools,
 			Compactor: fakeCompactor{},
 		},
-		WrapRun: func(ctx context.Context) (context.Context, func(error)) { return ctx, func(error) {} },
+		WrapRun: func(ctx context.Context, _ []agentcore.Message) (context.Context, func([]agentcore.Message, error)) {
+			return ctx, func([]agentcore.Message, error) {}
+		},
 		Context: func([]agentcore.Message) []agentcore.Message { return nil },
 	}
 }

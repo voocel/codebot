@@ -89,7 +89,7 @@ func TestForProjectClassifiesEveryField(t *testing.T) {
 		"provider": "open", "model": "open", "reasoning_effort": "open", "max_turns": "open",
 		"compact_window": "open", "compact_ratio": "open", "snapshot": "open",
 		"hooks": "grant", "mcp_servers": "grant", "plugins": "grant", "permissions": "grant",
-		"providers": "refused", "search_provider": "refused", "search_api_key": "refused", "telemetry": "refused",
+		"providers": "refused", "search_provider": "refused", "search_api_key": "refused", "langfuse": "refused",
 	}
 	typ := reflect.TypeFor[Settings]()
 	for i := range typ.NumField() {
@@ -109,14 +109,14 @@ func TestForProjectClassifiesEveryField(t *testing.T) {
 		Plugins:        []string{"github.com/acme/tools"},
 		Permissions:    &PermissionsConfig{Allow: []string{"Bash(x)"}, Deny: []string{"Bash(y)"}, ReadRoots: []string{"/r"}, WriteRoots: []string{"/w"}},
 		Providers:      map[string]*ProviderConfig{"p": {BaseURL: "https://evil"}},
-		SearchProvider: &str, SearchAPIKey: &str, Telemetry: &TelemetryConfig{Enabled: true},
+		SearchProvider: &str, SearchAPIKey: &str, Langfuse: &LangfuseConfig{PublicKey: "pk", SecretKey: "sk"},
 	}
 	open, grants, refused := ForProject(s)
-	if !slices.Equal(refused, []string{"providers", "search_api_key", "search_provider", "telemetry"}) {
+	if !slices.Equal(refused, []string{"langfuse", "providers", "search_api_key", "search_provider"}) {
 		t.Errorf("refused %q", refused)
 	}
-	if open.Providers != nil || open.SearchProvider != nil || open.SearchAPIKey != nil || open.Telemetry != nil ||
-		grants.Providers != nil || grants.SearchProvider != nil || grants.SearchAPIKey != nil || grants.Telemetry != nil {
+	if open.Providers != nil || open.SearchProvider != nil || open.SearchAPIKey != nil || open.Langfuse != nil ||
+		grants.Providers != nil || grants.SearchProvider != nil || grants.SearchAPIKey != nil || grants.Langfuse != nil {
 		t.Error("kept a field a project may not set")
 	}
 	if open.Model == nil || open.Snapshot == nil || open.Permissions == nil || !slices.Equal(open.Permissions.Deny, []string{"Bash(y)"}) {
@@ -130,13 +130,14 @@ func TestForProjectClassifiesEveryField(t *testing.T) {
 	}
 
 	// Resolve applies only the grants passed to it.
+	t.Setenv("LANGFUSE_PUBLIC_KEY", "")
 	effort := "high"
 	s.ReasoningEffort = &effort
 	r, err := Layers{Root: t.TempDir(), Project: s}.Resolve(t.TempDir(), Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Permissions.Allow) > 0 || !slices.Equal(r.Permissions.Deny, []string{"Bash(y)"}) || r.Providers["p"].BaseURL != "" || r.Telemetry.Enabled {
+	if len(r.Permissions.Allow) > 0 || !slices.Equal(r.Permissions.Deny, []string{"Bash(y)"}) || r.Providers["p"].BaseURL != "" || r.Langfuse.PublicKey != "" {
 		t.Errorf("resolved %+v", r)
 	}
 }
@@ -265,5 +266,19 @@ func TestProjectSettingsStayInTheProject(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(dotfiles); !strings.Contains(string(data), "~/kit") || !strings.Contains(string(data), "sk-secret") {
 		t.Errorf("dotfiles %s", data)
+	}
+}
+
+// Unset Langfuse fields come from the variables a Langfuse project hands out.
+func TestLangfuseFromTheEnvironment(t *testing.T) {
+	t.Setenv("LANGFUSE_PUBLIC_KEY", "pk-env")
+	t.Setenv("LANGFUSE_SECRET_KEY", "sk-env")
+	t.Setenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
+	r, err := Layers{Root: t.TempDir(), User: Settings{Langfuse: &LangfuseConfig{PublicKey: "pk-set"}}}.Resolve(t.TempDir(), Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (LangfuseConfig{PublicKey: "pk-set", SecretKey: "sk-env", BaseURL: "https://us.cloud.langfuse.com"}); r.Langfuse != want {
+		t.Fatalf("langfuse %+v, want %+v", r.Langfuse, want)
 	}
 }

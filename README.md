@@ -58,6 +58,9 @@ This split matters. The agent loop stays small and reusable, while long-running 
 - Editor integration over ACP (`-acp`, e.g. in Zed): sessions side by side, each in its own mode, in the project or a linked git worktree; thread history; model, reasoning and mode pickers; `@` file mentions and images; the editor's MCP servers; native diffs and the todo list as the plan
 - Slash commands: `/model`, `/rewind`, `/status`, `/tasks`, `/permissions`, `/memory`, `/init`, ... (`/help` lists them); every skill is also a `/` command, in print mode and ACP too, where the editor lists them
 
+**Observability**
+- Langfuse tracing: each turn is a trace of what the model saw and said, the tool calls with their approvals and results, and the sub-agents, grouped by conversation, with each call's cost; compacting, `/btw` and input suggestions are traces of their own
+
 **Extensibility**
 - Skills (Agent Skills `SKILL.md`), sub-agents, MCP servers and hooks, from you and from the project
 - Plugins in the [Agent Plugins](https://github.com/agentplugins/agent-plugins-spec) format bundle skills, MCP servers, hooks and sub-agents, from git or a directory; one runs once you agree to it as a whole, and a git one stays at the commit you agreed to
@@ -156,7 +159,7 @@ This means codebot is not just "an agent with tools". It is an agent plus a harn
 
 ## Configuration
 
-Config files: `~/.codebot/settings.json` (yours) and `.codebot/settings.json` at the project's root, the top of its git repository. The project's fields take precedence over yours, except those it may not set: `providers`, `search_provider`, `search_api_key` and `telemetry` are yours alone, so a repository can never send your keys or your conversations elsewhere. `/model` saves its choice to your file.
+Config files: `~/.codebot/settings.json` (yours) and `.codebot/settings.json` at the project's root, the top of its git repository. The project's fields take precedence over yours, except those it may not set: `providers`, `search_provider`, `search_api_key` and `langfuse` are yours alone, so a repository can never send your keys or your conversations elsewhere. `/model` saves its choice to your file.
 
 All fields are optional. See [settings.example.jsonc](settings.example.jsonc) for the full reference with comments.
 
@@ -165,6 +168,8 @@ Provider entries support `extra` for connection settings sent as HTTP/client con
 A provider of type `anthropic` loads tools on demand through tool search, which takes Claude 4.5 or later; older Claude models, and other vendors' models behind an Anthropic-compatible endpoint, may reject such requests.
 
 For Claude on Amazon Bedrock, use Bedrock's Messages API rather than Converse: `type: "anthropic"`, `base_url: "https://bedrock-mantle.<region>.api.aws/anthropic"`, a Bedrock API key as `api_key`, and model IDs such as `anthropic.claude-opus-5-5`. It takes Anthropic's request format, so tools load on demand through tool search as with Anthropic. Converse cannot defer tools: a tool that joins mid-conversation, such as from an MCP server that connected late, changes the request, which restarts the prompt cache and can get the request rejected by Claude models that bind their thinking to it (Fable 5.1, Opus 5.5, Sonnet 5.5).
+
+`langfuse` traces to a Langfuse project: its `public_key` and `secret_key`, and `base_url` for Langfuse Cloud US or your own instance; the `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` a project hands out work too. Inputs and outputs are recorded in full, credentials recognizable by their form (API keys, tokens, private keys) cut out, so choose a project you trust with your code. Each call's cost is priced as codebot prices it, so models Langfuse has no price for show one too.
 
 Context windows, output caps, and prices come from LiteLLM's model list: a snapshot built into codebot, refreshed daily into `~/.codebot/litellm-models.json`.
 

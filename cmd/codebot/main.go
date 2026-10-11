@@ -115,7 +115,7 @@ func main() {
 	if err != nil {
 		fail(err, "error")
 	}
-	opts := app.Options{Cwd: cwd, Mode: mode, Trust: *trustFlag, PluginDirs: pluginDirs}
+	opts := app.Options{Cwd: cwd, Mode: mode, Trust: *trustFlag, PluginDirs: pluginDirs, Version: version}
 	if err := run(opts, resume, printMode, *acpFlag, *jsonFlag, notice); err != nil {
 		fail(err, "error")
 	}
@@ -132,7 +132,7 @@ func run(opts app.Options, resume string, printMode, acpMode, jsonMode bool, not
 		warn(a)
 		return acp.NewServer(version).Serve(a)
 	case printMode:
-		opts.UI = print.UI{}
+		opts.Name, opts.UI = "print", print.UI{}
 		a := boot(opts)
 		defer a.Close()
 		open(a, resume)
@@ -140,7 +140,7 @@ func run(opts app.Options, resume string, printMode, acpMode, jsonMode bool, not
 		return print.Run(a, flag.Args(), jsonMode)
 	default:
 		screen := &tui.UI{}
-		opts.UI, opts.Interactive, opts.CacheTTL = screen, true, "1h"
+		opts.Name, opts.UI, opts.Interactive, opts.CacheTTL = "tui", screen, true, "1h"
 		a := boot(opts)
 		defer a.Close()
 		open(a, resume)

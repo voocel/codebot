@@ -147,7 +147,7 @@ func TestModelFactoryAnthropic(t *testing.T) {
 	if err := models.catalog.Set("claude-x", catalog.Model{MaxOutputTokens: 64000, Pricing: pricing}); err != nil {
 		t.Fatal(err)
 	}
-	factory := NewModelFactory(models)
+	factory := NewModelFactory(models, nil)
 	conn := llmprovider.Config{APIKey: "test-key", BaseURL: server.URL, Headers: map[string]string{"anthropic-beta": "beta-a"}}
 	call := func(name string) agentcore.Model {
 		t.Helper()
@@ -182,7 +182,7 @@ func TestModelFactoryGateway(t *testing.T) {
 	}})
 	defer srv.Close()
 
-	m, err := NewModelFactory(NewModels())(ModelSpec{
+	m, err := NewModelFactory(NewModels(), nil)(ModelSpec{
 		Provider: "corp",
 		Type:     "gateway",
 		Model:    "claude-sonnet-4-6",
@@ -202,7 +202,7 @@ func TestModelFactoryGateway(t *testing.T) {
 		t.Fatalf("reply %q, auth %q, request %+v", resp.Text(), auth, got)
 	}
 
-	if _, err := NewModelFactory(NewModels())(ModelSpec{Provider: "corp", Type: "gateway", Model: "m"}); err == nil {
+	if _, err := NewModelFactory(NewModels(), nil)(ModelSpec{Provider: "corp", Type: "gateway", Model: "m"}); err == nil {
 		t.Fatal("a gateway without a base URL must be refused")
 	}
 }

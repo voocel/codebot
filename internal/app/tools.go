@@ -59,6 +59,9 @@ func (c *Conversation) buildSubagents(pool []agentcore.Tool, ws agentcoretools.W
 		// A sub-agent runs its own loop, so it needs its own middleware.
 		Middleware: c.middleware(),
 		Emit:       agentEmit(c.agents),
+		WrapRun: func(ctx context.Context, s coresub.Spawn, prompt string) (context.Context, func(string, error)) {
+			return a.tracer.SubAgent(ctx, s.Agent, s.ID, prompt)
+		},
 	}
 	var agents []coresub.Agent
 	for _, def := range subagent.Definitions(c.cwd, model.small, a.Extensions().Agents) {

@@ -1,7 +1,7 @@
 {
   // ~/.codebot/settings.json is yours; .codebot/settings.json at a project's
   // root sets fields over it. A project never sets providers, search_provider,
-  // search_api_key or telemetry, and each of its hooks, mcp_servers, plugins,
+  // search_api_key or langfuse, and each of its hooks, mcp_servers, plugins,
   // permissions.allow rules and roots takes effect only once you trust it
   // (/trust).
   //
@@ -113,22 +113,20 @@
   "search_provider": "tavily", // tavily (needs a key) | jina
   "search_api_key": "", // else TAVILY_API_KEY / JINA_API_KEY
 
-  // OpenTelemetry trace export. When enabled, every LLM call is emitted as a
-  // generation span (gen_ai.* attributes) to an OTLP/HTTP backend such as
-  // Langfuse — any OTLP-compatible platform works (Phoenix, Jaeger, …).
-  // Each span is tagged with the current session id (langfuse.session.id +
-  // session.id), so a run's calls — main agent and sub-agents — group into one
-  // session on the backend automatically; no extra config needed.
-  // endpoint is the full OTLP *traces* URL, used as-is: it must already include
-  // the /v1/traces path (it is NOT auto-appended). For Langfuse Cloud:
-  //   EU https://cloud.langfuse.com/api/public/otel/v1/traces
-  //   US https://us.cloud.langfuse.com/api/public/otel/v1/traces
-  // public_key/secret_key form HTTP Basic auth (base64 of "public:secret").
-  "telemetry": {
-    "enabled": false,
-    "endpoint": "https://cloud.langfuse.com/api/public/otel/v1/traces",
-    "public_key": "pk-lf-...",
-    "secret_key": "sk-lf-..."
+  // Langfuse: the keys of a project turn tracing on. Each turn is a trace of
+  // what the model saw and said, the tool calls with their approvals and
+  // results, and the sub-agents, grouped by conversation as Langfuse
+  // sessions, with the cost of each call. Compacting, /btw and the input
+  // suggestions are traces of their own. Inputs and outputs are recorded in
+  // full, credentials recognizable by their form (API keys, tokens, private
+  // keys) cut out, so point it at a project you trust with your code:
+  // Langfuse Cloud or your own instance. Unset fields fall back to
+  // LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and LANGFUSE_BASE_URL, as a
+  // project's settings hand them out.
+  "langfuse": {
+    "public_key": "", // pk-lf-...
+    "secret_key": "", // sk-lf-...
+    "base_url": "https://cloud.langfuse.com" // US https://us.cloud.langfuse.com, or your own instance
   },
 
   // Hooks: commands/prompts/http triggered on lifecycle events.

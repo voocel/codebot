@@ -1,8 +1,11 @@
 package app
 
 import (
+	"cmp"
 	"context"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -14,6 +17,7 @@ import (
 	"github.com/voocel/codebot/internal/agent/prompt"
 	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/infra/telemetry"
+	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
 )
 
@@ -24,19 +28,36 @@ var retryPolicy = retry.Policy{MaxAttempts: 6, InitialDelay: time.Second, MaxDel
 func (c *Conversation) configureLocked() { c.session.Configure(c.specLocked()) }
 
 // middleware applies to the main agent and its sub-agents, outermost first.
-// The limiter is innermost so hooks and telemetry see the result the model
-// will see.
+// Tracing is outermost so a call's trace holds its approval, and a refused
+// call is traced too; the limiter is innermost so hooks and tracing see the
+// result the model will see.
 func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 	a := c.app
 	scope := permission.Scope{Mode: c.Mode, UI: c.frontend.UI, Grants: c.skillGrants, Meta: a.toolPermission}
+	if a.tracer != nil && scope.UI != nil {
+		scope.UI = tracedApprovals{scope.UI, a.tracer}
+	}
 	if !a.within(c.home) {
 		scope.Roots = []string{c.home}
 	}
-	out := []agentcore.ToolMiddleware{c.hooks.PreToolUse(), a.permissions.Middleware(scope)}
+	var out []agentcore.ToolMiddleware
 	if mw := a.tracer.ToolMiddleware(); mw != nil {
 		out = append(out, mw)
 	}
-	return append(out, c.hooks.PostToolUse(), c.validation.Track, c.limiter.Middleware())
+	return append(out, c.hooks.PreToolUse(), a.permissions.Middleware(scope), c.hooks.PostToolUse(), c.validation.Track, c.limiter.Middleware())
+}
+
+// tracedApprovals traces the approvals the UI gives.
+type tracedApprovals struct {
+	interact.UI
+	tracer *telemetry.Tracer
+}
+
+func (u tracedApprovals) Approve(ctx context.Context, req interact.Approval) (interact.Verdict, error) {
+	ctx, o := u.tracer.Approval(ctx, cmp.Or(req.Summary, req.Tool))
+	v, err := u.UI.Approve(ctx, req)
+	o.End(string(v.Choice), err)
+	return v, err
 }
 
 // specLocked is the only source of a run's configuration. Callers hold c.mu.
@@ -48,6 +69,7 @@ func (c *Conversation) specLocked() session.RunSpec {
 
 	model := c.model.model
 	model.Request.Thinking = provider.Thinking(c.model.effort)
+	ran := map[string]string{"model": c.model.provider + "/" + c.model.name, "effort": c.model.effort}
 	cfg := agentcore.Config{
 		// One conversation, one prompt-cache key.
 		Model:              provider.WithCacheKey(model, c.id),
@@ -66,12 +88,14 @@ func (c *Conversation) specLocked() session.RunSpec {
 		OnStop: c.stop,
 	}
 	return session.RunSpec{
-		Provider:   c.model.provider,
-		Model:      c.model.name,
-		Effort:     c.model.effort,
-		Window:     c.model.window,
-		Config:     cfg,
-		WrapRun:    c.wrapRun,
+		Provider: c.model.provider,
+		Model:    c.model.name,
+		Effort:   c.model.effort,
+		Window:   c.model.window,
+		Config:   cfg,
+		WrapRun: func(ctx context.Context, inputs []agentcore.Message) (context.Context, func([]agentcore.Message, error)) {
+			return c.wrapRun(ctx, inputs, ran)
+		},
 		Checkpoint: c.checkpoint,
 		Context: func(history []agentcore.Message) []agentcore.Message {
 			// Use the date the run starts.
@@ -81,20 +105,36 @@ func (c *Conversation) specLocked() session.RunSpec {
 }
 
 // runContext is ctx for the conversation's work: tools read its cwd live,
-// so a worktree entered mid-run applies to later calls, and spans are its
-// session's.
+// so a worktree entered mid-run applies to later calls, and its traces are
+// the conversation's.
 func (c *Conversation) runContext(ctx context.Context) context.Context {
-	return telemetry.WithSession(agentcoretools.WithCwd(ctx, c.Cwd), c.id)
+	return telemetry.WithConversation(agentcoretools.WithCwd(ctx, c.Cwd), c.id, c.frontend.Name)
 }
 
-func (c *Conversation) wrapRun(ctx context.Context) (context.Context, func(error)) {
-	ctx, span := c.app.tracer.StartRun(c.runContext(ctx), "agent run")
-	return ctx, func(err error) {
-		span.End(err)
+// wrapRun traces the run as a turn, ran being the model it runs.
+func (c *Conversation) wrapRun(ctx context.Context, inputs []agentcore.Message, ran map[string]string) (context.Context, func([]agentcore.Message, error)) {
+	meta := maps.Clone(ran)
+	meta["mode"], meta["cwd"] = string(c.Mode()), c.Cwd()
+	ctx, turn := c.app.tracer.Turn(c.runContext(ctx), inputText(inputs), meta)
+	return ctx, func(history []agentcore.Message, err error) {
+		turn.End(agentcore.LastResponse(history).Text(), err)
 		c.mu.Lock()
 		c.grants = nil
 		c.mu.Unlock()
 	}
+}
+
+// inputText is what a run's inputs say, as the user put it.
+func inputText(inputs []agentcore.Message) string {
+	texts := make([]string, 0, len(inputs))
+	for _, m := range inputs {
+		text, ok := UserText(m)
+		if !ok {
+			text = m.Text()
+		}
+		texts = append(texts, text)
+	}
+	return strings.Join(texts, "\n\n")
 }
 
 // checkpoint is best effort: a failed checkpoint must not block the run, and

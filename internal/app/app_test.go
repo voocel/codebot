@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,9 +17,12 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/litellmtest"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/infra/provider"
+	"github.com/voocel/codebot/internal/infra/telemetry"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
 )
@@ -167,8 +171,9 @@ type setup struct {
 	settings map[string]any
 	project  map[string]any // the project's settings
 	git      bool
-	cacheTTL string   // the frontend's, see Options.CacheTTL
-	plugins  []string // given on the command line, see Options.PluginDirs
+	cacheTTL string                  // the frontend's, see Options.CacheTTL
+	plugins  []string                // given on the command line, see Options.PluginDirs
+	traces   *tracetest.SpanRecorder // where the work is traced, nil for nowhere
 }
 
 // boot starts an App with a temporary home and workspace and scripted
@@ -209,10 +214,14 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 	}
 
 	e := &env{t: t, cwd: cwd, ui: &fakeUI{choice: interact.AllowOnce}, models: models, idle: make(chan struct{}, 64)}
+	var tracer *telemetry.Tracer
+	if s.traces != nil {
+		tracer = telemetry.New(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.traces)), "test")
+	}
 	a, err := Boot(Options{
 		Cwd:        cwd,
 		Mode:       s.mode,
-		Frontend:   Frontend{UI: e.ui, Interactive: true},
+		Frontend:   Frontend{Name: "test", UI: e.ui, Interactive: true},
 		CacheTTL:   s.cacheTTL,
 		PluginDirs: s.plugins,
 		NewModel: func(spec provider.ModelSpec) (agentcore.Model, error) {
@@ -220,7 +229,7 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 			if m, ok := models[spec.Model]; ok {
 				p = m
 			}
-			client, err := litellm.New(p)
+			client, err := litellm.New(p, litellm.WithObservers(tracer.Observer(nil)))
 			if err != nil {
 				return agentcore.Model{}, err
 			}
@@ -231,6 +240,7 @@ func boot(t *testing.T, s setup, models map[string]*fakeModel) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(a.Close)
+	a.tracer = tracer
 	a.Subscribe(func(ev Event) {
 		if ev.Kind == SessionEvent && ev.Session.Kind == session.Idle {
 			e.idle <- struct{}{}
@@ -524,6 +534,87 @@ func TestApprovalAsksTheUI(t *testing.T) {
 	if got := texts(e.app.Current().History()); !slices.Contains(got, "tool:t1!") {
 		t.Fatalf("history = %q, want a failed bash result", got)
 	}
+}
+
+// A turn is traced as the user's input and the answer, with the model calls
+// and the sub-agent beneath it, beside the call that asked for it, and the
+// sub-agent's tool calls beneath that, a refused call and its approval
+// included; a side question and a suggestion are traces of their own. All of
+// them are the conversation's.
+func TestWorkIsTraced(t *testing.T) {
+	model := script(
+		use("s1", "subagent", map[string]string{"agent": "general-purpose", "task": "make a file"}),
+		use("t1", "bash", map[string]string{"command": "touch made"}),
+		text("could not"),
+		text("ok"),
+		text("an answer"),
+		text("run the tests"),
+	)
+	traces := tracetest.NewSpanRecorder()
+	e := boot(t, setup{traces: traces}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	e.ui.choice = interact.Deny
+	e.submit("delegate it")
+	c := e.app.Current()
+	if _, err := c.Query(context.Background(), "what?"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Suggest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	spans := map[string][]sdktrace.ReadOnlySpan{}
+	for _, s := range traces.Ended() {
+		spans[s.Name()] = append(spans[s.Name()], s)
+		if got := attr(s, "langfuse.session.id"); got != c.ID() {
+			t.Errorf("%s is of session %q", s.Name(), got)
+		}
+	}
+	one := func(name string) sdktrace.ReadOnlySpan {
+		t.Helper()
+		if len(spans[name]) != 1 {
+			t.Fatalf("%d spans %q among %v", len(spans[name]), name, slices.Collect(maps.Keys(spans)))
+		}
+		return spans[name][0]
+	}
+	under := func(child, parent sdktrace.ReadOnlySpan) {
+		t.Helper()
+		if child.Parent().SpanID() != parent.SpanContext().SpanID() {
+			t.Errorf("%s is not under %s", child.Name(), parent.Name())
+		}
+	}
+	turn := one("invoke_agent codebot")
+	if attr(turn, "langfuse.trace.name") != "turn" || attr(turn, "langfuse.observation.input") != "delegate it" ||
+		attr(turn, "langfuse.observation.output") != "ok" || attr(turn, "langfuse.trace.tags") != `["test"]` ||
+		attr(turn, "langfuse.observation.metadata.model") != "anthropic/claude-sonnet-4-5" {
+		t.Errorf("turn %v", turn.Attributes())
+	}
+	sub, bash, approval := one("invoke_agent general-purpose"), one("execute_tool bash"), one("approval")
+	under(sub, turn)
+	under(bash, sub)
+	under(approval, bash)
+	if attr(bash, "langfuse.observation.level") != "ERROR" || attr(approval, "langfuse.observation.output") != "deny" {
+		t.Errorf("the refused call %v, its approval %v", bash.Attributes(), approval.Attributes())
+	}
+	calls := spans["chat"]
+	if len(calls) != 6 {
+		t.Fatalf("%d model calls", len(calls))
+	}
+	under(calls[0], turn)
+	under(calls[1], sub)
+	for name, input := range map[string]string{"btw": "what?", "suggestion": ""} {
+		if s := one(name); s.Parent().IsValid() || attr(s, "langfuse.trace.name") != name || attr(s, "langfuse.observation.input") != input {
+			t.Errorf("%s %v", name, s.Attributes())
+		}
+	}
+}
+
+func attr(s sdktrace.ReadOnlySpan, key string) string {
+	for _, kv := range s.Attributes() {
+		if string(kv.Key) == key {
+			return kv.Value.Emit()
+		}
+	}
+	return ""
 }
 
 // A sub-agent runs its own loop under the same permission mode.

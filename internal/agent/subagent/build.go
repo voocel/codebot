@@ -1,6 +1,7 @@
 package subagent
 
 import (
+	"context"
 	"slices"
 
 	"github.com/voocel/agentcore"
@@ -38,6 +39,9 @@ type BuildDeps struct {
 
 	// Emit may return nil to drop a run's events.
 	Emit func(coresub.Spawn) func(agentcore.Event) error
+
+	// WrapRun wraps each run, see coresub.Agent.
+	WrapRun func(ctx context.Context, s coresub.Spawn, prompt string) (context.Context, func(output string, err error))
 }
 
 // Agent gives each run its own tools (see toolPool) and its own prompt-cache
@@ -53,6 +57,7 @@ func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 	return coresub.Agent{
 		Name:        d.Name,
 		Description: d.Description,
+		WrapRun:     deps.WrapRun,
 		Config: func(s coresub.Spawn) (agentcore.Config, error) {
 			m := model
 			if s.Model != "" {

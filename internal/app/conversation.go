@@ -21,7 +21,6 @@ import (
 	"github.com/voocel/codebot/internal/agent/tools"
 	"github.com/voocel/codebot/internal/extension/hooks"
 	"github.com/voocel/codebot/internal/infra/config"
-	"github.com/voocel/codebot/internal/infra/telemetry"
 	"github.com/voocel/codebot/internal/interact"
 	"github.com/voocel/codebot/internal/session"
 	"github.com/voocel/codebot/internal/session/storage"
@@ -247,28 +246,35 @@ func (c *Conversation) Wait(ctx context.Context) error { return c.session.Wait(c
 func (c *Conversation) Cancel() { c.session.Cancel() }
 
 func (c *Conversation) Compact(ctx context.Context) error {
-	return c.session.Compact(telemetry.WithSession(ctx, c.id))
+	ctx, work := c.app.tracer.Work(c.runContext(ctx), "compact", "")
+	err := c.session.Compact(ctx)
+	work.End("", err)
+	return err
 }
 
 // Query answers a side question without adding to the history. It keeps the
 // conversation's reasoning settings, because a request with different ones
 // misses the prompt cache.
 func (c *Conversation) Query(ctx context.Context, question string) (string, error) {
-	return c.session.Query(telemetry.WithSession(ctx, c.id), question, 0)
+	ctx, work := c.app.tracer.Work(c.runContext(ctx), "btw", question)
+	answer, err := c.session.Query(ctx, question, 0)
+	work.End(answer, err)
+	return answer, err
 }
 
 // Suggest predicts the user's next input, or "" when nothing fits. Like
 // Query, it keeps the conversation's reasoning settings.
 func (c *Conversation) Suggest(ctx context.Context) (string, error) {
-	text, err := c.session.Query(telemetry.WithSession(ctx, c.id), prompt.Suggestion, suggestionMaxTokens)
-	if err != nil {
-		return "", err
+	ctx, work := c.app.tracer.Work(c.runContext(ctx), "suggestion", "")
+	text, err := c.session.Query(ctx, prompt.Suggestion, suggestionMaxTokens)
+	if err == nil {
+		text = strings.TrimSpace(strings.Trim(text, "\"'`"))
+		if strings.EqualFold(text, "NONE") || len(strings.Fields(text)) > 12 {
+			text = ""
+		}
 	}
-	text = strings.TrimSpace(strings.Trim(text, "\"'`"))
-	if text == "" || strings.EqualFold(text, "NONE") || len(strings.Fields(text)) > 12 {
-		return "", nil
-	}
-	return text, nil
+	work.End(text, err)
+	return text, err
 }
 
 func (c *Conversation) History() []agentcore.Message { return c.session.History() }
@@ -407,7 +413,9 @@ func (c *Conversation) InvokeSkill(ctx context.Context, name, args string) (stri
 	}
 	if inv.Fork {
 		c.skillInvoked(inv)
-		res, err := tools.ForkSkill(c.runContext(ctx), inv, c.forkSkill)
+		ctx, work := c.app.tracer.Work(c.runContext(ctx), "skill "+name, strings.TrimSpace("/"+name+" "+args))
+		res, err := tools.ForkSkill(ctx, inv, c.forkSkill)
+		work.End(res.Text(), err)
 		if err != nil {
 			return "", err
 		}
