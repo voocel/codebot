@@ -499,7 +499,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 func (m *Model) interrupt() tea.Cmd {
 	switch {
 	case !m.editor.Empty():
-		m.editor.Clear()
+		m.editor.Discard()
 		return nil
 	case m.run.active:
 		m.stop()

@@ -639,6 +639,17 @@ func TestStopAShellLine(t *testing.T) {
 	h.shows("Stopped")
 }
 
+func TestUpRecallsAClearedInput(t *testing.T) {
+	h := boot(t)
+	h.write("half typed")
+	h.press("ctrl+c")
+	if !h.m.editor.Empty() {
+		t.Fatal("ctrl+c left the input")
+	}
+	h.press("up")
+	h.shows("half typed")
+}
+
 func TestCompactionOutsideARun(t *testing.T) {
 	h := boot(t)
 	h.feed(agentMsg{agentcore.CompactionStart{}})

@@ -167,6 +167,17 @@ func (e *Editor) Clear() {
 	e.endSearch()
 }
 
+// Discard clears the input and keeps it in the history, so up brings it
+// back. During a search the input is what the search replaced.
+func (e *Editor) Discard() {
+	text := e.ta.Value()
+	if e.searching {
+		text = e.draft
+	}
+	e.remember(strings.TrimSpace(text))
+	e.Clear()
+}
+
 // Insert prepends text to the input.
 func (e *Editor) Insert(text string) {
 	if v := e.ta.Value(); v != "" {
@@ -252,7 +263,7 @@ func (e *Editor) key(k tea.KeyPressMsg) (tea.Cmd, *Input) {
 			e.SetSuggestion("")
 		}
 		return nil, nil
-	case "up":
+	case "up", "ctrl+p":
 		if len(e.menu) > 0 || e.searching {
 			e.move(-1)
 			return nil, nil
@@ -265,7 +276,7 @@ func (e *Editor) key(k tea.KeyPressMsg) (tea.Cmd, *Input) {
 			e.show(e.pastes.adopt(e.history.get(e.recall)))
 			return nil, nil
 		}
-	case "down":
+	case "down", "ctrl+n":
 		if len(e.menu) > 0 || e.searching {
 			e.move(1)
 			return nil, nil
@@ -344,13 +355,17 @@ func (e *Editor) send() *Input {
 		}
 		text = e.suggestion
 	}
-	if e.history != nil && text != "" {
-		e.history.Add(text, e.pastes.of(text))
-	}
+	e.remember(text)
 	in := &Input{Text: e.pastes.expand(text), Images: e.images}
 	e.Clear()
 	e.SetSuggestion("")
 	return in
+}
+
+func (e *Editor) remember(text string) {
+	if e.history != nil && text != "" {
+		e.history.Add(text, e.pastes.of(text))
+	}
 }
 
 func (e *Editor) show(text string) {

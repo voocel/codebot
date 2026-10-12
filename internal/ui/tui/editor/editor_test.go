@@ -38,8 +38,9 @@ func keyPress(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "space":
 		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
-	case "ctrl+r":
-		return tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}
+	}
+	if c, ok := strings.CutPrefix(k, "ctrl+"); ok {
+		return tea.KeyPressMsg{Code: []rune(c)[0], Mod: tea.ModCtrl}
 	}
 	return tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
 }
@@ -190,7 +191,7 @@ func TestHistory(t *testing.T) {
 	}
 	write(e, "draft")
 	for _, c := range []struct{ key, want string }{
-		{"up", "two"}, {"up", "one"}, {"up", "one"}, {"down", "two"}, {"down", "draft"},
+		{"up", "two"}, {"ctrl+p", "one"}, {"up", "one"}, {"ctrl+n", "two"}, {"down", "draft"},
 	} {
 		press(e, c.key)
 		if got := e.ta.Value(); got != c.want {
@@ -206,6 +207,34 @@ func TestHistory(t *testing.T) {
 	press(e, "up")
 	if got := e.ta.Value(); got != long {
 		t.Errorf("up on a wrapped row recalled %q", got)
+	}
+}
+
+func TestDiscardKeepsTheInput(t *testing.T) {
+	e := newEditor()
+	e.SetHistory(NewHistory(filepath.Join(t.TempDir(), "history.jsonl"), "/project"))
+	write(e, "sent")
+	press(e, "enter")
+
+	write(e, "half typed")
+	e.Discard()
+	if !e.Empty() {
+		t.Fatalf("discard left %q", e.ta.Value())
+	}
+	for _, want := range []string{"half typed", "sent"} {
+		if press(e, "up"); e.ta.Value() != want {
+			t.Errorf("up recalled %q, want %q", e.ta.Value(), want)
+		}
+	}
+
+	// During a search it keeps the input, not the query.
+	e.Clear()
+	write(e, "before the search")
+	press(e, "ctrl+r")
+	write(e, "query")
+	e.Discard()
+	if press(e, "up"); e.ta.Value() != "before the search" {
+		t.Errorf("up recalled %q", e.ta.Value())
 	}
 }
 
