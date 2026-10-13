@@ -1055,7 +1055,7 @@ func TestRewindToAGoneRequestChangesNothing(t *testing.T) {
 	e.submit("write a")
 	c := e.app.Current()
 	cp := c.Checkpoints()[0]
-	if err := c.Compact(context.Background()); err != nil {
+	if err := c.Compact(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.Rewind(cp, true, true); err == nil {
@@ -1107,7 +1107,7 @@ func TestHistoryRewritesForgetReads(t *testing.T) {
 	}
 	c := e.app.Current()
 	e.submit("read a")
-	if err := c.Compact(context.Background()); err != nil {
+	if err := c.Compact(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	select { // the compaction's

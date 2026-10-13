@@ -75,8 +75,10 @@ type Status struct {
 	Context int
 	Running bool
 	// Usage includes responses that a compaction later replaced.
-	Usage   agentcore.Usage
-	LastRun *agentcore.RunEnd
+	Usage agentcore.Usage
+	// Compactions is how many times the history was compacted.
+	Compactions int
+	LastRun     *agentcore.RunEnd
 }
 
 type Session struct {
@@ -116,6 +118,7 @@ type run struct {
 
 type compactRequest struct {
 	ctx   context.Context
+	focus string
 	reply chan<- error
 }
 
@@ -135,7 +138,7 @@ func Open(store *storage.Store, state storage.State, spec RunSpec) (*Session, er
 		return nil, err
 	}
 	s.agent.Subscribe(s.observe)
-	s.status = Status{SessionID: s.id, Usage: state.Usage}
+	s.status = Status{SessionID: s.id, Usage: state.Usage, Compactions: state.Compactions}
 	s.refreshStatus()
 	go s.loop()
 	return s, nil
@@ -151,11 +154,14 @@ func (s *Session) Cancel() { s.ops.push(s.cancel) }
 // Configure leaves a live run on the spec it started with.
 func (s *Session) Configure(spec RunSpec) { s.ops.push(func() { s.configure(spec) }) }
 
-// Compact cancels a live run first. The session keeps accepting calls while
-// the summary is written; inputs posted meanwhile run after it is committed.
-func (s *Session) Compact(ctx context.Context) error {
+// Compact has the history compacted now, attending to focus if set (see
+// agentcore.Agent.Compact). It cancels a live run first. The session keeps
+// accepting calls while the summary is written; inputs posted meanwhile run
+// after it is committed.
+func (s *Session) Compact(ctx context.Context, focus string) error {
 	reply := make(chan error, 1)
-	if !s.ops.push(func() { s.compact(ctx, reply) }) {
+	req := compactRequest{ctx: ctx, focus: focus, reply: reply}
+	if !s.ops.push(func() { s.compact(req) }) {
 		return ErrClosed
 	}
 	return <-reply
@@ -406,27 +412,27 @@ func (s *Session) record() error {
 	return nil
 }
 
-func (s *Session) compact(ctx context.Context, reply chan<- error) {
+func (s *Session) compact(req compactRequest) {
 	switch {
 	case s.closing:
-		reply <- ErrClosed
+		req.reply <- ErrClosed
 	case s.compacting != nil || s.compactWait != nil:
-		reply <- errors.New("session: compaction already in progress")
+		req.reply <- errors.New("session: compaction already in progress")
 	case s.run != nil:
 		s.cancel()
-		s.compactWait = &compactRequest{ctx: ctx, reply: reply}
+		s.compactWait = &req
 	default:
-		s.startCompaction(ctx, reply)
+		s.startCompaction(req)
 	}
 }
 
-func (s *Session) startCompaction(ctx context.Context, reply chan<- error) {
-	ctx, cancel := context.WithCancel(ctx)
+func (s *Session) startCompaction(req compactRequest) {
+	ctx, cancel := context.WithCancel(req.ctx)
 	s.compacting = cancel
 	go func() {
-		err := s.agent.Compact(ctx)
+		err := s.agent.Compact(ctx, req.focus)
 		cancel()
-		s.ops.push(func() { s.compacted(err, reply) })
+		s.ops.push(func() { s.compacted(err, req.reply) })
 	}()
 }
 
@@ -453,9 +459,9 @@ func (s *Session) settle() {
 	case s.closing:
 		s.finish()
 	case s.compactWait != nil:
-		req := s.compactWait
+		req := *s.compactWait
 		s.compactWait = nil
-		s.startCompaction(req.ctx, req.reply)
+		s.startCompaction(req)
 	default:
 		s.startPending()
 		if s.run == nil {
@@ -561,6 +567,7 @@ func (s *Session) observe(ev agentcore.Event) error {
 			s.checkpointsMu.Unlock()
 			s.updateStatus(func(st *Status) {
 				st.Usage.Add(e.Compaction.Usage)
+				st.Compactions++
 				st.Context = s.estimate(e.Compaction.Messages)
 			})
 		}
@@ -584,8 +591,8 @@ type retelling struct {
 	context func(history []agentcore.Message) []agentcore.Message
 }
 
-func (r retelling) Compact(ctx context.Context, history []agentcore.Message, call func([]agentcore.Message) agentcore.Call) (*agentcore.Compaction, error) {
-	c, err := r.Compactor.Compact(ctx, history, call)
+func (r retelling) Compact(ctx context.Context, history []agentcore.Message, call func([]agentcore.Message) agentcore.Call, focus string) (*agentcore.Compaction, error) {
+	c, err := r.Compactor.Compact(ctx, history, call, focus)
 	if c == nil || err != nil {
 		return c, err
 	}

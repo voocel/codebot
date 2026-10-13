@@ -245,9 +245,10 @@ func (c *Conversation) Wait(ctx context.Context) error { return c.session.Wait(c
 
 func (c *Conversation) Cancel() { c.session.Cancel() }
 
-func (c *Conversation) Compact(ctx context.Context) error {
-	ctx, work := c.app.tracer.Work(c.runContext(ctx), "compact", "")
-	err := c.session.Compact(ctx)
+// Compact summarizes the conversation now, attending to focus if set.
+func (c *Conversation) Compact(ctx context.Context, focus string) error {
+	ctx, work := c.app.tracer.Work(c.runContext(ctx), "compact", focus)
+	err := c.session.Compact(ctx, focus)
 	work.End("", err)
 	return err
 }

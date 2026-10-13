@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm"
@@ -61,6 +62,12 @@ type ModelSpec struct {
 // require one; every Claude 4 or later model accepts it.
 const fallbackMaxTokens = 32000
 
+// streamIdleTimeout fails a call whose connection has sent nothing for this
+// long, a hung endpoint or gateway, as a temporary error the run retries.
+// A model reading a long prompt or thinking may be silent for minutes; this
+// is Codex's default.
+const streamIdleTimeout = 5 * time.Minute
+
 // NewModelFactory names each provider as configured, so replay state goes
 // back only to the endpoint that issued it. observe, if set, gives each
 // model an observer of its calls, given the model's pricing, nil when
@@ -74,7 +81,7 @@ func NewModelFactory(models *Models, observe func(*catalog.Pricing) litellm.Obse
 			return agentcore.Model{}, fmt.Errorf("create model %s/%s: %w", spec.Provider, spec.Model, err)
 		}
 		facts, _ := models.Lookup(spec)
-		var opts []litellm.ClientOption
+		opts := []litellm.ClientOption{litellm.WithStreamIdleTimeout(streamIdleTimeout)}
 		if observe != nil {
 			opts = append(opts, litellm.WithObservers(observe(facts.Pricing)))
 		}

@@ -92,6 +92,9 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 	if got, ok := state.Messages[3].Blocks[0].(litellm.ReasoningBlock); !ok || got.Text != thinking.Text || got.State == nil || string(got.State.Data) != `{"signature":"s"}` {
 		t.Fatal("thinking must be stored verbatim so a resumed request matches the live one")
 	}
+	if state.Compactions != 1 {
+		t.Fatalf("compactions = %d", state.Compactions)
+	}
 	if want := []Checkpoint{{At: 2, Dir: "/w", Tree: "t2"}}; !slices.Equal(state.Checkpoints, want) {
 		t.Fatalf("checkpoints = %+v, want %+v", state.Checkpoints, want)
 	}

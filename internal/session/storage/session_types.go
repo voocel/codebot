@@ -68,6 +68,8 @@ type State struct {
 	Usage agentcore.Usage
 	// Checkpoints are those of the runs Messages still holds, oldest first.
 	Checkpoints []Checkpoint
+	// Compactions is how many times the history was compacted.
+	Compactions int
 }
 
 type SessionInfo struct {

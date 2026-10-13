@@ -154,12 +154,13 @@ func (w *waitTool) tool() agentcore.Tool {
 		}}
 }
 
-// fakeCompactor keeps the last message after a summary.
+// fakeCompactor keeps the last message after a summary, which names the
+// focus.
 type fakeCompactor struct {
 	gate chan struct{} // when set, Compact waits for it
 }
 
-func (c fakeCompactor) Compact(ctx context.Context, msgs []agentcore.Message, _ func([]agentcore.Message) agentcore.Call) (*agentcore.Compaction, error) {
+func (c fakeCompactor) Compact(ctx context.Context, msgs []agentcore.Message, _ func([]agentcore.Message) agentcore.Call, focus string) (*agentcore.Compaction, error) {
 	if c.gate != nil {
 		select {
 		case <-c.gate:
@@ -171,7 +172,11 @@ func (c fakeCompactor) Compact(ctx context.Context, msgs []agentcore.Message, _ 
 		return nil, nil
 	}
 	kept := msgs[len(msgs)-1:]
-	out := append([]agentcore.Message{agentcore.SummaryMessage(fmt.Sprintf("%d earlier", len(msgs)-1))}, kept...)
+	summary := fmt.Sprintf("%d earlier", len(msgs)-1)
+	if focus != "" {
+		summary += " on " + focus
+	}
+	out := append([]agentcore.Message{agentcore.SummaryMessage(summary)}, kept...)
 	return &agentcore.Compaction{Messages: out, Replaced: len(msgs) - 1}, nil
 }
 
@@ -292,6 +297,9 @@ func (h *harness) checkReplay() {
 	if got, want := encode(h.t, h.s.History()), encode(h.t, state.Messages); got != want {
 		raw, _ := os.ReadFile(h.store.Path())
 		h.t.Fatalf("history differs from its log:\nmemory: %s\nlog:    %s\nfile:\n%s", got, want, raw)
+	}
+	if got := h.s.Status().Compactions; got != state.Compactions {
+		h.t.Fatalf("%d compactions, %d in the log", got, state.Compactions)
 	}
 }
 
@@ -502,11 +510,12 @@ func TestCompactCancelsALiveRun(t *testing.T) {
 	h.waitIdle(1)
 	h.post(User, "u2")
 	<-started
-	if err := h.s.Compact(context.Background()); err != nil {
+	if err := h.s.Compact(context.Background(), "the plan"); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := h.history(); got != "summary:2 earlier user:u2" {
+	// The focus reaches the compactor after the run it waited for.
+	if got := h.history(); got != "summary:2 earlier on the plan user:u2" {
 		t.Fatalf("history = %s", got)
 	}
 	h.waitIdle(2)
@@ -526,7 +535,7 @@ func TestInputDuringCompactionRunsAfterIt(t *testing.T) {
 	h.post(User, "u1")
 	h.waitIdle(1)
 	done := make(chan error)
-	go func() { done <- h.s.Compact(context.Background()) }()
+	go func() { done <- h.s.Compact(context.Background(), "") }()
 	h.waitCount(1, isAgent[agentcore.CompactionStart])
 	h.post(User, "u2")
 	h.post(Background, "bg")
@@ -555,7 +564,7 @@ func TestCancelAbandonsAManualCompaction(t *testing.T) {
 	h.waitIdle(1)
 
 	done := make(chan error)
-	go func() { done <- h.s.Compact(context.Background()) }()
+	go func() { done <- h.s.Compact(context.Background(), "") }()
 	h.waitCount(1, isAgent[agentcore.CompactionStart])
 	h.s.Cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
@@ -577,8 +586,8 @@ func TestLoopCompactionIsRecorded(t *testing.T) {
 	h.post(User, "u2")
 	h.waitIdle(2)
 
-	if n := h.eventCount(isAgent[agentcore.CompactionEnd]); n == 0 {
-		t.Fatal("loop did not compact")
+	if n := h.eventCount(isAgent[agentcore.CompactionEnd]); n == 0 || h.s.Status().Compactions == 0 {
+		t.Fatalf("loop did not compact: %d events, %d counted", n, h.s.Status().Compactions)
 	}
 	if got := h.history(); !strings.HasPrefix(got, "summary:") {
 		t.Fatalf("history = %s", got)
@@ -609,7 +618,7 @@ func TestContextIsTold(t *testing.T) {
 		t.Fatalf("history = %s", got)
 	}
 
-	if err := h.s.Compact(context.Background()); err != nil {
+	if err := h.s.Compact(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	h.waitIdle(3)
@@ -684,7 +693,7 @@ func TestCloseCancelsTheRunAndDropsLaterInput(t *testing.T) {
 	if got := h.history(); got != "user:go" {
 		t.Fatalf("history = %s", got)
 	}
-	if err := h.s.Compact(context.Background()); !errors.Is(err, ErrClosed) {
+	if err := h.s.Compact(context.Background(), ""); !errors.Is(err, ErrClosed) {
 		t.Fatalf("compact after close: %v", err)
 	}
 	h.checkReplay()
@@ -793,7 +802,7 @@ func TestEditRefusesARunAndCompactionMovesCheckpoints(t *testing.T) {
 		t.Fatalf("edit during a run: err %v, ran %v", err, ran)
 	}
 	cps, _ := h.s.Checkpoints()
-	if err := h.s.Compact(context.Background()); err != nil {
+	if err := h.s.Compact(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	// It summarized u1 and a1, and kept u2.
@@ -866,7 +875,7 @@ func TestHistoryMatchesTheLog(t *testing.T) {
 				case 5:
 					h.s.Cancel()
 				case 6:
-					go h.s.Compact(context.Background())
+					go h.s.Compact(context.Background(), "")
 				case 7:
 					next := sp
 					next.Model = fmt.Sprintf("m%d", i)

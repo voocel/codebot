@@ -25,11 +25,11 @@ import (
 )
 
 func compact(a *app.App) Command {
-	return Command{Name: "compact", Description: "Summarize the conversation to free context", Idle: true, Run: func(string) tea.Cmd {
+	return Command{Name: "compact", Args: "[focus]", Description: "Summarize the conversation to free context", Idle: true, Run: func(focus string) tea.Cmd {
 		conv := a.Current()
 		return func() tea.Msg {
 			// The transcript shows the compaction from its events.
-			if err := conv.Compact(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+			if err := conv.Compact(context.Background(), focus); err != nil && !errors.Is(err, context.Canceled) {
 				return transcript.Fail("Compaction failed: " + app.ErrorText(err))
 			}
 			return nil
@@ -213,12 +213,6 @@ func status(a *app.App, version string) Command {
 		}
 		branch := conv.GitBranch()
 		history := conv.History()
-		summaries := 0
-		for _, m := range history {
-			if m.Kind == agentcore.KindSummary {
-				summaries++
-			}
-		}
 		load := func() []panel.Tab {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -229,8 +223,8 @@ func status(a *app.App, version string) Command {
 				effort = "provider default"
 			}
 			used := contextLine(st.Context, st.Window)
-			if summaries > 0 {
-				used += fmt.Sprintf(" · compacted %d %s", summaries, plural(summaries, "time"))
+			if n := st.Compactions; n > 0 {
+				used += fmt.Sprintf(" · compacted %d %s", n, plural(n, "time"))
 			}
 			overview := [][2]string{
 				{"Model", st.Provider + " · " + st.Model},

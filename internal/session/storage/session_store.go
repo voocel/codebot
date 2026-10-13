@@ -136,6 +136,7 @@ func (s *State) apply(e entry, h *Header) error {
 		s.Usage.Add(c.Usage)
 		s.Checkpoints = Compacted(s.Checkpoints, len(s.Messages), len(c.Messages), c.Kept)
 		s.Messages = c.Messages
+		s.Compactions++
 	case entryModel:
 		return json.Unmarshal(e.Data, &s.Model)
 	case entryCheckpoint:

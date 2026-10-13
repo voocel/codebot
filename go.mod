@@ -9,7 +9,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/coder/acp-go-sdk v0.13.5
-	github.com/voocel/agentcore v1.8.6
+	github.com/voocel/agentcore v1.8.7
 	github.com/voocel/litellm v1.9.5
 	github.com/voocel/litellm/otel v0.0.0-20261010162241-67708be74e44
 	github.com/voocel/mcp-sdk-go v1.4.0
@@ -47,7 +47,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect
