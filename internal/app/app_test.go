@@ -1092,6 +1092,45 @@ func TestRewindingTheFilesAloneTellsTheAgent(t *testing.T) {
 	}
 }
 
+// A compaction or a rewind takes what the model read out of its history, so
+// it reads a file again before it overwrites it.
+func TestHistoryRewritesForgetReads(t *testing.T) {
+	read := use("r1", "read", map[string]string{"file_path": "a.txt"})
+	write := func(id string) litellmtest.Reply {
+		return use(id, "write", map[string]string{"file_path": "a.txt", "content": "new"})
+	}
+	model := script(read, text("read it"), text("<summary>s</summary>"), write("w1"), text("refused"), read, text("read it"), write("w2"), text("refused"))
+	e := boot(t, setup{mode: interact.ModeTrust}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+	path := filepath.Join(e.cwd, "a.txt")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := e.app.Current()
+	e.submit("read a")
+	if err := c.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select { // the compaction's
+	case <-e.idle:
+	case <-time.After(timeout):
+		t.Fatal("conversation did not go idle")
+	}
+	unchanged := func(after string) {
+		t.Helper()
+		if b, _ := os.ReadFile(path); string(b) != "old" {
+			t.Fatalf("overwrote a file whose read %s took: %q", after, b)
+		}
+	}
+	e.submit("overwrite a")
+	unchanged("the compaction")
+	e.submit("read a again")
+	if _, err := c.Rewind(c.Checkpoints()[1], false, true); err != nil {
+		t.Fatal(err)
+	}
+	e.submit("overwrite a")
+	unchanged("the rewind")
+}
+
 // Without checkpoints of the files only the conversation goes back.
 func TestRewindWithoutFileCheckpoints(t *testing.T) {
 	e := boot(t, setup{}, map[string]*fakeModel{"claude-sonnet-4-5": script(text("hi"))})

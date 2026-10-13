@@ -10,6 +10,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/litellm/catalog"
 
+	"github.com/voocel/codebot/internal/agent/subagent"
 	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/infra/provider"
 )
@@ -39,22 +40,12 @@ func (a *App) chooseModel(prov, name, effort string) (modelChoice, error) {
 	if err != nil {
 		return modelChoice{}, fmt.Errorf("create model failed: %w", err)
 	}
-	facts, ok := a.models.Lookup(spec)
+	facts, _ := a.models.Lookup(spec)
 	levels := provider.ThinkingLevels(model.Client, facts.Reasoning)
 	if !slices.Contains(levels, effort) {
 		return modelChoice{}, fmt.Errorf("model %s/%s: unsupported reasoning_effort %q", prov, name, effort)
 	}
-
-	window, maxOutput := defaultWindow, 0
-	if ok && facts.MaxInputTokens > 0 {
-		window, maxOutput = facts.MaxInputTokens, facts.MaxOutputTokens
-	}
-	// The user's cap can only lower the window; the provider rejects requests
-	// above the model's own.
-	if cap := a.settings.CompactWindow; cap > 0 && cap < window {
-		window = cap
-	}
-
+	window, compactAt := a.window(facts)
 	return modelChoice{
 		provider:  prov,
 		name:      name,
@@ -62,9 +53,24 @@ func (a *App) chooseModel(prov, name, effort string) (modelChoice, error) {
 		effort:    effort,
 		reasoning: len(levels) > 1,
 		window:    window,
-		compactAt: window - compactReserve(window, maxOutput, a.settings.CompactRatio),
+		compactAt: compactAt,
 		small:     a.smallModel(prov, name),
 	}, nil
+}
+
+// window returns the effective context window of a model with facts, and
+// the estimated request size that triggers compaction.
+func (a *App) window(facts catalog.Model) (window, compactAt int) {
+	window, maxOutput := defaultWindow, 0
+	if facts.MaxInputTokens > 0 {
+		window, maxOutput = facts.MaxInputTokens, facts.MaxOutputTokens
+	}
+	// The user's cap can only lower the window; the provider rejects requests
+	// above the model's own.
+	if cap := a.settings.CompactWindow; cap > 0 && cap < window {
+		window = cap
+	}
+	return window, window - compactReserve(window, maxOutput, a.settings.CompactRatio)
 }
 
 // compactReserve is the room left in the window for the model's reply.
@@ -83,9 +89,10 @@ func (a *App) smallModel(prov, name string) string {
 	return cmp.Or(a.settings.Providers[prov].SmallModel, name)
 }
 
-// resolveModelName resolves a model named in an agent definition. It prefers
-// prov, then the first provider (by name) that lists the model.
-func (a *App) resolveModelName(prov, name string) (agentcore.Model, error) {
+// subagentModel resolves a model named in an agent definition, or a call of
+// one. It prefers prov, then the first provider (by name) that lists the
+// model.
+func (a *App) subagentModel(prov, name string) (subagent.Model, error) {
 	lists := func(p string) bool {
 		return slices.ContainsFunc(a.settings.Providers[p].Models, func(m string) bool { return strings.EqualFold(m, name) })
 	}
@@ -99,9 +106,15 @@ func (a *App) resolveModelName(prov, name string) (agentcore.Model, error) {
 	}
 	spec, err := config.ModelSpec(a.settings.Providers, prov, name)
 	if err != nil {
-		return agentcore.Model{}, err
+		return subagent.Model{}, err
 	}
-	return a.newModel(spec)
+	model, err := a.newModel(spec)
+	if err != nil {
+		return subagent.Model{}, err
+	}
+	facts, _ := a.models.Lookup(spec)
+	_, compactAt := a.window(facts)
+	return subagent.Model{Model: model, CompactAt: compactAt}, nil
 }
 
 func (a *App) ModelFacts(prov, name string) (catalog.Model, bool) {

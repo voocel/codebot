@@ -23,12 +23,11 @@ type BuildDeps struct {
 	// another.
 	MainTools []agentcore.Tool
 
-	DefaultModel agentcore.Model
-	ResolveModel func(name string) (agentcore.Model, error)
+	DefaultModel Model
+	ResolveModel func(name string) (Model, error)
 
-	// CompactAt and Retry match the parent's.
-	CompactAt int
-	Retry     retry.Policy
+	// Retry matches the parent's.
+	Retry retry.Policy
 
 	// SessionID prefixes each run's prompt-cache key.
 	SessionID string
@@ -42,6 +41,13 @@ type BuildDeps struct {
 
 	// WrapRun wraps each run, see coresub.Agent.
 	WrapRun func(ctx context.Context, s coresub.Spawn, prompt string) (context.Context, func(output string, err error))
+}
+
+// Model is a model a sub-agent runs, and the estimated request size that
+// compacts the history of a run on it, which its context window sets.
+type Model struct {
+	agentcore.Model
+	CompactAt int
 }
 
 // Agent gives each run its own tools (see toolPool) and its own prompt-cache
@@ -66,21 +72,22 @@ func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 					return agentcore.Config{}, err
 				}
 			}
+			files := tools.NewFileReadState()
 			cfg := agentcore.Config{
-				Model: provider.WithCacheKey(m, deps.SessionID+"-"+s.ID),
+				Model: provider.WithCacheKey(m.Model, deps.SessionID+"-"+s.ID),
 				// Cache the system prompt so spawns of one agent share it.
 				// The default TTL suffices: a spawn's calls don't wait on a
 				// person.
 				System:     []litellm.Block{litellm.TextBlock{Text: d.SystemPrompt, Cache: &litellm.CacheControl{}}},
-				Tools:      toolPool(deps, d),
+				Tools:      toolPool(deps, d, files),
 				Middleware: deps.Middleware,
 				MaxTurns:   d.MaxTurns,
 				Retry:      deps.Retry,
 				// Cache the latest message and where the previous call
 				// ended, so each call reuses the one before.
 				Cache:     &litellm.CacheControl{},
-				Compactor: compact.Summarizer{Notes: tools.FileOps},
-				CompactAt: deps.CompactAt,
+				Compactor: files.Forgetting(compact.Summarizer{Notes: tools.FileOps}),
+				CompactAt: m.CompactAt,
 				Emit:      deps.Emit(s),
 			}
 			return cfg, nil
@@ -92,12 +99,12 @@ func (d *AgentDefinition) Agent(deps BuildDeps) (coresub.Agent, error) {
 // sub-agent's todo list would sit in a history nobody sees.
 var mainAgentOnly = []string{"ask_user", "todo_write"}
 
-// toolPool rebuilds read, write and edit over the run's own read state, so
-// its reads can't vouch for writes by the parent or another run.
-func toolPool(deps BuildDeps, d *AgentDefinition) []agentcore.Tool {
+// toolPool rebuilds read, write and edit over files, the run's own read
+// state, so its reads can't vouch for writes by the parent or another run.
+func toolPool(deps BuildDeps, d *AgentDefinition, files *tools.FileReadState) []agentcore.Tool {
 	narrowed := len(d.Tools) > 0 && !slices.Contains(d.Tools, "*")
 	w := deps.Workspace
-	w.Files = tools.NewFileReadState()
+	w.Files = files
 	var out []agentcore.Tool
 	for _, t := range deps.MainTools {
 		if slices.Contains(mainAgentOnly, t.Name) || slices.Contains(d.DisallowedTools, t.Name) ||

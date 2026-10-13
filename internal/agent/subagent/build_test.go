@@ -40,7 +40,7 @@ func mainTools(dir string) []agentcore.Tool {
 }
 
 func TestToolPoolKeepsTheMainAgentsOwnTools(t *testing.T) {
-	got := names(toolPool(BuildDeps{Workspace: tools.Workspace{Dir: "."}, MainTools: mainTools(".")}, &AgentDefinition{Name: "general-purpose"}))
+	got := names(toolPool(BuildDeps{Workspace: tools.Workspace{Dir: "."}, MainTools: mainTools(".")}, &AgentDefinition{Name: "general-purpose"}, tools.NewFileReadState()))
 	want := []string{"read", "write", "edit", "bash", "glob", "grep", "ls", "web_search", "web_fetch"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("tools = %v, want %v", got, want)
@@ -49,15 +49,15 @@ func TestToolPoolKeepsTheMainAgentsOwnTools(t *testing.T) {
 
 func TestToolPoolAppliesTheDefinition(t *testing.T) {
 	deps := BuildDeps{Workspace: tools.Workspace{Dir: "."}, MainTools: mainTools(".")}
-	if got := names(toolPool(deps, &AgentDefinition{DisallowedTools: readOnlyDisallowed})); slices.ContainsFunc(got, func(n string) bool {
+	if got := names(toolPool(deps, &AgentDefinition{DisallowedTools: readOnlyDisallowed}, tools.NewFileReadState())); slices.ContainsFunc(got, func(n string) bool {
 		return slices.Contains(readOnlyDisallowed, n)
 	}) {
 		t.Fatalf("read-only agent got %v", got)
 	}
-	if got := names(toolPool(deps, &AgentDefinition{Tools: []string{"read", "grep", "ask_user"}})); !slices.Equal(got, []string{"read", "grep"}) {
+	if got := names(toolPool(deps, &AgentDefinition{Tools: []string{"read", "grep", "ask_user"}}, tools.NewFileReadState())); !slices.Equal(got, []string{"read", "grep"}) {
 		t.Fatalf("narrowed agent got %v, want [read grep]", got)
 	}
-	if got := toolPool(deps, &AgentDefinition{Tools: []string{"*"}}); len(got) != 9 {
+	if got := toolPool(deps, &AgentDefinition{Tools: []string{"*"}}, tools.NewFileReadState()); len(got) != 9 {
 		t.Fatalf("{*} narrowed the tools to %v", names(got))
 	}
 }
@@ -70,7 +70,7 @@ func TestToolPoolRebuildsTheFileTools(t *testing.T) {
 	}
 	main := mainTools(dir)
 	deps := BuildDeps{Workspace: tools.Workspace{Dir: dir}, MainTools: main}
-	a, b := toolPool(deps, &AgentDefinition{}), toolPool(deps, &AgentDefinition{})
+	a, b := toolPool(deps, &AgentDefinition{}, tools.NewFileReadState()), toolPool(deps, &AgentDefinition{}, tools.NewFileReadState())
 	run := func(tool agentcore.Tool, args string) error {
 		if _, err := tool.Check(context.Background(), json.RawMessage(args)); err != nil {
 			return err
@@ -95,20 +95,19 @@ func TestToolPoolRebuildsTheFileTools(t *testing.T) {
 // A run uses the call's model, else the definition's, else the
 // conversation's.
 func TestAgentConfiguresEachRun(t *testing.T) {
-	model := func(name string) agentcore.Model {
+	model := func(name string) Model {
 		client, err := litellm.New(litellmtest.New())
 		if err != nil {
 			t.Fatal(err)
 		}
-		return agentcore.Model{Client: client, Request: litellm.Request{Model: name}}
+		return Model{agentcore.Model{Client: client, Request: litellm.Request{Model: name}}, len(name) * 1000}
 	}
 	var spawned []coresub.Spawn
 	deps := BuildDeps{
 		Workspace:    tools.Workspace{Dir: "."},
 		MainTools:    mainTools("."),
 		DefaultModel: model("main"),
-		ResolveModel: func(name string) (agentcore.Model, error) { return model(name), nil },
-		CompactAt:    1000,
+		ResolveModel: func(name string) (Model, error) { return model(name), nil },
 		Emit: func(s coresub.Spawn) func(agentcore.Event) error {
 			spawned = append(spawned, s)
 			return nil
@@ -128,7 +127,8 @@ func TestAgentConfiguresEachRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := cfg.Model.Request.Model; got != want[i] || cfg.Compactor == nil || cfg.Cache == nil || len(cfg.Tools) != 9 {
+			// Each model compacts at its own size.
+			if got := cfg.Model.Request.Model; got != want[i] || cfg.CompactAt != len(got)*1000 || cfg.Compactor == nil || cfg.Cache == nil || len(cfg.Tools) != 9 {
 				t.Errorf("%s with %q: model %q, config %+v", def.Name, call, got, cfg)
 			}
 		}

@@ -94,9 +94,8 @@ func (c *Conversation) buildSubagents(pool []agentcore.Tool, ws agentcoretools.W
 	deps := subagent.BuildDeps{
 		Workspace:    ws,
 		MainTools:    pool,
-		DefaultModel: model.model,
-		ResolveModel: func(name string) (agentcore.Model, error) { return a.resolveModelName(model.provider, name) },
-		CompactAt:    model.compactAt,
+		DefaultModel: subagent.Model{Model: model.model, CompactAt: model.compactAt},
+		ResolveModel: func(name string) (subagent.Model, error) { return a.subagentModel(model.provider, name) },
 		Retry:        retryPolicy,
 		SessionID:    c.id,
 		// A sub-agent runs its own loop, so it needs its own middleware.

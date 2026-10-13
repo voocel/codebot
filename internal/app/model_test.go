@@ -25,3 +25,17 @@ func TestCompactReserveTracksModelOutputCeiling(t *testing.T) {
 		})
 	}
 }
+
+// A sub-agent's history compacts by the window of the model it runs, not
+// the conversation's: a 200k model under a 1M one would only compact once
+// its requests failed.
+func TestSubagentsCompactByTheirModel(t *testing.T) {
+	e := boot(t, setup{}, nil) // claude-sonnet-4-5, 1M
+	sub, err := e.app.subagentModel("anthropic", "claude-opus-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if main := e.app.Current().model.compactAt; main != 980_000 || sub.CompactAt != 180_000 {
+		t.Fatalf("compact at %d for the conversation, %d for the sub-agent", main, sub.CompactAt)
+	}
+}

@@ -81,7 +81,7 @@ func (c *Conversation) specLocked() session.RunSpec {
 		Retry:              retryPolicy,
 		MaxToolErrors:      3,
 		MaxToolConcurrency: 4,
-		Compactor:          compact.Summarizer{Notes: agentcoretools.FileOps},
+		Compactor:          c.files.Forgetting(compact.Summarizer{Notes: agentcoretools.FileOps}),
 		CompactAt:          c.model.compactAt,
 		// Breakpoints go on the newest message and where the previous call
 		// ended, so each call reads the previous one from the cache.

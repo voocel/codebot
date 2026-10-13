@@ -516,7 +516,13 @@ func (c *Conversation) Rewind(cp Checkpoint, files, conversation bool) ([]string
 		}
 		switch {
 		case conversation:
-			return e.Rewind(cp.cp)
+			if err := e.Rewind(cp.cp); err != nil {
+				return err
+			}
+			// Some reads went with the history, and which is not recorded,
+			// so none counts as whole any more.
+			c.files.Forget()
+			return nil
 		case len(changed) > 0:
 			return e.Append(reminderMessage(fmt.Sprintf("The user put the files back as they were before the request %q: what was changed since is undone (%s). Read them again before relying on them.", cp.Prompt, strings.Join(changed, ", "))))
 		}
