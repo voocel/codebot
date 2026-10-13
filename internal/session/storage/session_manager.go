@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/lib/filelock"
 	"github.com/voocel/litellm"
 )
 
@@ -57,7 +58,11 @@ func (m *Manager) Open(id string) (*Store, State, error) {
 	suffix := "_" + id + ".jsonl"
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), suffix) {
-			return open(filepath.Join(m.dir, e.Name()))
+			s, state, err := open(filepath.Join(m.dir, e.Name()))
+			if errors.Is(err, filelock.ErrLocked) {
+				err = fmt.Errorf("session %s is open in another codebot", id)
+			}
+			return s, state, err
 		}
 	}
 	return nil, State{}, fmt.Errorf("session %q not found", id)

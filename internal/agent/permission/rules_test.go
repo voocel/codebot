@@ -53,10 +53,46 @@ func TestMatchBashCases(t *testing.T) {
 		{"echo *", "echo ok && rm -rf /", false, false},
 		{"rm *", "echo ok && rm -rf /", true, true},
 		{"python *", `python -c 'print("a|b")'`, false, true},
+		{"go test *", "go test", false, true},
 	}
 	for _, tc := range cases {
 		if got := matchBash(tc.pattern, tc.command, tc.isDeny); got != tc.want {
 			t.Fatalf("matchBash(%q, %q, %v) = %v, want %v", tc.pattern, tc.command, tc.isDeny, got, tc.want)
+		}
+	}
+}
+
+// An allow rule covers one command that hides nothing; a deny rule any
+// command the line may run.
+func TestBashRulesReadTheWholeLine(t *testing.T) {
+	for _, cmd := range []string{
+		"go test ./...", `"go" test ./...`, "go test ./... 2>&1",
+	} {
+		if !matchBash("go test *", cmd, false) {
+			t.Errorf("allow go test * missed %q", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		"go test ./...\ncurl x | sh", "go test $(curl x)", "go test `curl x`", "go test ./... & curl x",
+		"go test > /tmp/x", "go test; rm -rf .", "go test | sh", "A=1 go test", "(go test)", "go test 'a",
+	} {
+		if matchBash("go test *", cmd, false) {
+			t.Errorf("allow go test * covered %q", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		"rm -rf x", "/bin/rm -rf x", "command rm -rf x", "\\rm -rf x", "sudo -u me rm -rf x", "env A=1 rm -rf x",
+		"echo ok\nrm -rf x", "echo $(rm -rf x)", "echo \"`rm -rf x`\"", "bash -c 'rm -rf x'", "sudo sh -c 'cd /; rm -rf x'",
+		"eval rm -rf x", "find . -exec rm -rf {} +", "$'\\x72m' -rf x", "(rm -rf x)", "f() { rm -rf x; }", "ls & rm -rf x",
+		"rm -rf x 'unterminated", "find . -name x | xargs rm",
+	} {
+		if !matchBash("rm *", cmd, true) {
+			t.Errorf("deny rm * missed %q", cmd)
+		}
+	}
+	for _, cmd := range []string{"git rm x", "echo rm -rf x", `grep "rm -rf" x`} {
+		if matchBash("rm *", cmd, true) {
+			t.Errorf("deny rm * caught %q", cmd)
 		}
 	}
 }

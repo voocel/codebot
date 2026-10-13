@@ -72,12 +72,16 @@ func (l *OutputLimiter) saveToFile(toolName, text string) string {
 	if err := os.MkdirAll(l.dir, 0o755); err != nil {
 		return saveFailedPath
 	}
-	filename := fmt.Sprintf("%s-%d.txt", toolName, time.Now().UnixMilli())
-	path := filepath.Join(l.dir, filename)
-	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+	// A name of its own: calls run in parallel.
+	f, err := os.CreateTemp(l.dir, toolName+"-*.txt")
+	if err != nil {
 		return saveFailedPath
 	}
-	return path
+	defer f.Close()
+	if _, err := f.WriteString(text); err != nil {
+		return saveFailedPath
+	}
+	return f.Name()
 }
 
 func truncatedOutputSummary(text, path string) string {

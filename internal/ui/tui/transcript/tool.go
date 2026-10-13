@@ -24,6 +24,9 @@ const (
 	Interrupted
 )
 
+// liveLines is the most lines of progress a running tool shows.
+const liveLines = 6
+
 type Tool struct {
 	rev
 	ID      string
@@ -36,9 +39,17 @@ type Tool struct {
 	Waiting bool      // it waits for the user's approval
 
 	args    args
-	output  []string // progress lines of a running tool
+	output  []string // the last progress lines of a running tool, as many as show
 	agents  []*Agent // runs of a subagent call
 	toggled bool
+	// body is the last rendering below the head, which changes only with
+	// the version, while the head of a running call does with time.
+	body struct {
+		version  uint64
+		width    int
+		expanded bool
+		lines    []string
+	}
 }
 
 type Agent struct {
@@ -86,6 +97,7 @@ func (t *Tool) progress(p any) {
 	switch p := p.(type) {
 	case string: // a line of bash output
 		t.output = append(t.output, strings.TrimRight(p, "\n"))
+		t.output = t.output[max(len(t.output)-liveLines, 0):]
 	case subagent.Progress:
 		t.agent(p.Spawn).apply(p.Event)
 	default:
@@ -138,16 +150,19 @@ func (t *Tool) Render(p Params) []string {
 	lines := []string{fit(head, p.Width-ansi.StringWidth(suffix)) + suffix}
 
 	expanded := p.Expanded != t.toggled
-	var b []string
-	switch t.State {
-	case Failed:
-		b = errorBody(t.Result, p.Width, expanded)
-	case Interrupted:
-		b = []string{theme.SubtleText.Render("Interrupted")}
-	default:
-		b = v.body(t, p.Width, expanded)
+	if c := &t.body; c.lines == nil || c.version != t.Version() || c.width != p.Width || c.expanded != expanded {
+		var b []string
+		switch t.State {
+		case Failed:
+			b = errorBody(t.Result, p.Width, expanded)
+		case Interrupted:
+			b = []string{theme.SubtleText.Render("Interrupted")}
+		default:
+			b = v.body(t, p.Width, expanded)
+		}
+		c.version, c.width, c.expanded, c.lines = t.Version(), p.Width, expanded, body(b, p.Width)
 	}
-	return append(lines, body(b, p.Width)...)
+	return append(lines, t.body.lines...)
 }
 
 func (t *Tool) icon(now time.Time) string {

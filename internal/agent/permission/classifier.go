@@ -5,14 +5,17 @@ import (
 )
 
 // In a classification, path is checked against ReadRoots or WriteRoots by
-// capability. For exec, command yields the approval keys (see commandKeys)
-// and workdir is checked against WriteRoots. WebFetch(host) rules match url.
+// capability. A command's workdir is checked against WriteRoots and the
+// files its read-only commands read against ReadRoots. WebFetch(host) rules
+// match url.
 type classification struct {
 	capability Capability
 	path       string
 	command    string
 	workdir    string
-	intent     string // what the call says it does
+	reads      []string // see shellLine
+	keys       []string // see shellLine
+	intent     string   // what the call says it does
 	url        string
 	// confirm is why the user must confirm this call each time. The mode and
 	// stored approvals don't apply, and an allow covers only this call. Deny
@@ -42,10 +45,10 @@ type args struct {
 }
 
 // classifyTool covers the built-in tools; MCP tools classify themselves
-// through Metadata. web_fetch only GETs and web_search only sends a query,
-// so both count as reads; a "web_fetch" or WebFetch(host) deny rule blocks
-// them. Internal tools change only model-authored state, so there is no
-// side effect to gate.
+// through Metadata. web_search only sends a query to the search provider, so
+// it counts as a read; web_fetch reaches any host, which its URL can carry
+// data out to, so it asks for hosts not yet allowed. Internal tools change
+// only model-authored state, so there is no side effect to gate.
 func classifyTool(req Request) classification {
 	var a args
 	// A tool fails a call it cannot decode, so whatever a failed decode
@@ -59,13 +62,14 @@ func classifyTool(req Request) classification {
 	case "write", "edit":
 		return classification{capability: CapabilityWrite, path: a.FilePath}
 	case "bash":
+		line := readShell(a.Command)
 		capability := CapabilityExec
-		if isReadonlyBash(a.Command) {
+		if line.readonly {
 			capability = CapabilityRead
 		}
-		return classification{capability: capability, command: a.Command, workdir: a.WorkDir, intent: a.Description, unsandboxed: a.Unsandboxed}
+		return classification{capability: capability, command: a.Command, workdir: a.WorkDir, reads: line.reads, keys: line.keys, intent: a.Description, unsandboxed: a.Unsandboxed}
 	case "web_fetch":
-		return classification{capability: CapabilityRead, url: a.URL}
+		return classification{capability: CapabilityNetwork, url: a.URL}
 	case "web_search":
 		return classification{capability: CapabilityRead}
 	case "todo_write", "task_output", "task_stop", "subagent", "skill", "ask_user", "tool_search", "enter_worktree", "exit_worktree":

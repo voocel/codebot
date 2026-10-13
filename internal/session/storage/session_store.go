@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/codebot/internal/lib/filelock"
 )
 
 const currentVersion = 5
@@ -33,9 +34,13 @@ func create(dir, cwd string) (*Store, error) {
 	id := generateID()
 	now := time.Now()
 	path := filepath.Join(dir, fmt.Sprintf("%s_%s.jsonl", now.Format("2006-01-02"), id))
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("create session file: %w", err)
+	}
+	if err := filelock.TryLock(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("lock session file: %w", err)
 	}
 	s := &Store{path: path, file: f, header: Header{
 		Version:   currentVersion,
@@ -50,11 +55,17 @@ func create(dir, cwd string) (*Store, error) {
 	return s, nil
 }
 
-// open cuts off a torn final line left by a crash before appending.
+// open cuts off a torn final line left by a crash before appending. The
+// session stays locked until Close: two appending to it would overwrite each
+// other's lines.
 func open(path string) (*Store, State, error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, State{}, fmt.Errorf("open session: %w", err)
+	}
+	if err := filelock.TryLock(f); err != nil {
+		f.Close()
+		return nil, State{}, fmt.Errorf("lock session: %w", err)
 	}
 	h, state, scan, err := replay(f)
 	if err == nil {
@@ -123,7 +134,8 @@ func (s *State) apply(e entry, h *Header) error {
 			return err
 		}
 		s.Usage.Add(c.Usage)
-		s.Messages, s.Checkpoints = c.Messages, nil
+		s.Checkpoints = Compacted(s.Checkpoints, len(s.Messages), len(c.Messages), c.Kept)
+		s.Messages = c.Messages
 	case entryModel:
 		return json.Unmarshal(e.Data, &s.Model)
 	case entryCheckpoint:
@@ -155,8 +167,23 @@ func (s *Store) Append(m agentcore.Message) error {
 	return s.append(entryMessage, m)
 }
 
-func (s *Store) AppendCompaction(c *agentcore.Compaction) error {
-	return s.append(entryCompaction, compaction{Messages: c.Messages, Usage: c.Usage})
+// AppendCompaction logs c, which kept the last kept messages of the history.
+func (s *Store) AppendCompaction(c *agentcore.Compaction, kept int) error {
+	return s.append(entryCompaction, compaction{Messages: c.Messages, Kept: kept, Usage: c.Usage})
+}
+
+// Compacted returns the checkpoints of the runs whose messages a compaction
+// kept, where they stand after it: of before messages it kept the last kept,
+// which end the after messages it made.
+func Compacted(cps []Checkpoint, before, after, kept int) []Checkpoint {
+	var out []Checkpoint
+	for _, c := range cps {
+		if c.At >= before-kept {
+			c.At += after - before
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func (s *Store) AppendCheckpoint(c Checkpoint) error { return s.append(entryCheckpoint, c) }
@@ -215,7 +242,7 @@ func (s *Store) append(kind entryKind, data any) error {
 }
 
 func generateID() string {
-	b := make([]byte, 4)
+	b := make([]byte, 8)
 	rand.Read(b) // never fails since Go 1.24
 	return hex.EncodeToString(b)
 }

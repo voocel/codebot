@@ -526,10 +526,14 @@ func TestPermissionPanel(t *testing.T) {
 		t.Error("the editor's cursor shows under a panel")
 	}
 
-	// Keys typed as the request appeared go to the editor.
+	// Keys typed as the request appeared go to the editor, as does a paste;
+	// esc does nothing.
 	h.write("12")
-	if len(reply) > 0 || h.m.editor.Empty() {
-		t.Fatalf("typing answered %d, and the editor is empty: %v", len(reply), h.m.editor.Empty())
+	h.feed(tea.PasteMsg{Content: "34"})
+	h.feed(runStartedMsg{})
+	h.press("esc")
+	if len(reply) > 0 || h.m.stopped {
+		t.Fatalf("answered %d, stopped %v", len(reply), h.m.stopped)
 	}
 	h.pause()
 	h.press("1")
@@ -539,6 +543,7 @@ func TestPermissionPanel(t *testing.T) {
 	if h.m.top() != nil {
 		t.Error("the panel stayed")
 	}
+	h.shows("1234")
 
 	// Withdrawing a request removes its panel.
 	other := make(chan<- interact.Verdict, 1)
@@ -648,6 +653,25 @@ func TestUpRecallsAClearedInput(t *testing.T) {
 	}
 	h.press("up")
 	h.shows("half typed")
+}
+
+// A run slow to stop, as one stuck in a tool, does not keep ctrl+c from
+// quitting.
+func TestCtrlCQuitsWhileARunStops(t *testing.T) {
+	h := boot(t)
+	h.feed(runStartedMsg{})
+	h.press("ctrl+c")
+	if !h.m.stopped {
+		t.Fatal("ctrl+c did not stop the run")
+	}
+	h.press("ctrl+c")
+	cmd := h.m.update(keyPress("ctrl+c"))
+	if cmd == nil {
+		t.Fatal("a third ctrl+c did nothing")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("a third ctrl+c did not quit")
+	}
 }
 
 func TestCompactionOutsideARun(t *testing.T) {

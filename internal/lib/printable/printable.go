@@ -18,3 +18,23 @@ func Escape(s string) string {
 	}
 	return strconv.Quote(s)
 }
+
+// Lines returns s with each character a terminal would act on, not show,
+// written out as its escape, such as \x1b: lines and tabs stay.
+func Lines(s string) string {
+	if !strings.ContainsFunc(s, hidden) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if hidden(r) {
+			q := strconv.QuoteRune(r)
+			b.WriteString(q[1 : len(q)-1])
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func hidden(r rune) bool { return r != '\n' && r != '\t' && !unicode.IsPrint(r) }

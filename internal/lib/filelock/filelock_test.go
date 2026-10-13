@@ -93,3 +93,32 @@ func TestGoroutinesTakeTurns(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestTryLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x")
+	if err := os.WriteFile(path, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := TryLock(holder); err != nil {
+		t.Fatal(err)
+	}
+	other, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := TryLock(other); err != ErrLocked {
+		t.Fatalf("took a held lock: %v", err)
+	}
+	if b, err := os.ReadFile(path); string(b) != "data" {
+		t.Fatalf("could not read a locked file: %q, %v", b, err)
+	}
+	holder.Close()
+	if err := TryLock(other); err != nil {
+		t.Fatalf("the lock was not released with the file: %v", err)
+	}
+}

@@ -91,6 +91,11 @@ type Session struct {
 	statusMu sync.Mutex
 	status   Status
 
+	// checkpointsMu guards checkpoints, which a compaction moves from the
+	// Agent's goroutine, just before the Agent takes the history it made.
+	checkpointsMu sync.Mutex
+	checkpoints   []storage.Checkpoint
+
 	// Owned by the actor goroutine.
 	spec        RunSpec
 	recorded    storage.Model
@@ -98,8 +103,7 @@ type Session struct {
 	compacting  context.CancelFunc // non-nil while a manual compaction runs
 	compactWait *compactRequest    // a Compact waiting for the canceled run to end
 	pending     []Input            // inputs waiting for the live run to end
-	checkpoints []storage.Checkpoint
-	waiters     []chan<- func() // Waits to release at the next Idle
+	waiters     []chan<- func()    // Waits to release at the next Idle
 	aborted     bool
 	closing     bool
 	finished    bool
@@ -199,10 +203,9 @@ func (s *Session) Wait(ctx context.Context) error {
 // Checkpoints returns those of the runs the history holds, oldest first,
 // with that history.
 func (s *Session) Checkpoints() ([]storage.Checkpoint, []agentcore.Message) {
-	var cps []storage.Checkpoint
-	var history []agentcore.Message
-	s.do(func() { cps, history = slices.Clone(s.checkpoints), s.agent.Messages() })
-	return cps, history
+	s.checkpointsMu.Lock()
+	defer s.checkpointsMu.Unlock()
+	return slices.Clone(s.checkpoints), s.agent.Messages()
 }
 
 // ErrBusy refuses an Edit while the agent works.
@@ -230,7 +233,11 @@ type Editor struct{ s *Session }
 
 // Holds reports whether the history still holds cp's run, which a
 // compaction or an earlier rewind drops.
-func (e Editor) Holds(cp storage.Checkpoint) bool { return slices.Contains(e.s.checkpoints, cp) }
+func (e Editor) Holds(cp storage.Checkpoint) bool {
+	e.s.checkpointsMu.Lock()
+	defer e.s.checkpointsMu.Unlock()
+	return slices.Contains(e.s.checkpoints, cp)
+}
 
 // Rewind cuts the history back to before cp's run, which it must hold.
 func (e Editor) Rewind(cp storage.Checkpoint) error {
@@ -241,10 +248,15 @@ func (e Editor) Rewind(cp storage.Checkpoint) error {
 	if err := s.store.AppendRewind(cp.At); err != nil {
 		return err
 	}
-	if err := s.agent.SetMessages(s.agent.Messages()[:cp.At]); err != nil {
+	s.checkpointsMu.Lock()
+	err := s.agent.SetMessages(s.agent.Messages()[:cp.At])
+	if err == nil {
+		s.checkpoints = slices.DeleteFunc(s.checkpoints, func(c storage.Checkpoint) bool { return c.At >= cp.At })
+	}
+	s.checkpointsMu.Unlock()
+	if err != nil {
 		return err
 	}
-	s.checkpoints = slices.DeleteFunc(s.checkpoints, func(c storage.Checkpoint) bool { return c.At >= cp.At })
 	s.refreshStatus()
 	return nil
 }
@@ -507,7 +519,9 @@ func (s *Session) checkpoint(spec RunSpec, at int) {
 		s.emit(Event{Kind: Error, Err: err})
 		return
 	}
-	s.ops.push(func() { s.checkpoints = append(s.checkpoints, c) })
+	s.checkpointsMu.Lock()
+	s.checkpoints = append(s.checkpoints, c)
+	s.checkpointsMu.Unlock()
 }
 
 func (s *Session) runEnded() {
@@ -534,12 +548,17 @@ func (s *Session) observe(ev agentcore.Event) error {
 			st.Context = s.estimate(history)
 		})
 	case agentcore.CompactionEnd:
-		if e.Compaction != nil {
-			if err := s.store.AppendCompaction(e.Compaction); err != nil {
+		if c := e.Compaction; c != nil {
+			// The Agent takes the compacted history after this.
+			before := len(s.agent.Messages())
+			kept := before - c.Replaced
+			if err := s.store.AppendCompaction(c, kept); err != nil {
 				return err
 			}
-			// The runs they began are gone from the history.
-			s.ops.push(func() { s.checkpoints = nil })
+			// The runs whose messages it kept can still be rewound.
+			s.checkpointsMu.Lock()
+			s.checkpoints = storage.Compacted(s.checkpoints, before, len(c.Messages), kept)
+			s.checkpointsMu.Unlock()
 			s.updateStatus(func(st *Status) {
 				st.Usage.Add(e.Compaction.Usage)
 				st.Context = s.estimate(e.Compaction.Messages)
@@ -570,7 +589,10 @@ func (r retelling) Compact(ctx context.Context, history []agentcore.Message, cal
 	if c == nil || err != nil {
 		return c, err
 	}
-	c.Messages = slices.Concat(c.Messages, r.context(c.Messages))
+	// The context joins the rewrite, coming before the messages kept as
+	// they were, as before a run's inputs.
+	at := len(c.Messages) - (len(history) - c.Replaced)
+	c.Messages = slices.Concat(c.Messages[:at], r.context(c.Messages), c.Messages[at:])
 	return c, nil
 }
 

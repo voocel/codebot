@@ -221,8 +221,15 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	case tea.BlurMsg:
 		m.away = true
 		return nil
+	case batch:
+		cmds := make([]tea.Cmd, len(msg))
+		for i, msg := range msg {
+			cmds[i] = m.update(msg)
+		}
+		return tea.Batch(cmds...)
 	case tea.PasteMsg:
-		if p := m.top(); p != nil {
+		// A paste just as a request appears goes to the editor, as keys do.
+		if p := m.top(); p != nil && m.ready(p, time.Now()) {
 			return m.updatePanel(p, msg)
 		}
 		cmd, _ := m.editor.Update(msg)
@@ -431,9 +438,15 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 
-	// Keys typed just as a request appears go to the editor, not to it.
-	if p := m.top(); p != nil && m.ready(p, now) {
-		return m.updatePanel(p, k)
+	// Keys typed just as a request appears go to the editor, not to it, and
+	// esc does nothing, rather than stop the run the user meant to answer.
+	if p := m.top(); p != nil {
+		if m.ready(p, now) {
+			return m.updatePanel(p, k)
+		}
+		if s == "esc" {
+			return nil
+		}
 	}
 	switch s {
 	case "pgup":
@@ -495,13 +508,13 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 }
 
 // interrupt handles ctrl+c: clear the input, else stop the run or the shell
-// line, else quit on a second press.
+// line, else quit on a second press, as while a stopped run winds down.
 func (m *Model) interrupt() tea.Cmd {
 	switch {
 	case !m.editor.Empty():
 		m.editor.Discard()
 		return nil
-	case m.run.active:
+	case m.run.active && !m.stopped:
 		m.stop()
 		return nil
 	case m.shell != nil:

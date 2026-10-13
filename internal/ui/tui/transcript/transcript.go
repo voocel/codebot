@@ -81,6 +81,7 @@ func (t *Transcript) Apply(ev agentcore.Event) {
 		}
 		if c != nil {
 			c.Preview, c.Started = e.Call.Preview, t.now()
+			c.bump()
 		}
 	case agentcore.ToolUpdate:
 		if c := t.calls[e.Call.ID]; c != nil {

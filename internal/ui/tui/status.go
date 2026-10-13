@@ -164,7 +164,9 @@ func (r *run) lines(width int, now time.Time, pending []pending, waiting, stoppa
 	}
 	out = append(out, todoLines(r.todos)...)
 	for _, p := range pending {
-		out = append(out, theme.SubtleText.Render("↳ ")+theme.MutedText.Render(strings.ReplaceAll(p.text, "\n", " ")))
+		// Only what fits a line is laid out: an input may be a large paste.
+		text := strings.ToValidUTF8(p.text[:min(len(p.text), 4*width)], "")
+		out = append(out, theme.SubtleText.Render("↳ ")+theme.MutedText.Render(strings.ReplaceAll(text, "\n", " ")))
 	}
 	for i, l := range out {
 		out[i] = ansi.Truncate(" "+l, width, "…")

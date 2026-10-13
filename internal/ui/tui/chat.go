@@ -145,12 +145,13 @@ func (v *chatView) scroll(n int) {
 	}
 	p := v.top
 	for ; n < 0; n++ {
-		if p.line == 0 {
-			if p.cell == 0 {
-				break
-			}
+		// A cell may show no lines, as a reply yet to stream any does.
+		for p.line == 0 && p.cell > 0 {
 			p.cell--
 			p.line = len(v.lines(cells, p.cell))
+		}
+		if p.line == 0 {
+			break
 		}
 		p.line--
 	}

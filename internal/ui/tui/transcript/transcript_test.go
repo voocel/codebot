@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -229,5 +230,40 @@ func TestHomePath(t *testing.T) {
 		if got := HomePath(p); got != want {
 			t.Errorf("HomePath(%q) = %q, want %q", p, got, want)
 		}
+	}
+}
+
+// A running command keeps only the lines it shows: a long output would
+// otherwise cost more to render with every line.
+func TestRunningToolKeepsItsLastLines(t *testing.T) {
+	tool := newTool("1", "bash", json.RawMessage(`{"command":"seq 10000"}`), "")
+	tool.Started = time.Now()
+	for i := range 10000 {
+		tool.progress(strconv.Itoa(i) + "\n")
+	}
+	if len(tool.output) > liveLines {
+		t.Fatalf("kept %d lines", len(tool.output))
+	}
+	view := ansi.Strip(strings.Join(tool.Render(Params{Width: 80, Now: time.Now()}), "\n"))
+	if !strings.Contains(view, "9999") || strings.Contains(view, "9990") {
+		t.Fatalf("view:\n%s", view)
+	}
+}
+
+// A call waiting for approval renders its diff once: only its head changes
+// as time passes.
+func TestWaitingToolRendersItsBodyOnce(t *testing.T) {
+	tool := newTool("1", "write", json.RawMessage(`{"file_path":"a.go","content":"package a\n"}`), "+1 package a\n")
+	tool.Waiting = true
+	p := Params{Width: 80, Now: time.Now()}
+	first := tool.Render(p)
+	tool.body.lines[0] = "cached"
+	p.Now = p.Now.Add(time.Second)
+	if again := tool.Render(p); again[1] != "cached" || again[0] != first[0] {
+		t.Fatalf("rendered again:\n%s", strings.Join(again, "\n"))
+	}
+	tool.bump()
+	if again := tool.Render(p); again[1] == "cached" {
+		t.Fatal("a new version kept the old body")
 	}
 }

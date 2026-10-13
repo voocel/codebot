@@ -95,6 +95,7 @@ type App struct {
 	// configuration read last is the one in effect. starting serializes
 	// opening conversations, so no session is opened twice.
 	reloading, connecting, starting sync.Mutex
+	closing                         sync.Once
 
 	mu            sync.Mutex
 	conversations map[*Conversation]func() // each open one, with its unsubscribe
@@ -287,7 +288,11 @@ func (a *App) Sessions() ([]SessionInfo, error) { return a.sessions.List() }
 // open a conversation) or wait on the conversation.
 func (a *App) Subscribe(fn func(Event)) (unsubscribe func()) { return a.events.subscribe(fn) }
 
-func (a *App) Close() {
+// Close closes the open conversations and what serves them. Later calls,
+// as from a signal handler, wait for the first to finish.
+func (a *App) Close() { a.closing.Do(a.close) }
+
+func (a *App) close() {
 	for _, c := range a.open() {
 		c.Close()
 	}

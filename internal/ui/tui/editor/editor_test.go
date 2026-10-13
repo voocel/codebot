@@ -139,6 +139,33 @@ func TestLongPasteGoesInAsAReference(t *testing.T) {
 	}
 }
 
+// Text sent and put back, as when a run stops, comes back as it went in:
+// its pastes as references, not a body too long to edit.
+func TestInsertFoldsPastesBack(t *testing.T) {
+	e := newEditor()
+	body := strings.Repeat("x", 600) + "\n" + strings.Repeat("y", 600)
+	e.Update(tea.PasteMsg{Content: body})
+	write(e, " fix this")
+	in := press(e, "enter")
+	e.Insert(in.Text)
+	if got := e.ta.Value(); got != "[Pasted text #1 +2 lines] fix this" {
+		t.Fatalf("the input holds %q", got)
+	}
+	if again := press(e, "enter"); again == nil || again.Text != in.Text {
+		t.Fatalf("sent %+v, want %q", again, in.Text)
+	}
+
+	// Text with no paste it knows goes in as one when too long to edit.
+	long := strings.Repeat("z", pasteInline+1)
+	e.Insert(long)
+	if got := e.ta.Value(); got != "[Pasted text #2]" {
+		t.Fatalf("the input holds %q", got)
+	}
+	if again := press(e, "enter"); again == nil || again.Text != long {
+		t.Fatal("did not send the text back")
+	}
+}
+
 func TestCompletion(t *testing.T) {
 	e := newEditor()
 	write(e, "/")

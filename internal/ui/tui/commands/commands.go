@@ -226,15 +226,17 @@ func table(rows [][2]string, width int) []string {
 
 // info renders a row with an empty value as a section heading.
 func info(rows [][2]string, width int) []string {
+	rows = slices.Clone(rows)
 	w := 0
-	for _, r := range rows {
+	for i, r := range rows {
+		r = [2]string{app.Printable(r[0]), app.Printable(r[1])}
 		if r[1] != "" {
 			w = max(w, ansi.StringWidth(r[0]))
 		}
+		rows[i] = r
 	}
 	var out []string
 	for _, r := range rows {
-		r = [2]string{app.Printable(r[0]), app.Printable(r[1])}
 		if r[1] == "" {
 			if len(out) > 0 {
 				out = append(out, "")

@@ -106,3 +106,22 @@ func TestLimiterPassesOtherResults(t *testing.T) {
 		t.Fatalf("result changed: %v, %d blocks", err, len(res.Content))
 	}
 }
+
+// Calls of one tool cut at once each keep their own output.
+func TestLimiterKeepsEachCallsOutput(t *testing.T) {
+	l := NewOutputLimiter(t.TempDir())
+	saved := map[string]bool{}
+	for i := range 3 {
+		res, err := l.Middleware()(context.Background(), agentcore.ToolCall{Name: "grep"},
+			func(context.Context, agentcore.ToolCall) (agentcore.Result, error) {
+				return agentcore.TextResult(strings.Repeat(string(rune('a'+i)), outputLimit+1)), nil
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved[persistedPath(text(res))] = true
+	}
+	if len(saved) != 3 {
+		t.Fatalf("saved to %v", saved)
+	}
+}

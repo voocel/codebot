@@ -74,7 +74,7 @@ func Run(a *app.App, args []string, jsonMode bool) error {
 		fmt.Fprintf(os.Stderr, "mcp: %s needs a login: log in with /mcp in codebot\n", name)
 	}
 
-	p := &printer{json: jsonMode, hidden: make(map[string]bool)}
+	p := &printer{json: jsonMode, stream: isTerminal(os.Stdout), hidden: make(map[string]bool)}
 	unsubscribe := a.Subscribe(p.onEvent)
 	defer unsubscribe()
 
@@ -102,7 +102,11 @@ func Run(a *app.App, args []string, jsonMode bool) error {
 }
 
 type printer struct {
-	json   bool
+	json bool
+	// stream shows the reply as it comes, on a terminal; elsewhere it is
+	// written whole, so that a response retried after part of it streamed
+	// appears once.
+	stream bool
 	hidden map[string]bool // tool calls the transcript does not show
 
 	mu  sync.Mutex
@@ -162,12 +166,19 @@ func (p *printer) onAgentEvent(ev agentcore.Event) {
 	switch e := ev.(type) {
 	case agentcore.MessageDelta:
 		// Thinking and tool-argument deltas are not part of the reply.
-		if d, ok := e.Event.(litellm.TextDelta); ok {
+		if d, ok := e.Event.(litellm.TextDelta); ok && p.stream {
 			fmt.Fprint(os.Stdout, d.Text)
 		}
 	case agentcore.MessageEnd:
+		text := e.Message.Text()
+		if e.Message.Role != litellm.RoleAssistant || text == "" {
+			break
+		}
+		if !p.stream {
+			fmt.Fprint(os.Stdout, text)
+		}
 		// End the reply's line, so tool notes on stderr start their own.
-		if text := e.Message.Text(); e.Message.Role == litellm.RoleAssistant && text != "" && !strings.HasSuffix(text, "\n") {
+		if !strings.HasSuffix(text, "\n") {
 			fmt.Fprintln(os.Stdout)
 		}
 	case agentcore.ToolStart:
@@ -193,9 +204,13 @@ func (p *printer) onAgentEvent(ev agentcore.Event) {
 	}
 }
 
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
 func readStdinPrompt() (string, error) {
-	info, _ := os.Stdin.Stat()
-	if info.Mode()&os.ModeCharDevice != 0 {
+	if isTerminal(os.Stdin) {
 		return "", nil
 	}
 	data, err := io.ReadAll(bufio.NewReader(os.Stdin))

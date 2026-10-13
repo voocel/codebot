@@ -39,8 +39,8 @@ var allowed = map[string][]string{
 	"internal/extension/...": {"internal/extension/...", "internal/agent/...", "internal/workspace/...", "internal/infra/...", "internal/interact", "internal/lib/..."},
 	"internal/agent/...":     {"internal/agent/...", "internal/infra/...", "internal/interact", "internal/lib/..."},
 	"internal/workspace/...": {"internal/workspace/...", "internal/infra/...", "internal/lib/..."},
-	// The session depends only on the kernel and its log.
-	"internal/session/...": {"internal/session/..."},
+	// The session depends only on the kernel, its log and helpers.
+	"internal/session/...": {"internal/session/...", "internal/lib/..."},
 	"internal/infra/...":   {"internal/infra/...", "internal/lib/..."},
 	// The frontend contract depends on nothing.
 	"internal/interact": {},

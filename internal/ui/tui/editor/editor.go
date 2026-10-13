@@ -178,8 +178,14 @@ func (e *Editor) Discard() {
 	e.Clear()
 }
 
-// Insert prepends text to the input.
+// Insert prepends text, as sent, to the input: its pastes go back to
+// references, and all of it into one if it is still too long to edit.
 func (e *Editor) Insert(text string) {
+	if folded := e.pastes.fold(text); len([]rune(folded)) <= pasteInline {
+		text = folded
+	} else {
+		text = e.pastes.ref(text)
+	}
 	if v := e.ta.Value(); v != "" {
 		text += "\n" + v
 	}

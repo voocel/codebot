@@ -1,333 +1,243 @@
 package permission
 
 import (
+	"cmp"
+	"os"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
 )
 
-// isReadonlyBash reports whether balanced mode may run cmd without asking.
-// It is deliberately conservative and does not parse shell: a redirect from
-// or to a file disqualifies cmd, and every segment must be a known read-only
-// command. A false negative costs one prompt; a false positive skips the
-// user entirely, so when in doubt it returns false.
-func isReadonlyBash(cmd string) bool {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		return false
-	}
-	if hasUnquotedInput(cmd) || opaque(cmd) {
-		return false
-	}
-	for _, seg := range splitBashSegments(cmd) {
-		if !isReadonlySegment(strings.TrimSpace(seg)) {
-			return false
-		}
-	}
-	// cat ~/.ssh/id_rsa reads, but leaks a credential; keep it on the
-	// regular ask flow.
-	if scanBashForSensitiveRead("", cmd) != "" {
-		return false
-	}
-	return true
+// shellLine is what the engine makes of a bash command.
+type shellLine struct {
+	// readonly is set when every command only reads, so that balanced mode
+	// may run the line without asking. It is conservative: a false negative
+	// costs one prompt, a false positive skips the user entirely.
+	readonly bool
+	// reads are the files the read-only commands read, which must lie in
+	// the readable roots for the line to run unasked.
+	reads []string
+	// keys are what Allow Always remembers ("exec:go test"), one for each
+	// command that is not read-only; nil when nothing can be remembered, as
+	// for a line that is opaque or destructive, or a command that runs
+	// another.
+	keys []string
 }
 
-// readonlyBashCommands have no local side effect when invoked safely; see
-// isReadonlySegment for the per-command checks. awk is excluded because
-// system() makes arbitrary execution trivial.
-var readonlyBashCommands = map[string]bool{
-	"pwd":      true,
-	"whoami":   true,
-	"id":       true,
-	"uname":    true,
-	"hostname": true,
-	"date":     true,
-	"which":    true,
-	"type":     true,
-	"printenv": true,
-
-	"ls":       true,
-	"tree":     true,
-	"stat":     true,
-	"file":     true,
-	"basename": true,
-	"dirname":  true,
-	"realpath": true,
-	"readlink": true,
-	"df":       true,
-	"du":       true,
-	"wc":       true,
-
-	"cat":  true,
-	"head": true,
-	"tail": true,
-	"less": true,
-	"more": true,
-
-	"grep":    true,
-	"egrep":   true,
-	"fgrep":   true,
-	"rg":      true,
-	"ripgrep": true,
-	"find":    true, // -exec / -delete checked below
-	"fd":      true,
-	"fdfind":  true,
-	"sort":    true,
-	"uniq":    true,
-	"cut":     true,
-	"tr":      true,
-	"sed":     true, // -i / --in-place checked below
-	"diff":    true,
-	"cmp":     true,
-	"echo":    true,
-	"printf":  true,
-
-	"git": true,
-}
-
-// gitReadonlySubcommands is kept small on purpose: any other git subcommand
-// asks, which spares per-flag mutation checks.
-var gitReadonlySubcommands = map[string]bool{
-	"status": true,
-	"log":    true,
-	"diff":   true,
-	"show":   true,
-	"blame":  true,
-}
-
-func isReadonlySegment(seg string) bool {
-	tokens := strings.Fields(seg)
-	if len(tokens) == 0 {
-		return false
+func readShell(line string) shellLine {
+	s := parseScript(line)
+	if s.opaque || len(s.cmds) == 0 {
+		return shellLine{}
 	}
-	// NODE_ENV=prod is harmless but LD_PRELOAD=/tmp/evil.so is not; reject
-	// every assignment rather than keep a list of safe names.
-	if strings.ContainsRune(tokens[0], '=') {
-		return false
-	}
-	cmd := tokens[0]
-	if !readonlyBashCommands[cmd] {
-		return false
-	}
-
-	switch cmd {
-	case "find", "fd", "fdfind":
-		for _, t := range tokens[1:] {
-			switch t {
-			case "-exec", "-execdir", "-delete", "-ok", "-okdir":
-				return false
-			}
-		}
-	case "sed":
-		for _, t := range tokens[1:] {
-			if t == "-i" || t == "--in-place" || strings.HasPrefix(t, "-i") {
-				return false
-			}
-		}
-	case "git":
-		// Bare "git" only prints help.
-		if len(tokens) < 2 {
-			return true
-		}
-		if !gitReadonlySubcommands[tokens[1]] {
-			return false
-		}
-	}
-	return true
-}
-
-// hasUnquotedInput reports a < outside quotes: input from a file may read a
-// credential the path scan misses, as <~/.ssh/id_rsa does. Output redirects
-// are opaque's to judge, which lets 2>&1 and 2>/dev/null through.
-func hasUnquotedInput(cmd string) bool {
-	inSingle, inDouble, escaped := false, false, false
-	for i := 0; i < len(cmd); i++ {
-		ch := cmd[i]
-		if escaped {
-			escaped = false
+	out := shellLine{readonly: true}
+	remember := destructiveCommandWarning(line) == ""
+	for _, c := range s.cmds {
+		if reads, ok := readonly(c); ok {
+			out.reads = append(out.reads, reads...)
 			continue
 		}
-		if ch == '\\' && !inSingle {
-			escaped = true
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			continue
-		}
-		if inSingle || inDouble {
-			continue
-		}
-		if ch == '<' {
-			return true
-		}
-	}
-	return false
-}
-
-func splitBashSegments(cmd string) []string {
-	var (
-		parts    []string
-		buf      strings.Builder
-		inSingle bool
-		inDouble bool
-		escaped  bool
-	)
-	flush := func() {
-		s := strings.TrimSpace(buf.String())
-		if s != "" {
-			parts = append(parts, s)
-		}
-		buf.Reset()
-	}
-	for i := 0; i < len(cmd); i++ {
-		ch := cmd[i]
-		if escaped {
-			buf.WriteByte(ch)
-			escaped = false
-			continue
-		}
-		if ch == '\\' && !inSingle {
-			escaped = true
-			buf.WriteByte(ch)
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			buf.WriteByte(ch)
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			buf.WriteByte(ch)
-			continue
-		}
-		if !inSingle && !inDouble {
-			if ch == ';' {
-				flush()
-				continue
-			}
-			if i+1 < len(cmd) && ((ch == '&' && cmd[i+1] == '&') || (ch == '|' && cmd[i+1] == '|')) {
-				flush()
-				i++
-				continue
-			}
-			if ch == '|' {
-				flush()
-				continue
-			}
-		}
-		buf.WriteByte(ch)
-	}
-	flush()
-	return parts
-}
-
-// commandKeys returns an approval key ("exec:go test") for each command in
-// cmd that is not read-only. It returns nil, so nothing is remembered, when
-// cmd is opaque or destructive, or when a command is prefixed by variables
-// or runs another command.
-func commandKeys(cmd string) []string {
-	if opaque(cmd) || destructiveCommandWarning(cmd) != "" {
-		return nil
-	}
-	var keys []string
-	for _, seg := range splitBashSegments(cmd) {
-		if isReadonlySegment(seg) {
-			continue
-		}
-		p := commandPrefix(seg)
+		out.readonly = false
+		p := commandPrefix(c.args)
 		if p == "" {
-			return nil
-		}
-		if k := "exec:" + p; !slices.Contains(keys, k) {
-			keys = append(keys, k)
+			remember = false
+		} else if k := "exec:" + p; !slices.Contains(out.keys, k) {
+			out.keys = append(out.keys, k)
 		}
 	}
-	return keys
+	if !remember {
+		out.keys = nil
+	}
+	return out
+}
+
+// readonlySpec describes a command with no side effect.
+type readonlySpec struct {
+	// files marks a command whose operands are files it reads.
+	files bool
+	// pattern marks one whose first operand is a pattern, unless options
+	// give it.
+	pattern bool
+	// allows, if set, checks the arguments for options that write or run a
+	// program. A command with one may not take a glob that could expand to
+	// an option.
+	allows func(args []string) bool
+}
+
+// readonlyCommands have no side effect, given arguments their spec allows.
+// awk is excluded because system() makes running anything trivial, less and
+// more because LESSOPEN runs a program.
+var readonlyCommands = map[string]readonlySpec{
+	"pwd": {}, "whoami": {}, "id": {}, "uname": {}, "which": {}, "type": {},
+	"echo": {}, "printf": {}, "basename": {}, "dirname": {}, "tr": {},
+	"hostname": {allows: optionsOnly}, // an operand sets the name
+	"date":     {allows: without("s", "--set")},
+
+	"ls": {files: true}, "stat": {files: true}, "realpath": {files: true}, "readlink": {files: true},
+	"df": {files: true}, "du": {files: true}, "wc": {files: true},
+	"cat": {files: true}, "head": {files: true}, "tail": {files: true},
+	"grep": {files: true, pattern: true}, "egrep": {files: true, pattern: true}, "fgrep": {files: true, pattern: true},
+	"cut": {files: true}, "diff": {files: true}, "cmp": {files: true},
+
+	"tree": {files: true, allows: without("oR")},
+	"file": {files: true, allows: without("C", "--compile")},
+	// --files0-from reads the files another file names.
+	"sort": {files: true, allows: without("o", "--output", "--compress-program", "--files0-from")},
+	"uniq": {files: true, allows: func(args []string) bool { return len(operands(args)) <= 1 }}, // a second operand is written
+	"rg":   {files: true, pattern: true, allows: without("", "--pre", "--hostname-bin")},
+	"find": {files: true, allows: func(args []string) bool {
+		return !slices.ContainsFunc(args, func(a string) bool {
+			return slices.Contains([]string{"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}, a)
+		})
+	}},
+	"sed": {files: true, pattern: true, allows: sedPrints},
+	// git's other subcommands may change the repository; these may write a
+	// file or run a program only as their options ask.
+	"git": {files: true, allows: func(args []string) bool {
+		if len(args) == 0 {
+			return true
+		}
+		switch args[0] {
+		case "status", "log", "diff", "show", "blame":
+			return without("", "--output", "--ext-diff", "--textconv")(args)
+		}
+		return false
+	}},
+}
+
+// readonly returns the files c reads, if it only reads.
+func readonly(c command) ([]string, bool) {
+	spec, ok := readonlyCommands[c.args[0]]
+	if !ok || spec.allows != nil && (!spec.allows(c.args[1:]) || c.looseGlob()) {
+		return nil, false
+	}
+	if !spec.files {
+		return nil, true
+	}
+	ops := operands(c.literal[1:])
+	if spec.pattern && len(ops) > 0 && !patternGiven(c.args[1:]) {
+		ops = ops[1:]
+	}
+	if len(ops) == 0 {
+		ops = []string{"."} // the working directory, as ls and grep -r read, or standard input
+	}
+	var reads []string
+	for _, op := range ops {
+		switch {
+		case op == "~" || strings.HasPrefix(op, "~/"):
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, false
+			}
+			op = home + op[1:]
+		case strings.HasPrefix(op, "~"):
+			return nil, false // another user's home
+		}
+		reads = append(reads, cmp.Or(op, "."))
+	}
+	return reads, true
+}
+
+// operands returns the arguments that are not options, the values of
+// options included, and the values of those written --name=value; "-" is
+// standard input. After "--" all are operands.
+func operands(args []string) []string {
+	var out []string
+	for i, a := range args {
+		if a == "--" {
+			return append(out, args[i+1:]...)
+		}
+		if name, value, ok := strings.Cut(a, "="); ok && strings.HasPrefix(name, "--") {
+			out = append(out, value)
+		} else if !strings.HasPrefix(a, "-") {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// patternGiven reports whether options give grep, rg or sed its pattern or
+// script, with -e or -f, alone or grouped, or a long form of them.
+func patternGiven(args []string) bool {
+	return slices.ContainsFunc(args, func(a string) bool {
+		name, _, _ := strings.Cut(a, "=")
+		switch {
+		case name == "--regexp" || name == "--file" || name == "--expression":
+			return true
+		case strings.HasPrefix(a, "--"):
+			return false
+		}
+		return strings.HasPrefix(a, "-") && strings.ContainsAny(a[1:], "ef")
+	})
+}
+
+// without returns a check that refuses the short options in letters, alone
+// or grouped as in -uo, and the long ones, given as --name or --name=value.
+func without(letters string, long ...string) func([]string) bool {
+	return func(args []string) bool {
+		for _, a := range args {
+			if a == "--" {
+				return true
+			}
+			if strings.HasPrefix(a, "--") {
+				name, _, _ := strings.Cut(a, "=")
+				if slices.Contains(long, name) {
+					return false
+				}
+			} else if strings.HasPrefix(a, "-") && strings.ContainsAny(a[1:], letters) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+func optionsOnly(args []string) bool { return len(operands(args)) == 0 }
+
+// sedScript matches scripts that only print or delete lines by number or
+// pattern, such as 1,80p: sed's other commands may write files (w) or run
+// programs (e).
+var sedScript = func() *regexp.Regexp {
+	addr := `(?:\d+|\$|/[^/\\\n]*/)`
+	cmd := `(?:` + addr + `(?:,(?:` + addr + `|\+\d+))?)?!?[pdq=]`
+	return regexp.MustCompile(`^\s*` + cmd + `(?:\s*[;\n]\s*` + cmd + `)*\s*;?\s*$`)
+}()
+
+func sedPrints(args []string) bool {
+	script := false
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-e" || a == "--expression":
+			if i++; i == len(args) || !sedScript.MatchString(args[i]) {
+				return false
+			}
+			script = true
+		case slices.Contains([]string{"-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-s", "--separate", "-u", "--unbuffered", "-z", "--null-data"}, a):
+		case strings.HasPrefix(a, "-"):
+			return false // -i edits in place, -f reads a script
+		case !script:
+			if !sedScript.MatchString(a) {
+				return false
+			}
+			script = true
+		}
+	}
+	return true
 }
 
 // commandPrefix is what an approval remembers: "git commit -m x" → "git
-// commit", "./script.sh arg" → "./script.sh". It is "" for a command behind
-// variable assignments (LD_PRELOAD=…) or one that runs another (sudo, sh).
-func commandPrefix(seg string) string {
-	tokens := strings.Fields(seg)
-	if len(tokens) == 0 || envVarAssignRE.MatchString(tokens[0]) || runsAnother[tokens[0]] {
+// commit", "./script.sh arg" → "./script.sh". It is "" for a command that
+// runs another, and for git with options before its subcommand, which can
+// make it run anything (-c core.sshCommand=…).
+func commandPrefix(args []string) string {
+	if runsAnother[path.Base(args[0])] || args[0] == "git" && len(args) > 1 && strings.HasPrefix(args[1], "-") {
 		return ""
 	}
 	// A subcommand only follows a plain command name, not a path or a flag.
-	if subcommandShapeRE.MatchString(tokens[0]) && len(tokens) > 1 && subcommandShapeRE.MatchString(tokens[1]) {
-		return tokens[0] + " " + tokens[1]
+	if subcommandShapeRE.MatchString(args[0]) && len(args) > 1 && subcommandShapeRE.MatchString(args[1]) {
+		return args[0] + " " + args[1]
 	}
-	return tokens[0]
+	return args[0]
 }
 
-// The commands in runsAnother run a command they are given, so remembering
-// one would allow anything.
-var runsAnother = map[string]bool{
-	"bash": true, "sh": true, "zsh": true, "fish": true, "dash": true, "ksh": true,
-	"eval": true, "exec": true, "source": true, ".": true, "command": true, "builtin": true,
-	"sudo": true, "su": true, "doas": true, "env": true, "xargs": true, "nohup": true,
-	"nice": true, "timeout": true, "time": true, "watch": true, "chroot": true,
-}
-
-// opaque reports whether cmd may do more than its commands show: command
-// substitution, background jobs, extra lines or redirection to a file. Only
-// single quotes disarm these; substitution still runs inside double quotes.
-func opaque(cmd string) bool {
-	single, double := false, false
-	for i := 0; i < len(cmd); i++ {
-		c := cmd[i]
-		next := byte(0)
-		if i+1 < len(cmd) {
-			next = cmd[i+1]
-		}
-		switch {
-		case single:
-			single = c != '\''
-		case c == '\\':
-			i++
-		case c == '\'' && !double:
-			single = true
-		case c == '"':
-			double = !double
-		case c == '`', c == '$' && next == '(':
-			return true
-		case double:
-		case c == '\n', (c == '<' || c == '>') && next == '(':
-			return true
-		case c == '&' && next == '&':
-			i++
-		case c == '&':
-			// The & in 2>&1 or &> is a redirection, not a background job.
-			if next != '>' && (i == 0 || cmd[i-1] != '>') {
-				return true
-			}
-		case c == '>':
-			if writesFile(cmd[i+1:]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// writesFile reports whether the redirect target is a file, not &N or
-// /dev/null.
-func writesFile(rest string) bool {
-	rest = strings.TrimLeft(strings.TrimPrefix(rest, ">"), " \t")
-	if strings.HasPrefix(rest, "&") {
-		return false
-	}
-	target, _, _ := strings.Cut(rest, " ")
-	return strings.TrimRight(target, ";|&") != "/dev/null"
-}
-
-var (
-	envVarAssignRE    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
-	subcommandShapeRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-)
+var subcommandShapeRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)

@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/infra/config"
@@ -129,12 +131,14 @@ func run(opts app.Options, resume string, printMode, acpMode, jsonMode bool, not
 		opts.CacheTTL = "1h"
 		a := boot(opts)
 		defer a.Close()
+		closeOnSignal(a)
 		warn(a)
 		return acp.NewServer(version).Serve(a)
 	case printMode:
 		opts.Name, opts.UI = "print", print.UI{}
 		a := boot(opts)
 		defer a.Close()
+		closeOnSignal(a)
 		open(a, resume)
 		warn(a)
 		return print.Run(a, flag.Args(), jsonMode)
@@ -146,6 +150,21 @@ func run(opts app.Options, resume string, printMode, acpMode, jsonMode bool, not
 		open(a, resume)
 		return tui.Run(a, screen, version, notice)
 	}
+}
+
+// closeOnSignal closes a before a signal ends codebot: the commands it
+// started run in sessions of their own, out of reach of a ctrl+c or a
+// closing terminal, and would live on. A second signal ends codebot at
+// once. The TUI quits on these itself.
+func closeOnSignal(a *app.App) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		s := <-ch
+		signal.Stop(ch)
+		a.Close()
+		os.Exit(128 + int(s.(syscall.Signal)))
+	}()
 }
 
 func boot(opts app.Options) *app.App {

@@ -586,8 +586,8 @@ func TestLoopCompactionIsRecorded(t *testing.T) {
 	h.checkReplay()
 }
 
-// The spec's context messages go before each run's inputs and after a
-// compacted history.
+// The spec's context messages go before each run's inputs, and after a
+// compaction's rewrite, before what it kept.
 func TestContextIsTold(t *testing.T) {
 	t.Parallel()
 	sp := spec(script(say("a1"), say("a2"), say("a3")))
@@ -615,7 +615,7 @@ func TestContextIsTold(t *testing.T) {
 	h.waitIdle(3)
 	h.post(User, "u3")
 	h.waitIdle(4)
-	if got := h.history(); got != "summary:4 earlier assistant:a2 user:context user:u3 assistant:a3" {
+	if got := h.history(); got != "summary:4 earlier user:context assistant:a2 user:u3 assistant:a3" {
 		t.Fatalf("history = %s", got)
 	}
 	h.checkReplay()
@@ -746,9 +746,41 @@ func TestRewindCutsBackToACheckpoint(t *testing.T) {
 	store.Close()
 }
 
+// A prompt too long for the model even after a compaction stays in the
+// history, where later prompts would only add to it; its run's checkpoint
+// survives the compaction, so it can be rewound away.
+func TestATooLongPromptCanBeRewound(t *testing.T) {
+	t.Parallel()
+	tooLong := func(context.Context) (litellmtest.Reply, error) {
+		return litellmtest.Reply{}, &litellm.Error{Type: litellm.ErrorTypeContextOverflow, Message: "prompt is too long"}
+	}
+	h := start(t, spec(script(say("a1"), tooLong, tooLong, say("a2"))))
+	h.post(User, "u1")
+	h.waitIdle(1)
+	h.post(User, "huge")
+	h.waitIdle(2)
+	if got := h.history(); got != "summary:2 earlier user:huge" {
+		t.Fatalf("history = %s", got)
+	}
+	cps, _ := h.s.Checkpoints()
+	if len(cps) != 1 {
+		t.Fatalf("checkpoints = %+v", cps)
+	}
+	if err := h.s.Edit(func(e Editor) error { return e.Rewind(cps[0]) }); err != nil {
+		t.Fatal(err)
+	}
+	h.post(User, "u2")
+	h.waitIdle(3)
+	if got := h.history(); got != "summary:2 earlier user:u2 assistant:a2" {
+		t.Fatalf("history = %s", got)
+	}
+	h.checkReplay()
+}
+
 // Edit waits for no run: it refuses one and leaves fn unrun. A compaction
-// drops the checkpoints of the runs it summarizes, so none can be rewound to.
-func TestEditRefusesARunAndCompactionDropsCheckpoints(t *testing.T) {
+// drops the checkpoints of the runs it summarizes, which can no longer be
+// rewound to, and moves those of the runs it kept.
+func TestEditRefusesARunAndCompactionMovesCheckpoints(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
 	h := start(t, spec(script(say("a1"), hang(started))))
@@ -764,11 +796,20 @@ func TestEditRefusesARunAndCompactionDropsCheckpoints(t *testing.T) {
 	if err := h.s.Compact(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := h.s.Checkpoints(); len(got) != 0 {
-		t.Fatalf("checkpoints after compaction = %+v", got)
+	// It summarized u1 and a1, and kept u2.
+	got, _ := h.s.Checkpoints()
+	if len(got) != 1 || got[0].At != 1 {
+		t.Fatalf("checkpoints after compaction = %+v, from %+v", got, cps)
 	}
+	h.checkReplay()
 	if err := h.s.Edit(func(e Editor) error { return e.Rewind(cps[0]) }); err == nil {
 		t.Fatal("rewound into a compacted history")
+	}
+	if err := h.s.Edit(func(e Editor) error { return e.Rewind(got[0]) }); err != nil {
+		t.Fatal(err)
+	}
+	if h := h.history(); h != "summary:2 earlier" {
+		t.Fatalf("history = %s", h)
 	}
 	h.checkReplay()
 }

@@ -54,7 +54,10 @@ type rewind struct {
 
 type compaction struct {
 	Messages []agentcore.Message `json:"messages"`
-	Usage    *agentcore.Usage    `json:"usage,omitempty"`
+	// Kept is how many messages at the end of the history it kept as they
+	// were, which end Messages.
+	Kept  int              `json:"kept,omitempty"`
+	Usage *agentcore.Usage `json:"usage,omitempty"`
 }
 
 type State struct {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/interact"
+	"github.com/voocel/codebot/internal/lib/printable"
 )
 
 type Config struct {
@@ -225,10 +226,12 @@ func (e *Engine) ask(ctx context.Context, ui interact.UI, info toolInfo) (*Decis
 		return decision, nil
 	}
 	approval := interact.Approval{
-		ToolID:       info.toolID,
-		Tool:         info.tool,
-		Summary:      info.summary,
-		Intent:       info.intent,
+		ToolID: info.toolID,
+		Tool:   info.tool,
+		// Both come from the model, which could hide a part of the call
+		// from the user with characters the terminal acts on.
+		Summary:      printable.Lines(info.summary),
+		Intent:       printable.Lines(info.intent),
 		Dir:          info.dir,
 		Reason:       info.reason,
 		OutsideRoots: info.outsideRoots,
@@ -451,7 +454,7 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 	case CapabilityExec:
 		command := strings.TrimSpace(c.command)
 		info.summary = firstNonEmpty(command, info.summary)
-		info.keys = commandKeys(command)
+		info.keys = c.keys
 		info.remember = commands(info.keys)
 		if info.reason == "" {
 			info.reason = "shell execution requires approval"
@@ -467,12 +470,31 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 				info.reason = fmt.Sprintf("workdir outside writable roots: %s", wd)
 			}
 		}
+	case CapabilityNetwork:
+		info.summary = firstNonEmpty(strings.TrimSpace(c.url), info.summary)
+		if host := hostOf(c.url); host != "" {
+			info.keys, info.remember = []string{"fetch:" + host}, "fetches from `"+host+"`"
+		}
+		if info.reason == "" {
+			info.reason = "a request to a host can carry data out"
+		}
 	case CapabilityInternal:
 	default:
 		info.capability = CapabilityUnknown
 		info.keys, info.remember = []string{"tool:" + req.ToolName}, "`"+req.ToolName+"`"
 		if info.reason == "" {
 			info.reason = "unclassified tool requires approval"
+		}
+	}
+	// What a command reads is held to the readable roots, as the read
+	// tool's reads are.
+	dir := cmp.Or(absPath(workspace, c.workdir), workspace)
+	for _, p := range c.reads {
+		path, deny := checkedPath(dir, roots.ReadRoots, p, "readable")
+		if deny != "" && !pathInRoots(path, roots.InternalReadable) && !pathInRoots(path, roots.InternalWritable) {
+			info.outsideRoots = true
+			info.reason = "command reads outside the readable roots: " + path
+			break
 		}
 	}
 
@@ -503,18 +525,9 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 // checkedPath returns the absolute path, and a deny message if it lies
 // outside roots.
 func checkedPath(workspace string, roots []string, raw, rootLabel string) (string, string) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	path := absPath(workspace, raw)
+	if path == "" {
 		return "", ""
-	}
-	var path string
-	switch {
-	case filepath.IsAbs(raw):
-		path = filepath.Clean(raw)
-	case workspace == "":
-		path = filepath.Clean(raw)
-	default:
-		path = filepath.Clean(filepath.Join(workspace, raw))
 	}
 	if len(roots) == 0 {
 		if workspace == "" {
@@ -526,6 +539,19 @@ func checkedPath(workspace string, roots []string, raw, rootLabel string) (strin
 		return path, ""
 	}
 	return path, fmt.Sprintf("path outside %s roots denied: %s", rootLabel, path)
+}
+
+// absPath returns raw cleaned, taken from workspace if relative; "" for
+// none.
+func absPath(workspace, raw string) string {
+	raw = strings.TrimSpace(raw)
+	switch {
+	case raw == "":
+		return ""
+	case filepath.IsAbs(raw) || workspace == "":
+		return filepath.Clean(raw)
+	}
+	return filepath.Join(workspace, raw)
 }
 
 func pathInRoots(path string, roots []string) bool {

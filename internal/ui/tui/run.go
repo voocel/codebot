@@ -8,10 +8,12 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -93,6 +95,17 @@ func Run(a *app.App, ui *UI, version, notice string) error {
 		q.push(updatesMsg{a.PluginUpdates(ctx)})
 	}()
 
+	// A closing terminal hangs up: quit, so that the shell line and, as Run
+	// returns, the App's commands stop too, which run in sessions of their
+	// own, out of the signal's reach.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		<-hup
+		p.Quit()
+	}()
+
 	_, err := p.Run()
 	if m.shell != nil {
 		m.shell.cancel()
@@ -163,13 +176,17 @@ func suggest(conv *app.Conversation, q *queue) {
 	}
 }
 
-// queue delivers messages in order without blocking the sender.
+// queue delivers messages in order without blocking the sender, those that
+// arrived meanwhile as one batch: the program renders after each message,
+// and a command's output can arrive by the thousand lines.
 type queue struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
-	msgs   []tea.Msg
+	msgs   batch
 	closed bool
 }
+
+type batch []tea.Msg
 
 func newQueue(p *tea.Program) *queue {
 	q := &queue{}
@@ -184,12 +201,10 @@ func newQueue(p *tea.Program) *queue {
 				q.mu.Unlock()
 				return
 			}
-			batch := q.msgs
+			msgs := q.msgs
 			q.msgs = nil
 			q.mu.Unlock()
-			for _, msg := range batch {
-				p.Send(msg)
-			}
+			p.Send(msgs)
 		}
 	}()
 	return q

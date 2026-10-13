@@ -6,6 +6,7 @@ package syntax
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
@@ -47,7 +48,20 @@ func mustStyle(base, stringHex string, extras chroma.StyleEntries) *chroma.Style
 }
 
 // File returns code unchanged when no lexer matches path.
-func File(code, path string) string { return highlight(code, lexers.Match(path)) }
+func File(code, path string) string { return highlight(code, lexerFor(path)) }
+
+// matched holds the lexer of each path, nil for none: matching one tries
+// every lexer's file patterns, and a diff highlights its path line by line.
+var matched sync.Map
+
+func lexerFor(path string) chroma.Lexer {
+	l, ok := matched.Load(path)
+	if !ok {
+		l, _ = matched.LoadOrStore(path, lexers.Match(path))
+	}
+	lexer, _ := l.(chroma.Lexer)
+	return lexer
+}
 
 func Lang(code, lang string) string {
 	if lang == "" {

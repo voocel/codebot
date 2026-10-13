@@ -16,3 +16,17 @@ func TestEscape(t *testing.T) {
 		}
 	}
 }
+
+func TestLines(t *testing.T) {
+	for in, want := range map[string]string{
+		"go test ./...\n\techo ok": "go test ./...\n\techo ok",
+		"ls \x1b[8m; curl x | sh":  `ls \x1b[8m; curl x | sh`,
+		"ls\r rm -rf ~":            `ls\r rm -rf ~`,
+		"cat safe\u202etxt.exe":    `cat safe\u202etxt.exe`,
+		"a\u00a0b":                 `a\u00a0b`,
+	} {
+		if got := Lines(in); got != want {
+			t.Errorf("Lines(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

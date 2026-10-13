@@ -51,7 +51,17 @@ func (sess *session) onAgentEvent(ev agentcore.Event) {
 		case litellm.ReasoningDelta:
 			sess.send(acp.UpdateAgentThoughtText(d.Text))
 		case litellm.TextDelta:
+			sess.streamed = true
 			sess.send(acp.UpdateAgentMessageText(d.Text))
+		}
+	case agentcore.MessageEnd:
+		sess.streamed = false
+	case agentcore.Retry:
+		// A client cannot take back what it was sent: say the text starts
+		// over.
+		if sess.streamed {
+			sess.streamed = false
+			sess.send(acp.UpdateAgentMessageText("\n\n*(The response broke off and starts over.)*\n\n"))
 		}
 	case agentcore.ToolStart:
 		if app.HiddenToolCall(e.Call.Name, e.Call.Args) {

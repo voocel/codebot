@@ -63,7 +63,7 @@ func TestReplayAppliesEveryEntryKind(t *testing.T) {
 		func() error { return s.Append(agentcore.UserText("u1")) },
 		func() error { return s.Append(answer) },
 		func() error {
-			return s.AppendCompaction(&agentcore.Compaction{Messages: []agentcore.Message{summary, answer}, Usage: &agentcore.Usage{Usage: litellm.Usage{InputTokens: 5}}})
+			return s.AppendCompaction(&agentcore.Compaction{Messages: []agentcore.Message{summary, answer}, Usage: &agentcore.Usage{Usage: litellm.Usage{InputTokens: 5}}}, 1)
 		},
 		func() error { return s.AppendCheckpoint(Checkpoint{At: 2, Dir: "/w", Tree: "t2"}) },
 		func() error { return s.Append(agentcore.UserText("u2")) },
@@ -265,4 +265,28 @@ func TestManagerListsSessions(t *testing.T) {
 	if len(state.Messages) != 3 {
 		t.Fatalf("messages = %d", len(state.Messages))
 	}
+}
+
+// Two appending to one session would overwrite each other's lines, so one
+// open session is all there is.
+func TestSessionOpensOnce(t *testing.T) {
+	t.Parallel()
+	m := NewManager(t.TempDir())
+	s, err := m.Create("/project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := s.Header().SessionID
+	if _, _, err := m.Open(id); err == nil || !strings.Contains(err.Error(), "open in another codebot") {
+		t.Fatalf("opened a session already open: %v", err)
+	}
+	s.Close()
+	again, _, err := m.Open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Open(id); err == nil {
+		t.Fatal("opened a session already open")
+	}
+	again.Close()
 }

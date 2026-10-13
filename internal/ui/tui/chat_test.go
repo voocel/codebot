@@ -86,6 +86,26 @@ func TestChatScrollStopsAtTheTop(t *testing.T) {
 	}
 }
 
+// attached is a cell shown right under the one before, with no gap.
+type attached struct{ cell }
+
+func (*attached) Attached() bool { return true }
+
+// Scrolling up passes over a cell showing no lines, as a reply yet to stream
+// any does when what follows is attached to it.
+func TestChatScrollsPastEmptyCells(t *testing.T) {
+	cells := []transcript.Cell{&cell{[]string{"a"}}, &attached{}, &attached{}, &attached{cell{[]string{"b.0", "b.1", "b.2"}}}}
+	v := newChatView(func() []transcript.Cell { return cells }, emptyPage)
+	v.width, v.height = 40, 2
+	v.view()
+	for _, want := range []string{"b.0", "a", "a"} {
+		v.scroll(-1)
+		if got := v.view(); got[0] != want {
+			t.Fatalf("view = %q, want %q on top", got, want)
+		}
+	}
+}
+
 func TestSelectionCopiesTheText(t *testing.T) {
 	cells := []transcript.Cell{
 		&cell{[]string{"● The answer is", "  in two lines"}},

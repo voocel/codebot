@@ -3,6 +3,7 @@ package permission
 import (
 	"fmt"
 	"net/url"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -110,104 +111,37 @@ func (r Rule) matches(info toolInfo, isDeny bool) bool {
 	}
 }
 
-func matchBash(pattern, command string, isDeny bool) bool {
-	command = strings.TrimSpace(command)
-	pattern = strings.TrimSpace(pattern)
-	if command == "" || pattern == "" {
+// matchBash matches a command against the words of pattern. An allow rule
+// covers a single command that hides nothing; a deny rule any command the
+// line may run, however nested or wrapped, by its name or base name, as
+// /bin/rm is rm.
+func matchBash(pattern, line string, isDeny bool) bool {
+	words := strings.Fields(pattern)
+	if len(words) == 0 {
 		return false
 	}
-	if hasShellOperator(command) {
-		if !isDeny {
-			return false
-		}
-		for _, seg := range splitShellSegments(command) {
-			seg = strings.TrimSpace(seg)
-			if seg != "" && matchSimpleBash(pattern, seg) {
-				return true
-			}
-		}
-		return false
+	if isDeny {
+		return eachCommand(line, func(args []string) bool { return matchWords(words, args, true) })
 	}
-	return matchSimpleBash(pattern, command)
+	s := parseScript(line)
+	return !s.opaque && len(s.cmds) == 1 && matchWords(words, s.cmds[0].args, false)
 }
 
-func matchSimpleBash(pattern, command string) bool {
-	pt := strings.Fields(pattern)
-	ct := strings.Fields(command)
-	if len(pt) == 0 || len(ct) == 0 {
-		return false
-	}
-	for i, p := range pt {
-		if p == "*" {
-			return i < len(ct)
-		}
-		if i >= len(ct) || p != ct[i] {
+// matchWords reports whether args begin with pattern, where "*" stands for
+// the rest of them, if any, as xargs rm has none; with base, the command
+// also matches by base name.
+func matchWords(pattern, args []string, base bool) bool {
+	for i, p := range pattern {
+		switch {
+		case p == "*":
+			return true
+		case i >= len(args):
+			return false
+		case args[i] != p && !(base && i == 0 && path.Base(args[i]) == p):
 			return false
 		}
 	}
-	return len(ct) >= len(pt)
-}
-
-func hasShellOperator(cmd string) bool {
-	return len(splitShellSegments(cmd)) > 1
-}
-
-func splitShellSegments(cmd string) []string {
-	var (
-		parts    []string
-		buf      strings.Builder
-		inSingle bool
-		inDouble bool
-		escaped  bool
-	)
-	flush := func() {
-		part := strings.TrimSpace(buf.String())
-		if part != "" {
-			parts = append(parts, part)
-		}
-		buf.Reset()
-	}
-	for i := 0; i < len(cmd); i++ {
-		ch := cmd[i]
-		if escaped {
-			buf.WriteByte(ch)
-			escaped = false
-			continue
-		}
-		if ch == '\\' && !inSingle {
-			escaped = true
-			buf.WriteByte(ch)
-			continue
-		}
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			buf.WriteByte(ch)
-			continue
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			buf.WriteByte(ch)
-			continue
-		}
-		if !inSingle && !inDouble {
-			if ch == ';' {
-				flush()
-				continue
-			}
-			if i+1 < len(cmd) && ((ch == '&' && cmd[i+1] == '&') || (ch == '|' && cmd[i+1] == '|')) {
-				flush()
-				i++
-				continue
-			}
-			if ch == '|' {
-				flush()
-				continue
-			}
-		}
-		buf.WriteByte(ch)
-	}
-	flush()
-	return parts
+	return true
 }
 
 func matchPath(pattern, path, workspace string, roots []string) bool {

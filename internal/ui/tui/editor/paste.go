@@ -2,7 +2,9 @@ package editor
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -55,6 +57,17 @@ func (p *pastes) expand(text string) string {
 		}
 		return ref
 	})
+}
+
+// fold puts the references of the bodies text holds back in their place,
+// as expand took them out, the longest first.
+func (p *pastes) fold(text string) string {
+	bodies := slices.Collect(maps.Values(p.bodies))
+	slices.SortFunc(bodies, func(a, b string) int { return len(b) - len(a) })
+	for _, body := range bodies {
+		text = strings.ReplaceAll(text, body, p.ref(body))
+	}
+	return text
 }
 
 func (p *pastes) of(text string) map[int]string {

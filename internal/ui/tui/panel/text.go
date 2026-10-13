@@ -102,7 +102,7 @@ func (t *Text) View(width, height int) string {
 	case t.loading:
 		lines = []string{theme.SubtleText.Render("Loading…")}
 	case len(t.Tabs) > 0:
-		lines = t.Tabs[t.active].Body(width - 2)
+		lines = t.Tabs[t.active].Body(max(width-2, 0))
 	}
 	room := max(height-chrome-len(body), 1)
 	t.offset = min(t.offset, max(len(lines)-room, 0))

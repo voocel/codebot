@@ -158,8 +158,8 @@ func output(text string, width int) []string {
 	return markdown.Wrap(text, theme.MutedText, bodyWidth(width))
 }
 
-// liveTail shows the last n lines of a running tool's progress, and nothing
-// before it reports any.
+// liveTail shows the last n lines, at most liveLines, of a running tool's
+// progress, and nothing before it reports any.
 func liveTail(t *Tool, width, n int) []string {
 	if len(t.output) == 0 {
 		return nil
@@ -193,7 +193,7 @@ func errorBody(text string, width int, expanded bool) []string {
 
 func bashBody(t *Tool, width int, expanded bool) []string {
 	if t.State == Running {
-		return liveTail(t, width, 6)
+		return liveTail(t, width, liveLines)
 	}
 	if strings.TrimSpace(t.Result) == "" {
 		return []string{theme.SubtleText.Render("(no output)")}

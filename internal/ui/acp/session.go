@@ -33,6 +33,10 @@ type session struct {
 	// stop stops the prompt in flight. session/cancel reaches the prompt
 	// through the SDK, which cancels its context; session/close needs this.
 	stop context.CancelFunc
+
+	// streamed is set once the response under way sent text, which a retry
+	// sends again. Events come one at a time.
+	streamed bool
 }
 
 var _ interact.UI = (*session)(nil)
