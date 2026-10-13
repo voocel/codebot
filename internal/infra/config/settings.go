@@ -222,6 +222,17 @@ type Settings struct {
 	// Snapshot enables the checkpoints behind /rewind; unset means on. Large
 	// repos may turn it off because every turn scans the workspace.
 	Snapshot *bool `json:"snapshot,omitempty"`
+
+	Sandbox *SandboxConfig `json:"sandbox,omitempty"`
+}
+
+// SandboxConfig runs the model's shell commands in an OS sandbox: they can
+// write only in the workspace, the write roots and the temp directory, and
+// reach no network unless Network. Those that stay in it need no approval
+// in balanced and accept-edits modes, as long as the network is off.
+type SandboxConfig struct {
+	Enabled bool `json:"enabled"`
+	Network bool `json:"network,omitempty"`
 }
 
 type PermissionsConfig struct {
@@ -248,6 +259,8 @@ type Resolved struct {
 	Langfuse LangfuseConfig
 
 	Snapshot bool
+
+	Sandbox SandboxConfig
 }
 
 func FormatModelID(provider, model string) string {
@@ -302,6 +315,9 @@ func (s Settings) resolve() Resolved {
 	}
 	if s.Snapshot != nil {
 		r.Snapshot = *s.Snapshot
+	}
+	if s.Sandbox != nil {
+		r.Sandbox = *s.Sandbox
 	}
 	return r
 }
@@ -481,14 +497,16 @@ func (l Layers) Resolve(cwd string, granted Settings) (Resolved, error) {
 //     servers, plugins, allow rules, roots) and apply only once the user
 //     agrees;
 //   - fields that decide where calls go and whose credentials they carry
-//     (providers, search provider and key, langfuse) belong to the user
-//     alone, so they are dropped and listed in refused.
+//     (providers, search provider and key, langfuse), and the sandbox
+//     that contains what a project's code does, belong to the user alone,
+//     so they are dropped and listed in refused.
 func ForProject(s Settings) (open, grants Settings, refused []string) {
 	for name, set := range map[string]bool{
 		"providers":       s.Providers != nil,
 		"search_provider": s.SearchProvider != nil,
 		"search_api_key":  s.SearchAPIKey != nil,
 		"langfuse":        s.Langfuse != nil,
+		"sandbox":         s.Sandbox != nil,
 	} {
 		if set {
 			refused = append(refused, name)
@@ -496,7 +514,7 @@ func ForProject(s Settings) (open, grants Settings, refused []string) {
 	}
 	slices.Sort(refused)
 	open = s
-	open.Providers, open.SearchProvider, open.SearchAPIKey, open.Langfuse = nil, nil, nil, nil
+	open.Providers, open.SearchProvider, open.SearchAPIKey, open.Langfuse, open.Sandbox = nil, nil, nil, nil, nil
 	open.Hooks, open.MCPServers, open.Plugins, open.Permissions = nil, nil, nil, nil
 	grants = Settings{Hooks: s.Hooks, MCPServers: s.MCPServers, Plugins: s.Plugins}
 	if p := s.Permissions; p != nil {
@@ -589,6 +607,9 @@ func mergeSettings(base, override Settings) Settings {
 	}
 	if override.Snapshot != nil {
 		base.Snapshot = override.Snapshot
+	}
+	if override.Sandbox != nil {
+		base.Sandbox = override.Sandbox
 	}
 	return base
 }

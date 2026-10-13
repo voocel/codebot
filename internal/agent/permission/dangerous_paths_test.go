@@ -50,6 +50,8 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 		{"write claude config", mkReq("edit", "file_path", filepath.Join(home, ".claude.json"))},
 		{"write into .git/hooks", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "hooks", "post-commit"))},
 		{"write .git/config", mkReq("edit", "file_path", filepath.Join(home, "proj", ".git", "config"))},
+		// commondir would point git at another config.
+		{"write .git/commondir", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "commondir"))},
 		{"write .ssh/config", mkReq("write", "file_path", filepath.Join(home, ".ssh", "config"))},
 		{"write .gnupg/something", mkReq("write", "file_path", filepath.Join(home, ".gnupg", "trustdb.gpg"))},
 		{"write .aws/sso cache", mkReq("write", "file_path", filepath.Join(home, ".aws", "sso", "cache", "token.json"))},
@@ -76,7 +78,7 @@ func TestCheckDangerousPath_ForceAsk(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if reason := checkDangerousPath(home, tc.req); reason == "" {
+			if reason := classify(home, tc.req).confirm; reason == "" {
 				t.Fatalf("expected force-ask, got allow")
 			}
 		})
@@ -98,7 +100,6 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 		{"read gcloud configuration", mkReq("read", "file_path", filepath.Join(home, ".config", "gcloud", "configurations", "config_default"))},
 		{"read a project named gcloud", mkReq("read", "file_path", filepath.Join(home, "src", "gcloud", "main.go"))},
 		{"write normal source", mkReq("write", "file_path", filepath.Join(home, "proj", "main.go"))},
-		{"write .git/info/exclude is harmless", mkReq("write", "file_path", filepath.Join(home, "proj", ".git", "info", "exclude"))},
 		{"bash has no path", mkReq("bash", "command", "ls -la")},
 		{"empty args", Request{ToolName: "write"}},
 		{"codebot memory", mkReq("write", "file_path", filepath.Join(home, ".codebot", "memory", "user.md"))},
@@ -108,7 +109,7 @@ func TestCheckDangerousPath_Allowed(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if reason := checkDangerousPath(home, tc.req); reason != "" {
+			if reason := classify(home, tc.req).confirm; reason != "" {
 				t.Fatalf("expected allow, got reason=%q", reason)
 			}
 		})
@@ -136,7 +137,7 @@ func TestCheckDangerousPath_SymlinkDotfilesPattern(t *testing.T) {
 	}
 
 	req := mkReq("write", "file_path", link)
-	if reason := checkDangerousPath(home, req); reason == "" {
+	if reason := classify(home, req).confirm; reason == "" {
 		t.Fatalf("symlinked ~/.bashrc → ~/dotfiles/bashrc must still match force-ask")
 	}
 }
@@ -162,7 +163,7 @@ func TestCheckDangerousPath_BashCommandReferencesSSHKey(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := mkReq("bash", "command", tc.cmd)
-			reason := checkDangerousPath(home, req)
+			reason := classify(home, req).confirm
 			gotHit := reason != ""
 			if gotHit != tc.wantHit {
 				t.Fatalf("hit=%v want=%v reason=%q", gotHit, tc.wantHit, reason)
@@ -186,7 +187,7 @@ func TestCheckDangerousPath_ThroughALinkedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := mkReq("write", "file_path", filepath.Join(proj, "docs", "evil", "SKILL.md"))
-	if reason := checkDangerousPath(proj, req); reason == "" {
+	if reason := classify(proj, req).confirm; reason == "" {
 		t.Fatal("a skill written through a linked directory went unasked")
 	}
 }
@@ -212,7 +213,7 @@ func TestCheckDangerousPath_SymlinkAttackPattern(t *testing.T) {
 	}
 
 	req := mkReq("read", "file_path", innocent)
-	if reason := checkDangerousPath(home, req); reason == "" {
+	if reason := classify(home, req).confirm; reason == "" {
 		t.Fatalf("symlink to SSH private key must be caught via resolved form")
 	}
 }

@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,9 +24,23 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The sandbox tests run commands in bubblewrap, which Ubuntu keeps from
+      # unprivileged user namespaces unless told otherwise. Without it they
+      # skip; macOS has sandbox-exec built in, Windows no sandbox.
+      - name: Install bubblewrap
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Vet
         run: go vet ./...
 
       # Includes internal/arch, which enforces the package dependency rules.
       - name: Test
         run: go test -race ./...
+
+      # The sandbox tests skip where the sandbox cannot start; here it must.
+      - name: Sandbox runs
+        if: runner.os != 'Windows'
+        run: "! go test -count=1 -v ./internal/agent/sandbox/ | grep -- '--- SKIP'"

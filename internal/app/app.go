@@ -22,6 +22,7 @@ import (
 	agentcoretools "github.com/voocel/agentcore/tools"
 
 	"github.com/voocel/codebot/internal/agent/permission"
+	"github.com/voocel/codebot/internal/agent/sandbox"
 	"github.com/voocel/codebot/internal/agent/skill"
 	"github.com/voocel/codebot/internal/agent/tools"
 	"github.com/voocel/codebot/internal/extension"
@@ -79,6 +80,7 @@ type App struct {
 	newModel    ModelFactory
 	sessions    *storage.Manager
 	permissions *permission.Engine
+	sandbox     *sandbox.Sandbox // nil when commands run unsandboxed
 	mcp         *mcp.Manager
 	usage       *skill.UsageTracker
 	tracer      *telemetry.Tracer
@@ -144,6 +146,11 @@ func Boot(opts Options) (*App, error) {
 	}
 	if a.permissions, err = newPermissionEngine(cwd, settings, ext.Set); err != nil {
 		return nil, err
+	}
+	if settings.Sandbox.Enabled {
+		if a.sandbox, err = sandbox.New(settings.Sandbox.Network); err != nil {
+			return nil, fmt.Errorf("sandbox: %w; to run commands without it, set sandbox.enabled to false in %s", err, config.UserSettingsPath())
+		}
 	}
 	a.mcp = mcp.NewManager(func() { go a.refreshMCP() })
 
@@ -285,6 +292,9 @@ func (a *App) Close() {
 		c.Close()
 	}
 	a.mcp.Close()
+	if a.sandbox != nil {
+		a.sandbox.Close()
+	}
 	// Bound the final span flush so a hung OTLP backend can't block exit.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -29,7 +29,7 @@ func toolReq(name string, args map[string]any) Request {
 func TestBalancedWithoutUI(t *testing.T) {
 	engine := newEngine(t, engineCfg{})
 	for tool, want := range map[string]DecisionKind{"read": DecisionAllow, "write": DecisionDeny} {
-		decision, err := engine.Decide(context.Background(), toolReq(tool, map[string]any{"path": "a.txt"}))
+		decision, err := engine.Decide(context.Background(), toolReq(tool, map[string]any{"file_path": "a.txt"}))
 		if err != nil {
 			t.Fatalf("Decide: %v", err)
 		}
@@ -48,7 +48,7 @@ func TestOutsideRootsAllowsOnlyOnce(t *testing.T) {
 		return interact.Verdict{Choice: interact.AllowAlways}, nil
 	})})
 
-	decision, err := engine.Decide(context.Background(), toolReq("read", map[string]any{"path": outside}))
+	decision, err := engine.Decide(context.Background(), toolReq("read", map[string]any{"file_path": outside}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestWriteViaSymlinkEscapeDenied(t *testing.T) {
 	}
 
 	engine := newEngine(t, engineCfg{Cwd: workspace})
-	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": "link/escape.txt"}))
+	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"file_path": "link/escape.txt"}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestInternalPathsSilentlyAllowed(t *testing.T) {
 			roots = FilesystemRoots{InternalWritable: []string{memDir}}
 		}
 		engine := newEngine(t, engineCfg{Cwd: t.TempDir(), Roots: roots, UI: mustNotAsk(t)})
-		decision, err := engine.Decide(context.Background(), toolReq(tc.tool, map[string]any{"path": filepath.Join(memDir, "MEMORY.md")}))
+		decision, err := engine.Decide(context.Background(), toolReq(tc.tool, map[string]any{"file_path": filepath.Join(memDir, "MEMORY.md")}))
 		if err != nil {
 			t.Fatalf("Decide: %v", err)
 		}
@@ -201,7 +201,7 @@ func TestInternalReadOnlyHardDeniesWrite(t *testing.T) {
 	})
 
 	target := filepath.Join(memDir, "MEMORY.md")
-	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": target}))
+	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"file_path": target}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestInternalPathRespectsDenyRule(t *testing.T) {
 		Roots: FilesystemRoots{InternalReadable: []string{memDir}},
 	})
 
-	decision, err := engine.Decide(context.Background(), toolReq("read", map[string]any{"path": target}))
+	decision, err := engine.Decide(context.Background(), toolReq("read", map[string]any{"file_path": target}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestUserRootsTakePrecedenceOverInternal(t *testing.T) {
 	})
 
 	target := filepath.Join(memDir, "MEMORY.md")
-	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": target}))
+	decision, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"file_path": target}))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestProtectedWritesAskEachTime(t *testing.T) {
 		}),
 	})
 	for _, path := range []string{filepath.Join(kit, "mcp.json"), filepath.Join(workspace, "main.go")} {
-		if _, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"path": path})); err != nil {
+		if _, err := engine.Decide(context.Background(), toolReq("write", map[string]any{"file_path": path})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -355,7 +355,7 @@ func TestRequestRoots(t *testing.T) {
 		}),
 	})
 	for _, path := range []string{filepath.Join(checkout, "a.go"), filepath.Join(elsewhere, "b.go")} {
-		req := toolReq("write", map[string]any{"path": path})
+		req := toolReq("write", map[string]any{"file_path": path})
 		req.Roots = []string{checkout}
 		if _, err := engine.Decide(context.Background(), req); err != nil {
 			t.Fatal(err)
@@ -363,5 +363,61 @@ func TestRequestRoots(t *testing.T) {
 	}
 	if len(asked) != 1 || !strings.Contains(asked[0], "b.go") {
 		t.Errorf("asked about %q, want the file outside both alone", asked)
+	}
+}
+
+// A command the sandbox contains runs without asking, except in strict
+// mode. One that asks to leave it is asked about, and says so, and a
+// credential is confirmed even inside.
+func TestSandboxedCommands(t *testing.T) {
+	ctx := context.Background()
+	sandboxed := func(args map[string]any) Request {
+		req := toolReq("bash", args)
+		req.Sandboxed = true
+		return req
+	}
+	for _, mode := range []interact.Mode{interact.ModeBalanced, interact.ModeAcceptEdits} {
+		engine := newEngine(t, engineCfg{Mode: mode, UI: mustNotAsk(t)})
+		if d, err := engine.Decide(ctx, sandboxed(map[string]any{"command": "go test ./..."})); err != nil || !d.Allowed() || d.Source != DecisionSourceSandbox {
+			t.Errorf("%s: %+v, %v", mode, d, err)
+		}
+	}
+	strict := newEngine(t, engineCfg{Mode: interact.ModeStrict, UI: mustNotAsk(t)})
+	if d, _ := strict.Decide(ctx, sandboxed(map[string]any{"command": "go test ./..."})); d.Allowed() {
+		t.Error("strict mode let a sandboxed command run")
+	}
+
+	var asked []interact.Approval
+	engine := newEngine(t, engineCfg{UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+		asked = append(asked, p)
+		return interact.Verdict{Choice: interact.AllowOnce}, nil
+	})})
+	if d, err := engine.Decide(ctx, sandboxed(map[string]any{"command": "go mod download", "unsandboxed": true})); err != nil || !d.Prompted || !asked[0].Unsandboxed {
+		t.Errorf("unsandboxed: %+v, %v, asked %+v", d, err, asked)
+	}
+	if d, err := engine.Decide(ctx, sandboxed(map[string]any{"command": "base64 ~/.ssh/id_rsa"})); err != nil || !d.Prompted || len(asked) != 2 || !asked[1].Confirm {
+		t.Errorf("credential: %+v, %v, asked %+v", d, err, asked)
+	}
+}
+
+// The engine reads a call as the tool does: a key in another case names the
+// same field, the last winning, so a call cannot show the engine one command
+// and run another.
+func TestReadsACallAsTheToolDoes(t *testing.T) {
+	var asked []interact.Approval
+	engine := newEngine(t, engineCfg{UI: approveFunc(func(_ context.Context, p interact.Approval) (interact.Verdict, error) {
+		asked = append(asked, p)
+		return interact.Verdict{Choice: interact.Deny}, nil
+	})})
+	ctx := context.Background()
+	if _, err := engine.Decide(ctx, Request{ToolName: "bash", Args: json.RawMessage(`{"command":"ls","Command":"touch made"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	unsandboxed := Request{ToolName: "bash", Args: json.RawMessage(`{"command":"touch made","Unsandboxed":true}`), Sandboxed: true}
+	if _, err := engine.Decide(ctx, unsandboxed); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 2 || asked[0].Summary != "touch made" || !asked[1].Unsandboxed {
+		t.Errorf("asked %+v", asked)
 	}
 }

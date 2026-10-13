@@ -112,6 +112,9 @@ func (p *Permission) View(width, height int) string {
 		lines = append(lines, markdown.Wrap("⚠ "+p.req.Warning, theme.ErrorText, width-2)...)
 	}
 	lines = append(lines, p.summary(width-2)...)
+	if p.req.Unsandboxed {
+		lines = append(lines, theme.WarmText.Render("Runs outside the sandbox"))
+	}
 	// Explain why this call is asked every time; otherwise the mode is why.
 	switch {
 	case p.req.OutsideRoots:

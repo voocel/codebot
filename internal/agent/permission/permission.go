@@ -41,6 +41,7 @@ const (
 	DecisionSourceStore    DecisionSource = "store"
 	DecisionSourceRoots    DecisionSource = "roots"
 	DecisionSourceInternal DecisionSource = "internal"
+	DecisionSourceSandbox  DecisionSource = "sandbox"
 )
 
 // FilesystemRoots scope filesystem access.
@@ -83,10 +84,11 @@ type Request struct {
 	// The conversation's: see Scope. Grants allow this request on top of
 	// stored approvals; deny rules, roots and confirm-each-time paths still
 	// come first.
-	Mode   interact.Mode `json:"-"`
-	UI     interact.UI   `json:"-"`
-	Roots  []string      `json:"-"`
-	Grants []Rule        `json:"-"`
+	Mode      interact.Mode `json:"-"`
+	UI        interact.UI   `json:"-"`
+	Roots     []string      `json:"-"`
+	Grants    []Rule        `json:"-"`
+	Sandboxed bool          `json:"-"`
 }
 
 type Decision struct {

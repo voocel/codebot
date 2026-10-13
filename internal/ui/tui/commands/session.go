@@ -236,6 +236,7 @@ func status(a *app.App, version string) Command {
 				{"Model", st.Provider + " · " + st.Model},
 				{"Reasoning", effort},
 				{"Mode", string(st.Mode)},
+				{"Sandbox", sandboxLine(a.Settings().Sandbox)},
 				{"Context", used},
 				{"Cost", cost(st.Usage)},
 				{"Directory", transcript.HomePath(st.Cwd)},
@@ -480,4 +481,14 @@ func plural(n int, word string) string {
 		return word
 	}
 	return word + "s"
+}
+
+func sandboxLine(s config.SandboxConfig) string {
+	switch {
+	case !s.Enabled:
+		return "off"
+	case s.Network:
+		return "on · network allowed"
+	}
+	return "on · no network"
 }

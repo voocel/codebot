@@ -44,9 +44,10 @@ This split matters. The agent loop stays small and reusable, while long-running 
 **Security**
 - Four permission modes: `strict` / `balanced` / `accept-edits` / `trust` (Shift+Tab cycles)
 - Destructive commands (rm -rf, git reset --hard, ...) flagged in the approval prompt
-- Touching credentials, or changing shell startup files or git hooks, is confirmed every time, in every mode
+- Touching credentials, or changing what runs later unasked (git's directory, shell startup files, editor and agent configs, codebot's settings and skills), is confirmed every time, in every mode
 - Workspace trust: a repository's hooks, MCP servers, plugins and allow rules stay off until you trust them, item by item: what it adds later waits for you while the rest runs on
 - Workspace-scoped file access
+- Optional OS sandbox for shell commands (Seatbelt on macOS, bubblewrap on Linux): writes stay in the workspace, credentials unreadable, no network; commands it contains run without asking
 - JSON audit log for every tool decision
 
 **Interface**
@@ -159,7 +160,7 @@ This means codebot is not just "an agent with tools". It is an agent plus a harn
 
 ## Configuration
 
-Config files: `~/.codebot/settings.json` (yours) and `.codebot/settings.json` at the project's root, the top of its git repository. The project's fields take precedence over yours, except those it may not set: `providers`, `search_provider`, `search_api_key` and `langfuse` are yours alone, so a repository can never send your keys or your conversations elsewhere. `/model` saves its choice to your file.
+Config files: `~/.codebot/settings.json` (yours) and `.codebot/settings.json` at the project's root, the top of its git repository. The project's fields take precedence over yours, except those it may not set: `providers`, `search_provider`, `search_api_key`, `langfuse` and `sandbox` are yours alone, so a repository can never send your keys or your conversations elsewhere, nor loosen the sandbox. `/model` saves its choice to your file.
 
 All fields are optional. See [settings.example.jsonc](settings.example.jsonc) for the full reference with comments.
 
@@ -176,6 +177,22 @@ Context windows, output caps, and prices come from LiteLLM's model list: a snaps
 OpenAI-protocol providers also support `api: "chat"` (default) or `api: "responses"` to choose between `/v1/chat/completions` and `/v1/responses`.
 
 A provider of `type: "gateway"` is a [LiteLLM gateway](https://github.com/voocel/litellm#gateway): codebot runs the agent, say in a sandbox, while the gateway at `base_url` holds the provider keys, makes the model calls and bills them; `api_key` is codebot's token for the gateway. Reasoning effort, prompt caching and retries work as with a direct provider.
+
+## Safety
+
+**Approvals are not a boundary.** Permission modes, approvals and workspace trust keep the model from doing by accident what you would not want. They do not contain a model turned against you, as by text it read in a web page or a repository, once it can run commands. Two things do: the sandbox, around the commands the model runs, and a container, around codebot as a whole.
+
+**Sandbox.** With `"sandbox": {"enabled": true}` in your settings, the commands the model runs go through Seatbelt on macOS or bubblewrap on Linux, which needs installing; Windows has neither. A sandboxed command reads what you can, except credentials (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, cloud and GitHub CLI tokens, `.netrc`, `.npmrc`, shell history, codebot's settings). It writes only in the workspace, your write roots and the temp directory, never in a directory holding your home directory, and there not to what runs later unasked: git's directory and the hooks directory its config names, codebot's settings and skills, `.vscode`, `.idea`, `.claude`, `.mcp.json`, `.envrc`, shell startup files. So git commands that write, such as `git commit`, run outside the sandbox. It reaches no network, not even localhost, where a local proxy would lead out; `"network": true` lets it. With the network off, such commands run without asking in `balanced` and `accept-edits` modes, while strict mode still refuses them; with it on, they are asked about as without the sandbox. A command the sandbox blocks fails, and the model may ask to run it outside, which you are asked about, the prompt saying so. If the sandbox cannot start, codebot stops rather than run commands without it. Only your own settings turn it on or off, never a project's. Commands you type with `!`, hooks and MCP servers run outside it, as you, and so do the model's file tools, which approvals govern; sandboxed commands inherit codebot's environment. On Linux, a protected path that does not exist yet, such as `.git` in a folder that is no repository, or that is a symlink, can still be created or replaced, and Unix sockets other than your session's and the container engines' stay reachable. On macOS, tests that start a server on localhost need the network on. `/status` shows whether the sandbox is on.
+
+**Containers.** To contain codebot as a whole, its hooks, MCP servers and file tools too, run it in a container that sees only the project and your settings file, not all of `~/.codebot`, which holds every project's sessions:
+
+```bash
+docker run --rm -it -v "$PWD":/work -w /work \
+  -v ~/.codebot/settings.json:/root/.codebot/settings.json \
+  <an image with codebot and your toolchain> codebot
+```
+
+With a `gateway` provider (see Configuration) the container holds no provider key either. Its network is open unless you close it.
 
 ## Extensions
 

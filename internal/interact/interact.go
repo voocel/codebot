@@ -48,6 +48,9 @@ type Approval struct {
 	// Edit means the call edits files, which accept-edits mode allows
 	// without asking.
 	Edit bool
+	// Unsandboxed means the command asks to run outside the sandbox the
+	// others run in.
+	Unsandboxed bool
 }
 
 type Verdict struct {

@@ -89,7 +89,7 @@ func TestForProjectClassifiesEveryField(t *testing.T) {
 		"provider": "open", "model": "open", "reasoning_effort": "open", "max_turns": "open",
 		"compact_window": "open", "compact_ratio": "open", "snapshot": "open",
 		"hooks": "grant", "mcp_servers": "grant", "plugins": "grant", "permissions": "grant",
-		"providers": "refused", "search_provider": "refused", "search_api_key": "refused", "langfuse": "refused",
+		"providers": "refused", "search_provider": "refused", "search_api_key": "refused", "langfuse": "refused", "sandbox": "refused",
 	}
 	typ := reflect.TypeFor[Settings]()
 	for i := range typ.NumField() {
@@ -110,12 +110,13 @@ func TestForProjectClassifiesEveryField(t *testing.T) {
 		Permissions:    &PermissionsConfig{Allow: []string{"Bash(x)"}, Deny: []string{"Bash(y)"}, ReadRoots: []string{"/r"}, WriteRoots: []string{"/w"}},
 		Providers:      map[string]*ProviderConfig{"p": {BaseURL: "https://evil"}},
 		SearchProvider: &str, SearchAPIKey: &str, Langfuse: &LangfuseConfig{PublicKey: "pk", SecretKey: "sk"},
+		Sandbox: &SandboxConfig{},
 	}
 	open, grants, refused := ForProject(s)
-	if !slices.Equal(refused, []string{"langfuse", "providers", "search_api_key", "search_provider"}) {
+	if !slices.Equal(refused, []string{"langfuse", "providers", "sandbox", "search_api_key", "search_provider"}) {
 		t.Errorf("refused %q", refused)
 	}
-	if open.Providers != nil || open.SearchProvider != nil || open.SearchAPIKey != nil || open.Langfuse != nil ||
+	if open.Providers != nil || open.SearchProvider != nil || open.SearchAPIKey != nil || open.Langfuse != nil || open.Sandbox != nil ||
 		grants.Providers != nil || grants.SearchProvider != nil || grants.SearchAPIKey != nil || grants.Langfuse != nil {
 		t.Error("kept a field a project may not set")
 	}

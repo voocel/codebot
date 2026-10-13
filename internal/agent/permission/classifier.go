@@ -18,12 +18,27 @@ type classification struct {
 	// stored approvals don't apply, and an allow covers only this call. Deny
 	// rules still apply first.
 	confirm string
+	// unsandboxed is a command that asks to run outside the sandbox.
+	unsandboxed bool
 }
 
 func classify(workspace string, req Request) classification {
 	c := classifyTool(req)
-	c.confirm = checkDangerousPath(workspace, req)
+	c.confirm = checkDangerousPath(workspace, req.ToolName, c)
 	return c
+}
+
+// args are the arguments of the built-in tools that the engine reads,
+// decoded as the tools decode theirs, so that both see the same call: a key
+// in any case names its field, and of two keys for one field the last wins.
+type args struct {
+	FilePath    string `json:"file_path"`
+	Path        string `json:"path"`
+	Command     string `json:"command"`
+	WorkDir     string `json:"workdir"`
+	Description string `json:"description"`
+	URL         string `json:"url"`
+	Unsandboxed bool   `json:"unsandboxed"`
 }
 
 // classifyTool covers the built-in tools; MCP tools classify themselves
@@ -32,45 +47,29 @@ func classify(workspace string, req Request) classification {
 // them. Internal tools change only model-authored state, so there is no
 // side effect to gate.
 func classifyTool(req Request) classification {
+	var a args
+	// A tool fails a call it cannot decode, so whatever a failed decode
+	// leaves here never runs.
+	_ = json.Unmarshal(req.Args, &a)
 	switch req.ToolName {
 	case "read":
-		return classification{capability: CapabilityRead, path: pathField(req.Args)}
+		return classification{capability: CapabilityRead, path: a.FilePath}
 	case "glob", "grep", "ls":
-		return classification{capability: CapabilityRead, path: stringField(req.Args, "path")}
+		return classification{capability: CapabilityRead, path: a.Path}
 	case "write", "edit":
-		return classification{capability: CapabilityWrite, path: pathField(req.Args)}
+		return classification{capability: CapabilityWrite, path: a.FilePath}
 	case "bash":
-		cmd := stringField(req.Args, "command")
 		capability := CapabilityExec
-		if isReadonlyBash(cmd) {
+		if isReadonlyBash(a.Command) {
 			capability = CapabilityRead
 		}
-		return classification{capability: capability, command: cmd, workdir: stringField(req.Args, "workdir"), intent: stringField(req.Args, "description")}
+		return classification{capability: capability, command: a.Command, workdir: a.WorkDir, intent: a.Description, unsandboxed: a.Unsandboxed}
 	case "web_fetch":
-		return classification{capability: CapabilityRead, url: stringField(req.Args, "url")}
+		return classification{capability: CapabilityRead, url: a.URL}
 	case "web_search":
 		return classification{capability: CapabilityRead}
 	case "todo_write", "task_output", "task_stop", "subagent", "skill", "ask_user", "tool_search", "enter_worktree", "exit_worktree":
 		return classification{capability: CapabilityInternal}
 	}
 	return classification{}
-}
-
-func stringField(raw json.RawMessage, key string) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return ""
-	}
-	value, _ := payload[key].(string)
-	return value
-}
-
-func pathField(raw json.RawMessage) string {
-	if v := stringField(raw, "file_path"); v != "" {
-		return v
-	}
-	return stringField(raw, "path")
 }

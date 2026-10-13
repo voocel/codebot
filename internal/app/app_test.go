@@ -20,6 +20,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/voocel/codebot/internal/agent/sandbox"
 	"github.com/voocel/codebot/internal/infra/config"
 	"github.com/voocel/codebot/internal/infra/provider"
 	"github.com/voocel/codebot/internal/infra/telemetry"
@@ -533,6 +534,95 @@ func TestApprovalAsksTheUI(t *testing.T) {
 	}
 	if got := texts(e.app.Current().History()); !slices.Contains(got, "tool:t1!") {
 		t.Fatalf("history = %q, want a failed bash result", got)
+	}
+}
+
+// With the sandbox on, commands run in it without asking, so one writing
+// outside the workspace fails; one that asks to leave it is asked about.
+func TestSandboxedBash(t *testing.T) {
+	s, err := sandbox.New(false)
+	if err != nil {
+		t.Skipf("no sandbox here: %v", err)
+	}
+	s.Close()
+	// Not in the temp directory, which sandboxed commands may write to.
+	outside, err := os.MkdirTemp(".", ".sandbox-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(outside) })
+	if outside, err = filepath.Abs(outside); err != nil {
+		t.Fatal(err)
+	}
+	model := script(
+		use("t1", "bash", map[string]any{"command": "touch inside"}),
+		use("t2", "bash", map[string]any{"command": "touch " + outside + "/escaped"}),
+		use("t3", "bash", map[string]any{"command": "touch " + outside + "/approved", "unsandboxed": true}),
+		text("ok"))
+	e := boot(t, setup{settings: map[string]any{"sandbox": map[string]any{"enabled": true}}}, map[string]*fakeModel{"claude-sonnet-4-5": model})
+
+	e.submit("make files")
+
+	if _, err := os.Stat(filepath.Join(e.cwd, "inside")); err != nil {
+		t.Errorf("the sandboxed command did not run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escaped")); !os.IsNotExist(err) {
+		t.Errorf("a sandboxed command wrote outside the workspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "approved")); err != nil {
+		t.Errorf("the approved unsandboxed command did not run: %v", err)
+	}
+	if got := e.ui.approvals; len(got) != 1 || !got[0].Unsandboxed {
+		t.Errorf("approvals %+v, want one, for the unsandboxed command", got)
+	}
+}
+
+// A sandboxed command keeps off git's directory, codebot's settings and
+// the hooks core.hooksPath names, while a worktree codebot keeps in
+// .codebot stays writable.
+func TestSandboxProtectsWhatRunsLater(t *testing.T) {
+	s, err := sandbox.New(false)
+	if err != nil {
+		t.Skipf("no sandbox here: %v", err)
+	}
+	defer s.Close()
+	// Not in the temp directory, which sandboxed commands may write to.
+	repo, err := os.MkdirTemp(".", ".sandbox-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(repo) })
+	if repo, err = filepath.Abs(repo); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, repo)
+	wt := filepath.Join(repo, ".codebot", "worktrees", "wt")
+	for _, args := range [][]string{{"config", "core.hooksPath", ".husky"}, {"worktree", "add", "-q", wt}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// What exists: on Linux the sandbox can cover nothing else.
+	if err := os.Mkdir(filepath.Join(repo, ".husky"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(repo, ".codebot", "settings.json"), map[string]any{})
+	writable := []string{repo, wt}
+	for _, c := range []struct {
+		path string
+		ok   bool
+	}{
+		{filepath.Join(repo, "main.go"), true},
+		{filepath.Join(wt, "main.go"), true},
+		{filepath.Join(repo, ".git", "commondir"), false},
+		{filepath.Join(wt, ".git"), false},
+		{filepath.Join(repo, ".codebot", "settings.json"), false},
+		{filepath.Join(repo, ".husky", "pre-commit"), false},
+	} {
+		argv := s.Wrap([]string{"/bin/sh", "-c", "echo x > \"$0\"", c.path}, writable, persistentIn(writable))
+		if out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput(); (err == nil) != c.ok {
+			t.Errorf("%s: wrote = %v, want %v: %s", c.path, err == nil, c.ok, out)
+		}
 	}
 }
 

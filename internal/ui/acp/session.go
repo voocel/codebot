@@ -136,6 +136,9 @@ func (sess *session) Approve(ctx context.Context, p interact.Approval) (interact
 	if title == "" {
 		title = p.Tool
 	}
+	if p.Unsandboxed {
+		title += " (outside the sandbox)"
+	}
 	// A hook command has no tool call of its own for the client to show, so
 	// the approval is labeled with the tool name.
 	id := p.ToolID

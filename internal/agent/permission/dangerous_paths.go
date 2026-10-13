@@ -1,7 +1,6 @@
 package permission
 
 import (
-	"path"
 	"path/filepath"
 	"strings"
 )
@@ -18,24 +17,21 @@ import (
 // checks both the raw and the symlink-resolved path: ~/.bashrc →
 // ~/dotfiles/bashrc matches only raw, project/innocent → /etc/passwd only
 // resolved.
-func checkDangerousPath(workspace string, req Request) string {
+func checkDangerousPath(workspace, tool string, c classification) string {
 	// bash paths hide in the command string; without this, cat ~/.ssh/id_rsa
 	// would pass as a read-only command.
-	if req.ToolName == "bash" {
-		cmd := stringField(req.Args, "command")
-		if r := scanBashForSensitiveRead(workspace, cmd); r != "" {
+	if tool == "bash" {
+		if r := scanBashForSensitiveRead(workspace, c.command); r != "" {
 			return r + " referenced in bash command"
 		}
 		return ""
 	}
-
-	raw := pathField(req.Args)
-	if raw == "" {
+	if c.path == "" {
 		return ""
 	}
-	candidates := dangerousPathCandidates(workspace, raw)
+	candidates := dangerousPathCandidates(workspace, c.path)
 
-	switch req.ToolName {
+	switch tool {
 	case "read", "glob", "grep", "ls":
 		for _, p := range candidates {
 			if r := matchSensitiveRead(p); r != "" {
@@ -119,73 +115,32 @@ func matchSensitiveRead(p string) string {
 	return ""
 }
 
-// matchSensitiveWrite adds persistence paths to the credential ones.
-// Overwriting a credential can lock the user out.
+// Persistent are the paths whose contents run later, unasked: git's
+// directory, codebot's configuration, the configs editors and agents run on
+// open, and the dotfiles shells and tools load. A write tool's write to one
+// is confirmed every time, and the sandbox keeps commands from writing those
+// at the top of the directories they may write.
+var Persistent = []string{
+	".git", ".gitmodules", ".gitconfig",
+	".codebot/settings.json", ".codebot/consent.json", ".codebot/skills", ".codebot/agents", ".codebot/plugins", ".codebot/approvals", ".agents/skills",
+	".vscode", ".idea", ".claude", ".claude.json", ".mcp.json",
+	".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile", ".envrc", ".ripgreprc",
+	".ssh", ".gnupg",
+}
+
+// matchSensitiveWrite adds the persistent paths, anywhere, to the credential
+// ones. Overwriting a credential can lock the user out.
 func matchSensitiveWrite(p string) string {
 	if r := matchSensitiveRead(p); r != "" {
 		return r
 	}
-
-	base, parent := splitLower(p)
-	if reason, ok := forceAskBasenames[base]; ok {
-		return reason
-	}
-
-	// codebot's own configuration decides what runs unasked: settings,
-	// consent.json, skills, plugins, sub-agents and stored approvals.
-	// Sessions, memory, snapshots and worktrees are data, not configuration.
 	lower := strings.ToLower(filepath.ToSlash(p))
-	if parent == ".codebot" && (base == "settings.json" || base == "consent.json") {
-		return "codebot settings"
-	}
-	for _, dir := range []string{".codebot/skills", ".codebot/agents", ".codebot/plugins", ".codebot/approvals", ".agents/skills"} {
-		if strings.Contains(lower, "/"+dir+"/") {
-			return "codebot " + path.Base(dir)
+	for _, name := range Persistent {
+		if suffix := "/" + name; strings.HasSuffix(lower, suffix) || strings.Contains(lower, suffix+"/") {
+			return name
 		}
-	}
-
-	// .ssh and .gnupg hold identity. Editing .vscode, .idea or .claude once
-	// runs code on every later open: tasks.json, runConfigurations and agent
-	// hooks autorun.
-	for _, seg := range []string{".ssh", ".gnupg"} {
-		if parent == seg || hasPathSegment(p, seg) {
-			return seg + " config"
-		}
-	}
-	for _, seg := range []string{".vscode", ".idea"} {
-		if hasPathSegment(p, seg) {
-			return seg + " loader config"
-		}
-	}
-	if hasPathSegment(p, ".claude") {
-		return "Claude config"
-	}
-
-	// Hooks run on every commit and config sets remotes and identity. The
-	// rest of .git is harmless or managed by git.
-	if strings.Contains(lower, "/.git/hooks/") {
-		return ".git hooks"
-	}
-	if strings.HasSuffix(lower, "/.git/config") {
-		return ".git/config"
 	}
 	return ""
-}
-
-// forceAskBasenames covers the common persistence dotfiles only; rare ones
-// such as .zshenv and .kshrc are left out.
-var forceAskBasenames = map[string]string{
-	".bashrc":       "shell rc",
-	".bash_profile": "shell rc",
-	".zshrc":        "shell rc",
-	".zprofile":     "shell rc",
-	".profile":      "shell rc",
-	".envrc":        "direnv config",
-	".gitconfig":    "git config",
-	".gitmodules":   "git config",
-	".ripgreprc":    "tool config",
-	".mcp.json":     "MCP config",
-	".claude.json":  "Claude config",
 }
 
 func splitLower(p string) (base, parent string) {

@@ -1,15 +1,20 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"log"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/voocel/agentcore"
 	coresub "github.com/voocel/agentcore/subagent"
 	agentcoretools "github.com/voocel/agentcore/tools"
 	"github.com/voocel/litellm"
 
+	"github.com/voocel/codebot/internal/agent/permission"
 	"github.com/voocel/codebot/internal/agent/subagent"
 	"github.com/voocel/codebot/internal/agent/tools"
 )
@@ -18,6 +23,9 @@ import (
 func (c *Conversation) buildTools() []agentcore.Tool {
 	a := c.app
 	ws := agentcoretools.Workspace{Dir: c.cwd, FS: c.frontend.FS, Files: c.files, Tasks: c.tasks}
+	if a.sandbox != nil {
+		ws.Sandbox = c.sandboxed
+	}
 
 	// Sub-agents get every tool up to here, re-pooled per agent.
 	out := append(ws.Tools(),
@@ -44,6 +52,41 @@ func (c *Conversation) buildTools() []agentcore.Tool {
 		}),
 	)
 	return append(out, c.tasks.Tools()...)
+}
+
+// sandboxed wraps a bash command in the sandbox. It may write where the call
+// runs, in the checkout the conversation opened in and in the write roots,
+// but not to the persistent paths there or to local plugins, whose code
+// codebot runs.
+func (c *Conversation) sandboxed(ctx context.Context, argv []string) []string {
+	roots := c.app.permissions.Roots()
+	writable := append([]string{cmp.Or(agentcoretools.CwdFromContext(ctx), c.home), c.home}, roots.WriteRoots...)
+	return c.app.sandbox.Wrap(argv, writable, append(persistentIn(writable), roots.Protected...))
+}
+
+// persistentIn returns the persistent paths in dirs, the directory git runs
+// hooks from included.
+func persistentIn(dirs []string) []string {
+	var out []string
+	for _, dir := range dirs {
+		for _, name := range permission.Persistent {
+			out = append(out, filepath.Join(dir, name))
+		}
+		if hooks := gitHooks(dir); hooks != "" {
+			out = append(out, hooks)
+		}
+	}
+	return out
+}
+
+// gitHooks returns the directory git runs hooks from in the repository at
+// dir, such as Husky's that core.hooksPath names, or "" outside one.
+func gitHooks(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-path", "hooks").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func (c *Conversation) buildSubagents(pool []agentcore.Tool, ws agentcoretools.Workspace) agentcore.Tool {

@@ -40,6 +40,7 @@ func (c *Conversation) middleware() []agentcore.ToolMiddleware {
 	if !a.within(c.home) {
 		scope.Roots = []string{c.home}
 	}
+	scope.Sandboxed = a.sandbox != nil && !a.sandbox.Network()
 	var out []agentcore.ToolMiddleware
 	if mw := a.tracer.ToolMiddleware(); mw != nil {
 		out = append(out, mw)

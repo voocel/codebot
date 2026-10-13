@@ -66,6 +66,10 @@ type Scope struct {
 	Grants func() []Rule
 	// Meta returns the Metadata of self-classifying tools such as MCP tools.
 	Meta func(tool string) Metadata
+	// Sandboxed means bash runs commands in a sandbox that keeps them in the
+	// workspace and off the network, unless a call sets unsandboxed. Those
+	// it keeps need no approval, except in strict mode.
+	Sandboxed bool
 }
 
 // Middleware gates one conversation's tool calls.
@@ -83,6 +87,7 @@ func (e *Engine) Middleware(s Scope) agentcore.ToolMiddleware {
 			UI:        s.UI,
 			Roots:     s.Roots,
 			Grants:    s.Grants(),
+			Sandboxed: s.Sandboxed,
 		})
 		if err != nil {
 			return agentcore.Result{}, err
@@ -92,6 +97,13 @@ func (e *Engine) Middleware(s Scope) agentcore.ToolMiddleware {
 		}
 		return next(ctx, call)
 	}
+}
+
+// Roots returns the roots in effect.
+func (e *Engine) Roots() FilesystemRoots {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.roots
 }
 
 func (e *Engine) Configure(rules *RuleSet, roots FilesystemRoots) {
@@ -157,6 +169,12 @@ func (e *Engine) Decide(ctx context.Context, req Request) (*Decision, error) {
 		return decision, nil
 	}
 
+	if info.sandboxed && req.Mode != interact.ModeStrict {
+		decision := allowDecision(DecisionSourceSandbox, info, "runs in the sandbox")
+		e.audit(info, decision)
+		return decision, nil
+	}
+
 	switch req.Mode {
 	case interact.ModeTrust:
 		decision := allowDecision(DecisionSourceMode, info, "trust mode allows tool execution")
@@ -216,6 +234,7 @@ func (e *Engine) ask(ctx context.Context, ui interact.UI, info toolInfo) (*Decis
 		OutsideRoots: info.outsideRoots,
 		Confirm:      info.askEachTime(),
 		Edit:         info.capability == CapabilityWrite && !info.askEachTime(),
+		Unsandboxed:  info.unsandboxed,
 	}
 	if info.rememberable() {
 		approval.Remember = info.remember
@@ -319,6 +338,8 @@ type toolInfo struct {
 	outsideRoots bool
 	confirm      bool
 	internalPath bool
+	sandboxed    bool // the command runs in a sandbox that contains it
+	unsandboxed  bool // the command asks to run outside the sandbox
 	workspace    string
 	roots        []string
 }
@@ -435,6 +456,7 @@ func inspectRequest(workspace string, roots FilesystemRoots, req Request) toolIn
 		if info.reason == "" {
 			info.reason = "shell execution requires approval"
 		}
+		info.sandboxed, info.unsandboxed = req.Sandboxed && !c.unsandboxed, c.unsandboxed
 		if wd := strings.TrimSpace(c.workdir); wd != "" {
 			dir, deny := checkedPath(workspace, roots.WriteRoots, wd, "writable")
 			if dir != filepath.Clean(workspace) {

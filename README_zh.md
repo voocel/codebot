@@ -44,9 +44,10 @@
 **安全**
 - 四种权限模式：`strict` / `balanced` / `accept-edits` / `trust`（Shift+Tab 切换）
 - 破坏性命令（rm -rf、git reset --hard 等）在审批提示中标出
-- 读写凭据、修改 shell 启动文件或 git hooks，在任何模式下每次都要确认
+- 读写凭据，或修改之后会自动运行的东西（git 目录、shell 启动文件、编辑器和 agent 的配置、codebot 的配置和 skills），在任何模式下每次都要确认
 - 工作区信任：仓库里的 hooks、MCP 服务器、插件和 allow 规则，要等你逐项信任后才生效；后来新增的等你确认，其余照常运行
 - 工作区范围的文件访问控制
+- 可选的系统级 shell 命令沙箱（macOS 用 Seatbelt，Linux 用 bubblewrap）：只能写工作区，读不到凭据，不能联网；在沙箱里运行的命令免审批
 - 每次工具决策的 JSON 审计日志
 
 **界面**
@@ -159,7 +160,7 @@ Codebot 采用分层的 Coding Agent 架构：
 
 ## 配置
 
-配置文件：`~/.codebot/settings.json`（你自己的）和项目根目录（所在 git 仓库的顶层）下的 `.codebot/settings.json`。项目的字段优先于你的，但有几项项目不能设置：`providers`、`search_provider`、`search_api_key` 和 `langfuse` 只认你自己的，所以仓库永远没法把你的 key 或对话发到别处。`/model` 的选择保存在你自己的文件里。
+配置文件：`~/.codebot/settings.json`（你自己的）和项目根目录（所在 git 仓库的顶层）下的 `.codebot/settings.json`。项目的字段优先于你的，但有几项项目不能设置：`providers`、`search_provider`、`search_api_key`、`langfuse` 和 `sandbox` 只认你自己的，所以仓库永远没法把你的 key 或对话发到别处，也没法放宽沙箱。`/model` 的选择保存在你自己的文件里。
 
 所有字段可选，参考 [settings.example.jsonc](settings.example.jsonc) 了解完整配置项及说明。
 
@@ -176,6 +177,22 @@ Provider 条目支持 `extra`，用于配置连接参数，作为 HTTP/客户端
 OpenAI 协议 provider 还支持 `api: "chat"`（默认）或 `api: "responses"`，用于在 `/v1/chat/completions` 和 `/v1/responses` 之间切换。
 
 `type: "gateway"` 的 provider 是一个 [LiteLLM 网关](https://github.com/voocel/litellm/blob/main/README_CN.md#网关)：codebot 负责运行 agent（比如在沙盒里），`base_url` 处的网关持有 provider key、执行模型调用并计费；`api_key` 是 codebot 访问网关的 token。思考级别、prompt 缓存和重试与直连 provider 时一样有效。
+
+## 安全边界
+
+**审批不是安全边界。** 权限模式、审批和工作区信任，防的是模型无意中做出你不想要的事。模型一旦能执行命令，如果它被网页或仓库里的文字带偏、转而对你不利，这些都拦不住。真正拦得住的有两样：包住模型所执行命令的沙箱，和包住整个 codebot 的容器。
+
+**沙箱。** 在你的配置里写 `"sandbox": {"enabled": true}`，模型执行的命令就会经过沙箱：macOS 用 Seatbelt，Linux 用 bubblewrap（需要自行安装），Windows 不支持。沙箱里的命令能读你能读的文件，但读不到凭据（`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.kube`、`~/.docker`、各家云和 GitHub CLI 的 token、`.netrc`、`.npmrc`、shell 历史、codebot 的配置）。它只能写工作区、你配置的可写目录和临时目录，包含你 home 目录的目录一律不可写；即使在可写目录里，也写不了之后会自动运行的东西：git 目录和 git 配置指定的 hooks 目录、codebot 的配置和 skills、`.vscode`、`.idea`、`.claude`、`.mcp.json`、`.envrc`、shell 启动文件。所以 `git commit` 这类会写 git 目录的命令要在沙箱外运行。命令不能联网，连 localhost 也不行，因为本地代理会把它带出去；设置 `"network": true` 才放开。断网时，这类命令在 `balanced` 和 `accept-edits` 模式下免审批，strict 模式下仍然拒绝；开网时，审批和不开沙箱时一样。被沙箱拦住的命令会失败，模型可以申请在沙箱外重跑，这时会弹审批，并注明是在沙箱外运行。沙箱启动不了时，codebot 直接退出，不会不加沙箱继续执行命令。沙箱只认你自己的配置，项目配置开不了也关不了。你用 `!` 输入的命令、hooks 和 MCP 服务器都在沙箱外、以你的身份运行；模型的文件工具也在沙箱外，由审批管控；沙箱里的命令会继承 codebot 的环境变量。Linux 上，原本不存在的受保护路径（比如不是 git 仓库的目录里的 `.git`）以及符号链接形式的受保护路径，仍然可以被创建或替换；除了你会话的和容器引擎的 Unix socket，其他 socket 仍然连得上。macOS 上，会在 localhost 起服务的测试需要打开网络。`/status` 会显示沙箱是否开启。
+
+**容器。** 想把整个 codebot（包括 hooks、MCP 服务器和文件工具）都关进去，就在容器里运行它，只让容器看到项目和你的配置文件，不要挂载整个 `~/.codebot`，那里有所有项目的会话：
+
+```bash
+docker run --rm -it -v "$PWD":/work -w /work \
+  -v ~/.codebot/settings.json:/root/.codebot/settings.json \
+  <装好 codebot 和你的工具链的镜像> codebot
+```
+
+用 `gateway` 类型的 provider（见“配置”），容器里就连 provider key 都没有。容器的网络默认是通的，除非你自己关掉。
 
 ## 扩展
 
