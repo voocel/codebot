@@ -700,6 +700,35 @@ func TestShortScreen(t *testing.T) {
 	}
 }
 
+// The menu covers the chat above the editor, a blank line setting it off:
+// nothing moves, the footer stays, and what it covers takes no clicks.
+func TestMenuCoversTheChat(t *testing.T) {
+	h := boot(t)
+	h.feed(tea.WindowSizeMsg{Width: 60, Height: 20})
+	before := strings.Split(h.screen(), "\n")
+	y := h.m.View().Cursor.Y
+	h.write("/")
+	v := h.m.View()
+	s := ansi.Strip(v.Content)
+	rows := strings.Split(s, "\n")
+	if v.Cursor.Y != y {
+		t.Errorf("the editor moved from row %d to %d", y, v.Cursor.Y)
+	}
+	top := slices.IndexFunc(rows, func(r string) bool { return strings.HasPrefix(r, "❯ /") })
+	if top < 1 || y-1-top != 6 || rows[top-1] != "" {
+		t.Fatalf("not 6 rows set off above the editor:\n%s", s)
+	}
+	if !slices.Equal(rows[:top-1], before[:top-1]) {
+		t.Errorf("the chat moved:\n%s", s)
+	}
+	if !strings.Contains(rows[len(rows)-1], "balanced") {
+		t.Errorf("the footer gave way to the menu:\n%s", s)
+	}
+	if h.m.mainTop+h.m.mainHeight > top-1 {
+		t.Errorf("the chat takes clicks down to row %d, under the menu at %d", h.m.mainTop+h.m.mainHeight, top-1)
+	}
+}
+
 func TestPendingInputsJoinInAnyOrder(t *testing.T) {
 	h := boot(t)
 	h.m.pending = []pending{{id: 1, text: "first", posted: true}, {id: 2, text: "second", posted: true}}

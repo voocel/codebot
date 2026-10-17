@@ -39,8 +39,9 @@ type Completion struct {
 }
 
 const (
-	maxHeight = 10 // rows the input grows to before it scrolls
-	maxMenu   = 8  // completions shown at once
+	maxHeight   = 10 // rows the input grows to before it scrolls
+	maxMenu     = 6  // completions shown at once
+	promptWidth = 2  // "❯ "
 )
 
 const placeholder = "Ask anything · / for commands · @ for files · ! for shell"
@@ -61,10 +62,9 @@ type Editor struct {
 
 	// The menu completes the word at the cursor: a command for a leading
 	// "/word", a file for an "@path". sign is the word's prefix rune, 0 for
-	// none. cmds and files are listed when the word begins and the menu
-	// filters them. During a history search it shows matching entries.
+	// none. files are listed when an "@path" begins and the menu filters
+	// them. During a history search it shows matching entries.
 	sign      rune
-	cmds      []Completion
 	files     []string
 	searching bool
 	menu      []item
@@ -90,7 +90,7 @@ func New(commands func() []Completion, root func() string) *Editor {
 	ta.MaxContentHeight = 1 << 20
 	ta.Placeholder = placeholder
 	ta.SetVirtualCursor(false)
-	ta.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+	ta.SetPromptFunc(promptWidth, func(info textarea.PromptInfo) string {
 		if info.LineNumber == 0 {
 			return "❯ "
 		}
@@ -468,8 +468,7 @@ func (e *Editor) repeat(k tea.KeyPressMsg, n int) {
 	}
 }
 
-// refreshMenu lists commands and files once per word, not per key: listing
-// commands may scan the workspace for skills, and listing files reads the
+// refreshMenu lists files once per word, not per key, as listing reads the
 // disk. Files are listed off the TUI goroutine; until they arrive the menu
 // filters the previous list.
 func (e *Editor) refreshMenu() tea.Cmd {
@@ -481,10 +480,7 @@ func (e *Editor) refreshMenu() tea.Cmd {
 	var cmd tea.Cmd
 	if sign != e.sign {
 		e.sign, e.menuOff = sign, false
-		switch sign {
-		case '/':
-			e.cmds = e.commands()
-		case '@':
+		if sign == '@' {
 			root := e.root()
 			cmd = func() tea.Msg { return filesMsg{listFiles(root)} }
 		}
@@ -542,7 +538,7 @@ func (e *Editor) pick(it item) tea.Cmd {
 
 func (e *Editor) commandItems(q string) []item {
 	var items []item
-	for _, c := range match(e.cmds, q) {
+	for _, c := range match(e.commands(), q) {
 		items = append(items, item{label: "/" + c.Name, note: c.Description, run: c.Run, pick: func() {
 			e.ta.SetValue("/" + c.Name + " ")
 			e.ta.MoveToEnd()
@@ -688,8 +684,41 @@ func (e *Editor) View(width int) string {
 		}
 		lines = append(lines, ansi.Truncate(strings.Join(chips, " ")+theme.SubtleText.Render("  backspace removes"), width, "…"))
 	}
-	lines = append(lines, e.ta.View(), rule)
+	lines = append(lines, e.markCommand(e.ta.View()), rule)
 	return strings.Join(lines, "\n")
+}
+
+// markCommand colors the command the input starts with, setting it apart
+// from a message. The textarea styles its text as a whole, so the command's
+// columns are restyled in what it rendered.
+func (e *Editor) markCommand(view string) string {
+	n := e.command()
+	if n == 0 || e.ta.ScrollYOffset() > 0 {
+		return view
+	}
+	rows := strings.SplitN(view, "\n", 2)
+	rows[0] = lipgloss.StyleRanges(rows[0], lipgloss.NewRange(promptWidth, promptWidth+n, theme.WarmText))
+	return strings.Join(rows, "\n")
+}
+
+// command returns the width of the "/name" the input starts with when name
+// is a command, else 0, as for a path such as "/usr/bin", an unknown name or
+// the query of a search.
+func (e *Editor) command() int {
+	v, ok := strings.CutPrefix(e.ta.Value(), "/")
+	if !ok || e.searching {
+		return 0
+	}
+	if i := strings.IndexAny(v, " \n"); i >= 0 {
+		v = v[:i]
+	}
+	name := strings.ToLower(v)
+	for _, c := range e.commands() {
+		if c.Name == name || slices.Contains(c.Aliases, name) {
+			return 1 + ansi.StringWidth(v)
+		}
+	}
+	return 0
 }
 
 // Cursor is relative to View.

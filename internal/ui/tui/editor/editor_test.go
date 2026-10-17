@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/voocel/codebot/internal/ui/tui/theme"
 )
 
 func newEditor() *Editor {
@@ -208,6 +211,32 @@ func TestCompletion(t *testing.T) {
 	write(e, "/bt")
 	if in := press(e, "enter"); in != nil || e.ta.Value() != "/btw " {
 		t.Errorf("sent %+v, input %q", in, e.ta.Value())
+	}
+}
+
+// The command the input starts with stands out; a path, an unknown name and
+// the query of a search do not.
+func TestMarksTheCommand(t *testing.T) {
+	e := newEditor()
+	for in, want := range map[string]int{"/model": 6, "/M opus": 2, "/btw\nmore": 4, "/usr/bin": 0, "/typo": 0, "/": 0, "model": 0} {
+		e.ta.SetValue(in)
+		if got := e.command(); got != want {
+			t.Errorf("%q marks %d columns, want %d", in, got, want)
+		}
+	}
+
+	e.ta.SetValue("/model opus")
+	view := e.View(60)
+	if !strings.Contains(view, theme.WarmText.Render("/model")) || !strings.Contains(ansi.Strip(view), "❯ /model opus") {
+		t.Errorf("the command is not marked:\n%q", view)
+	}
+
+	e.Clear()
+	e.SetHistory(NewHistory(filepath.Join(t.TempDir(), "history.jsonl"), "/project"))
+	press(e, "ctrl+r")
+	write(e, "/model")
+	if e.command() != 0 {
+		t.Error("a search's query is marked")
 	}
 }
 

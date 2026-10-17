@@ -43,26 +43,34 @@ func (m *Model) View() tea.View {
 		bottom = append([]string{""}, m.statusLines(now, m.pending, nil)...)
 		editorAt = len(bottom)
 		bottom = append(bottom, strings.Split(m.editor.View(m.width), "\n")...)
-		if menu := m.editor.Menu(m.width - 1); menu != nil {
-			bottom = append(bottom, menu...)
-		} else {
-			bottom = append(bottom, m.footer())
-		}
+		bottom = append(bottom, m.footer())
 	}
 
 	main := m.mainView(max(m.height-len(bottom), 1), now)
 	lines := append(main, bottom...)
 	// On a short screen the bottom keeps its lines and the top is cut.
 	cut := max(len(lines)-m.height, 0)
+	lines = lines[cut:]
 	m.mainTop -= cut
-	v.SetContent(strings.Join(lines[cut:], "\n"))
 
 	if editorAt >= 0 {
+		editorAt += len(main) - cut
+		// The menu covers what is above the editor, a blank line setting it
+		// off, so nothing moves as it opens, narrows or closes; what it
+		// covers takes no clicks.
+		if menu := m.editor.Menu(m.width - 1); menu != nil {
+			menu = append([]string{""}, menu...)
+			menu = menu[max(len(menu)-editorAt, 0):]
+			from := editorAt - len(menu)
+			copy(lines[from:], menu)
+			m.mainHeight = min(m.mainHeight, from-m.mainTop)
+		}
 		if c := m.editor.Cursor(); c != nil {
-			c.Y += len(main) + editorAt - cut
+			c.Y += editorAt
 			v.Cursor = c
 		}
 	}
+	v.SetContent(strings.Join(lines, "\n"))
 	return v
 }
 
