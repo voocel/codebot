@@ -133,7 +133,11 @@ func (m *Model) head(width int) []string {
 	beside := brand.Room(width)
 	st := m.status
 	model := theme.Text.Render(st.Model)
-	// Drop the effort when it doesn't fit beside the model.
+	// The provider is dimmer than the model it serves. It and the effort
+	// are dropped when they don't fit beside the model, the effort first.
+	if withProvider := theme.SubtleText.Render(st.Provider+"/") + model; ansi.StringWidth(withProvider) <= beside {
+		model = withProvider
+	}
 	if effort := theme.FaintText.Render("  ·  ") + theme.SubtleText.Render("effort "+cmp.Or(st.Effort, "auto")); st.Reasoning && ansi.StringWidth(model+effort) <= beside {
 		model += effort
 	}

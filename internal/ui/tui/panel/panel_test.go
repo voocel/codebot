@@ -329,6 +329,49 @@ func TestListFilterAndSelect(t *testing.T) {
 	}
 }
 
+// Cells line up under the header, a group's note shows beside its name, and
+// the footer tells about the selected item. Too narrow, the cells give way.
+func TestListColumns(t *testing.T) {
+	l := &List{
+		Title:  "Model",
+		Filter: true,
+		Header: []string{"context", "price"},
+		Notes:  map[string]string{"remote": "openai · example.com"},
+		Footer: func(it *Item) string { return "about " + it.Title },
+		Items: []Item{
+			{Group: "local", Title: "small", Cells: []string{"8k", "$1"}},
+			{Group: "remote", Title: "a-much-longer-name", Cells: []string{"1M", "$15"}, Current: true},
+		},
+	}
+	l.Init()
+	view := l.View(60, 14)
+	fits(t, view, 60, 14)
+	v := ansi.Strip(view)
+	// end is the column a cell ends at in the line holding row.
+	end := func(row, cell string) int {
+		for _, line := range strings.Split(v, "\n") {
+			if strings.Contains(line, row) {
+				return ansi.StringWidth(line[:strings.LastIndex(line, cell)+len(cell)])
+			}
+		}
+		return -1
+	}
+	for _, c := range [][3]string{{"context", "8k", "1M"}, {"price", "$1", "$15"}} {
+		if h, a, b := end("filter", c[0]), end("small", c[1]), end("longer", c[2]); h != a || a != b {
+			t.Errorf("%s ends at %d, %d, %d:\n%s", c[0], h, a, b, v)
+		}
+	}
+	if !strings.Contains(v, "remote  openai · example.com") || !strings.Contains(v, "about a-much-longer-name") {
+		t.Errorf("no note or footer:\n%s", v)
+	}
+
+	view = l.View(30, 14)
+	fits(t, view, 30, 14)
+	if strings.Contains(ansi.Strip(view), "context") {
+		t.Errorf("the cells did not give way:\n%s", ansi.Strip(view))
+	}
+}
+
 func TestListGrowsAfterScrolling(t *testing.T) {
 	var items []Item
 	for i := range 30 {

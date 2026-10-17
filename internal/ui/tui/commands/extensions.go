@@ -4,13 +4,18 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/voocel/litellm/catalog"
 
 	"github.com/voocel/codebot/internal/app"
 	"github.com/voocel/codebot/internal/infra/config"
@@ -26,17 +31,66 @@ type modelChoice struct {
 	effort         int
 }
 
-func (c *modelChoice) detail(window int) string {
-	var parts []string
-	if window > 0 {
-		parts = append(parts, transcript.Tokens(window)+" context")
+// effortChip lights the chosen effort.
+var effortChip = lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Accent).Bold(true)
+
+// effortBar lays the efforts the model takes side by side, the chosen one lit.
+func (c *modelChoice) effortBar() string {
+	line := theme.MutedText.Render("Effort  ")
+	if len(c.efforts) < 2 {
+		return line + theme.SubtleText.Render("set by the provider for this model")
 	}
-	if len(c.efforts) > 1 {
-		e := c.efforts[c.effort]
+	for i, e := range c.efforts {
 		if e == "" {
 			e = "auto"
 		}
-		parts = append(parts, "effort ◂ "+e+" ▸")
+		st := theme.SubtleText
+		if i == c.effort {
+			st = effortChip
+		}
+		line += st.Render(" " + e + " ")
+	}
+	return line
+}
+
+// modelCells are the context window and the dollars per million input and
+// output tokens, blank where the model list does not know them.
+func modelCells(facts catalog.Model) []string {
+	cells := make([]string, 3)
+	if facts.MaxInputTokens > 0 {
+		cells[0] = transcript.Tokens(facts.MaxInputTokens)
+	}
+	if p := facts.Pricing; p != nil {
+		cells[1], cells[2] = perMillion(p.Input), perMillion(p.Output)
+	}
+	return cells
+}
+
+// perMillion shows whole dollars as such and cents to at least two places:
+// $3, $0.10, $0.075.
+func perMillion(rate float64) string {
+	if rate == 0 {
+		return "free"
+	}
+	s := strconv.FormatFloat(math.Round(rate*1e9)/1000, 'f', -1, 64)
+	if i := strings.IndexByte(s, '.'); i >= 0 && len(s)-i == 2 {
+		s += "0"
+	}
+	return "$" + s
+}
+
+// providerNote tells what a provider's name does not: the protocol it
+// speaks and where it connects.
+func providerNote(name string, pc config.ProviderConfig) string {
+	var parts []string
+	if pc.Type != "" && pc.Type != name {
+		parts = append(parts, pc.Type)
+	}
+	if pc.API != "" {
+		parts = append(parts, pc.API+" API")
+	}
+	if u, err := url.Parse(pc.BaseURL); err == nil && u.Host != "" {
+		parts = append(parts, u.Host)
 	}
 	return strings.Join(parts, " · ")
 }
@@ -45,19 +99,18 @@ func model(a *app.App) Command {
 	return Command{Name: "model", Aliases: []string{"m"}, Description: "Switch the model and its reasoning effort", Idle: true, Run: func(string) tea.Cmd {
 		st := a.Current().Status()
 		providers := a.Settings().Providers
+		notes := map[string]string{}
 		var items []panel.Item
 		for _, prov := range slices.Sorted(maps.Keys(providers)) {
+			notes[prov] = providerNote(prov, providers[prov])
 			for _, name := range providers[prov].Models {
 				c := &modelChoice{provider: prov, name: name, efforts: a.ThinkingLevels(prov, name)}
 				c.effort = max(slices.Index(c.efforts, st.Effort), 0)
-				window := 0
-				if facts, ok := a.ModelFacts(prov, name); ok {
-					window = facts.MaxInputTokens
-				}
+				facts, _ := a.ModelFacts(prov, name)
 				items = append(items, panel.Item{
 					Group:   prov,
 					Title:   name,
-					Detail:  c.detail(window),
+					Cells:   modelCells(facts),
 					Current: prov == st.Provider && strings.EqualFold(name, st.Model),
 					Value:   c,
 				})
@@ -70,6 +123,9 @@ func model(a *app.App) Command {
 		return show(&panel.List{
 			Title:  "Model",
 			Items:  items,
+			Header: []string{"context", "input", "output"},
+			Notes:  notes,
+			Footer: func(it *panel.Item) string { return it.Value.(*modelChoice).effortBar() },
 			Filter: true,
 			Hint:   theme.Hint("↑↓", "select", "←→", "effort", "enter", "switch", "esc", "close"),
 			Keys: func(k string, it *panel.Item) (tea.Cmd, bool, bool) {
@@ -77,18 +133,11 @@ func model(a *app.App) Command {
 					return nil, false, false
 				}
 				c := it.Value.(*modelChoice)
-				if n := len(c.efforts); n > 1 {
-					step := 1
-					if k == "left" {
-						step = n - 1
-					}
-					c.effort = (c.effort + step) % n
-					window := 0
-					if facts, ok := a.ModelFacts(c.provider, c.name); ok {
-						window = facts.MaxInputTokens
-					}
-					it.Detail = c.detail(window)
+				step := 1
+				if k == "left" {
+					step = -1
 				}
+				c.effort = min(max(c.effort+step, 0), len(c.efforts)-1)
 				return nil, true, false
 			},
 			Select: func(it panel.Item) tea.Cmd {

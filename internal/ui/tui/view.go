@@ -136,11 +136,12 @@ func (m *Model) footer() string {
 
 	var right []string
 	st := m.status
-	model := st.Model
+	// The provider is dimmer than the model it serves.
+	model := theme.SubtleText.Render(st.Provider+"/") + theme.MutedText.Render(st.Model)
 	if st.Effort != "" {
-		model += " · " + st.Effort
+		model += theme.MutedText.Render(" · " + st.Effort)
 	}
-	right = append(right, theme.MutedText.Render(model))
+	right = append(right, model)
 	if st.Window > 0 {
 		pct := st.Context * 100 / st.Window
 		c := theme.SubtleText

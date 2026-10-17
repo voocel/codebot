@@ -234,7 +234,7 @@ func use(id, tool string, args any) litellmtest.Reply {
 func TestWelcome(t *testing.T) {
 	const antennae = "▀▄    ▄▀"
 	h := boot(t)
-	h.shows(antennae, "codebot  test", tagline, "claude-sonnet-4-5  ·  effort auto", "balanced")
+	h.shows(antennae, "codebot  test", tagline, "anthropic/claude-sonnet-4-5  ·  effort auto", "balanced")
 	if h.m.View().Cursor == nil {
 		t.Fatal("the editor has no cursor")
 	}
@@ -243,6 +243,11 @@ func TestWelcome(t *testing.T) {
 	h.feed(tea.WindowSizeMsg{Width: 30, Height: 20})
 	if s := h.screen(); strings.Contains(s, antennae) || !strings.Contains(s, "codebot  test") {
 		t.Errorf("at 30 columns:\n%s", s)
+	}
+
+	// Where the model alone fits, the effort and the provider give way.
+	if s := ansi.Strip(strings.Join(h.m.head(24), "\n")); !strings.Contains(s, "claude-sonnet-4-5") || strings.Contains(s, "anthropic/") || strings.Contains(s, "effort") {
+		t.Errorf("at 24 columns:\n%s", s)
 	}
 }
 
@@ -357,6 +362,23 @@ func TestPermissionsListTheRules(t *testing.T) {
 	h.press("x")
 	h.settleNotes()
 	h.shows("edited in the settings file", "Bash(rm:*)")
+}
+
+// /model shows the models in columns under their providers, and ←→ picks
+// the effort that is switched to with the model.
+func TestModelPanel(t *testing.T) {
+	h := boot(t)
+	h.write("/model")
+	h.press("enter")
+	h.settleNotes()
+	h.shows("context", "input", "output", "anthropic", "claude-sonnet-4-5 ✓", "Effort   auto")
+	h.press("right", "enter")
+	h.settleNotes()
+	st := h.app.Current().Status()
+	if st.Effort == "" {
+		t.Fatalf("switched without the effort picked:\n%s", h.screen())
+	}
+	h.shows("anthropic/claude-sonnet-4-5 · " + st.Effort)
 }
 
 // A background agent's page follows its own run, so two runs of one agent
