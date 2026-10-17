@@ -7,7 +7,7 @@
 *.dll
 *.so
 *.dylib
-codebot
+/codebot
 
 # Test binary, built with `go test -c`
 *.test

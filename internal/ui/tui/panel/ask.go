@@ -19,7 +19,8 @@ type Ask struct {
 	state []answer
 	head  head
 	queue
-	own field // the user's free-form answer
+	own    field // the user's free-form answer
+	finish menu  // the review's submit and cancel, on submit at first
 }
 
 // An answer's rows are the question's options, then the free-form answer
@@ -32,7 +33,7 @@ type answer struct {
 }
 
 func NewAsk(qs []interact.Question, reply chan<- interact.Answers) *Ask {
-	a := &Ask{qs: qs, reply: reply, state: make([]answer, len(qs)), own: newField("Type your answer")}
+	a := &Ask{qs: qs, reply: reply, state: make([]answer, len(qs)), own: newField("Type your answer"), finish: menu{n: 2}}
 	for i, q := range qs {
 		n := len(q.Options)
 		if q.AllowsCustom() {
@@ -68,8 +69,12 @@ func (a *Ask) Update(msg tea.Msg) (tea.Cmd, bool) {
 		}
 	}
 	if a.tab == len(a.qs) {
-		if k == "enter" {
+		switch a.finish.key(k) {
+		case 0:
 			return a.submit()
+		case 1:
+			a.reply <- interact.Answers{Cancelled: true}
+			return nil, true
 		}
 		return nil, false
 	}
@@ -181,10 +186,11 @@ func (a *Ask) View(width, height int) string {
 			if name == "" {
 				name = "Q" + strconv.Itoa(i+1)
 			}
+			mark := ""
 			if a.state[i].done {
-				name = "✓ " + name
+				mark = theme.OKText.Render("✓ ")
 			}
-			tabs = append(tabs, tabLabel(name, i == a.tab))
+			tabs = append(tabs, mark+tabLabel(name, i == a.tab))
 		}
 		tabs = append(tabs, tabLabel("Submit", a.tab == len(a.qs)))
 		body = append(body, strings.Join(tabs, "  "), "")
@@ -192,8 +198,14 @@ func (a *Ask) View(width, height int) string {
 
 	title := "Question"
 	if a.tab == len(a.qs) {
-		body = append(body, a.review(width)...)
-		return frame(a.queue.title(title), body, theme.Hint("enter", "submit", "tab", "switch", "esc", "cancel"), width, height)
+		// A long review scrolls so the choices stay visible.
+		opts := []string{a.finish.numbered(0, "Submit answers"), a.finish.numbered(1, "Cancel")}
+		body, cut := a.head.fit(append(body, a.review(width)...), opts, height-chrome)
+		hint := []string{"↑↓", "select", "enter", "choose", "tab", "switch"}
+		if cut {
+			hint = append(hint, "pgup/pgdn", "scroll")
+		}
+		return frame(a.queue.title(title), body, theme.Hint(append(hint, "esc", "cancel")...), width, height)
 	}
 
 	q, s := a.qs[a.tab], a.state[a.tab]
@@ -249,15 +261,26 @@ func (a *Ask) View(width, height int) string {
 	return frame(a.queue.title(title), body, theme.Hint(hint...), width, height)
 }
 
+// review sets each answer under its question, a line of its own for each
+// choice, the answers standing out: they are what the user checks before
+// submitting.
 func (a *Ask) review(width int) []string {
 	var out []string
 	for i, q := range a.qs {
-		out = append(out, markdown.Wrap(q.Question, theme.Bold, width-2)...)
+		out = append(out, markdown.Wrap(q.Question, theme.MutedText, width-2)...)
 		if !a.state[i].done {
-			out = append(out, theme.SubtleText.Render("  (no answer)"))
+			out = append(out, theme.WarmText.Render("  (no answer)"))
 			continue
 		}
-		out = append(out, theme.AccentText.Render("  → ")+theme.Text.Render(strings.Join(a.chosen(i), ", ")))
+		for _, choice := range a.chosen(i) {
+			for j, l := range markdown.Wrap(choice, theme.Text.Bold(true), width-6) {
+				lead := "    "
+				if j == 0 {
+					lead = theme.AccentText.Render("  → ")
+				}
+				out = append(out, lead+l)
+			}
+		}
 	}
 	return out
 }

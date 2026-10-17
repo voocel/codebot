@@ -267,8 +267,8 @@ func TestAskSeveral(t *testing.T) {
 	press(a, "space", "down", "down") // X, then to Z
 	press(a, "space", "enter")        // Z, then to the review
 	view := ansi.Strip(a.View(60, 20))
-	if !strings.Contains(view, "Submit") {
-		t.Errorf("no review:\n%s", view)
+	if !strings.Contains(view, "❯ 1. Submit answers") {
+		t.Errorf("the review is not on submit:\n%s", view)
 	}
 	if !press(a, "enter") {
 		t.Fatal("the panel stayed")
@@ -276,6 +276,26 @@ func TestAskSeveral(t *testing.T) {
 	got := (<-reply).Selected
 	if !slices.Equal(got["Which?"], []string{"A"}) || !slices.Equal(got["Also?"], []string{"X", "Z"}) {
 		t.Errorf("answered %v", got)
+	}
+}
+
+// The review's second choice cancels, and its choices stay in view however
+// long the review.
+func TestAskReviewCancels(t *testing.T) {
+	long := strings.Repeat("A long question. ", 30)
+	reply := make(chan interact.Answers, 1)
+	a := NewAsk([]interact.Question{
+		{Question: long, Options: []interact.Option{{Label: "A"}}},
+		{Question: long, Options: []interact.Option{{Label: "B"}}},
+	}, reply)
+	press(a, "enter", "enter")
+	view := a.View(60, 12)
+	fits(t, view, 60, 12)
+	if v := ansi.Strip(view); !strings.Contains(v, "Submit answers") || !strings.Contains(v, "Cancel") {
+		t.Errorf("the choices do not show:\n%s", v)
+	}
+	if !press(a, "down", "enter") || !(<-reply).Cancelled {
+		t.Error("cancel did not cancel")
 	}
 }
 

@@ -34,6 +34,8 @@ func keyPress(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "right":
+		return tea.KeyPressMsg{Code: tea.KeyRight}
 	case "backspace":
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "space":
@@ -268,10 +270,24 @@ func TestDiscardKeepsTheInput(t *testing.T) {
 func TestSuggestion(t *testing.T) {
 	e := newEditor()
 	e.SetSuggestion("run the tests")
-	press(e, "tab")
-	if got := e.ta.Value(); got != "run the tests" {
-		t.Errorf("tab took %q", got)
+	for _, k := range []string{"tab", "right"} {
+		e.Clear()
+		e.SetSuggestion("run the tests")
+		press(e, k)
+		if got := e.ta.Value(); got != "run the tests" {
+			t.Errorf("%s took %q", k, got)
+		}
 	}
+
+	// A search hides the suggestion, so → only moves the cursor.
+	e.Clear()
+	e.SetHistory(NewHistory(filepath.Join(t.TempDir(), "history.jsonl"), "/project"))
+	e.SetSuggestion("run the tests")
+	press(e, "ctrl+r", "right")
+	if got := e.ta.Value(); got != "" {
+		t.Errorf("→ took %q during a search", got)
+	}
+	e.Dismiss()
 
 	e.Clear()
 	e.SetSuggestion("run the tests")

@@ -139,7 +139,8 @@ func (e *Editor) SetSession(id string) {
 
 func (e *Editor) SetWidth(w int) { e.ta.SetWidth(max(w, 10)) }
 
-// SetSuggestion shows s while the input is empty; tab or enter accepts it.
+// SetSuggestion shows s while the input is empty; tab or → takes it into
+// the input, enter sends it.
 func (e *Editor) SetSuggestion(s string) {
 	e.suggestion = s
 	e.placehold()
@@ -150,7 +151,7 @@ func (e *Editor) placehold() {
 	case e.searching:
 		e.ta.Placeholder = "Type to search what you sent before"
 	case e.suggestion != "":
-		e.ta.Placeholder = e.suggestion + "  (tab)"
+		e.ta.Placeholder = e.suggestion + "  (tab / →)"
 	default:
 		e.ta.Placeholder = placeholder
 	}
@@ -263,11 +264,7 @@ func (e *Editor) key(k tea.KeyPressMsg) (tea.Cmd, *Input) {
 		if it, ok := e.selected(); ok {
 			return e.pick(it), nil
 		}
-		if e.suggestion != "" && e.ta.Value() == "" {
-			e.ta.SetValue(e.suggestion)
-			e.ta.MoveToEnd()
-			e.SetSuggestion("")
-		}
+		e.takeSuggestion()
 		return nil, nil
 	case "up", "ctrl+p":
 		if len(e.menu) > 0 || e.searching {
@@ -330,6 +327,9 @@ func (e *Editor) key(k tea.KeyPressMsg) (tea.Cmd, *Input) {
 			return nil, nil
 		}
 	case "right":
+		if e.takeSuggestion() {
+			return nil, nil
+		}
 		if n := refAfter(e.line(), e.ta.Column()); n > 0 {
 			e.ta.SetCursorColumn(e.ta.Column() + n)
 			return nil, nil
@@ -339,6 +339,18 @@ func (e *Editor) key(k tea.KeyPressMsg) (tea.Cmd, *Input) {
 	var cmd tea.Cmd
 	e.ta, cmd = e.ta.Update(k)
 	return tea.Batch(cmd, e.edited()), nil
+}
+
+// takeSuggestion puts the suggestion the empty input shows into it, and
+// reports whether there was one. A search shows none.
+func (e *Editor) takeSuggestion() bool {
+	if e.suggestion == "" || e.ta.Value() != "" || e.searching {
+		return false
+	}
+	e.ta.SetValue(e.suggestion)
+	e.ta.MoveToEnd()
+	e.SetSuggestion("")
+	return true
 }
 
 func (e *Editor) edited() tea.Cmd {
